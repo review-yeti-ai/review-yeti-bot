@@ -5,7 +5,8 @@ import type { ReviewFindingItem, ToolResult } from '../../src/mcp/types.js';
 import { getAnalyticsDashboardTool } from '../../src/mcp/tools/getAnalyticsDashboard.js';
 import { getRuntimeMetricsTool } from '../../src/mcp/tools/getRuntimeMetrics.js';
 import { queryFindingsTool } from '../../src/mcp/tools/queryFindings.js';
-import { SAMPLE_REPO_CDR } from '../../src/sampleRepositories.js';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_META } from '../../src/sampleRepositories.js';
+import { fetchRepositoriesFromDb } from '../../src/storage/d1Client.js';
 
 type Equals<Actual, Expected> =
   (<T>() => T extends Actual ? 1 : 2) extends
@@ -69,6 +70,20 @@ function payload(result: ToolResult) {
 }
 
 describe('MCP edge telemetry contracts', () => {
+  for (const fullName of [SAMPLE_REPO_CDR, SAMPLE_REPO_META]) {
+    it(`returns seeded sample repository ${fullName} with its canonical owner and ID`, async () => {
+      const repositories = await fetchRepositoriesFromDb();
+      const matches = repositories.filter(repository => repository.id === fullName);
+      assert.equal(matches.length, 1, 'the exported API must return exactly one matching sample repository');
+      const repository = matches[0];
+      const [owner, slug] = fullName.split('/');
+      assert.equal(repository.id, fullName);
+      assert.equal(repository.owner, owner);
+      assert.equal(repository.repo, slug);
+      assert.equal(`${repository.owner}/${repository.repo}`, fullName);
+    });
+  }
+
   it('labels bound-D1 analytics with the canonical live source', async () => {
     const result = payload(await getAnalyticsDashboardTool.execute({}, { env: { DB: boundDb() } }));
     assert.equal(result.dataSource, 'live_telemetry');
