@@ -318,13 +318,20 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
             const workerImage = spec.workerImage || this.env.DEFAULT_WORKER_IMAGE;
             // The operator endpoint is deployment-owned, not a tenant-specific
             // default in this public runtime. Accept either explicit binding;
-            // with neither configured, omit the hint.
+            // omit the optional hint when the selected binding is absent or unsafe.
             const statusBaseUrl = this.env.DISPATCH_STATUS_BASE_URL || this.env.OPERATOR_STATUS_BASE_URL;
-            const statusBase = statusBaseUrl ? new URL(statusBaseUrl) : undefined;
-            if (statusBase && !statusBase.pathname.endsWith('/')) statusBase.pathname += '/';
-            const statusUrl = statusBase
-              ? new URL(`api/dispatch/runs/${encodeURIComponent(runId)}/status`, statusBase).toString()
-              : undefined;
+            let statusUrl: string | undefined;
+            if (statusBaseUrl) {
+              try {
+                const statusBase = new URL(statusBaseUrl);
+                if ((statusBase.protocol === 'http:' || statusBase.protocol === 'https:') && !statusBase.username && !statusBase.password) {
+                  if (!statusBase.pathname.endsWith('/')) statusBase.pathname += '/';
+                  statusUrl = new URL(`api/dispatch/runs/${encodeURIComponent(runId)}/status`, statusBase).toString();
+                }
+              } catch {
+                // Invalid optional deployment hints must not prevent dispatch.
+              }
+            }
 
             const result = await this.getRunner(spec.runner).dispatchJob({
               jobId: `job-${runId}`,
