@@ -169,6 +169,72 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     });
   }
 
+  for (const { name, value } of [
+    { name: 'malformed URL', value: 'https://' },
+    { name: 'schemeless URL', value: 'operator.example.com/gateway' },
+    { name: 'unsupported protocol', value: 'ftp://operator.example.com/gateway' },
+    { name: 'embedded credentials', value: 'https://fixture-user:fixture-password@operator.example.com/gateway' },
+    { name: 'embedded username', value: 'https://fixture-user@operator.example.com/gateway' },
+    { name: 'embedded password', value: 'https://:fixture-password@operator.example.com/gateway' },
+  ]) {
+    for (const { label, binding } of [
+      { label: 'preferred setting', binding: 'DISPATCH_STATUS_BASE_URL' },
+      { label: 'compatibility setting', binding: 'OPERATOR_STATUS_BASE_URL' },
+    ]) {
+      it(`omits invalid dispatch status hint for a ${name} from the ${label} without stopping dispatch`, async () => {
+        const runner = new MockContainerRunner();
+        const workflow = new ReviewJobWorkflow({ ...createMockEnv(), [binding]: value }, runner);
+        const mockStep = {
+          async do(_name: string, arg2: any, arg3?: any) {
+            return (typeof arg2 === 'function' ? arg2 : arg3)();
+          },
+          async sleep() {},
+        };
+        const result = await workflow.run({ payload: { ...sampleSpec, runId: 'run-invalid-status-hint' } }, mockStep as any);
+        assert.equal(result.status, 'succeeded');
+        assert.equal(runner.dispatched.length, 1);
+        assert.equal(Object.hasOwn(runner.dispatched[0].env, 'DISPATCH_STATUS_URL'), false);
+      });
+    }
+  }
+
+  it('omits an invalid preferred status hint without falling back to the compatibility setting', async () => {
+    const runner = new MockContainerRunner();
+    const workflow = new ReviewJobWorkflow({
+      ...createMockEnv(),
+      DISPATCH_STATUS_BASE_URL: 'https://',
+      OPERATOR_STATUS_BASE_URL: 'https://legacy.example.com/gateway',
+    }, runner);
+    const mockStep = {
+      async do(_name: string, arg2: any, arg3?: any) {
+        return (typeof arg2 === 'function' ? arg2 : arg3)();
+      },
+      async sleep() {},
+    };
+    const result = await workflow.run({ payload: { ...sampleSpec, runId: 'run-invalid-preferred-status-hint' } }, mockStep as any);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(runner.dispatched.length, 1);
+    assert.equal(Object.hasOwn(runner.dispatched[0].env, 'DISPATCH_STATUS_URL'), false);
+  });
+
+  it('accepts an explicit HTTP status hint while preserving its prefix and encoded run ID', async () => {
+    const runner = new MockContainerRunner();
+    const workflow = new ReviewJobWorkflow({
+      ...createMockEnv(),
+      DISPATCH_STATUS_BASE_URL: 'http://operator.example.com/gateway/',
+    }, runner);
+    const mockStep = {
+      async do(_name: string, arg2: any, arg3?: any) {
+        return (typeof arg2 === 'function' ? arg2 : arg3)();
+      },
+      async sleep() {},
+    };
+    const result = await workflow.run({ payload: { ...sampleSpec, runId: 'run/http ?#%' } }, mockStep as any);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(runner.dispatched.length, 1);
+    assert.equal(runner.dispatched[0].env.DISPATCH_STATUS_URL, 'http://operator.example.com/gateway/api/dispatch/runs/run%2Fhttp%20%3F%23%25/status');
+  });
+
   it('guarantees repo slot release in finally block even if container dispatch throws', async () => {
     const env = createMockEnv();
     // Runner that throws an exception during dispatch
