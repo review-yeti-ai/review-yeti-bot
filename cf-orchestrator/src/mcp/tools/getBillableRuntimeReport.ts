@@ -1,7 +1,7 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult, BillableRuntimeReport } from '../types.js';
 import { calculateRunnerCost, formatCostUsd, formatDuration } from '../../runners/runnerCost.js';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_CDR_SLUG } from '../../sampleRepositories.js';
 import { fetchReviewsFromDb } from '../../storage/d1Client.js';
-import { SAMPLE_REPO_CDR } from '../../sampleRepositories.js';
 
 export const getBillableRuntimeReportTool: McpToolHandler = {
   definition: {
@@ -13,7 +13,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
       properties: {
         repo: {
           type: 'string',
-          description: `Repository name filter (e.g. "${SAMPLE_REPO_CDR}")`,
+          description: `Repository name filter (e.g. "${SAMPLE_REPO_CDR_SLUG}")`,
         },
         prNumber: {
           type: 'number',

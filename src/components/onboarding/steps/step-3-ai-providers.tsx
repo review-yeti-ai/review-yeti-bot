@@ -114,6 +114,7 @@ export function Step3AIProviders({
           return (
             <Card
               key={meta.id}
+              data-testid={`provider-card-${meta.id}`}
               className={`border-border/60 backdrop-blur-sm transition-all duration-200 ${
                 isEnabled ? 'bg-card/60 border-indigo-500/20' : 'bg-card/20 opacity-70'
               }`}

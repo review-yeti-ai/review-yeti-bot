@@ -169,14 +169,14 @@ export interface BillableRuntimeReport {
     totalCostUSD: number;
     createdAt: string;
   }>;
-  dataSource?: 'live_telemetry' | 'baseline_sample_telemetry';
+  dataSource?: 'live_telemetry' | 'live_edge_telemetry' | 'baseline_sample_telemetry';
 }
 
 export interface RuntimeMetricsReport {
   repo?: string;
   windowHours: number;
   sampleCount: number;
-  dataSource?: 'live_telemetry' | 'baseline_sample_telemetry';
+  dataSource?: 'live_telemetry' | 'live_edge_telemetry' | 'baseline_sample_telemetry';
   percentilesWallLatencyMs: {
     p50: number;
     p75: number;
@@ -205,7 +205,7 @@ export interface RuntimeMetricsReport {
 
 export interface AnalyticsDashboardReport {
   timeframe: string;
-  dataSource?: 'live_telemetry' | 'baseline_sample_telemetry';
+  dataSource?: 'live_telemetry' | 'live_edge_telemetry' | 'baseline_sample_telemetry';
   kpis: {
     totalReviews: number;
     passRatePercent: number;

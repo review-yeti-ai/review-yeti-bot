@@ -317,9 +317,11 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
           async () => {
             const workerImage = spec.workerImage || this.env.DEFAULT_WORKER_IMAGE;
             // The operator endpoint is deployment-owned, not a tenant-specific
-            // default in this public runtime. With no binding, omit the hint.
-            const statusUrl = this.env.DISPATCH_STATUS_BASE_URL
-              ? new URL(`/api/dispatch/runs/${encodeURIComponent(runId)}/status`, this.env.DISPATCH_STATUS_BASE_URL).toString()
+            // default in this public runtime. Accept either explicit binding;
+            // with neither configured, omit the hint.
+            const statusBaseUrl = this.env.DISPATCH_STATUS_BASE_URL || this.env.OPERATOR_STATUS_BASE_URL;
+            const statusUrl = statusBaseUrl
+              ? new URL(`/api/dispatch/runs/${encodeURIComponent(runId)}/status`, statusBaseUrl).toString()
               : undefined;
 
             const result = await this.getRunner(spec.runner).dispatchJob({

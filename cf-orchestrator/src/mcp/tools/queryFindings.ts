@@ -1,6 +1,6 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult, ReviewFindingItem } from '../types.js';
 import { fetchFindingsFromDb } from '../../storage/d1Client.js';
-import { SAMPLE_REPO_CDR } from '../../sampleRepositories.js';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_CDR_SLUG } from '../../sampleRepositories.js';
 
 export const queryFindingsTool: McpToolHandler = {
   definition: {
@@ -12,7 +12,7 @@ export const queryFindingsTool: McpToolHandler = {
       properties: {
         repo: {
           type: 'string',
-          description: `Repository name (e.g. "${SAMPLE_REPO_CDR}")`,
+          description: `Repository name (e.g. "${SAMPLE_REPO_CDR_SLUG}")`,
         },
         prNumber: {
           type: 'number',
@@ -75,7 +75,7 @@ export const queryFindingsTool: McpToolHandler = {
           rule: f.title.toLowerCase().replace(/[^a-z0-9]+/g, '.'),
           body: f.description,
           suggestedPatch: '',
-          status: f.status === 'dismissed' ? 'dismissed' : f.status === 'resolved' ? 'resolved' : 'open',
+          status: f.status === 'resolved' ? 'resolved' : f.status === 'disputed' ? 'disputed' : f.status === 'dismissed' ? 'dismissed' : 'open',
           authorPersona: 'security-architect',
         }));
       } catch {

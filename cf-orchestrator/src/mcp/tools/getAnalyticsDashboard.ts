@@ -1,7 +1,7 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult, AnalyticsDashboardReport } from '../types.js';
 import { formatCostUsd, formatDuration } from '../../runners/runnerCost.js';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_CDR_SLUG } from '../../sampleRepositories.js';
 import { fetchReviewsFromDb, fetchFindingsFromDb } from '../../storage/d1Client.js';
-import { SAMPLE_REPO_CDR } from '../../sampleRepositories.js';
 
 export const getAnalyticsDashboardTool: McpToolHandler = {
   definition: {
@@ -13,7 +13,7 @@ export const getAnalyticsDashboardTool: McpToolHandler = {
       properties: {
         repo: {
           type: 'string',
-          description: `Repository name to filter dashboard (e.g. "${SAMPLE_REPO_CDR}")`,
+          description: `Repository name to filter dashboard (e.g. "${SAMPLE_REPO_CDR_SLUG}")`,
         },
         timeframe: {
           type: 'string',

@@ -286,7 +286,7 @@ function collectMix(lines: readonly string[]): Collected | string {
       if (changed) out.unattributed += 1;
       continue;
     }
-    if (entry[1] !== entry[2]) return 'changes an entry whose package name and declaration disagree';
+    if (changed && entry[1] !== entry[2]) return 'changes an entry whose package name and declaration disagree';
     // The entry's OWN repository is the positional field Hex writes (entry[4]);
     // anything but hexpm means this package did not come from the default public
     // registry, so the registry-vouched summary does not stand over it.

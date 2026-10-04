@@ -65,6 +65,10 @@ export interface Env {
   DOKS_FALLBACK_URL?: string;
   /** Deployment-owned operator origin for optional dispatch status callbacks. */
   DISPATCH_STATUS_BASE_URL?: string;
+  /** Base host of the operator run-status API; deployments bind the real internal operator host here. */
+  OPERATOR_STATUS_BASE_URL?: string;
+  /** Comma-separated full names of the repositories whose live gate state the dashboard reports. */
+  REVIEWED_REPOSITORIES?: string;
   /** Comma-separated browser origins allowed for the MCP endpoint (exact origin or `*.suffix`). */
   ALLOWED_ORIGINS?: string;
   DEFAULT_WORKER_IMAGE: string;
@@ -116,4 +120,3 @@ export interface TurnStepPayload {
   latencyMs?: number;
   timestamp?: string;
 }
-

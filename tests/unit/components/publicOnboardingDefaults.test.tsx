@@ -56,26 +56,52 @@ describe('public onboarding defaults', () => {
     expect(screen.getByText('configured-service')).toBeInTheDocument();
   });
 
-  it('shows a load failure instead of substituting sample credentials', async () => {
-    vi.mocked(apiClient.fetchGitHubAppConfig).mockRejectedValue(new Error('unavailable'));
+  it.each([
+    ['GitHub App configuration', apiClient.fetchGitHubAppConfig],
+    ['repositories', apiClient.fetchRepositories],
+    ['AI providers', apiClient.fetchProviders],
+    ['personas', apiClient.fetchPersonas],
+  ] as const)('reports only the failed %s loader without substituting sample credentials', async (name, loader) => {
+    vi.mocked(loader).mockRejectedValue(new Error('unavailable'));
     render(<FiveStepWizard />);
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Could not load GitHub App configuration'));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(`Could not load ${name}. Sync Store`));
+    const alert = screen.getByRole('alert');
+    for (const other of ['GitHub App configuration', 'repositories', 'AI providers', 'personas']) {
+      if (other !== name) expect(alert).not.toHaveTextContent(other);
+    }
     expect(screen.getByPlaceholderText('e.g. 1048293')).toHaveValue('');
     expect(screen.getByPlaceholderText('whsec_...')).toHaveValue('');
   });
 
-  it('requires an explicit owner and repository for a new monitored repository', () => {
+  it('does not report a load error for successfully loaded empty settings', async () => {
+    render(<FiveStepWizard />);
+    await waitFor(() => expect(screen.getByRole('button', { name: /Sync Store/i })).toBeEnabled());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('e.g. 1048293')).toHaveValue('');
+  });
+
+  it.each(['service', 'a/b/c', 'a/', '/b', ' / '])('rejects malformed repository input %j', (value) => {
     const addRepo = vi.fn();
     render(<Step2ReposPicker repositories={[]} onUpdateRepo={vi.fn()} onAddRepo={addRepo} />);
     const input = screen.getByPlaceholderText('org/repository-name');
     const add = screen.getByRole('button', { name: /Add Repo/i });
-    fireEvent.change(input, { target: { value: 'service' } });
+    fireEvent.change(input, { target: { value } });
     expect(add).toBeDisabled();
     fireEvent.click(add);
     expect(addRepo).not.toHaveBeenCalled();
-    fireEvent.change(input, { target: { value: 'operator-org/service' } });
+  });
+
+  it.each(['operator-org/service', ' operator-org / service '])('trims valid repository input %j and clears it after adding', (value) => {
+    const addRepo = vi.fn();
+    render(<Step2ReposPicker repositories={[]} onUpdateRepo={vi.fn()} onAddRepo={addRepo} />);
+    const input = screen.getByPlaceholderText('org/repository-name');
+    const add = screen.getByRole('button', { name: /Add Repo/i });
+    fireEvent.change(input, { target: { value } });
+    expect(add).toBeEnabled();
     fireEvent.click(add);
+    expect(addRepo).toHaveBeenCalledTimes(1);
     expect(addRepo).toHaveBeenCalledWith('operator-org', 'service');
+    expect(input).toHaveValue('');
   });
 
   it('honors a configured webhook even when its secret is not yet configured', () => {
@@ -113,8 +139,8 @@ describe('public onboarding defaults', () => {
   it('requires operator URLs for custom gateways and does not test fabricated endpoints', () => {
     const testProvider = vi.fn();
     render(<Step3AIProviders providers={{}} onUpdateProvider={vi.fn()} onTestProvider={testProvider} />);
-    for (const name of ['Custom OpenAI-Compatible', 'Codex AI Engine', 'AGY Thinking Engine']) {
-      const card = screen.getByText(name).closest('.backdrop-blur-sm') as HTMLElement;
+    for (const id of ['custom-openai', 'codex', 'agy']) {
+      const card = screen.getByTestId(`provider-card-${id}`);
       expect(within(card).getByPlaceholderText('Enter your provider base URL')).toHaveValue('');
       expect(within(card).getByRole('button', { name: /Test Connection/i })).toBeDisabled();
       fireEvent.click(within(card).getByRole('button', { name: /Test Connection/i }));
@@ -125,7 +151,7 @@ describe('public onboarding defaults', () => {
   it('preserves an explicitly configured custom provider endpoint', async () => {
     const testProvider = vi.fn().mockResolvedValue({ success: true });
     render(<Step3AIProviders providers={{ codex: { id: 'codex', displayName: 'Codex', enabled: true, baseUrl: 'https://configured-ai.example.com/v1', activeModels: [], updatedAt: '' } }} onUpdateProvider={vi.fn()} onTestProvider={testProvider} />);
-    const card = screen.getByText('Codex AI Engine').closest('.backdrop-blur-sm') as HTMLElement;
+    const card = screen.getByTestId('provider-card-codex');
     expect(within(card).getByPlaceholderText('Enter your provider base URL')).toHaveValue('https://configured-ai.example.com/v1');
     fireEvent.click(within(card).getByRole('button', { name: /Test Connection/i }));
     await waitFor(() => expect(testProvider).toHaveBeenCalledWith('codex'));
@@ -134,7 +160,7 @@ describe('public onboarding defaults', () => {
   it('keeps built-in connection tests enabled after a partial API-key update', async () => {
     const testProvider = vi.fn().mockResolvedValue({ success: true });
     render(<Step3AIProviders providers={{ openai: { id: 'openai', displayName: 'OpenAI', enabled: true, apiKeyRaw: 'test-only-key', activeModels: [], updatedAt: '' } }} onUpdateProvider={vi.fn()} onTestProvider={testProvider} />);
-    const card = screen.getByText('OpenAI').closest('.backdrop-blur-sm') as HTMLElement;
+    const card = screen.getByTestId('provider-card-openai');
     const testButton = within(card).getByRole('button', { name: /Test Connection/i });
     expect(testButton).toBeEnabled();
     fireEvent.click(testButton);
