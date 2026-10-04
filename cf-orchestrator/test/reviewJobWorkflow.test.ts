@@ -54,6 +54,7 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     assert.equal(runner.dispatched[0].runId, 'run_wf_001');
     assert.equal(runner.dispatched[0].prNumber, 42);
     assert.ok(runner.dispatched[0].env.GITHUB_TOKEN.startsWith('ghs_ephemeral_'));
+    assert.equal(Object.hasOwn(runner.dispatched[0].env, 'DISPATCH_STATUS_URL'), false);
 
     // Verify slot released in RepoGateDO
     const repoGate = env.REPO_GATE.get('review-yeti-ai/review-yeti-bot');
@@ -101,6 +102,21 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     assert.ok(executedSteps.includes('poll-slot-1'));
     assert.ok(executedSteps.includes('dispatch-container'));
     assert.ok(executedSteps.includes('cleanup-and-release'));
+  });
+
+  it('uses the explicit deployment-owned dispatch status origin', async () => {
+    const env = { ...createMockEnv(), DISPATCH_STATUS_BASE_URL: 'https://operator.example.com' };
+    const runner = new MockContainerRunner();
+    const workflow = new ReviewJobWorkflow(env, runner);
+    const mockStep = {
+      async do(_name: string, arg2: any, arg3?: any) {
+        return (typeof arg2 === 'function' ? arg2 : arg3)();
+      },
+      async sleep() {},
+    };
+    const result = await workflow.run({ payload: { ...sampleSpec, runId: 'run-status-origin' } }, mockStep as any);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(runner.dispatched[0].env.DISPATCH_STATUS_URL, 'https://operator.example.com/api/dispatch/runs/run-status-origin/status');
   });
 
   it('guarantees repo slot release in finally block even if container dispatch throws', async () => {
@@ -436,5 +452,4 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     });
   });
 });
-
 

@@ -23,6 +23,8 @@ export function Step2ReposPicker({
 }: Step2ReposPickerProps) {
   const [searchTerm, setSearchTerm] = React.useState('');
   const [newRepoInput, setNewRepoInput] = React.useState('');
+  const newRepoParts = newRepoInput.trim().split('/');
+  const hasExplicitRepository = newRepoParts.length === 2 && newRepoParts.every((part) => part.trim().length > 0);
 
   const filteredRepos = repositories.filter(
     (r) =>
@@ -31,10 +33,8 @@ export function Step2ReposPicker({
   );
 
   const handleCreateRepo = () => {
-    if (!newRepoInput.trim()) return;
-    const parts = newRepoInput.trim().split('/');
-    const owner = parts.length > 1 ? parts[0] : 'calltelemetry';
-    const repo = parts.length > 1 ? parts[1] : parts[0];
+    if (!hasExplicitRepository) return;
+    const [owner, repo] = newRepoParts.map((part) => part.trim());
     if (onAddRepo) {
       onAddRepo(owner, repo);
       setNewRepoInput('');
@@ -86,7 +86,7 @@ export function Step2ReposPicker({
             <Button
               size="sm"
               onClick={handleCreateRepo}
-              disabled={!newRepoInput.trim()}
+              disabled={!hasExplicitRepository}
               className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs gap-1.5 shrink-0"
             >
               <Plus className="h-3.5 w-3.5" />
