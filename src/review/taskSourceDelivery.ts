@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { MAX_CHANGED_FILES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import { classifyUnavailablePatch } from './patchAvailability';
+import type { TaskSourceReceipt } from '../types/taskSourceDelivery';
+export type { TaskSourceReceipt } from '../types/taskSourceDelivery';
 
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 const count = z.number().int().nonnegative().safe();
@@ -38,7 +40,6 @@ export const taskSourceReceiptSchema = z.object({
     context.addIssue({ code: z.ZodIssueCode.custom, message: 'delivery completeness does not match its evidence' });
   }
 });
-export type TaskSourceReceipt = z.infer<typeof taskSourceReceiptSchema>;
 type SourceFile = { path: string; patch?: string; originalPatchLength?: number };
 
 function originalPatch(file: SourceFile | undefined): string | null {

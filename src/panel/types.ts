@@ -12,7 +12,7 @@ import type { IncrementalReviewDisclosure } from '../types/incrementalReview';
 import type { ReviewBudgetDisclosure } from '../types/reviewBudget';
 import type { VerdictCacheDisclosure } from '../types/verdictCache';
 import type { MapReduceDisclosure } from '../types/mapReduceReview';
-import type { TaskSourceReceipt } from '../review/taskSourceDelivery';
+import type { TaskSourceReceipt } from '../types/taskSourceDelivery';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
