@@ -1378,14 +1378,22 @@ describe('executeComposedReview', () => {
       expect(format.json_schema.strict).toBe(true);
       expect(schema.additionalProperties).toBe(false);
       expect(Object.keys(schema.properties).sort()).toEqual([...schema.required].sort());
+      expect(schema.properties.blockedReason).toEqual({
+        type: ['string', 'null'],
+        enum: ['unspecified', 'evidence_insufficient', 'tool_evidence_unavailable', 'analysis_unresolved', null],
+      });
       expect(lastText(payload.messages)).toContain('result_fields');
       expect(lastText(payload.messages)).toContain(`Binding task-result schema: ${JSON.stringify(format.json_schema)}`);
-      // Populate every declared property from the real provider schema. An additive string
-      // field must be admitted without another hand-maintained allowlist being updated here.
+      // Populate every declared property, including the required nullable logs-only diagnostic.
+      // Other additive fields must remain strings and be admitted from the provider schema.
       const candidate = Object.fromEntries(Object.entries(schema.properties).map(([field, property]) => {
-        if (Object.hasOwn(values, field)) return [field, values[field]];
+        if (field === 'blockedReason') return [field, null];
+        if (field === 'findings') {
+          expect(property).toMatchObject({ type: 'array' });
+          return [field, values[field]];
+        }
         expect(property).toMatchObject({ type: 'string' });
-        return [field, 'schema-declared-fixture'];
+        return [field, Object.hasOwn(values, field) ? values[field] : 'schema-declared-fixture'];
       }));
       expect(Object.keys(candidate).sort()).toEqual(Object.keys(schema.properties).sort());
       return fakeResponse(JSON.stringify(candidate));
