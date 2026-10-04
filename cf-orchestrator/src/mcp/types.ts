@@ -88,7 +88,7 @@ export interface ReviewFindingItem {
   rule: string;
   body: string;
   suggestedPatch?: string;
-  status: 'open' | 'disputed' | 'resolved' | 'dismissed';
+  status: 'open' | 'disputed' | 'dismissed' | 'resolved';
   authorPersona?: string;
 }
 

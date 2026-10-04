@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from '../src/worker.js';
 import type { Env } from '../src/types.js';
+import { SAMPLE_REPO_CDR } from '../src/sampleRepositories.js';
 
 function createMockEnv(): Env {
   return {
@@ -566,6 +567,96 @@ describe('Neutral dashboard API state and boundary controls', () => {
 });
 
 
+describe('Dashboard log identity deduplication', () => {
+  function reviewRow(id: string) {
+    return {
+      id,
+      repo: SAMPLE_REPO_CDR,
+      pr_number: 42,
+      title: 'Authoritative D1 title',
+      head_sha: 'a'.repeat(40),
+      verdict: 'BLOCK',
+      status: 'completed',
+      duration_ms: 1234,
+      prompt_tokens: 300,
+      completion_tokens: 45,
+      total_tokens: 345,
+      spend_usd: 0.025,
+      created_at: 1700000000000,
+      quorum: 'Authoritative D1 quorum',
+    };
+  }
+
+  async function readLogs(
+    storedRows: Array<ReturnType<typeof reviewRow>>,
+    activityRows: Array<ReturnType<typeof reviewRow>>,
+  ) {
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind(...values: unknown[]) {
+            return {
+              async all() {
+                // Analytics filters reviews by repository; the authoritative log query is unfiltered.
+                // These semantic query shapes are independent of either caller's row limit.
+                if (!sql.includes('FROM reviews')) return { results: [] };
+                if (/\bWHERE\s+repo\s*=\s*\?/.test(sql)) {
+                  assert.equal(values[0], SAMPLE_REPO_CDR);
+                  return { results: activityRows };
+                }
+                return { results: storedRows };
+              },
+            };
+          },
+        };
+      },
+    };
+    const response = await worker.fetch(
+      new Request('https://worker.dev/api/dashboard/logs'),
+      { ...createMockEnv(), DB: db },
+    );
+    assert.equal(response.status, 200);
+    const body = await response.json() as {
+      success: boolean;
+      logs: Array<{
+        id: string; title: string; verdict: string; headSha: string; quorum: string;
+        tokens: number; tokenDetails: { prompt: number; completion: number; total: number };
+        latencyMs: number; cost: number;
+      }>;
+    };
+    assert.equal(body.success, true);
+    return body.logs;
+  }
+
+  it('keeps an overlapping D1 review exactly once with its authoritative metadata', async () => {
+    const stored = reviewRow('stored-overlap');
+    const logs = await readLogs([stored], [{ ...stored, verdict: 'SHIP', spend_usd: 99, duration_ms: 9999 }]);
+    assert.deepEqual(logs.map(log => log.id), [stored.id]);
+    assert.equal(logs[0].title, stored.title);
+    assert.equal(logs[0].verdict, 'NACK');
+    assert.equal(logs[0].headSha, stored.head_sha);
+    assert.equal(logs[0].quorum, stored.quorum);
+    assert.equal(logs[0].tokens, stored.total_tokens);
+    assert.deepEqual(logs[0].tokenDetails, { prompt: 300, completion: 45, total: 345 });
+    assert.equal(logs[0].latencyMs, stored.duration_ms);
+    assert.equal(logs[0].cost, stored.spend_usd);
+  });
+
+  it('keeps repeated recentActivity run IDs once and retains the first projection', async () => {
+    const activity = reviewRow('analytics-duplicate');
+    const logs = await readLogs([reviewRow('stored-only')], [activity, { ...activity, duration_ms: 9999, spend_usd: 99 }]);
+    assert.deepEqual(logs.map(log => log.id), ['stored-only', activity.id]);
+    assert.equal(logs[1].latencyMs, activity.duration_ms);
+    assert.equal(logs[1].cost, activity.spend_usd);
+  });
+
+  it('retains distinct run IDs even when repository and PR number match', async () => {
+    const ids = ['stored-run', 'analytics-first', 'analytics-second'];
+    const logs = await readLogs([reviewRow(ids[0])], ids.slice(1).map(reviewRow));
+    assert.deepEqual(logs.map(log => log.id), ids);
+  });
+});
+
 describe('Dashboard trigger and gate public fallback boundaries', () => {
   it('sends the public trigger command and completed lifecycle through a bound review run', async () => {
     const calls: Array<{ url: string; payload: any }> = [];
@@ -645,17 +736,20 @@ describe('Integrated public topology route boundaries', () => {
     }
   });
 
-  it('retains an explicit job identifier without invoking mutable review or storage bindings', async () => {
-    let bindingCalls = 0;
-    const env = { ...createMockEnv(), REVIEW_RUN: { idFromName: () => { bindingCalls++; throw new Error('Unexpected review mutation'); } }, DB: { prepare: () => { bindingCalls++; throw new Error('Unexpected database mutation'); } } } as unknown as Env;
+  it('retains an explicit job identifier with zero metrics when a bound storage read fails', async () => {
+    let reviewMutations = 0;
+    let storageReads = 0;
+    const env = { ...createMockEnv(), REVIEW_RUN: { idFromName: () => { reviewMutations++; throw new Error('Unexpected review mutation'); } }, DB: { prepare: () => { storageReads++; throw new Error('Storage read unavailable'); } } } as unknown as Env;
     const response = await worker.fetch(new Request('https://worker.dev/api/live/topology?jobId=example-topology-run'), env);
     assert.equal(response.status, 200);
     const topology = await response.json() as any;
     assert.equal(topology.jobId, 'example-topology-run');
-    assert.equal(topology.globalThroughputTokSec, 384);
-    assert.equal(topology.edgeP95RttMs, 14.2);
-    assert.equal(topology.r2CacheHitRate, 95.8);
-    assert.equal(bindingCalls, 0);
+    assert.equal(topology.globalThroughputTokSec, 0);
+    assert.equal(topology.edgeP95RttMs, 0);
+    assert.equal(topology.r2CacheHitRate, 0);
+    assert.equal(topology.healthScore, 0);
+    assert.equal(reviewMutations, 0);
+    assert.ok(storageReads > 0);
   });
 
   it('preserves topology CORS preflight without returning a topology payload', async () => {
@@ -713,8 +807,8 @@ describe('Bound gate read fallback regressions', () => {
     assert.equal(active[0].prNumber, 41);
     assert.equal(active[0].status, 'pending');
     assert.equal(active[0].verdict, 'PENDING');
-    assert.equal(active[0].latencyMs, 12000);
-    assert.equal(active[0].headSha, '9b8a7c6d');
+    assert.equal(active[0].latencyMs, 0);
+    assert.equal(active[0].headSha, '');
     assert.equal(active[0].quorum, 'Swarm In-Flight');
     assert.ok(Number.isFinite(Date.parse(active[0].timestamp)));
   });

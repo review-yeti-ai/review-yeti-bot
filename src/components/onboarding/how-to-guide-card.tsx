@@ -118,7 +118,7 @@ export const PROVIDER_GUIDES = [
     keyFormat: 'Custom bearer token or sk-custom-...',
     steps: [
       'Deploy vLLM, LocalAI, LM Studio, or Enterprise AI gateway with OpenAI schema.',
-      'Specify the endpoint Base URL (e.g. `https://ai.internal.mycompany.com/v1`).',
+      'Specify your deployed endpoint Base URL (sample only: `https://ai.example.com/v1`).',
       'Provide your custom API bearer token or secret header.',
     ],
   },
@@ -128,8 +128,8 @@ export const PROVIDER_GUIDES = [
     url: 'https://codex.example.com',
     keyFormat: 'cx-...',
     steps: [
-      'Review Yeti internal high-throughput code review engine.',
-      'Obtain API credentials from the Review Yeti deployment portal.',
+      'Configure your administrator-provided Codex-compatible gateway endpoint; the URL shown is a sample only.',
+      'Obtain API credentials from your gateway administrator.',
     ],
   },
   {
@@ -138,8 +138,8 @@ export const PROVIDER_GUIDES = [
     url: 'https://agy.example.com',
     keyFormat: 'agy-...',
     steps: [
-      'Antigravity deep reasoning cluster for complex architectural arbitration.',
-      'Use AGY token or service account key for 256k context reasoning.',
+      'Configure your administrator-provided reasoning gateway endpoint; the URL shown is a sample only.',
+      'Use the token or service account key supplied by your gateway administrator.',
     ],
   },
 ];
@@ -153,9 +153,9 @@ export function HowToGuideCard() {
 
   const sampleManifestSnippet = `{
   "name": "ct-review-bot-app",
-  "url": "https://github.com/example-org",
+  "url": "https://github.com/your-github-org",
   "hook_attributes": {
-    "url": "https://api.example.com/api/webhooks/github",
+    "url": "https://review.example.com/api/webhooks/github",
     "active": true
   },
   "default_permissions": {
@@ -238,7 +238,7 @@ export function HowToGuideCard() {
                 <div className="flex items-start gap-2">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-indigo-500/20 text-[11px] font-bold text-indigo-400">2</span>
                   <span>
-                    Fill in GitHub App Name (e.g. <code>ct-review-bot-app</code>) and set Webhook Target URL to <code>https://api.example.com/api/webhooks/github</code>.
+                    Fill in GitHub App Name (e.g. <code>ct-review-bot-app</code>) and set Webhook Target URL to your deployment's endpoint (sample only: <code>https://review.example.com/api/webhooks/github</code>).
                   </span>
                 </div>
                 <div className="flex items-start gap-2">

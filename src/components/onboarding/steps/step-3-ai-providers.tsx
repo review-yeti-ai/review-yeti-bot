@@ -19,9 +19,9 @@ export const OMNIROUTE_PROVIDERS = [
   { id: 'glm', name: 'Zhipu GLM', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4' },
   { id: 'doppler', name: 'Doppler Secret Vault', defaultBaseUrl: 'https://api.doppler.com/v3' },
   { id: 'ollama', name: 'Ollama Local Engine', defaultBaseUrl: 'http://localhost:11434/v1' },
-  { id: 'custom-openai', name: 'Custom OpenAI-Compatible', defaultBaseUrl: 'https://api.custom-ai.internal/v1' },
-  { id: 'codex', name: 'Codex AI Engine', defaultBaseUrl: 'https://codex.example.com/v1' },
-  { id: 'agy', name: 'AGY Thinking Engine', defaultBaseUrl: 'https://agy.example.com/v1' },
+  { id: 'custom-openai', name: 'Custom OpenAI-Compatible', defaultBaseUrl: '' },
+  { id: 'codex', name: 'Codex AI Engine', defaultBaseUrl: '' },
+  { id: 'agy', name: 'AGY Thinking Engine', defaultBaseUrl: '' },
 ];
 
 interface Step3AIProvidersProps {
@@ -114,6 +114,7 @@ export function Step3AIProviders({
           return (
             <Card
               key={meta.id}
+              data-testid={`provider-card-${meta.id}`}
               className={`border-border/60 backdrop-blur-sm transition-all duration-200 ${
                 isEnabled ? 'bg-card/60 border-indigo-500/20' : 'bg-card/20 opacity-70'
               }`}
@@ -193,12 +194,12 @@ export function Step3AIProviders({
                             <HelpCircle className="h-3 w-3 text-muted-foreground/70 hover:text-foreground cursor-pointer" />
                           </TooltipTrigger>
                           <TooltipContent side="top">
-                            Target HTTP endpoint for provider REST calls (e.g. {meta.defaultBaseUrl}).
+                            {meta.defaultBaseUrl ? `Target HTTP endpoint for provider REST calls (e.g. ${meta.defaultBaseUrl}).` : 'Enter the actual endpoint supplied by your provider administrator; there is no default service URL.'}
                           </TooltipContent>
                         </Tooltip>
                       </label>
                       <Input
-                        placeholder={meta.defaultBaseUrl}
+                        placeholder={meta.defaultBaseUrl || 'Enter your provider base URL'}
                         value={provider.baseUrl || ''}
                         onChange={(e) => onUpdateProvider(meta.id, { baseUrl: e.target.value })}
                         className="bg-background/80 text-[11px] font-mono"
@@ -262,7 +263,7 @@ export function Step3AIProviders({
                     variant="outline"
                     size="sm"
                     onClick={() => handleTestConnection(meta.id)}
-                    disabled={testState.loading || !isEnabled}
+                    disabled={testState.loading || !isEnabled || !(provider.baseUrl?.trim() || meta.defaultBaseUrl)}
                     className="h-7 text-[11px] gap-1.5"
                   >
                     {testState.loading ? (

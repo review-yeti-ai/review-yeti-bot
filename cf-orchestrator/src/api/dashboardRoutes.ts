@@ -1,5 +1,5 @@
 import type { Env } from '../types.js';
-import { SAMPLE_REPO_CDR, SAMPLE_REPO_META, SAMPLE_REPO_CDR_SLUG, SAMPLE_REPO_META_SLUG } from '../sampleRepositories.js';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_META, SAMPLE_REPO_CDR_SLUG } from '../sampleRepositories.js';
 import {
   getAnalyticsDashboardTool,
   getRuntimeMetricsTool,
@@ -271,8 +271,8 @@ export async function handleDashboardApi(
       },
       liveDurableObjects: {
         'reviewyeti-ai/review-yeti-bot': botGate || { activeCount: 0, queueLength: 0 },
-        SAMPLE_REPO_CDR: ciscoGate || { activeCount: 0, queueLength: 0 },
-        SAMPLE_REPO_META: metaGate || { activeCount: 0, queueLength: 0 },
+        [SAMPLE_REPO_CDR]: ciscoGate || { activeCount: 0, queueLength: 0 },
+        [SAMPLE_REPO_META]: metaGate || { activeCount: 0, queueLength: 0 },
       },
       dataSource: hasStorage ? 'cloudflare-edge-live' : 'test-harness',
     };
@@ -933,7 +933,7 @@ export async function handleDashboardApi(
         cost,
         latencyMs: job.elapsedMs || 0,
         timestamp: new Date(Date.now() - (job.elapsedMs || 0)).toISOString(),
-        headSha: job.headSha || '9b8a7c6d',
+        headSha: job.headSha || '',
         quorum: 'Swarm In-Flight',
         findingsDelta: { resolvedFindings: 0, newFindings: 0, netChange: 0 },
       });
@@ -966,8 +966,13 @@ export async function handleDashboardApi(
       }
     }
 
+    // Analytics can mirror the same D1 reviews. Do not publish either a
+    // duplicate or a less authoritative projection over the stored record.
+    const loggedIds = new Set(logs.map(log => log.id));
     // Completed reviews from recentActivity
     for (const act of recentActivity) {
+      if (loggedIds.has(act.runId)) continue;
+      loggedIds.add(act.runId);
       const isPass = act.verdict?.includes('Pass') || act.verdict === 'SHIP';
       const verdict = isPass ? 'SHIP' : act.verdict === 'BLOCK' ? 'NACK' : 'COMMENT';
       const prompt = act.tokenDetails?.prompt ?? (act.tokens ? Math.round(act.tokens * 0.8) : 0);
@@ -1813,10 +1818,10 @@ export async function handleDashboardApi(
           success: true,
           jobId,
           timestamp: now,
-          healthScore: 100.0,
+          healthScore: 0,
           globalThroughputTokSec: globalThroughput,
-          edgeP95RttMs: 12.5,
-          r2CacheHitRate: 100.0,
+          edgeP95RttMs: 0,
+          r2CacheHitRate: 0,
           activeWorkers,
           tiers: [
             { tier: 1, name: 'Edge Ingress', nodesCount: 2, status: 'HEALTHY' },

@@ -316,12 +316,22 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
           { timeout: '25 minutes', retries: { limit: 0 } },
           async () => {
             const workerImage = spec.workerImage || this.env.DEFAULT_WORKER_IMAGE;
-            // The operator status endpoint is deployment-specific configuration, not a
-            // code constant: deployments bind OPERATOR_STATUS_BASE_URL to the host the
-            // operator actually answers on. Falling back to the pre-#1367 placeholder
-            // keeps the scrub honest while a deployment that forgets the binding fails
-            // loudly (unresolvable host) instead of silently reporting to itself.
-            const statusUrl = `${this.env.OPERATOR_STATUS_BASE_URL || 'https://operator.internal.example'}/api/dispatch/runs/${runId}/status`;
+            // The operator endpoint is deployment-owned, not a tenant-specific
+            // default in this public runtime. Accept either explicit binding;
+            // omit the optional hint when the selected binding is absent or unsafe.
+            const statusBaseUrl = this.env.DISPATCH_STATUS_BASE_URL || this.env.OPERATOR_STATUS_BASE_URL;
+            let statusUrl: string | undefined;
+            if (statusBaseUrl) {
+              try {
+                const statusBase = new URL(statusBaseUrl);
+                if ((statusBase.protocol === 'http:' || statusBase.protocol === 'https:') && !statusBase.username && !statusBase.password) {
+                  if (!statusBase.pathname.endsWith('/')) statusBase.pathname += '/';
+                  statusUrl = new URL(`api/dispatch/runs/${encodeURIComponent(runId)}/status`, statusBase).toString();
+                }
+              } catch {
+                // Invalid optional deployment hints must not prevent dispatch.
+              }
+            }
 
             const result = await this.getRunner(spec.runner).dispatchJob({
               jobId: `job-${runId}`,
@@ -341,7 +351,7 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
                 HEAD_SHA: headSha,
                 BASE_SHA: baseSha,
                 R2_CACHE_BUCKET: 'review-yeti-workspace-cache',
-                DISPATCH_STATUS_URL: statusUrl,
+                ...(statusUrl ? { DISPATCH_STATUS_URL: statusUrl } : {}),
                 PARALLEL_CHECK_NAME: this.env.PARALLEL_CHECK_NAME,
                 PARALLEL_FILE_CONCURRENCY: this.env.PARALLEL_FILE_CONCURRENCY || '5',
                 DIFF_SHRINK: spec.diffShrink || 'true',
@@ -452,4 +462,3 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
     };
   }
 }
-
