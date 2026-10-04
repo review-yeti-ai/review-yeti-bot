@@ -438,7 +438,8 @@ function normalizeModelReportedBlockedReason(value: unknown): ModelReportedBlock
   return MODEL_REPORTED_BLOCKED_REASONS.find((reason) => reason === value) ?? 'unspecified';
 }
 
-/** The composed engine's own finalize contract; blockedReason is optional and logs-only. Never
+/** The composed engine's own provider finalize contract: blockedReason is required but nullable
+ * for strict schemas. Application admission still accepts legacy omission; it is logs-only. Never
  * shared with `buildPanelResponseFormat` -- that function's roles are the fan-out contract plus
  * the PLAN role this engine also uses; a per-task WORK result is neither a persona decision nor a
  * plan, and inventing a fifth shared role there for an engine-internal turn shape would widen a
@@ -477,7 +478,7 @@ function buildTaskResultResponseFormat() {
             },
           },
         },
-        required: ['nonce', 'task', 'status', 'findings'],
+        required: ['nonce', 'task', 'status', 'blockedReason', 'findings'],
         additionalProperties: false,
       },
     },
@@ -1129,10 +1130,10 @@ function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: num
     `Rationale: ${task.rationale}`,
     ``,
     `Investigate this task only. The changed-path manifest and related source are discovery context, not added obligations. You may request read-only tools as {"tool":"tool_name","args":{}} (e.g. read_file, symbol_search, ct_impact, knowledge_search, advise_blocker).`,
-    `When done, return the final result object with required top-level fields "nonce", "task" (must equal "${task.id}"), "status" (COMPLETE or BLOCKED), and "findings" (an array; empty if none), plus optional "blockedReason" -- no other fields, no Markdown fences.`,
+    `When done, return the final result object with required top-level fields "nonce", "task" (must equal "${task.id}"), "status" (COMPLETE or BLOCKED), "blockedReason" (nullable), and "findings" (an array; empty if none) -- no other fields, no Markdown fences.`,
     `Findings decomposition: Keep each finding compact and canonical: {"path": string, "line": number, "severity": "P0"|"P1"|"P2", "title": string, "body": string}. Keep body to 1-2 concise sentences. Do not generate inline code fixes or verbose remediation diffs.`,
     `Use BLOCKED only when you genuinely cannot complete this task with the tools and evidence available; BLOCKED is recorded as a failed lane, never as a pass.`,
-    `For BLOCKED, optional blockedReason must be null or one of ${MODEL_REPORTED_BLOCKED_REASONS.join(', ')}. It is a coarse model-reported diagnostic only, not a verified root cause; never include free text. It is ignored for COMPLETE.`,
+    `blockedReason is required by the strict provider schema: for BLOCKED use null or one of ${MODEL_REPORTED_BLOCKED_REASONS.join(', ')}; for COMPLETE use null. It is a coarse model-reported diagnostic only, not a verified root cause; never include free text. The application ignores it for COMPLETE.`,
     `CT_REVIEW_NONCE:${expectedNonce}`,
     ...disputeEvidence,
   ].join('\n');
@@ -1195,7 +1196,7 @@ function buildTaskFinalizationDirective(
     'The read-only investigation phase has ended. Return the complete task result now; do not request another tool.',
     `Return exactly one JSON object with nonce "${expectedNonce}" and task "${task.id}". Do not include prose or Markdown fences.`,
     'Use status COMPLETE or BLOCKED; if evidence is insufficient use BLOCKED, never invent a finding or an approval.',
-    `For BLOCKED, optional blockedReason must be null or one of ${MODEL_REPORTED_BLOCKED_REASONS.join(', ')}; it is a coarse model self-report only, not a verified root cause. It is ignored for COMPLETE.`,
+    `blockedReason is required by the strict provider schema: for BLOCKED use null or one of ${MODEL_REPORTED_BLOCKED_REASONS.join(', ')}; for COMPLETE use null. It is a coarse model self-report only, not a verified root cause. The application ignores it for COMPLETE.`,
     'Every finding must use severity P0, P1 or P2, an exact changed path and a positive integer line anchored in the supplied diff. Keep descriptions concise (1-2 sentences). Do not include inline code patches or multi-paragraph justifications.',
     `Binding task-result schema: ${JSON.stringify(buildTaskResultResponseFormat().json_schema)}`,
     `CT_REVIEW_NONCE:${expectedNonce}`,

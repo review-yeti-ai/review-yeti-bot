@@ -126,6 +126,46 @@ function expectNoDiagnosticOutsideLogs(value: unknown) {
 }
 
 describe('composed task logs-only model-reported blocked reason', () => {
+  it('requires every strict provider object property, using null for the logs-only diagnostic', async () => {
+    const harness = diagnosticHarness({ blockedReason: null });
+    await harness.run();
+    const format = harness.complete.mock.calls.at(-1)![0].responseFormat;
+    expect(format).toMatchObject({ type: 'json_schema', json_schema: { strict: true } });
+    const schema = format.json_schema.schema;
+    for (const objectSchema of [schema, schema.properties.findings.items]) {
+      expect(objectSchema.type).toBe('object');
+      expect(objectSchema.additionalProperties).toBe(false);
+      expect([...objectSchema.required].sort()).toEqual(Object.keys(objectSchema.properties).sort());
+    }
+    expect(schema.properties.blockedReason).toEqual({ type: ['string', 'null'], enum: [...blockedReasons, null] });
+  });
+
+  it.each(['BLOCKED', 'COMPLETE'] as const)('still admits legacy omitted blockedReason on %s despite provider requiredness', async (status) => {
+    const harness = diagnosticHarness({}, { status, retained: true });
+    const result = await harness.run();
+    const request = harness.complete.mock.calls.at(-1)![0];
+    expect(request.responseFormat.json_schema.schema.required).toContain('blockedReason');
+    const directives = request.messages.map((message: any) => extractMessageContentText(message.content))
+      .filter((text: string) => text.includes('=== WORK TURN:') || text.startsWith('TASK_FINALIZATION'));
+    expect(directives).toHaveLength(2);
+    for (const directive of directives) {
+      expect(directive).toContain('blockedReason is required by the strict provider schema');
+      expect(directive).toContain('for COMPLETE use null');
+      expect(directive).not.toContain('optional blockedReason');
+      expect(directive).not.toContain('plus optional "blockedReason"');
+    }
+    expect(result.quorum.satisfied).toBe(status === 'COMPLETE');
+    expect(harness.taskTurns()).toBe(1);
+    if (status === 'BLOCKED') {
+      expect(harness.taskLogs()[0].meta?.modelReportedBlockedReason).toBe('unspecified');
+      expect(result.optionalFailures).toMatchObject([{ id: 'verify-change', failureClass: 'contract' }]);
+    } else {
+      expect(harness.taskLogs()[0].meta).not.toHaveProperty('modelReportedBlockedReason');
+      expect(result.personas).toMatchObject([{ id: 'verify-change', decision: 'APPROVE', findings: [] }]);
+    }
+    expectNoDiagnosticOutsideLogs({ result, retained: harness.retained, progress: harness.progress });
+  });
+
   const cases: Array<[string, Record<string, unknown>, string]> = [
     ...blockedReasons.map((reason): [string, Record<string, unknown>, string] => [reason, { blockedReason: reason }, reason]),
     ['legacy omission', {}, 'unspecified'],
@@ -153,7 +193,7 @@ describe('composed task logs-only model-reported blocked reason', () => {
     expect(harness.complete).toHaveBeenCalledTimes(2); // One plan, one task; no retries/corrections.
     const taskRequest = harness.complete.mock.calls.at(-1)![0];
     const schema = taskRequest.responseFormat.json_schema.schema;
-    expect(schema.required).toEqual(['nonce', 'task', 'status', 'findings']);
+    expect(schema.required).toEqual(['nonce', 'task', 'status', 'blockedReason', 'findings']);
     expect(schema.additionalProperties).toBe(false);
     expect(schema.properties.blockedReason).toEqual({ type: ['string', 'null'], enum: [...blockedReasons, null] });
     expect(harness.taskLogs()).toHaveLength(1);
