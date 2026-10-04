@@ -2925,6 +2925,10 @@ export async function runPublishingReviewWorker(
       // verdict: the catch path's fail-closed terminal failure is then the
       // only published conclusion.
       if (authoritative) {
+        // Finding-thread authorization requires an active execution. Completion
+        // retires it, so the bounded best-effort write must precede that callback.
+        // Thread delivery never changes the verdict or completion-before-check invariant.
+        await publishThreads();
         await reportReviewResult(buildReviewResult());
       }
       await deps.checkClient.completeCheck({
@@ -2964,35 +2968,38 @@ export async function runPublishingReviewWorker(
     });
       // ADR 0002: publish this head's new required findings as review threads (through the service,
       // which holds the only `pull_requests: write` token) and let it resolve the bot's own outdated
-      // threads whose finding was not reported again. Strictly after the check is complete and best
-      // effort: the conclusion above never depends on it, and a failure here is only logged. Skipped
-      // when thread state could not be read, because every finding would then look new.
-      if (deps.findingThreads && findingThreadsRead && !notApplicable && !gracefulPartial && !unreportedNoVerdict) {
-        try {
-          const publish = convergence.entries
-            .filter((entry) => entry.status === 'new' && entry.blocking
-              && typeof entry.finding.path === 'string' && Number.isSafeInteger(Number(entry.finding.line))
-              && String(entry.finding.title || '').length > 0 && String(entry.finding.title).length <= 1_000
-              && String(entry.finding.body || '').length > 0)
-            .slice(0, MAX_FINDING_THREADS_PER_REQUEST)
-            .map((entry) => ({
-              fingerprint: entry.fingerprint,
-              severity: entry.severity,
-              path: String(entry.finding.path),
-              line: Number(entry.finding.line),
-              title: String(entry.finding.title),
-              body: String(entry.finding.body).slice(0, 16_000),
-            }));
-          const reported = [...new Set(convergence.entries.map((entry) => entry.fingerprint))].slice(0, MAX_REPORTED_FINGERPRINTS);
-          const published = await deps.findingThreads.publish({ headSha: identity.headSha, publish, reported }, deps.signal);
-          logger.info('Finding review threads published', { runId: identity.runId, ...published });
-        } catch (error) {
-          logger.warn('Finding review threads were not published', {
-            runId: identity.runId,
-            reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
-          });
+      // threads whose finding was not reported again. Best effort: failure is only logged, never
+      // an approval gate. Legacy publication stays after the raw check; authoritative publication
+      // runs before completion retires its execution. Skip an unread prior thread state.
+      async function publishThreads(): Promise<void> {
+        if (deps.findingThreads && findingThreadsRead && !notApplicable && !gracefulPartial && !unreportedNoVerdict) {
+          try {
+            const publish = convergence.entries
+              .filter((entry) => entry.status === 'new' && entry.blocking
+                && typeof entry.finding.path === 'string' && Number.isSafeInteger(Number(entry.finding.line))
+                && String(entry.finding.title || '').length > 0 && String(entry.finding.title).length <= 1_000
+                && String(entry.finding.body || '').length > 0)
+              .slice(0, MAX_FINDING_THREADS_PER_REQUEST)
+              .map((entry) => ({
+                fingerprint: entry.fingerprint,
+                severity: entry.severity,
+                path: String(entry.finding.path),
+                line: Number(entry.finding.line),
+                title: String(entry.finding.title),
+                body: String(entry.finding.body).slice(0, 16_000),
+              }));
+            const reported = [...new Set(convergence.entries.map((entry) => entry.fingerprint))].slice(0, MAX_REPORTED_FINGERPRINTS);
+            const published = await deps.findingThreads.publish({ headSha: identity.headSha, publish, reported }, deps.signal);
+            logger.info('Finding review threads published', { runId: identity.runId, ...published });
+          } catch (error) {
+            logger.warn('Finding review threads were not published', {
+              runId: identity.runId,
+              reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+            });
+          }
         }
       }
+      if (!authoritative) await publishThreads();
     }
 
     // A not-applicable run claims no verdict, so there is no evidence to report:
