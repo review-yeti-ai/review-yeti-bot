@@ -1,5 +1,6 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult, BillableRuntimeReport } from '../types.js';
 import { calculateRunnerCost, formatCostUsd, formatDuration } from '../../runners/runnerCost.js';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_CDR_SLUG } from '../../sampleRepositories.js';
 import { fetchReviewsFromDb } from '../../storage/d1Client.js';
 
 export const getBillableRuntimeReportTool: McpToolHandler = {
@@ -12,7 +13,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
       properties: {
         repo: {
           type: 'string',
-          description: 'Repository name filter (e.g. "example-api")',
+          description: `Repository name filter (e.g. "${SAMPLE_REPO_CDR_SLUG}")`,
         },
         prNumber: {
           type: 'number',
@@ -66,7 +67,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
       rawRuns = [
         {
           runId: 'run_cf_bd36035bf508024da7457527fa0fa4f5',
-          repo: 'example-api',
+          repo: SAMPLE_REPO_CDR_SLUG,
           prNumber: 5290,
           runner: 'digitalocean',
           durationMs: 18450,
@@ -75,7 +76,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
         },
         {
           runId: 'run_cf_45ca09576fc84c3f1a9627354e341121',
-          repo: 'example-api',
+          repo: SAMPLE_REPO_CDR_SLUG,
           prNumber: 5262,
           runner: 'digitalocean',
           durationMs: 248100,
@@ -84,7 +85,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
         },
         {
           runId: 'run_cf_692b3bb536',
-          repo: 'example-api',
+          repo: SAMPLE_REPO_CDR_SLUG,
           prNumber: 5288,
           runner: 'cloudflare',
           durationMs: 22400,
@@ -93,7 +94,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
         },
         {
           runId: 'run_cf_d94fde4fe8',
-          repo: 'example-api',
+          repo: SAMPLE_REPO_CDR_SLUG,
           prNumber: 5294,
           runner: 'digitalocean',
           durationMs: 28450,
@@ -102,7 +103,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
         },
         {
           runId: 'run_cf_d57c419e2a',
-          repo: 'example-api',
+          repo: SAMPLE_REPO_CDR_SLUG,
           prNumber: 5275,
           runner: 'cloudflare',
           durationMs: 19800,

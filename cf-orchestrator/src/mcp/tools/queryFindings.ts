@@ -1,5 +1,6 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult, ReviewFindingItem } from '../types.js';
 import { fetchFindingsFromDb } from '../../storage/d1Client.js';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_CDR_SLUG } from '../../sampleRepositories.js';
 
 export const queryFindingsTool: McpToolHandler = {
   definition: {
@@ -11,7 +12,7 @@ export const queryFindingsTool: McpToolHandler = {
       properties: {
         repo: {
           type: 'string',
-          description: 'Repository name (e.g. "example-api")',
+          description: `Repository name (e.g. "${SAMPLE_REPO_CDR_SLUG}")`,
         },
         prNumber: {
           type: 'number',
@@ -47,7 +48,7 @@ export const queryFindingsTool: McpToolHandler = {
   },
 
   async execute(args: Record<string, any>, context: McpExecutionContext): Promise<ToolResult> {
-    const repo = (args.repo || 'example-api').trim();
+    const repo = (args.repo || SAMPLE_REPO_CDR_SLUG).trim();
     const prNumber = typeof args.prNumber === 'number' ? args.prNumber : undefined;
     const severityFilter = (args.severity || 'all').toUpperCase();
     const ruleFilter = (args.rule || '').trim().toLowerCase();
@@ -64,7 +65,7 @@ export const queryFindingsTool: McpToolHandler = {
         allFindings = rawFindings.map((f: any) => ({
           findingId: f.id,
           runId: f.reviewId,
-          repo: repo || 'example-api',
+          repo: repo || SAMPLE_REPO_CDR_SLUG,
           prNumber: prNumber || 108,
           path: f.path,
           line: f.lineNumber,
@@ -74,7 +75,7 @@ export const queryFindingsTool: McpToolHandler = {
           rule: f.title.toLowerCase().replace(/[^a-z0-9]+/g, '.'),
           body: f.description,
           suggestedPatch: '',
-          status: f.status === 'dismissed' ? 'dismissed' : f.status === 'resolved' ? 'resolved' : 'open',
+          status: f.status === 'resolved' ? 'resolved' : f.status === 'disputed' ? 'disputed' : f.status === 'dismissed' ? 'dismissed' : 'open',
           authorPersona: 'security-architect',
         }));
       } catch {
@@ -86,7 +87,7 @@ export const queryFindingsTool: McpToolHandler = {
         {
           findingId: 'fnd_01_lease_epoch',
           runId: 'run_cf_bd36035bf508024da7457527fa0fa4f5',
-          repo: 'example-api',
+          repo: SAMPLE_REPO_CDR_SLUG,
           prNumber: 5290,
           path: 'packages/cf-orchestrator/wrangler.toml',
           line: 35,
@@ -102,7 +103,7 @@ export const queryFindingsTool: McpToolHandler = {
         {
           findingId: 'fnd_02_fencing_epoch',
           runId: 'run_cf_45ca09576fc84c3f1a9627354e341121',
-          repo: 'example-api',
+          repo: SAMPLE_REPO_CDR_SLUG,
           prNumber: 5262,
           path: 'packages/cf-orchestrator/src/reviewRunDO.ts',
           line: 120,
@@ -118,7 +119,7 @@ export const queryFindingsTool: McpToolHandler = {
         {
           findingId: 'fnd_03_credential_redaction',
           runId: 'run_cf_692b3bb536',
-          repo: 'example-api',
+          repo: SAMPLE_REPO_CDR_SLUG,
           prNumber: 5288,
           path: 'packages/cf-orchestrator/scripts/restore-r2-cache.sh',
           line: 48,
@@ -134,7 +135,7 @@ export const queryFindingsTool: McpToolHandler = {
         {
           findingId: 'fnd_04_r2_cache_expiration',
           runId: 'run_cf_d94fde4fe8',
-          repo: 'example-api',
+          repo: SAMPLE_REPO_CDR_SLUG,
           prNumber: 5294,
           path: 'packages/cf-orchestrator/src/runners/r2WorkspaceCache.ts',
           line: 95,

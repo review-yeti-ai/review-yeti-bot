@@ -55,7 +55,7 @@ export function MemoryGraphModal({
   const [graphError, setGraphError] = React.useState<string | null>(null);
 
   // Tab 2 state: Learned Rules & Memory
-  const [repoQuery, setRepoQuery] = React.useState('exampleorg/example-api');
+  const [repoQuery, setRepoQuery] = React.useState('example/sample-cdr');
   const [learningsResult, setLearningsResult] = React.useState<any>(null);
   const [loadingLearnings, setLoadingLearnings] = React.useState(false);
   const [learningsError, setLearningsError] = React.useState<string | null>(null);
@@ -275,7 +275,7 @@ export function MemoryGraphModal({
                 type="text"
                 value={repoQuery}
                 onChange={(e) => setRepoQuery(e.target.value)}
-                placeholder="Repository (e.g. exampleorg/example-api)"
+                placeholder="Repository (e.g. example/sample-cdr)"
                 className="bg-muted/40 font-mono text-xs"
               />
               <Button type="submit" size="sm" disabled={loadingLearnings} className="gap-1.5 text-xs">
