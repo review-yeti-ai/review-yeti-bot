@@ -125,6 +125,50 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     });
   }
 
+  for (const { name, settings, runId, expectedUrl } of [
+    {
+      name: 'bare origin',
+      settings: { DISPATCH_STATUS_BASE_URL: 'https://operator.example.com' },
+      runId: 'run-bare-origin',
+      expectedUrl: 'https://operator.example.com/api/dispatch/runs/run-bare-origin/status',
+    },
+    {
+      name: 'configured path prefix',
+      settings: { DISPATCH_STATUS_BASE_URL: 'https://operator.example.com/gateway/review-yeti' },
+      runId: 'run-path-prefix',
+      expectedUrl: 'https://operator.example.com/gateway/review-yeti/api/dispatch/runs/run-path-prefix/status',
+    },
+    {
+      name: 'trailing-slash path prefix and encoded run ID',
+      settings: { OPERATOR_STATUS_BASE_URL: 'https://legacy.example.com/gateway/review-yeti/' },
+      runId: 'run/slash ?#%',
+      expectedUrl: 'https://legacy.example.com/gateway/review-yeti/api/dispatch/runs/run%2Fslash%20%3F%23%25/status',
+    },
+    {
+      name: 'preferred dispatch path prefix when both settings exist',
+      settings: {
+        DISPATCH_STATUS_BASE_URL: 'https://operator.example.com/preferred',
+        OPERATOR_STATUS_BASE_URL: 'https://legacy.example.com/ignored/',
+      },
+      runId: 'run-preferred-prefix',
+      expectedUrl: 'https://operator.example.com/preferred/api/dispatch/runs/run-preferred-prefix/status',
+    },
+  ]) {
+    it(`preserves dispatch status ${name}`, async () => {
+      const runner = new MockContainerRunner();
+      const workflow = new ReviewJobWorkflow({ ...createMockEnv(), ...settings }, runner);
+      const mockStep = {
+        async do(_name: string, arg2: any, arg3?: any) {
+          return (typeof arg2 === 'function' ? arg2 : arg3)();
+        },
+        async sleep() {},
+      };
+      const result = await workflow.run({ payload: { ...sampleSpec, runId } }, mockStep as any);
+      assert.equal(result.status, 'succeeded');
+      assert.equal(runner.dispatched[0].env.DISPATCH_STATUS_URL, expectedUrl);
+    });
+  }
+
   it('guarantees repo slot release in finally block even if container dispatch throws', async () => {
     const env = createMockEnv();
     // Runner that throws an exception during dispatch

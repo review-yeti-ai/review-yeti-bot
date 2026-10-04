@@ -7,6 +7,20 @@ import { getRuntimeMetricsTool } from '../../src/mcp/tools/getRuntimeMetrics.js'
 import { queryFindingsTool } from '../../src/mcp/tools/queryFindings.js';
 import { SAMPLE_REPO_CDR } from '../../src/sampleRepositories.js';
 
+type Equals<Actual, Expected> =
+  (<T>() => T extends Actual ? 1 : 2) extends
+  (<T>() => T extends Expected ? 1 : 2) ? true : false;
+type Assert<Condition extends true> = Condition;
+type DeploymentBinding = 'GITHUB_APP_INSTALLATION_ID' | 'DISPATCH_STATUS_BASE_URL' | 'OPERATOR_STATUS_BASE_URL';
+
+// Enforced by the CF TypeScript build, not by assertions on hand-built runtime objects.
+type EnvBindingContract = [
+  Assert<Equals<Env['GITHUB_APP_INSTALLATION_ID'], string | undefined>>,
+  Assert<Equals<Env['DISPATCH_STATUS_BASE_URL'], string | undefined>>,
+  Assert<Equals<Env['OPERATOR_STATUS_BASE_URL'], string | undefined>>,
+  Assert<Equals<Pick<Env, DeploymentBinding>, Partial<Pick<Env, DeploymentBinding>>>>,
+];
+
 const reviewRows = [1000, 4000].map((durationMs, index) => ({
   id: `review-${index}`,
   repo: SAMPLE_REPO_CDR,
@@ -55,22 +69,6 @@ function payload(result: ToolResult) {
 }
 
 describe('MCP edge telemetry contracts', () => {
-  it('declares the optional installation variable as a string binding', () => {
-    const env: Pick<Env, 'GITHUB_APP_INSTALLATION_ID'> = { GITHUB_APP_INSTALLATION_ID: '123' };
-    assert.equal(env.GITHUB_APP_INSTALLATION_ID, '123');
-    const omitted: Pick<Env, 'GITHUB_APP_INSTALLATION_ID'> = {};
-    assert.equal(omitted.GITHUB_APP_INSTALLATION_ID, undefined);
-  });
-
-  it('declares dispatch status origin as optional deployment configuration', () => {
-    const env: Pick<Env, 'DISPATCH_STATUS_BASE_URL'> = {
-      DISPATCH_STATUS_BASE_URL: 'https://operator.example.com',
-    };
-    assert.equal(env.DISPATCH_STATUS_BASE_URL, 'https://operator.example.com');
-    const omitted: Pick<Env, 'DISPATCH_STATUS_BASE_URL'> = {};
-    assert.equal(omitted.DISPATCH_STATUS_BASE_URL, undefined);
-  });
-
   it('labels bound-D1 analytics with the canonical live source', async () => {
     const result = payload(await getAnalyticsDashboardTool.execute({}, { env: { DB: boundDb() } }));
     assert.equal(result.dataSource, 'live_telemetry');
