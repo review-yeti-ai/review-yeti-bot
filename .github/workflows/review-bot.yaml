@@ -150,6 +150,7 @@ jobs:
           lane-timeout-ms: ${{ vars.REVIEW_LANE_TIMEOUT_MS }}
           # REL-1113: lane re-attempts after an infrastructure failure must finish inside this job's
           # Stop evidence work at minute 20; the final five minutes belong to synthesis/publication.
+          action-budget-ms: '1200000'
           # 5 required personas x a 21-partition analytics-sized diff = 105 assignments;
           # the default 24 caps any single run at 4 partitions and fails closed with a
           # coverage gap (review_assignment_cap) once a diff spans more than 4 partitions.
