@@ -162,6 +162,34 @@ describe('readFindingThreads / publishFindingThreads', () => {
     expect(posts[1].body).toContain('reply here with the reason it does not apply and resolve this conversation');
   });
 
+  it('keeps v1 idempotency for a resolved P1 fingerprint from any prior run', async () => {
+    const resolvedPrior = parseFindingThreadNode(node({ id: 'T_resolved_p1', isResolved: true }, [{
+      author: { __typename: 'Bot', login: APP },
+      body: renderFindingMarker({ fingerprint, severity: 'P1', title: finding.title }),
+    }]))!;
+    const fetchImplementation = vi.fn(async () => new Response('{}', { status: 201 }));
+    const result = await publishFindingThreads({ token: TOKEN, fetchImplementation },
+      { owner: 'o', repo: 'r', prNumber: 7, headSha: HEAD },
+      [{ ...finding, severity: 'P1', fingerprint }], [resolvedPrior]);
+
+    expect(result).toEqual({ created: 0, skipped: 1 });
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it('lets v2 reopen a current P1 after a resolved same-fingerprint blocker thread', async () => {
+    const resolvedPrior = parseFindingThreadNode(node({ id: 'T_resolved_p1', isResolved: true }, [{
+      author: { __typename: 'Bot', login: APP },
+      body: renderFindingMarker({ fingerprint, severity: 'P1', title: finding.title }),
+    }]))!;
+    const fetchImplementation = vi.fn(async () => new Response('{}', { status: 201 }));
+    const result = await publishFindingThreads({ token: TOKEN, fetchImplementation },
+      { owner: 'o', repo: 'r', prNumber: 7, headSha: HEAD },
+      [{ ...finding, severity: 'P1', fingerprint }], [resolvedPrior], 1, { replaceAdvisoryThreads: true });
+
+    expect(result).toEqual({ created: 1, skipped: 0 });
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+
   it('publishes every verified blocker when the service supplies the complete v2 list', async () => {
     const findings = Array.from({ length: 31 }, (_, index) => {
       const candidate = { severity: 'P1' as const, path: `src/defect-${index}.ts`, line: index + 1,

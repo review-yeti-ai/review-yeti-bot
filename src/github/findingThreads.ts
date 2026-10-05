@@ -254,10 +254,10 @@ export async function publishFindingThreads(transport: FindingThreadTransport, p
     // Under v2, an open lower-severity advisory must not suppress a current P0/P1 blocker. The
     // service publishes the blocker first and then resolves the old advisory thread. An open
     // blocker already published for this fingerprint makes retries idempotent. V1 retains its
-    // historical same-fingerprint and resolved-P2 behavior.
+    // historical all-history fingerprint set, including resolved blockers.
     const alreadyPublished = options.replaceAdvisoryThreads
       ? open.some((thread) => thread.severity === 'P0' || thread.severity === 'P1')
-      : open.length > 0 || (finding.severity === 'P2' && prior.length > 0);
+      : prior.length > 0;
     if (alreadyPublished) { skipped += 1; continue; }
     const body = renderFindingThreadBody(finding);
     try {
