@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { canonicalJson, sha256 } from '../../src/review/reviewCore';
 import {
   createComposedTaskPlan, createComposedTaskOutcome, MAX_COMPOSED_LEDGER_BYTES,
-  ComposedTaskLedgerError, verifyComposedTaskPlan, verifyComposedTaskOutcome,
+  ComposedTaskLedgerError, parseComposedTaskOutcomeInput, verifyComposedTaskPlan, verifyComposedTaskOutcome,
 } from '../../src/review/composedTaskLedger';
 import { completeSourceDeliveryFixture, ledgerFixture } from '../support/composedTaskLedgerFixture';
 
@@ -122,6 +122,21 @@ describe('composed task retention contract (not execution or approval)', () => {
       sourceDelivery: completeSourceDeliveryFixture(trusted, tasks[0]) }, trusted.changedFiles)).toThrow();
     try { createComposedTaskPlan(trusted, [{ nonce: 'PRIVATE_NONCE_DO_NOT_ECHO' }]); }
     catch (error) { expect(String(error)).not.toContain('PRIVATE_NONCE_DO_NOT_ECHO'); }
+  });
+
+  it('parses legacy v1 outcomes but refuses to reuse one as complete delivery evidence', () => {
+    const { trusted, tasks, usage, finding } = ledgerFixture();
+    const plan = createComposedTaskPlan(trusted, tasks);
+    const legacyPayload = { version: 'ComposedTaskOutcome.v1', planDigest: plan.digest, taskId: tasks[0].id,
+      status: 'complete', findings: [finding], usage };
+    const parsed = parseComposedTaskOutcomeInput(legacyPayload);
+    expect(parsed).not.toHaveProperty('sourceDelivery');
+    const serialized = canonicalJson(parsed);
+    const legacyRecord = { payload: parsed, digest: sha256(serialized), byteLength: Buffer.byteLength(serialized, 'utf8') };
+    expect(() => verifyComposedTaskOutcome(plan, legacyRecord, trusted.changedFiles))
+      .toThrow('Composed task retention: integrity');
+    expect(() => createComposedTaskOutcome(plan, parsed, trusted.changedFiles))
+      .toThrow('Composed task retention: invalid-outcome');
   });
 
   it.each(['digest', 'byteLength', 'payload'] as const)('rejects tampered retained outcome %s', field => {

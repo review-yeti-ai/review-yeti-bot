@@ -88,7 +88,9 @@ const outcomeBase = { version: z.literal(COMPOSED_TASK_OUTCOME_VERSION).default(
   planDigest: digest, taskId: z.string().regex(TASK_ID_PATTERN), usage: usageSchema };
 const outcomeSchema = z.discriminatedUnion('status', [
   z.object({ ...outcomeBase, status: z.literal('complete'), findings: findingsSchema,
-    sourceDelivery: taskSourceReceiptSchema }).strict(),
+    // Keep earlier v1 records parseable; create/verify still require a receipt
+    // before treating any complete outcome as verified evidence.
+    sourceDelivery: taskSourceReceiptSchema.optional() }).strict(),
   z.object({ ...outcomeBase, status: z.literal('blocked'), sourceDelivery: taskSourceReceiptSchema.optional() }).strict(),
   z.object({ ...outcomeBase, status: z.literal('exhausted'), diagnostics: diagnosticsSchema,
     sourceDelivery: taskSourceReceiptSchema.optional() }).strict(),
