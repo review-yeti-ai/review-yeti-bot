@@ -732,10 +732,13 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
           expectedAppId: 4385771, repositoryIds: [1001],
           resolver: { resolve: async (requested: any) => ({
             identity: requested,
-            prepared: { policy: {
-              effectivePolicyDigest: 'c'.repeat(64),
-              effectiveConfigDigest: 'd'.repeat(64),
-            } },
+            prepared: {
+              config: { review_engine: 'composed' },
+              policy: {
+                effectivePolicyDigest: 'c'.repeat(64),
+                effectiveConfigDigest: 'd'.repeat(64),
+              },
+            },
           }) },
         } as any,
       });

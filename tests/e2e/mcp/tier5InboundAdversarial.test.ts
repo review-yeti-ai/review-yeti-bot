@@ -1110,14 +1110,14 @@ index 1111111..2222222 100644
       expect(invalidType.success).toBe(false);
     });
 
-    it('TC-T5-ENG-02: triggerReview propagates review_engine to resolveCandidate and prepared.config', async () => {
+    it('TC-T5-ENG-02: accepts an explicit review_engine only when it matches prepared policy', async () => {
       const mockAdmission = vi.fn().mockResolvedValue({
         run: { runId: 'run_1234567890123456' },
       });
       const mockResolve = vi.fn().mockResolvedValue({
         identity: 'test-identity',
         prepared: {
-          config: { default_max_turns: 10 },
+          config: { default_max_turns: 10, review_engine: 'composed' },
           policy: {
             sources: [
               {
