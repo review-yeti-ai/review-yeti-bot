@@ -31,6 +31,14 @@ describe('service review eligibility policy', () => {
   it('never treats dispatch admission as a completed review', () => {
     expect(evaluateReviewGate({ candidate, current })).toMatchObject({ status: 'pending', eligible: false });
   });
+  it('does not let the legacy global passthrough boolean approve mismatched coordinates', () => {
+    expect(evaluateReviewGate({ candidate, current: { ...current, headSha: 'e'.repeat(40) }, evidence: clean, passthrough: true }))
+      .toMatchObject({ status: 'cancelled', eligible: false, reason: 'candidate-superseded' });
+  });
+  it('does not treat the global passthrough boolean as verified review evidence', () => {
+    expect(evaluateReviewGate({ candidate, current, passthrough: true }))
+      .toMatchObject({ status: 'pending', eligible: false, reason: 'review-pending' });
+  });
   it.each(['headSha', 'baseSha', 'policyDigest', 'repositoryId', 'prNumber'] as const)('fences a changed %s', (field) => {
     const value = typeof current[field] === 'number' ? 321 : 'd'.repeat(String(current[field]).length);
     expect(evaluateReviewGate({ candidate, current: { ...current, [field]: value }, evidence: clean }))
