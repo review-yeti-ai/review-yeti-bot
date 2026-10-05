@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { findingFingerprint } from '../../src/review/findingConvergence';
 import { createReviewDecisionV2, REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
+import { computeArbitration } from '../../src/review/reviewCore';
 import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import { MAX_CHANGED_FILE_PATCH_BYTES } from '../../src/review/reviewEvidenceLimits';
 import {
@@ -784,6 +785,47 @@ describe('versioned v2 worker/Gate decision agreement', () => {
     const result = derive(withDecision(input), v2Contract);
     expect(result).toMatchObject({ valid: true, evidence: { verdict: 'SHIP', p2Count: 0,
       reviewDecision: { classification: 'SHIP', eligible: true, counts: { p2Count: 1, p3Count: 1, nitCount: 1 } } } });
+  });
+
+  it('keeps a P2-first, proof-backed P1 cluster aligned across decision and blocker receipts', () => {
+    const blockerEvidence = {
+      trigger: 'A request without a valid session reaches the profile lookup.',
+      impact: 'The handler returns another account holder private profile data.',
+      violatedContract: 'Profile data is readable only by its authenticated owner.',
+    };
+    const lower = { severity: 'P2' as const, path: 'src/example.ts', line: 1,
+      title: 'Profile lookup lacks a session guard', body: 'Requests without a session reach the profile lookup.' };
+    const verified = { ...lower, severity: 'P1' as const, line: 2,
+      body: 'An unauthenticated request reaches the profile lookup and returns private account data.', blockerEvidence };
+    const personas = [
+      lane('security', { decision: 'FINDINGS', findings: [lower] }),
+      lane('architecture', { decision: 'FINDINGS', findings: [verified] }),
+    ];
+    const canonical = computeArbitration(personas, 2, {
+      changedFiles, coverageComplete: true, severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+    });
+    const input = completion({ result: {
+      ...completion().result, verdict: canonical.verdict, findingCount: canonical.metrics.totalFindings,
+      blockingFindingCount: canonical.metrics.p0Count + canonical.metrics.p1Count, personas,
+      reviewDecision: createReviewDecisionV2({
+        schemaVersion: 'review-yeti-decision.v2', policyVersion: REVIEW_SEVERITY_POLICY_V2,
+        policyDigest: expectedCoordinates.policyDigest, coverageComplete: true, quorumSatisfied: true,
+        infrastructureFailure: false, expectedLanes: 2, completedLanes: canonical.completedPersonas,
+        counts: {
+          p0Count: canonical.metrics.p0Count, p1Count: canonical.metrics.p1Count,
+          p2Count: canonical.metrics.p2Count, p3Count: canonical.metrics.p3Count, nitCount: canonical.metrics.nitCount,
+        },
+      }),
+    } });
+
+    const result = derive(input, v2Contract);
+    const fingerprint = findingFingerprint(verified);
+    expect(result).toMatchObject({ valid: true, evidence: {
+      verdict: 'FIX_FIRST', p1Count: 1, p2Count: 0, blockingFingerprints: [fingerprint],
+      blockingFindings: [{ fingerprint, severity: 'P1', line: 2, title: verified.title,
+        body: verified.body, blockerEvidence }],
+      reviewDecision: { blocking: true, eligible: false, counts: { p1Count: 1, p2Count: 0 } },
+    } });
   });
 
   it('blocks one evidence-backed P1 and fails closed on a forged eligible receipt or count', () => {

@@ -294,7 +294,18 @@ function clusterFindings(findings) {
       continue;
     }
     target.reporters += 1;
-    if (SEVERITY_RANK[finding.severity] < SEVERITY_RANK[target.severity]) target.severity = finding.severity;
+    if (SEVERITY_RANK[finding.severity] < SEVERITY_RANK[target.severity]) {
+      // Keep the winning severity attached to the exact source record that established it.
+      // In particular, v2 blocker proof and its path/line/title/body must move together when a
+      // lower-severity duplicate was clustered first.
+      const reporters = target.reporters;
+      for (const key of Object.keys(target)) delete target[key];
+      Object.assign(target, finding, { reporters });
+      continue;
+    }
+    // Once the cluster has a blocker, a lower-severity duplicate may add a reporter but cannot
+    // replace any part of the winning claim or its source/evidence anchors.
+    if (target.severity === 'P0' || target.severity === 'P1') continue;
     if (String(finding.body || '').length > String(target.body || '').length) {
       target.body = finding.body;
       target.title = finding.title;

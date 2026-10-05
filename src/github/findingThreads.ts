@@ -229,24 +229,36 @@ export function renderFindingThreadBody(finding: PublishableFinding): string {
 }
 
 /**
- * Publishes one review thread per finding that has no thread yet (matched by fingerprint against
- * a fresh read, so a retry never duplicates). Falls back to a file-level thread when GitHub rejects
- * the line anchor. Returns how many threads were created and skipped.
+ * Publishes one review thread per finding that has no current blocker thread (matched by
+ * fingerprint against a fresh read, so a retry never duplicates). V2 may replace an older advisory
+ * conversation with a current blocker conversation. Falls back to a file-level thread when GitHub
+ * rejects the line anchor. Returns how many threads were created and skipped.
  */
 export async function publishFindingThreads(transport: FindingThreadTransport, pr: PullRequestRef & { headSha: string },
   findings: readonly PublishableFinding[], existing?: readonly PriorFindingThread[],
-  maxFindings = MAX_FINDING_THREADS_PUBLISHED_PER_RUN): Promise<{ created: number; skipped: number }> {
-  const known = new Map((existing ?? await readFindingThreads(transport, pr))
-    .map((thread) => [thread.fingerprint, thread] as const));
+  maxFindings = MAX_FINDING_THREADS_PUBLISHED_PER_RUN,
+  options: { replaceAdvisoryThreads?: boolean } = {}): Promise<{ created: number; skipped: number }> {
+  const known = new Map<string, PriorFindingThread[]>();
+  for (const thread of existing ?? await readFindingThreads(transport, pr)) {
+    const matching = known.get(thread.fingerprint) ?? [];
+    matching.push(thread);
+    known.set(thread.fingerprint, matching);
+  }
   const base = (transport.baseUrl ?? PUBLIC_GITHUB_API_BASE_URL).replace(/\/+$/u, '');
   const url = `${base}/repos/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/pulls/${pr.prNumber}/comments`;
   let created = 0;
   let skipped = 0;
   for (const finding of findings.slice(0, maxFindings)) {
-    const prior = known.get(finding.fingerprint);
-    // A fresh P0/P1 must reopen as a required conversation after someone resolved an older thread.
-    // A resolved P2 remains satisfied under the legacy v1 contract.
-    if (prior && (!prior.resolved || finding.severity === 'P2')) { skipped += 1; continue; }
+    const prior = known.get(finding.fingerprint) ?? [];
+    const open = prior.filter((thread) => !thread.resolved);
+    // Under v2, an open lower-severity advisory must not suppress a current P0/P1 blocker. The
+    // service publishes the blocker first and then resolves the old advisory thread. An open
+    // blocker already published for this fingerprint makes retries idempotent. V1 retains its
+    // historical same-fingerprint and resolved-P2 behavior.
+    const alreadyPublished = options.replaceAdvisoryThreads
+      ? open.some((thread) => thread.severity === 'P0' || thread.severity === 'P1')
+      : open.length > 0 || (finding.severity === 'P2' && prior.length > 0);
+    if (alreadyPublished) { skipped += 1; continue; }
     const body = renderFindingThreadBody(finding);
     try {
       await request(transport, url, { method: 'POST', body: JSON.stringify({
@@ -258,7 +270,7 @@ export async function publishFindingThreads(transport: FindingThreadTransport, p
         body, commit_id: pr.headSha, path: finding.path, subject_type: 'file',
       }) });
     }
-    known.set(finding.fingerprint, { ...finding, resolved: false, outdated: false });
+    known.set(finding.fingerprint, [...prior, { ...finding, resolved: false, outdated: false }]);
     created += 1;
   }
   return { created, skipped: skipped + Math.max(0, findings.length - maxFindings) };

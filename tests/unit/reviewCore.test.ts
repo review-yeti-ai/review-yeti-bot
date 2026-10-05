@@ -43,6 +43,60 @@ describe('review core diff parsing', () => {
     expect(result.metrics.p2Count).toBe(1);
   });
 
+  it('keeps the verified P1 finding and its proof together when a prior P2 claim clusters first', () => {
+    const blockerEvidence = {
+      trigger: 'A request without a valid session reaches the profile lookup.',
+      impact: 'The handler returns another account holder private profile data.',
+      violatedContract: 'Profile data is readable only by its authenticated owner.',
+    };
+    const lower = { severity: 'P2' as const, path: 'src/guard.ts', line: 10,
+      title: 'Profile lookup lacks a session guard', body: 'Requests without a session reach the profile lookup.',
+      severityAdjusted: { from: 'P1' as const, reason: 'legacy advisory adjustment' } };
+    const verified = { ...lower, severity: 'P1' as const, line: 11,
+      body: 'An unauthenticated request reaches the profile lookup and returns private account data.', blockerEvidence };
+    const result = computeArbitration([
+      { id: 'security', decision: 'FINDINGS', findings: [lower] },
+      { id: 'architecture', decision: 'FINDINGS', findings: [verified] },
+    ], 2, {
+      changedFiles: [{ path: 'src/guard.ts', patch: '@@ -1,0 +10,2 @@\n+guard();\n+return profile;' }],
+      coverageComplete: true,
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+    });
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({
+      severity: 'P1', path: verified.path, line: verified.line, title: verified.title,
+      body: verified.body, blockerEvidence,
+    });
+    expect(result.findings[0]).not.toHaveProperty('severityAdjusted');
+    expect(result.metrics).toMatchObject({ p1Count: 1, p2Count: 0 });
+  });
+
+  it('does not transfer verified blocker proof to a nearby distinct P2 claim', () => {
+    const blockerEvidence = {
+      trigger: 'An anonymous request reaches the profile lookup.',
+      impact: 'The response contains another account holder private data.',
+      violatedContract: 'Profile data is readable only by its authenticated owner.',
+    };
+    const lower = { severity: 'P2' as const, path: 'src/guard.ts', line: 10,
+      title: 'Profile cache returns stale account data', body: 'The cache is not invalidated after a profile update.' };
+    const verified = { severity: 'P1' as const, path: 'src/guard.ts', line: 11,
+      title: 'Profile lookup lacks a session guard', body: 'An anonymous request can read another account holder profile.', blockerEvidence };
+    const result = computeArbitration([
+      { id: 'security', decision: 'FINDINGS', findings: [lower] },
+      { id: 'architecture', decision: 'FINDINGS', findings: [verified] },
+    ], 2, {
+      changedFiles: [{ path: 'src/guard.ts', patch: '@@ -1,0 +10,2 @@\n+cache();\n+return profile;' }],
+      coverageComplete: true,
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+    });
+
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings.find((finding) => finding.title === lower.title)).toMatchObject({ severity: 'P2' });
+    expect(result.findings.find((finding) => finding.title === lower.title)).not.toHaveProperty('blockerEvidence');
+    expect(result.findings.find((finding) => finding.title === verified.title)).toMatchObject({ severity: 'P1', blockerEvidence });
+  });
+
   it('does not advance changed line numbers for no-newline metadata', () => {
     const patch = [
       '@@ -1,2 +10,3 @@',

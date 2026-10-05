@@ -96,6 +96,24 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  it('forwards configured reasoning effort to planning and task provider calls', async () => {
+    const cfg = config();
+    cfg.reviewers.providers[0].effort = 'max';
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages), nonce = nonceFrom(text);
+      if (text.includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [{ id: 'guard', dimension: 'security',
+          paths: ['src/auth/guard.ts'], question: 'Safe?', rationale: 'Changed guard.' }] }));
+      }
+      return fakeResponse(JSON.stringify({ nonce, task: 'guard', status: 'COMPLETE', findings: [] }));
+    });
+
+    await executeComposedReview({ config: cfg, changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40), client: { complete } });
+
+    expect(complete.mock.calls.map(([request]) => request.reasoningEffort)).toEqual(['max', 'max']);
+  });
+
   it.each(['COMPLETE', 'BLOCKED'] as const)(
     're-runs only the disputed task and records satisfaction only for %s output', async (status) => {
       const authTask = { id: 'auth-guard', dimension: 'security' as const,

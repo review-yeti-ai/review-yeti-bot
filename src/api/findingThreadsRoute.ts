@@ -197,8 +197,6 @@ async function publishV2FindingThreads(options: FindingThreadsRouteOptions, resp
     || (blockers as string[]).length !== input.reviewDecision.counts.p0Count + input.reviewDecision.counts.p1Count) {
     return response.status(409).json({ error: 'Finding-thread decision is not backed by complete current evidence' });
   }
-  const currentBlockers = new Set(blockers as string[]);
-
   try {
     const transport = await options.transportFor(input.owner, input.repo);
     const pr = { owner: input.owner, repo: input.repo, prNumber: input.prNumber, headSha: input.headSha };
@@ -216,14 +214,18 @@ async function publishV2FindingThreads(options: FindingThreadsRouteOptions, resp
       const bodyLimit = Math.max(0, 15_900 - proof.length);
       return { ...finding, body: `${finding.body.slice(0, bodyLimit)}\n\n${proof}`.slice(0, 16_000) };
     });
-    const published = await publishFindingThreads(transport, pr, publishable, existing, publishable.length);
+    const published = await publishFindingThreads(transport, pr, publishable, existing, publishable.length,
+      { replaceAdvisoryThreads: true });
     const mayRetireAdvisories = input.reviewDecision.coverageComplete && input.reviewDecision.quorumSatisfied
       && !input.reviewDecision.infrastructureFailure && input.reviewDecision.expectedLanes > 0
       && input.reviewDecision.completedLanes === input.reviewDecision.expectedLanes;
     const stale = existing.filter((thread) => {
-      if (!transport.botLogin || thread.resolved || !thread.threadId || currentBlockers.has(thread.fingerprint)) return false;
-      if (mayRetireAdvisories && (thread.severity === 'P2' || thread.severity === 'P3' || thread.severity === 'NIT')) return true;
-      return false;
+      if (!transport.botLogin || thread.resolved || !thread.threadId) return false;
+      const advisory = thread.severity === 'P2' || thread.severity === 'P3' || thread.severity === 'NIT';
+      // Same-fingerprint v2 reclassification publishes the current blocker first. Retire only the
+      // old App-owned advisory thread after that publication succeeds; if publication fails this
+      // loop is never reached and the old conversation remains visible.
+      return mayRetireAdvisories && advisory;
     });
     let resolved = 0;
     for (let offset = 0; offset < stale.length; offset += RESOLVE_CONCURRENCY) {

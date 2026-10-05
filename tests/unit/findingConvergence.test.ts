@@ -110,6 +110,20 @@ describe('evaluateFindingConvergence', () => {
     expect(summary).not.toContain('all block the merge');
   });
 
+  it('carries an open same-fingerprint P2 thread as continuity but blocks a current v2 P1', () => {
+    const current = finding({ severity: 'P1' });
+    const result = evaluateFindingConvergence({
+      findings: [current], changedFiles, priorThreads: [thread({ severity: 'P2', resolved: false })],
+      policyVersion: REVIEW_SEVERITY_POLICY_V2,
+    });
+
+    expect(result.entries[0]).toMatchObject({
+      finding: current, severity: 'P1', fingerprint: thread().fingerprint, status: 'carried', blocking: true,
+      matchedThread: { severity: 'P2', resolved: false },
+    });
+    expect(result.required).toEqual([current]);
+  });
+
   it('does not let a resolved prior thread waive a current v2 P0/P1', () => {
     const result = evaluateFindingConvergence({
       findings: [finding({ severity: 'P1', title: 'Verified current authorization defect' })],

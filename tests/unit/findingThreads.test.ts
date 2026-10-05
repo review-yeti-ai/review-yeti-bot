@@ -10,8 +10,9 @@ import {
 import { createFindingThreadsHandler } from '../../src/api/findingThreadsRoute';
 import { HttpFindingThreadsPublisher, findingThreadsEndpointFor } from '../../src/review/findingThreadsHttp';
 import { findingFingerprint, isResolutionSatisfiable, parseFindingMarker, renderFindingMarker } from '../../src/review/findingConvergence';
-import { sha256 } from '../../src/review/reviewCore';
+import { computeArbitration, sha256 } from '../../src/review/reviewCore';
 import { createReviewDecisionV2, REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
+import { deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
 import { findingThreadsRequestSchema } from '../../src/review/findingThreadsContract';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { savePreparedPublishingPolicy } from '../../src/persistence/preparedReviewRepository';
@@ -228,7 +229,8 @@ describe('POST /finding-threads (service)', () => {
     return { server, db, calls, transportFor };
   };
 
-  async function v2App(options: { existing?: unknown[]; liveHead?: string; blockers?: string[]; blockerFindings?: unknown[]; p1Count?: number; failResolveOn?: number } = {}) {
+  async function v2App(options: { existing?: unknown[]; liveHead?: string; blockers?: string[]; blockerFindings?: unknown[];
+    p1Count?: number; failResolveOn?: number; workerEvidence?: (coordinates: any) => any } = {}) {
     const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
       personas: 'security,testing', budget: { max_investigation_turns: 20 },
       severity_policy: REVIEW_SEVERITY_POLICY_V2,
@@ -237,23 +239,24 @@ describe('POST /finding-threads (service)', () => {
       repositoryId: 123, repository: 'o/r', sha: 'a'.repeat(40), path: 'policy/review-yeti.json',
       contentDigest: sha256(content),
     } }, { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' });
-    const decision = createReviewDecisionV2({
+    const coordinates = { runId: RUN, repositoryId: 123, owner: 'o', repo: 'r', prNumber: 7,
+      headSha: HEAD, baseSha: 'c'.repeat(40), policyDigest: prepared.policy.effectivePolicyDigest,
+      configDigest: prepared.policy.effectiveConfigDigest, executionAttempt: 2 };
+    const suppliedEvidence = options.workerEvidence?.(coordinates);
+    const decision = suppliedEvidence?.reviewDecision ?? createReviewDecisionV2({
       schemaVersion: 'review-yeti-decision.v2', policyVersion: REVIEW_SEVERITY_POLICY_V2,
       policyDigest: prepared.policy.effectivePolicyDigest, coverageComplete: true, quorumSatisfied: true,
       infrastructureFailure: false, expectedLanes: 2, completedLanes: 2,
       counts: { p0Count: 0, p1Count: options.p1Count ?? 0, p2Count: options.p1Count ? 0 : 1, p3Count: 0, nitCount: 0 },
     });
     const completionDigest = sha256('accepted-worker-completion');
-    const coordinates = { runId: RUN, repositoryId: 123, owner: 'o', repo: 'r', prNumber: 7,
-      headSha: HEAD, baseSha: 'c'.repeat(40), policyDigest: prepared.policy.effectivePolicyDigest,
-      configDigest: prepared.policy.effectiveConfigDigest, executionAttempt: 2 };
     const blockerEvidence = {
       trigger: 'A request without a valid session reaches the protected handler.',
       impact: 'The request exposes another account holder private information.',
       violatedContract: 'Account data is readable only to its authenticated owner.',
     };
     const blocker = { ...finding, severity: 'P1', blockerEvidence };
-    const gateEvidence = { reviewDecision: decision, blockingFingerprints: options.blockers ?? [],
+    const gateEvidence = suppliedEvidence ?? { reviewDecision: decision, blockingFingerprints: options.blockers ?? [],
       blockingFindings: options.blockerFindings ?? (options.p1Count ? [{ ...blocker, fingerprint }] : []) };
     let storedPolicy: Record<string, unknown> | undefined;
     const db = { query: vi.fn(async (sql: string, values?: unknown[]) => {
@@ -308,6 +311,12 @@ describe('POST /finding-threads (service)', () => {
         return new Response(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: {
           pageInfo: { hasNextPage: false }, nodes: currentExisting,
         } } } } }));
+      }
+      if (String(url).endsWith('/pulls/7/comments')) {
+        currentExisting.push(node({ id: `T_created_${currentExisting.length + 1}` }, [{
+          author: { login: APP, __typename: 'Bot' }, body: parsed.body, createdAt: '2026-10-05T00:00:00Z',
+        }]));
+        return new Response('{}', { status: 201 });
       }
       return new Response('{}', { status: 201 });
     });
@@ -399,6 +408,92 @@ describe('POST /finding-threads (service)', () => {
     expect(response.body).toMatchObject({ version: 'FindingThreadsResult.v2', created: 1, resolved: 0 });
     expect(fixture.calls.filter((call) => call.url.endsWith('/pulls/7/comments'))).toHaveLength(1);
     expect(fixture.calls.filter((call) => String(call.body.query).includes('resolveReviewThread'))).toHaveLength(0);
+  });
+
+  it('publishes the same-fingerprint v2 P1 before retiring its open prior P2 and retries idempotently', async () => {
+    const fixture = await v2App({ existing: [node()], blockers: [fingerprint], p1Count: 1, failResolveOn: 1 });
+    const send = () => request(fixture.server).post('/finding-threads').set('Authorization', `Bearer ${TOKEN}`)
+      .send(fixture.v2Body());
+
+    const partial = await send();
+    expect(partial.status).toBe(503);
+    const firstPosts = fixture.calls.filter((call) => call.url.endsWith('/pulls/7/comments'));
+    expect(firstPosts).toHaveLength(1);
+    expect(firstPosts[0]?.body.body).toContain('**[P1 · required]**');
+    expect(fixture.calls.filter((call) => String(call.body.query).includes('resolveReviewThread'))).toHaveLength(1);
+
+    const retry = await send();
+    expect(retry.status, JSON.stringify(retry.body)).toBe(200);
+    expect(retry.body).toMatchObject({ version: 'FindingThreadsResult.v2', created: 0, skipped: 1, resolved: 1 });
+    const duplicate = await send();
+    expect(duplicate.status).toBe(200);
+    expect(duplicate.body).toMatchObject({ created: 0, skipped: 1, resolved: 0 });
+    expect(fixture.calls.filter((call) => call.url.endsWith('/pulls/7/comments'))).toHaveLength(1);
+  });
+
+  it('publishes and retires a P2-first/P1-second cluster from the accepted worker completion', async () => {
+    const blockerEvidence = {
+      trigger: 'A request without a valid session reaches the profile lookup.',
+      impact: 'The handler returns another account holder private profile data.',
+      violatedContract: 'Profile data is readable only by its authenticated owner.',
+    };
+    const advisory = { severity: 'P2' as const, path: 'src/mod.ts', line: 2,
+      title: 'Profile lookup lacks a session guard', body: 'Requests without a session reach the profile lookup.' };
+    const verified = { ...advisory, severity: 'P1' as const, line: 3,
+      body: 'An unauthenticated request reaches the profile lookup and returns private account data.', blockerEvidence };
+    const changedFiles = [{ path: 'src/mod.ts', patch: '@@ -1,0 +1,3 @@\n+first();\n+second();\n+return profile;' }];
+    const workerEvidence = (coordinates: any) => {
+      const personas = [
+        { id: 'security', decision: 'FINDINGS', findings: [advisory] },
+        { id: 'testing', decision: 'FINDINGS', findings: [verified] },
+      ];
+      const canonical = computeArbitration(personas, 2, {
+        changedFiles, coverageComplete: true, severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+      });
+      const reviewDecision = createReviewDecisionV2({
+        schemaVersion: 'review-yeti-decision.v2', policyVersion: REVIEW_SEVERITY_POLICY_V2,
+        policyDigest: coordinates.policyDigest, coverageComplete: true, quorumSatisfied: true,
+        infrastructureFailure: false, expectedLanes: 2, completedLanes: canonical.completedPersonas,
+        counts: {
+          p0Count: canonical.metrics.p0Count, p1Count: canonical.metrics.p1Count,
+          p2Count: canonical.metrics.p2Count, p3Count: canonical.metrics.p3Count, nitCount: canonical.metrics.nitCount,
+        },
+      });
+      const completion = {
+        version: 'WorkerReviewCompletion.v1', ...coordinates,
+        result: {
+          version: 'WorkerReviewResult.v1', completedAt: '2026-10-05T00:00:00.000Z', personas,
+          coverageComplete: true, quorumSatisfied: true, verdict: canonical.verdict,
+          findingCount: canonical.metrics.totalFindings,
+          blockingFindingCount: canonical.metrics.p0Count + canonical.metrics.p1Count,
+          reviewDecision,
+        },
+      };
+      const derived = deriveCanonicalWorkerReviewEvidence(completion as any, {
+        expectedCoordinates: coordinates,
+        expectedPersonaIds: ['security', 'testing'],
+        changedFiles,
+        coverageComplete: true,
+        quorumSatisfied: true,
+        reviewDecisionPolicy: REVIEW_SEVERITY_POLICY_V2,
+      });
+      if (!derived.valid) throw new Error(derived.message);
+      return derived.evidence;
+    };
+    const priorP2 = node({ id: 'T_prior_p2', path: 'src/mod.ts', line: 2 }, [{
+      author: { login: APP, __typename: 'Bot' },
+      body: renderFindingThreadBody({ ...advisory, fingerprint: findingFingerprint(advisory) }),
+    }]);
+    const fixture = await v2App({ existing: [priorP2], p1Count: 1, workerEvidence });
+
+    const response = await request(fixture.server).post('/finding-threads').set('Authorization', `Bearer ${TOKEN}`)
+      .send(fixture.v2Body());
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toMatchObject({ version: 'FindingThreadsResult.v2', created: 1, resolved: 1 });
+    expect(fixture.calls.find((call) => call.url.endsWith('/pulls/7/comments'))?.body.body).toContain('**[P1 · required]**');
+    expect(fixture.calls.filter((call) => String(call.body.query).includes('resolveReviewThread')))
+      .toMatchObject([{ body: { variables: { threadId: 'T_prior_p2' } } }]);
   });
 
   it('rejects stale-head and forged v2 receipts before mutating bot threads', async () => {
