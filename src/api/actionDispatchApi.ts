@@ -47,6 +47,8 @@ import type { VerdictCacheBaseLookup } from '../persistence/verdictCacheSource';
 import { createVerdictCacheBaseHandler } from './verdictCacheBaseRoute';
 import { createReviewExecutionCheckpointHandler, type CheckpointDatabase } from './reviewExecutionCheckpointRoute';
 import { createFindingThreadsHandler, type FindingThreadsRouteOptions } from './findingThreadsRoute';
+import { createPrLifecycleHistoryHandler } from './prLifecycleHistoryRoute';
+import type { ReviewLifecycleQueryable } from '../persistence/reviewPrLifecycleRepository';
 
 
 export interface ActionOidcVerifier {
@@ -87,6 +89,8 @@ export interface ActionDispatchRouterOptions {
   reviewCheckpoint?: CheckpointDatabase;
   /** ADR 0002: publish/resolve the bot's finding review threads on a worker's behalf. */
   findingThreads?: FindingThreadsRouteOptions;
+  /** Fixed, exact-run snapshot bridge for durable semantic PR history. */
+  prLifecycleHistory?: ReviewLifecycleQueryable;
   now?: () => number;
 }
 
@@ -556,6 +560,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
   if (options.verdictCacheBase) router.post('/verdict-cache-base', createVerdictCacheBaseHandler(options.verdictCacheBase));
   if (options.reviewCheckpoint) router.post('/review-checkpoint', createReviewExecutionCheckpointHandler(options.reviewCheckpoint));
   if (options.findingThreads) router.post('/finding-threads', createFindingThreadsHandler(options.findingThreads));
+  if (options.prLifecycleHistory) router.post('/pr-lifecycle-history', createPrLifecycleHistoryHandler(options.prLifecycleHistory));
   router.get('/status', handleRunStatus);
 
   return router;

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { findingFingerprint } from '../../src/review/findingConvergence';
+import { findingClaimType, findingFingerprint, findingFingerprintForClaimType } from '../../src/review/findingConvergence';
 import { createReviewDecisionV2, REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
-import { computeArbitration } from '../../src/review/reviewCore';
+import { buildDeterministicCoverageManifest, groundedAffectedContextDigest, GROUNDED_VERIFICATION_VERSION,
+  GROUNDED_DEFAULT_BUDGET } from '../../src/review/groundedReviewEngine';
+import { canonicalJson, computeArbitration, sha256 } from '../../src/review/reviewCore';
 import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import { MAX_CHANGED_FILE_PATCH_BYTES } from '../../src/review/reviewEvidenceLimits';
 import {
@@ -104,7 +106,7 @@ function withDecision(input: WorkerReviewCompletion, overrides: Record<string, u
     else if (finding.severity === 'P3') counts.p3Count++;
     else if (finding.severity === 'NIT') counts.nitCount++;
   }
-  return { ...input, result: { ...input.result, reviewDecision: createReviewDecisionV2({
+  const reviewDecision = createReviewDecisionV2({
     schemaVersion: 'review-yeti-decision.v2', policyVersion: REVIEW_SEVERITY_POLICY_V2,
     policyDigest: expectedCoordinates.policyDigest,
     coverageComplete: input.result.coverageComplete,
@@ -113,7 +115,43 @@ function withDecision(input: WorkerReviewCompletion, overrides: Record<string, u
     expectedLanes: 2,
     completedLanes: input.result.personas.filter((persona) => persona.decision !== 'ERROR').length,
     counts, ...overrides,
-  }) } } as WorkerReviewCompletion;
+  });
+  const coverage = buildDeterministicCoverageManifest(changedFiles);
+  const outcomes = findings.map((finding) => {
+    const claimType = findingClaimType(finding);
+    const fingerprint = findingFingerprintForClaimType({ path: finding.path, title: finding.title }, claimType);
+    const path = finding.path!;
+    const currentAffectedContextDigest = groundedAffectedContextDigest(finding, changedFiles, [path]);
+    const evidence = {
+      violatedInvariant: 'The changed source violates the stated contract.',
+      failurePath: 'The changed path reaches the contract without a guard.',
+      benignCheck: 'The source contains no relevant guard.',
+      changeConnection: 'The admitted patch exposes the behavior.',
+      citations: [
+        { id: `head:${path}`, path, side: 'head', sha: expectedCoordinates.headSha },
+        { id: `base:${path}`, path, side: 'base', sha: expectedCoordinates.baseSha },
+        { id: `diff:${path}`, path, side: 'diff', sha: null },
+      ],
+      causalDiffPaths: [path],
+    };
+    return { fingerprint, path, line: finding.line!, title: finding.title!, claimType,
+      severity: finding.severity as 'P0' | 'P1' | 'P2' | 'P3' | 'NIT', status: 'confirmed' as const,
+      affectedContextDigest: currentAffectedContextDigest, relatedDiffPaths: [path],
+      evidenceDigest: sha256(canonicalJson({ fingerprint, currentAffectedContextDigest, evidence })), evidence };
+  });
+  const groundedReview = {
+    version: 'GroundedReviewReceipt.v1' as const,
+    coverage: { digest: coverage.digest, regionCount: coverage.regions.length, assignmentCount: coverage.assignments.length,
+      coveredRegionCount: coverage.coveredRegionIds.length, complete: coverage.complete, omissions: coverage.omissions },
+    history: { status: 'unavailable' as const, eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
+      eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0, omissions: ['unit fixture has no history'],
+      memorySources: { honcho: 'unavailable' as const, mcp: 'unavailable' as const },
+      verificationWrites: { attempted: 0, recorded: 0, failed: 0 } },
+    verification: { version: GROUNDED_VERIFICATION_VERSION, candidates: outcomes.length, confirmed: outcomes.length,
+      contradicted: 0, insufficient: 0, unverifiedBlockerCount: 0, coverageComplete: coverage.complete, calls: 0,
+      budget: GROUNDED_DEFAULT_BUDGET, outcomes },
+  };
+  return { ...input, result: { ...input.result, reviewDecision, groundedReview } } as WorkerReviewCompletion;
 }
 
 describe('composed infrastructure failure without a returned task plan', () => {
@@ -856,7 +894,7 @@ describe('versioned v2 worker/Gate decision agreement', () => {
 
   it('requires the explicit trusted policy and a receipt; malformed activation fails closed', () => {
     expectInvalid(derive(withDecision(completion())), /not enabled by trusted policy/u);
-    expectInvalid(derive(completion(), v2Contract), /receipt is required/u);
+    expectInvalid(derive(completion(), v2Contract), /grounded-review receipt/u);
     expect(() => derive(completion(), { ...contract,
       reviewDecisionPolicy: 'review-yeti-severity.v3' as typeof REVIEW_SEVERITY_POLICY_V2,
     })).toThrow(/policy is unsupported/u);

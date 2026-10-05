@@ -1,10 +1,10 @@
 import { z } from 'zod';
 import { taskSourceReceiptSchema } from './taskSourceDelivery';
-import { evaluateFindingConvergence, findingFingerprint, type PriorFindingThread } from './findingConvergence';
+import { evaluateFindingConvergence, findingFingerprint, findingFingerprintForClaimType, type PriorFindingThread } from './findingConvergence';
 import { DELETION_CLASSIFICATION_VERSION } from './deletionClassification';
 import { computeAppVerdict } from './reviewAdapters';
 import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane } from './reviewCore';
-import { canonicalJson, publishFinding, sha256, validateReviewFindings } from './reviewCore';
+import { canonicalJson, changedLineNumbers, publishFinding, sha256, validateReviewFindings } from './reviewCore';
 import { createReviewDecisionV2, reviewDecisionV2Schema, REVIEW_SEVERITY_POLICY_V2,
   type ReviewDecisionV2 } from './reviewDecision';
 import type { ReviewGateDecision, ReviewGateEvidence } from './reviewGatePolicy';
@@ -19,6 +19,7 @@ import { isInfrastructureIncompleteResult } from './laneInfrastructure';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
 import { MAX_TASKS_HARD_CAP, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN, validateTaskPlan, type ReviewTask } from '../reviewTaskContract';
+import { buildDeterministicCoverageManifest, groundedAffectedContextDigest } from './groundedReviewEngine';
 
 export { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 
@@ -45,6 +46,70 @@ const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const positiveInteger = z.number().int().positive().safe();
 const boundedInteger = z.number().int().nonnegative().safe();
 const boundedText = (max = MAX_TEXT_CHARACTERS) => z.string().min(1).max(max);
+const groundedCitationSchema = z.object({ id: z.string().min(1).max(MAX_PATH_CHARACTERS + 16),
+  path: z.string().min(1).max(MAX_PATH_CHARACTERS), side: z.enum(['head', 'base', 'diff']),
+  sha: sha.nullable() }).strict();
+const groundedVerifiedEvidenceSchema = z.union([
+  z.object({ violatedInvariant: boundedText(2_000), failurePath: boundedText(2_000), benignCheck: boundedText(2_000),
+    changeConnection: boundedText(2_000), citations: z.array(groundedCitationSchema).min(2).max(32),
+    causalDiffPaths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).min(1).max(13) }).strict(),
+  z.object({ explanation: boundedText(2_000), citations: z.array(groundedCitationSchema).min(3).max(32),
+    causalDiffPaths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).max(13) }).strict(),
+]);
+const groundedOutcomeSchema = z.object({ fingerprint: z.string().min(1).max(500), path: z.string().min(1).max(MAX_PATH_CHARACTERS),
+  line: positiveInteger, title: boundedText(MAX_TITLE_CHARACTERS), claimType: z.enum(['generic', 'absence', 'missing-tests']),
+  severity: z.enum(['P0', 'P1', 'P2', 'P3', 'NIT']),
+  status: z.enum(['confirmed', 'contradicted', 'insufficient']), affectedContextDigest: digest,
+  relatedDiffPaths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).max(13),
+  evidenceDigest: digest.optional(), evidence: groundedVerifiedEvidenceSchema.optional() }).strict()
+  .superRefine((outcome, context) => {
+    if ((outcome.status === 'confirmed' || outcome.status === 'contradicted')
+      && (!outcome.evidenceDigest || !outcome.evidence)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['evidence'], message: 'verified outcomes require traceable evidence' });
+    }
+    if (outcome.status === 'insufficient' && (outcome.evidenceDigest !== undefined || outcome.evidence !== undefined)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['evidence'], message: 'insufficient outcomes cannot carry verification proof' });
+    }
+  });
+const groundedReviewReceiptSchema = z.object({
+  version: z.literal('GroundedReviewReceipt.v1'),
+  coverage: z.object({ digest, regionCount: boundedInteger.max(100_000), assignmentCount: boundedInteger.max(24),
+    coveredRegionCount: boundedInteger.max(100_000), complete: z.boolean(), omissions: z.array(z.string().min(1).max(500)).max(500) }).strict(),
+  history: z.object({ status: z.enum(['complete', 'partial', 'unavailable']), snapshotId: z.string().uuid().optional(),
+    contextDigest: digest.optional(), eventCount: boundedInteger, findingCount: boundedInteger,
+    loadedEventCount: boundedInteger, loadedFindingCount: boundedInteger, eventOmittedCount: boundedInteger,
+    findingOmittedCount: boundedInteger, legacyOmittedCount: boundedInteger, eventsDigest: digest.optional(),
+    findingsDigest: digest.optional(), omissions: z.array(z.string().min(1).max(500)).max(500),
+    memorySources: z.object({ honcho: z.literal('unavailable'), mcp: z.literal('unavailable') }).strict(),
+    verificationWrites: z.object({ attempted: boundedInteger, recorded: boundedInteger, failed: boundedInteger })
+      .strict().refine((value) => value.recorded + value.failed === value.attempted, 'verification writes must be accounted for'),
+  }).strict().superRefine((history, context) => {
+    if (history.status === 'complete' && (!history.snapshotId || !history.contextDigest || !history.eventsDigest || !history.findingsDigest)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['snapshotId'], message: 'complete history requires its authenticated snapshot digests' });
+    }
+  }),
+  verification: z.object({ version: z.literal('GroundedIndependentVerification.v1'), candidates: boundedInteger.max(MAX_TOTAL_FINDINGS),
+    confirmed: boundedInteger.max(MAX_TOTAL_FINDINGS), contradicted: boundedInteger.max(MAX_TOTAL_FINDINGS),
+    insufficient: boundedInteger.max(MAX_TOTAL_FINDINGS), unverifiedBlockerCount: boundedInteger.max(MAX_TOTAL_FINDINGS),
+    coverageComplete: z.boolean(), calls: boundedInteger.max(100),
+    budget: z.object({ totalCalls: boundedInteger.max(100), callsPerTask: boundedInteger.max(12),
+      concurrency: boundedInteger.max(18), callTimeoutMs: boundedInteger.max(180_000), stageBudgetMs: boundedInteger.max(300_000) }).strict(),
+    outcomes: z.array(groundedOutcomeSchema).max(MAX_TOTAL_FINDINGS),
+  }).strict().superRefine((verification, context) => {
+    const outcomes = verification.outcomes;
+    if (verification.candidates !== outcomes.length
+      || verification.confirmed !== outcomes.filter((row) => row.status === 'confirmed').length
+      || verification.contradicted !== outcomes.filter((row) => row.status === 'contradicted').length
+      || verification.insufficient !== outcomes.filter((row) => row.status === 'insufficient').length
+      || verification.unverifiedBlockerCount !== outcomes.filter((row) => (row.severity === 'P0' || row.severity === 'P1')
+        && row.status === 'insufficient').length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['outcomes'], message: 'verification counts must account for every outcome' });
+    }
+    if (verification.calls > verification.budget.totalCalls) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['calls'], message: 'verifier calls exceeded the recorded budget' });
+    }
+  }),
+}).strict();
 
 const findingSchema = z.object({
   severity: z.enum(['P0', 'P1', 'P2', 'P3', 'NIT']),
@@ -300,6 +365,8 @@ const resultSchema = z.object({
   blockingFindingCount: boundedInteger.max(MAX_TOTAL_FINDINGS).optional(),
   /** Optional additive receipt. Required and recomputed by the trusted service only under v2 policy. */
   reviewDecision: reviewDecisionV2Schema.optional(),
+  /** Exact current source coverage, independently verified claims, and service-history loading receipt. */
+  groundedReview: groundedReviewReceiptSchema.optional(),
   /**
    * OPTIONAL, additive (Stage 0 / example-meta review-yeti telemetry work): the panel engine's own
    * wall-clock measurement of the whole run (`panelResult.panelWallClockMs` in `panelEngine.ts`),
@@ -919,6 +986,99 @@ export function storedEvidenceShipCompleteReason(
   return storedLanesRefusal(result, roster.length);
 }
 
+/** Validate the deterministic, exact-diff binding before any grounded result can affect arbitration. */
+function groundedReviewReceiptError(
+  result: WorkerReviewResult,
+  changedFiles: ReviewChangedFile[],
+  headSha: string,
+  baseSha: string,
+  required: boolean,
+): string | null {
+  const receipt = result.groundedReview;
+  if (!receipt) return required ? 'v2 review requires an independent grounded-review receipt' : null;
+  const expectedManifest = buildDeterministicCoverageManifest(changedFiles);
+  if (receipt.coverage.digest !== expectedManifest.digest || receipt.coverage.regionCount !== expectedManifest.regions.length
+    || receipt.coverage.assignmentCount !== expectedManifest.assignments.length
+    || receipt.coverage.coveredRegionCount !== expectedManifest.coveredRegionIds.length
+    || receipt.coverage.complete !== expectedManifest.complete
+    || canonicalJson(receipt.coverage.omissions) !== canonicalJson(expectedManifest.omissions)) {
+    return 'grounded coverage receipt does not match the trusted changed-source manifest';
+  }
+  if (receipt.verification.coverageComplete !== (receipt.coverage.complete && receipt.verification.unverifiedBlockerCount === 0)) {
+    return 'grounded verification coverage status is inconsistent';
+  }
+  const changedByPath = new Map(changedFiles.map((file) => [file.path, file]));
+  const outcomes = new Map<string, typeof receipt.verification.outcomes[number]>();
+  for (const outcome of receipt.verification.outcomes) {
+    if (outcomes.has(outcome.fingerprint)) return 'grounded receipt contains duplicate finding identities';
+    outcomes.set(outcome.fingerprint, outcome);
+    if (findingFingerprintForClaimType({ path: outcome.path, title: outcome.title }, outcome.claimType) !== outcome.fingerprint) {
+      return 'grounded outcome identity does not match its claim locator';
+    }
+    const changed = changedByPath.get(outcome.path);
+    if (!changed || outcome.relatedDiffPaths.some((path) => !changedByPath.has(path))
+      || new Set(outcome.relatedDiffPaths).size !== outcome.relatedDiffPaths.length) {
+      return 'grounded outcome references source outside the trusted changed set';
+    }
+    const currentAffectedContextDigest = groundedAffectedContextDigest(outcome, changedFiles, outcome.relatedDiffPaths);
+    if (currentAffectedContextDigest !== outcome.affectedContextDigest) return 'grounded outcome context does not match the trusted changed set';
+    if (outcome.status === 'insufficient') continue;
+    const evidence = outcome.evidence!;
+    const evidenceDigest = sha256(canonicalJson({ fingerprint: outcome.fingerprint,
+      currentAffectedContextDigest, evidence }));
+    if (evidenceDigest !== outcome.evidenceDigest) return 'grounded verification evidence digest is invalid';
+    if (outcome.status === 'confirmed') {
+      if (!('violatedInvariant' in evidence) || !evidence.causalDiffPaths.length
+        || canonicalJson([...evidence.causalDiffPaths].sort()) !== canonicalJson([...outcome.relatedDiffPaths].sort())) {
+        return 'confirmed grounded outcome is missing its causal change binding';
+      }
+      const headCitation = evidence.citations.find((citation) => citation.id === `head:${outcome.path}`
+        && citation.path === outcome.path && citation.side === 'head' && citation.sha === headSha);
+      const baseCitation = evidence.citations.find((citation) => citation.id === `base:${outcome.path}`
+        && citation.path === outcome.path && citation.side === 'base' && citation.sha === baseSha);
+      const citedDiffPaths = evidence.citations.filter((citation) => citation.side === 'diff'
+        && outcome.relatedDiffPaths.includes(citation.path) && citation.id === `diff:${citation.path}`)
+        .map((citation) => citation.path);
+      const changedCausalPath = outcome.relatedDiffPaths.some((path) => {
+        const patch = changedByPath.get(path)?.patch;
+        return (changedLineNumbers(patch)?.size ?? 0) > 0;
+      });
+      const directLineChange = changedLineNumbers(changed.patch)?.has(outcome.line) === true;
+      if (!headCitation || !baseCitation || citedDiffPaths.length === 0 || !changedCausalPath
+        || (!directLineChange && outcome.relatedDiffPaths.every((path) => path === outcome.path))) {
+        return 'confirmed grounded outcome lacks exact current source or a changed causal path';
+      }
+    } else {
+      if (!('explanation' in evidence) || evidence.causalDiffPaths.length !== outcome.relatedDiffPaths.length
+        || !evidence.citations.some((citation) => citation.id === `head:${outcome.path}`
+          && citation.path === outcome.path && citation.side === 'head' && citation.sha === headSha)
+        || !evidence.citations.some((citation) => citation.id === `base:${outcome.path}`
+          && citation.path === outcome.path && citation.side === 'base' && citation.sha === baseSha)
+        || !evidence.citations.some((citation) => citation.id === `diff:${outcome.path}`
+          && citation.path === outcome.path && citation.side === 'diff')) {
+      return 'contradicted grounded outcome lacks exact same-file head, admitted base, and diff evidence';
+      }
+    }
+  }
+  const currentFindings = result.personas.flatMap((persona) => persona.findings);
+  for (const outcome of receipt.verification.outcomes) {
+    const matching = currentFindings.some((finding) => findingFingerprint(finding) === outcome.fingerprint);
+    if ((outcome.status === 'confirmed' && !matching) || (outcome.status === 'contradicted' && matching)
+      || (outcome.status === 'insufficient' && (outcome.severity === 'P0' || outcome.severity === 'P1') && matching)) {
+      return 'grounded findings were not reconciled with the independent outcome';
+    }
+  }
+  for (const finding of currentFindings) {
+    const severity = publishedFindingSeverity(finding);
+    if ((severity === 'P0' || severity === 'P1') && outcomes.get(findingFingerprint(finding))?.status !== 'confirmed') {
+      return 'blocking finding lacks a current confirmed independent verification';
+    }
+  }
+  if ((receipt.verification.unverifiedBlockerCount > 0 || !receipt.coverage.complete || !receipt.verification.coverageComplete)
+    && result.coverageComplete) return 'worker claims complete coverage with an unverified blocker or source gap';
+  return null;
+}
+
 /** `storedCompletionShipCompleteReason(...) === null`. */
 export function storedCompletionShipComplete(
   result: WorkerReviewResult,
@@ -944,6 +1104,12 @@ export function deriveCanonicalWorkerReviewEvidence(
     return invalidEvidence('worker completion coordinates do not match the trusted review run identity');
   }
   const changedFiles = validateChangedFiles(contract.changedFiles);
+  const groundedError = groundedReviewReceiptError(completion.result, changedFiles, expectedCoordinates.headSha, expectedCoordinates.baseSha,
+    contract.reviewDecisionPolicy === REVIEW_SEVERITY_POLICY_V2);
+  if (groundedError) return invalidEvidence(groundedError);
+  const groundedCoverageComplete = completion.result.groundedReview
+    ? completion.result.groundedReview.coverage.complete && completion.result.groundedReview.verification.coverageComplete
+    : true;
   // REL-1084: a carried-forward verdict counts toward the gate only when the service verified it
   // against the prior review record it names, and only for files in this exact changed set.
   const carried = completion.result.incremental;
@@ -984,7 +1150,7 @@ export function deriveCanonicalWorkerReviewEvidence(
     if (!changedFiles.every((file) => isNoReviewableContentFile(file))) {
       return invalidEvidence('documentation-only completion contains analyzable source paths');
     }
-    const coverageComplete = contract.coverageComplete && completion.result.coverageComplete;
+    const coverageComplete = contract.coverageComplete && completion.result.coverageComplete && groundedCoverageComplete;
     const marker = completion.result.personas[0];
     const canonical = computeAppVerdict({
       lanes: [{ id: marker.id, decision: marker.decision, status: marker.status, findings: [] }],
@@ -1057,7 +1223,7 @@ export function deriveCanonicalWorkerReviewEvidence(
     seen.add(persona.id);
   }
 
-  const coverageComplete = contract.coverageComplete && completion.result.coverageComplete;
+  const coverageComplete = contract.coverageComplete && completion.result.coverageComplete && groundedCoverageComplete;
   const arbitration = arbitrateLanes(completion.result.personas, requiredIds.length, coverageComplete, changedFiles,
     contract.reviewEngine === 'composed', contract.reviewDecisionPolicy);
   if (!arbitration.valid) return invalidEvidence(arbitration.message);

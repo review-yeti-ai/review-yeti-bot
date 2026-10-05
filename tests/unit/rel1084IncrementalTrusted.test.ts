@@ -133,7 +133,8 @@ function contextFixture(fetcher: typeof fetch | null) {
   });
   const prior: PriorReviewRecord = {
     runId: PRIOR_RUN, executionAttempt: 1, repositoryId: 123, prNumber: 42, headSha: PREV_HEAD, baseSha: PREV_BASE,
-    policyDigest, configDigest, completionDigest: 'e'.repeat(64), ageMs: 60_000, shipComplete: true, findingPaths: ['src/open.ts'],
+    policyDigest, configDigest, completionDigest: 'e'.repeat(64), ageMs: 60_000,
+    coverageComplete: true, shipComplete: true, findingPaths: ['src/open.ts'],
   };
   const incremental = (carriedForwardPaths: string[], overrides: Partial<IncrementalVerificationInput> = {}): IncrementalVerificationInput => ({
     claim: { version: 'IncrementalReview.v1', previousRunId: PRIOR_RUN, previousExecutionAttempt: 1,
@@ -187,7 +188,7 @@ describe('trusted completion context verification', () => {
 const prior: PriorReviewRecord = {
   runId: PRIOR_RUN, executionAttempt: 1, repositoryId: 123, prNumber: 42, headSha: PREV_HEAD, baseSha: PREV_BASE,
   policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64), completionDigest: 'e'.repeat(64), ageMs: 60_000,
-  shipComplete: true, findingPaths: [],
+  coverageComplete: true, shipComplete: true, findingPaths: [],
 };
 
 describe('worker incremental base client', () => {

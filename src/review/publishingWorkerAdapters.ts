@@ -9,6 +9,7 @@ import { HttpReviewExecutionCheckpointAdapter } from './reviewExecutionCheckpoin
 import { HttpFindingThreadsPublisher } from './findingThreadsHttp';
 import { HttpProviderLeaseCoordinator } from './providerLeaseHttp';
 import { providerConcurrencyWorkerConfigFromEnv } from '../config/providerConcurrency';
+import { HttpPrLifecycleHistorySource } from './prLifecycleHistoryHttp';
 
 /** ADR 0002: the finding-thread publisher. Fail-soft: a publisher that cannot be built leaves the
  * run without new threads; the check's required-finding decision does not depend on it. */
@@ -33,6 +34,24 @@ function providerLeaseFor(env: Readonly<Record<string, string | undefined>>, tok
     return { providerLease: new HttpProviderLeaseCoordinator({
       token, completionEndpoint: endpoint, runId: String(env.REVIEW_RUN_ID || '').trim(),
       executionAttempt: Number(String(env.REVIEW_EXECUTION_ATTEMPT || '1').trim()),
+    }) };
+  } catch {
+    return {};
+  }
+}
+
+/** The authenticated durable PR history snapshot, shared by legacy and authoritative workers. */
+function prLifecycleHistoryFor(env: Readonly<Record<string, string | undefined>>, token: string, endpoint: string):
+  { prLifecycleHistory?: HttpPrLifecycleHistorySource } {
+  try {
+    const [owner, repo] = String(env.REVIEW_REPO || '').trim().split('/');
+    return { prLifecycleHistory: new HttpPrLifecycleHistorySource({
+      token, completionEndpoint: endpoint, runId: String(env.REVIEW_RUN_ID || '').trim(),
+      executionAttempt: Number(String(env.REVIEW_EXECUTION_ATTEMPT || '1').trim()),
+      identity: { repositoryId: Number(String(env.REVIEW_REPOSITORY_ID || '').trim()), owner, repo,
+        prNumber: Number(String(env.REVIEW_PR_NUMBER || '').trim()), headSha: String(env.REVIEW_HEAD_SHA || '').trim(),
+        baseSha: String(env.REVIEW_BASE_SHA || '').trim(), policyDigest: String(env.REVIEW_POLICY_DIGEST || '').trim(),
+        configDigest: String(env.REVIEW_CONFIG_DIGEST || '').trim() },
     }) };
   } catch {
     return {};
@@ -80,6 +99,7 @@ export function publishingWorkerAdapters(env: Readonly<Record<string, string | u
   reviewCheckpoint?: HttpReviewExecutionCheckpointAdapter;
   findingThreads?: HttpFindingThreadsPublisher;
   providerLease?: HttpProviderLeaseCoordinator;
+  prLifecycleHistory?: HttpPrLifecycleHistorySource;
 } {
   const endpoint = String(env.REVIEW_COMPLETION_URL || '').trim();
   const flag = String(env.REVIEW_AUTHORITATIVE_GATE || '').trim();
@@ -89,7 +109,8 @@ export function publishingWorkerAdapters(env: Readonly<Record<string, string | u
     return {};
   }
   return flag === 'true'
-    ? { reviewCompletion: new HttpWorkerReviewCompletionAdapter({ token, endpoint }), ...incrementalBaseFor(env, token, endpoint),
+    ? { reviewCompletion: new HttpWorkerReviewCompletionAdapter({ token, endpoint }), ...prLifecycleHistoryFor(env, token, endpoint),
+      ...incrementalBaseFor(env, token, endpoint),
       reviewCheckpoint: new HttpReviewExecutionCheckpointAdapter({ token, completionEndpoint: endpoint,
         runId: String(env.REVIEW_RUN_ID ?? ''), executionAttempt: Number(env.REVIEW_EXECUTION_ATTEMPT ?? '1') }),
       ...(Number(env.REVIEW_EXECUTION_ATTEMPT ?? '1') > 1 ? {
@@ -97,6 +118,7 @@ export function publishingWorkerAdapters(env: Readonly<Record<string, string | u
           runId: String(env.REVIEW_RUN_ID ?? ''), executionAttempt: Number(env.REVIEW_EXECUTION_ATTEMPT) }),
       } : {}),
       ...verdictCacheBaseFor(env, token, endpoint), ...findingThreadsFor(env, token, endpoint), ...providerLeaseFor(env, token, endpoint) }
-    : { completion: new HttpWorkerCompletionAdapter({ token, endpoint }), ...incrementalBaseFor(env, token, endpoint),
+    : { completion: new HttpWorkerCompletionAdapter({ token, endpoint }), ...prLifecycleHistoryFor(env, token, endpoint),
+      ...incrementalBaseFor(env, token, endpoint),
       ...verdictCacheBaseFor(env, token, endpoint), ...findingThreadsFor(env, token, endpoint), ...providerLeaseFor(env, token, endpoint) };
 }

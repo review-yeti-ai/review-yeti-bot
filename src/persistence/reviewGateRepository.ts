@@ -30,9 +30,9 @@ import { canonicalJson, sha256 } from '../review/reviewCore';
 import { loadValidatedDisputedFindingRechecks, pendingDisputedFindingRechecks,
   type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import { parseReviewExecutionCheckpoint, reviewCheckpointMatchesCompletion } from '../review/reviewExecutionCheckpoint';
-import { evaluateFindingConvergence } from '../review/findingConvergence';
+import { evaluateFindingConvergence, findingFingerprint } from '../review/findingConvergence';
 import { affectedContextDigest } from '../review/semanticContext';
-import { recordTrustedPrReviewCompletion, reservePrReview } from './reviewPrLifecycleRepository';
+import { recordTrustedPrReviewCompletion, reservePrReview, type ReviewSemanticFindingInput } from './reviewPrLifecycleRepository';
 import {
   appendLifecycleEventForRun,
   requireLifecycleEventsMode,
@@ -377,8 +377,18 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         ? evaluateFindingConvergence({ findings: derived.canonical.findings,
           changedFiles: trusted.coverage.changedFiles, priorThreads: trusted.coverage.findingThreads ?? [] })
         : undefined;
-      const semanticFindings = convergence?.entries.map((entry) => {
+      const groundedOutcomes = trusted && derived?.valid && timestampValid
+        ? event.result.groundedReview?.verification.outcomes ?? [] : [];
+      const groundedByFingerprint = new Map(groundedOutcomes.map((outcome) => [outcome.fingerprint, outcome]));
+      const verificationForOutcome = (outcome: (typeof groundedOutcomes)[number]) => {
+        const evidence = outcome.evidence ?? { status: 'insufficient' };
+        const evidenceDigest = outcome.evidenceDigest ?? sha256(canonicalJson({ fingerprint: outcome.fingerprint,
+          status: outcome.status, affectedContextDigest: outcome.affectedContextDigest, evidence }));
+        return { status: outcome.status, verifier: 'independent_grounded_verifier', evidenceDigest, evidence };
+      };
+      const semanticFindings: ReviewSemanticFindingInput[] = convergence?.entries.map((entry) => {
         const finding = entry.finding as unknown as Record<string, unknown>;
+        const outcome = groundedByFingerprint.get(entry.fingerprint) ?? groundedByFingerprint.get(findingFingerprint(finding));
         const severityAdjusted = (entry as unknown as { severityAdjusted?: { from?: string; reason?: string } }).severityAdjusted;
         const sourceSeverity = severityAdjusted?.from ?? String(finding.severity ?? entry.severity);
         return {
@@ -387,7 +397,8 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           ...(Number.isSafeInteger(finding.line) ? { line: Number(finding.line) } : {}),
           severity: String(entry.severity), sourceSeverity,
           disposition: String(entry.status), blocking: Boolean(entry.blocking),
-          affectedContextDigest: affectedContextDigest(finding, trusted!.coverage.changedFiles),
+          affectedContextDigest: outcome?.affectedContextDigest ?? affectedContextDigest(finding, trusted!.coverage.changedFiles),
+          ...(outcome ? { independentVerification: verificationForOutcome(outcome) } : {}),
           sourceEvidence: {
             finding, fingerprint: entry.fingerprint, disposition: entry.status,
             resolution: entry.resolution ?? null,
@@ -404,9 +415,25 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
             matchedThreadId: entry.matchedThread?.threadId ?? null,
             resolution: entry.resolution ?? null,
             sourceCompletionDigest: resultDigest,
+            ...(outcome ? { independentVerification: outcome.status } : {}),
           },
         };
       }) ?? [];
+      const persistedFindingFingerprints = new Set(semanticFindings.map((finding) => finding.fingerprint));
+      for (const outcome of groundedOutcomes) {
+        if (persistedFindingFingerprints.has(outcome.fingerprint)) continue;
+        const verification = verificationForOutcome(outcome);
+        semanticFindings.push({ fingerprint: outcome.fingerprint, path: outcome.path, line: outcome.line,
+          severity: outcome.severity, sourceSeverity: outcome.severity,
+          disposition: `independent-${outcome.status}`, blocking: false,
+          affectedContextDigest: outcome.affectedContextDigest, independentVerification: verification,
+          sourceEvidence: { claim: { fingerprint: outcome.fingerprint, path: outcome.path, line: outcome.line,
+            title: outcome.title, severity: outcome.severity, claimType: outcome.claimType },
+            independentVerification: { status: outcome.status, evidence: verification.evidence,
+              evidenceDigest: verification.evidenceDigest } },
+          provenance: { sourceCompletionDigest: resultDigest, independentVerification: outcome.status },
+        });
+      }
       const reviewDecisionV2 = derived?.valid
         ? (derived.evidence as unknown as { reviewDecision?: Record<string, unknown> }).reviewDecision
         : undefined;
