@@ -174,6 +174,11 @@ export async function loadValidatedDisputedFindingRechecks(
   run: DisputedFindingRecheckRunIdentity,
   currentAttempt: number,
 ): Promise<DisputedFindingRecheck[]> {
+  if (!Number.isSafeInteger(currentAttempt) || currentAttempt < 1) {
+    throw new Error('Disputed finding target execution is invalid');
+  }
+  if (currentAttempt === 1) return [];
+  const sourceAttempt = currentAttempt - 1;
   const rows = (await queryable.query(`
     SELECT request.*,
            completion.execution_attempt AS completion_execution_attempt,
@@ -195,16 +200,170 @@ export async function loadValidatedDisputedFindingRechecks(
         ON gate.attempt_id = request.source_gate_attempt_id
        AND gate.run_id = request.run_id
        AND gate.execution_attempt = request.source_execution_attempt
-      JOIN review_finding_recheck_admissions admission
-        ON admission.run_id = request.run_id
-       AND admission.source_execution_attempt = request.source_execution_attempt
-     WHERE request.run_id = $1 AND admission.execution_attempt = $2
+     WHERE request.run_id = $1 AND request.source_execution_attempt = $2
      ORDER BY request.source_execution_attempt, request.created_at, request.request_id
-     LIMIT ${MAX_DISPUTE_RECHECKS_PER_BATCH + 1}`, [run.run_id, currentAttempt])).rows;
+     LIMIT ${MAX_DISPUTE_RECHECKS_PER_BATCH + 1}`, [run.run_id, sourceAttempt])).rows;
   if (rows.length > MAX_DISPUTE_RECHECKS_PER_BATCH) {
     throw new Error('Disputed finding re-review batch exceeds its response bound');
   }
-  return rows.map((row) => validateDisputedFindingRecheckRow(row, run, currentAttempt));
+  const requests = rows.map((row) => validateDisputedFindingRecheckRow(row, run, currentAttempt));
+
+  // The admission table is a mutable projection used by dispatch. Do not let a
+  // lost projection make a still-admitted request disappear from the Gate's
+  // view. Reconcile this exact N-1 -> N batch with the request and target
+  // lifecycle events, the source/target reservations, and the Gate reserved by
+  // that projection. This intentionally does not count requests from older
+  // batches in the same run.
+  const admissionRows = (await queryable.query(`SELECT admission.*,
+        gate.review_generation AS target_gate_generation,
+        gate.execution_attempt AS target_gate_execution_attempt,
+        gate.repository_id AS target_gate_repository_id,
+        gate.pr_number AS target_gate_pr_number,
+        gate.coordinates AS target_gate_coordinates,
+        gate.expected_app_id AS target_gate_expected_app_id,
+        gate.current_attempt AS target_gate_current_attempt,
+        runs.attempt AS current_generation,
+        runs.authoritative_gate_app_id
+      FROM review_finding_recheck_admissions admission
+      LEFT JOIN review_gate_attempts gate
+        ON gate.attempt_id = admission.gate_attempt_id AND gate.run_id = admission.run_id
+      LEFT JOIN review_runs runs ON runs.run_id = admission.run_id
+      WHERE admission.run_id = $1 AND admission.source_execution_attempt = $2`, [run.run_id, sourceAttempt])).rows;
+  const lifecycleEvents = (await queryable.query(`SELECT event_id, lifecycle_id, reservation_id, idempotency_key, event_type, run_id, execution_attempt,
+        repository_id, pr_number, head_sha, base_sha, policy_digest, config_digest, context_digest,
+        evidence_digest, actor_digest, payload
+      FROM review_pr_lifecycle_events
+      WHERE run_id = $1 AND (
+        (event_type = 'finding.recheck_requested' AND execution_attempt = $2)
+        OR (event_type = 'finding.recheck_target_admitted' AND execution_attempt = $3))
+      ORDER BY event_type, idempotency_key
+      LIMIT ${MAX_DISPUTE_RECHECKS_PER_BATCH * 2 + 2}`, [run.run_id, sourceAttempt, currentAttempt])).rows;
+  const reservationRows = (await queryable.query(`SELECT reservation.reservation_id, reservation.lifecycle_id,
+        reservation.run_id, reservation.execution_attempt, reservation.status, reservation.completion_digest,
+        reservation.decision_receipt, reservation.head_sha, reservation.base_sha,
+        reservation.policy_digest, reservation.config_digest, reservation.context_digest,
+        lifecycle.repository_id, lifecycle.owner, lifecycle.repo, lifecycle.pr_number
+      FROM review_pr_review_reservations reservation
+      JOIN review_pr_lifecycles lifecycle USING (lifecycle_id)
+      WHERE reservation.run_id = $1 AND reservation.execution_attempt IN ($2, $3)
+      ORDER BY reservation.execution_attempt`, [run.run_id, sourceAttempt, currentAttempt])).rows;
+  const runRows = (await queryable.query('SELECT snapshot_digest, attempt FROM review_runs WHERE run_id = $1', [run.run_id])).rows;
+  if (lifecycleEvents.length >= MAX_DISPUTE_RECHECKS_PER_BATCH * 2 + 2) {
+    throw new Error('Disputed finding lifecycle batch exceeds its response bound');
+  }
+  const sourceEvents = lifecycleEvents.filter((event) => event.event_type === 'finding.recheck_requested');
+  const targetEvents = lifecycleEvents.filter((event) => event.event_type === 'finding.recheck_target_admitted');
+  const hasBatchEvidence = requests.length > 0 || admissionRows.length > 0 || sourceEvents.length > 0 || targetEvents.length > 0;
+  if (!hasBatchEvidence) return [];
+
+  const invalidBatch = (): never => { throw new Error('Disputed finding admitted batch evidence is inconsistent'); };
+  if (admissionRows.length !== 1 || requests.length === 0 || targetEvents.length !== requests.length) invalidBatch();
+  const admission = admissionRows[0]!;
+  if (Number(admission.source_execution_attempt) !== sourceAttempt
+    || Number(admission.execution_attempt) !== currentAttempt
+    || Number(admission.target_gate_execution_attempt) !== currentAttempt
+    || Number(admission.target_gate_generation) !== Number(admission.review_generation)
+    || Number(admission.current_generation) !== Number(admission.review_generation)
+    || Number(admission.target_gate_repository_id) !== Number(run.repository_id)
+    || Number(admission.target_gate_pr_number) !== Number(run.pr_number)
+    || admission.target_gate_current_attempt !== true
+    || admission.authoritative_gate_app_id == null
+    || Number(admission.target_gate_expected_app_id) !== Number(admission.authoritative_gate_app_id)) invalidBatch();
+  const trigger = requests.find((request) => request.requestId === admission.trigger_request_id);
+  if (!trigger || String(admission.requested_by) !== String((rows.find((row) => row.request_id === trigger.requestId))?.requested_by)) {
+    invalidBatch();
+  }
+  const targetGateCoordinates = jsonValue(admission.target_gate_coordinates);
+  if (!targetGateCoordinates || typeof targetGateCoordinates !== 'object'
+    || targetGateCoordinates.runId !== run.run_id
+    || Number(targetGateCoordinates.repositoryId) !== Number(run.repository_id)
+    || targetGateCoordinates.owner !== run.owner || targetGateCoordinates.repo !== run.repo
+    || Number(targetGateCoordinates.prNumber) !== Number(run.pr_number)
+    || targetGateCoordinates.headSha !== run.head_sha || targetGateCoordinates.baseSha !== run.base_sha
+    || targetGateCoordinates.policyDigest !== run.effective_policy_digest
+    || Number(targetGateCoordinates.executionAttempt) !== currentAttempt
+    || targetGateCoordinates.attemptId !== admission.gate_attempt_id) invalidBatch();
+
+  const runState = runRows[0];
+  const sourceReservation = reservationRows.find((reservation) => Number(reservation.execution_attempt) === sourceAttempt);
+  const targetReservation = reservationRows.find((reservation) => Number(reservation.execution_attempt) === currentAttempt);
+  if (!runState || !targetReservation || targetReservation.status !== 'reserved'
+    || targetReservation.completion_digest != null || targetReservation.decision_receipt != null
+    || Number(targetReservation.repository_id) !== Number(run.repository_id)
+    || targetReservation.owner !== run.owner || targetReservation.repo !== run.repo
+    || Number(targetReservation.pr_number) !== Number(run.pr_number)
+    || targetReservation.head_sha !== run.head_sha || targetReservation.base_sha !== run.base_sha
+    || targetReservation.policy_digest !== run.effective_policy_digest
+    || targetReservation.config_digest !== run.effective_config_digest
+    || targetReservation.context_digest !== runState.snapshot_digest) invalidBatch();
+
+  const requestById = new Map(requests.map((request) => [request.requestId, request]));
+  if (requestById.size !== requests.length) invalidBatch();
+  const targetEventIds = new Set<string>();
+  for (const event of targetEvents) {
+    const payload = jsonValue(event.payload);
+    const requestId = String(payload?.requestId ?? '');
+    const request = requestById.get(requestId);
+    const row = rows.find((candidate) => candidate.request_id === requestId);
+    if (!request || !row || targetEventIds.has(requestId)
+      || event.idempotency_key !== `${requestId}:recheck-target-admitted`
+      || event.reservation_id !== targetReservation.reservation_id
+      || event.lifecycle_id !== targetReservation.lifecycle_id
+      || Number(event.execution_attempt) !== currentAttempt
+      || Number(event.repository_id) !== Number(run.repository_id) || Number(event.pr_number) !== Number(run.pr_number)
+      || event.head_sha !== request.headSha || event.base_sha !== request.baseSha
+      || event.policy_digest !== request.policyDigest || event.config_digest !== request.configDigest
+      || event.context_digest !== runState.snapshot_digest || event.evidence_digest !== request.requestDigest
+      || event.actor_digest !== row.requested_by || payload.requestDigest !== request.requestDigest
+      || payload.sourceRunId !== run.run_id || Number(payload.sourceExecutionAttempt) !== sourceAttempt
+      || payload.sourceCompletionDigest !== request.sourceContentDigest
+      || payload.sourceContextDigest !== runState.snapshot_digest
+      || Number(payload.targetExecutionAttempt) !== currentAttempt
+      || canonicalJson(payload.candidate) !== canonicalJson({ headSha: request.headSha, baseSha: request.baseSha,
+        policyDigest: request.policyDigest, configDigest: request.configDigest, contextDigest: runState.snapshot_digest })) {
+      invalidBatch();
+    }
+    targetEventIds.add(requestId);
+  }
+  if (targetEventIds.size !== requestById.size || !targetEventIds.has(String(admission.trigger_request_id))) invalidBatch();
+
+  const sourceEventIds = new Set<string>();
+  if (sourceReservation) {
+    if (!['completed', 'failed'].includes(String(sourceReservation.status))
+      || sourceReservation.completion_digest !== trigger!.sourceContentDigest
+      || sourceReservation.context_digest !== runState.snapshot_digest
+      || Number(sourceReservation.repository_id) !== Number(run.repository_id)
+      || sourceReservation.owner !== run.owner || sourceReservation.repo !== run.repo
+      || Number(sourceReservation.pr_number) !== Number(run.pr_number)
+      || sourceReservation.head_sha !== run.head_sha || sourceReservation.base_sha !== run.base_sha
+      || sourceReservation.policy_digest !== run.effective_policy_digest
+      || sourceReservation.config_digest !== run.effective_config_digest
+      || sourceEvents.length !== requests.length) invalidBatch();
+    for (const event of sourceEvents) {
+      const payload = jsonValue(event.payload);
+      const requestId = String(payload?.requestId ?? '');
+      const request = requestById.get(requestId);
+      const row = rows.find((candidate) => candidate.request_id === requestId);
+      if (!request || !row || sourceEventIds.has(requestId)
+        || event.idempotency_key !== `${requestId}:recheck-requested`
+        || event.reservation_id !== sourceReservation.reservation_id
+        || event.lifecycle_id !== sourceReservation.lifecycle_id
+        || Number(event.execution_attempt) !== sourceAttempt
+        || Number(event.repository_id) !== Number(run.repository_id) || Number(event.pr_number) !== Number(run.pr_number)
+        || event.head_sha !== request.headSha || event.base_sha !== request.baseSha
+        || event.policy_digest !== request.policyDigest || event.config_digest !== request.configDigest
+        || event.context_digest !== runState.snapshot_digest || event.evidence_digest !== request.requestDigest
+        || event.actor_digest !== row.requested_by || payload.findingId !== request.findingId
+        || payload.sourceContentDigest !== request.sourceContentDigest
+        || payload.sourceReservationContextDigest !== sourceReservation.context_digest) invalidBatch();
+      sourceEventIds.add(requestId);
+    }
+    if (sourceEventIds.size !== requestById.size) invalidBatch();
+  } else if (sourceEvents.length > 0) {
+    invalidBatch();
+  }
+
+  return requests;
 }
 
 /** A task receipt always refers to its immutable source plan and persona. */

@@ -44,6 +44,8 @@ import { getReviewFindingId } from '../../src/mcp/server/tools/findingIdentity';
 import { disputedFindingRecheckDigest } from '../../src/review/disputedFindingRecheck';
 import { INCREMENTAL_REVIEW_CLAIM_VERSION } from '../../src/review/incrementalReviewClaim';
 import { VERDICT_CACHE_CLAIM_VERSION } from '../../src/review/verdictCacheClaim';
+import { recordPrFindingRecheckRequest, reservePrFindingRecheckTarget, reservePrReview,
+  transitionPrReviewReservation } from '../../src/persistence/reviewPrLifecycleRepository';
 
 const databaseUrl = postgresDatabaseUrl();
 const describeWithPostgres = describeWithPostgresShared;
@@ -1092,6 +1094,8 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         finding: sourceFinding, counterArgument, counterArgumentDigest: sha256(counterArgument),
       };
       const requestDigest = disputedFindingRecheckDigest(unsigned);
+      const actorDigest = sha256('authenticated-test-actor');
+      const sourceContextDigest = sha256(`snapshot-${id}`);
 
       // This fixture pins the production a2→a3 numbering: logical run generations are 1→2,
       // while the worker executions and Gate IDs are g1-e2→g2-e3.
@@ -1117,11 +1121,11 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
          policy_digest, config_digest, finding_id, persona_id, task_id, finding, counter_argument,
          counter_argument_digest, request_digest, requested_by)
         VALUES ($1, $2, 2, $3, $4, $5, $6, $7, $8, 42, $9, $10, $11, $12, $13, $14, $15,
-          $16::jsonb, $17, $18, $19, 'rel1265-gate-test')`,
+          $16::jsonb, $17, $18, $19, $20)`,
       [unsigned.requestId, id, sourceDigest, unsigned.sourcePlanDigest, sourceCoordinates.attemptId,
         REPOSITORY_ID, unsigned.owner, unsigned.repo, unsigned.headSha, unsigned.baseSha, unsigned.policyDigest,
         CONFIG_DIGEST, findingId, task.id, task.id, JSON.stringify(sourceFinding), counterArgument,
-        unsigned.counterArgumentDigest, requestDigest]);
+        unsigned.counterArgumentDigest, requestDigest, actorDigest]);
       await pool!.query(`INSERT INTO review_gate_attempts
         (attempt_id, run_id, review_generation, execution_attempt, repository_id, pr_number, expected_app_id,
          coordinates, external_id, check_id, creation_state, desired_state, desired_version, published_version,
@@ -1129,11 +1133,29 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         VALUES ($1, $2, 2, 3, $3, 42, $4, $5::jsonb, $6, 72002, 'bound', 'queued', 0, -1, true)`,
       [currentCoordinates.attemptId, id, REPOSITORY_ID, APP_ID, JSON.stringify(currentCoordinates),
         deriveReviewGateExternalId(currentCoordinates)]);
+      await reservePrReview(pool!, {
+        repositoryId: REPOSITORY_ID, owner: unsigned.owner, repo: unsigned.repo, prNumber: unsigned.prNumber,
+        runId: id, executionAttempt: 2, deliveryId: `delivery-${id}`, headSha: unsigned.headSha,
+        baseSha: unsigned.baseSha, policyDigest: unsigned.policyDigest, configDigest: unsigned.configDigest,
+        contextDigest: sourceContextDigest,
+      });
+      await transitionPrReviewReservation(pool!, { runId: id, executionAttempt: 2, status: 'failed',
+        completionDigest: sourceDigest, decisionReceipt: { gateDecision: { status: 'failure', eligible: false } } });
+      await recordPrFindingRecheckRequest(pool!, { runId: id, sourceExecutionAttempt: 2,
+        requestId: unsigned.requestId, findingId, actorDigest, sourceContentDigest: sourceDigest,
+        sourceContextDigest, requestDigest });
+      await reservePrFindingRecheckTarget(pool!, { repositoryId: REPOSITORY_ID,
+        owner: unsigned.owner, repo: unsigned.repo, prNumber: unsigned.prNumber, runId: id,
+        deliveryId: `delivery-${id}`, sourceExecutionAttempt: 2, executionAttempt: 3,
+        requestId: unsigned.requestId, requestDigest, sourceContentDigest: sourceDigest,
+        sourceContextDigest, headSha: unsigned.headSha, baseSha: unsigned.baseSha,
+        policyDigest: unsigned.policyDigest, configDigest: unsigned.configDigest,
+        candidateContextDigest: sourceContextDigest, actorDigest });
       await pool!.query(`INSERT INTO review_finding_recheck_admissions
         (run_id, source_execution_attempt, trigger_request_id, execution_attempt, review_generation,
          gate_attempt_id, requested_by, received_at, terminal_deadline)
         VALUES ($1, 2, $2, 3, 2, $3, $4, to_timestamp(100 / 1000.0), to_timestamp(9999999 / 1000.0))`,
-      [id, unsigned.requestId, currentCoordinates.attemptId, sha256('authenticated-test-actor')]);
+      [id, unsigned.requestId, currentCoordinates.attemptId, actorDigest]);
 
       if (receiptPersisted) {
         const checkpoint = {

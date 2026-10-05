@@ -177,6 +177,11 @@ function repositoryFixture(executionAttempt = 2) {
       }
       if (sql.includes('FROM review_worker_completions completions')) return { rows: [] };
       if (sql.includes('FROM review_finding_rechecks request')) return { rows: [] };
+      if (sql.includes('FROM review_finding_recheck_admissions admission')
+        || sql.includes('FROM review_pr_lifecycle_events')
+        || sql.includes('FROM review_pr_review_reservations reservation')
+        || sql.startsWith('SELECT snapshot_digest, attempt FROM review_runs')
+        || sql.includes('SELECT payload FROM review_execution_checkpoints')) return { rows: [] };
       if (sql.startsWith('UPDATE review_gate_attempts')
         || sql.startsWith('INSERT INTO review_worker_completions')
         || sql.startsWith('UPDATE review_dispatch_outbox')

@@ -173,20 +173,71 @@ describe('immutable disputed-finding request validator', () => {
   it.each([null, '{', undefined])('rejects malformed persisted finding JSON', (finding) => {
     const { row, run } = fixture(); row.finding = finding; expect(() => validateDisputedFindingRecheckRow(row, run, 2)).toThrow();
   });
-  it.each([0, 8])('loads all %s rows through the bounded parameterized source joins', async (count) => {
-    const { run } = fixture(), rows = Array.from({ length: count }, (_, index) => {
-      const row = fixture().row; row.request_id = `11111111-1111-4111-8111-${String(index + 1).padStart(12, '0')}`;
-      sign(row); return row;
-    }), query = vi.fn().mockResolvedValue({ rows });
-    expect(await loadValidatedDisputedFindingRechecks({ query }, run, 2)).toEqual(rows.map(request));
-    const [sql, values] = query.mock.calls[0]; expect(values).toEqual([run.run_id, 2]);
+  it('returns no batch only when current execution has no request or immutable admission evidence', async () => {
+    const { run } = fixture(); const query = vi.fn().mockResolvedValue({ rows: [] });
+    expect(await loadValidatedDisputedFindingRechecks({ query }, run, 2)).toEqual([]);
+    const [sql, values] = query.mock.calls[0]; expect(values).toEqual([run.run_id, 1]);
     for (const binding of ['LEFT JOIN review_worker_completions completion', 'completion.run_id = request.run_id',
       'completion.execution_attempt = request.source_execution_attempt', 'LEFT JOIN review_gate_attempts gate',
       'gate.attempt_id = request.source_gate_attempt_id', 'gate.run_id = request.run_id',
       'gate.execution_attempt = request.source_execution_attempt', 'WHERE request.run_id = $1',
-      'admission.execution_attempt = $2',
+      'request.source_execution_attempt = $2',
       'ORDER BY request.source_execution_attempt, request.created_at, request.request_id', 'LIMIT 9']) expect(sql).toContain(binding);
-    expect(sql).not.toMatch(/\b(?:INSERT|UPDATE|DELETE)\b/); expect(query).toHaveBeenCalledTimes(1);
+    expect(sql).not.toContain('JOIN review_finding_recheck_admissions');
+    expect(query.mock.calls.every(([statement]) => !/\b(?:INSERT|UPDATE|DELETE)\b/u.test(statement))).toBe(true);
+    expect(query).toHaveBeenCalledTimes(5);
+  });
+  it('loads eight members only after the exact admission, reservations, and immutable events reconcile', async () => {
+    const { run, row: base } = fixture();
+    const rows = Array.from({ length: 8 }, (_, index) => {
+      const row = fixture().row;
+      row.request_id = `11111111-1111-4111-8111-${String(index + 1).padStart(12, '0')}`;
+      row.requested_by = 'e'.repeat(64); row.created_at = new Date(index).toISOString(); sign(row); return row;
+    });
+    const snapshot = '9'.repeat(64), targetGateId = `${run.run_id}-g2-e2`;
+    const targetGateCoordinates = { runId: run.run_id, repositoryId: run.repository_id, owner: run.owner, repo: run.repo,
+      prNumber: run.pr_number, headSha: run.head_sha, baseSha: run.base_sha,
+      policyDigest: run.effective_policy_digest, executionAttempt: 2, attemptId: targetGateId };
+    const admission = { run_id: run.run_id, source_execution_attempt: 1, trigger_request_id: rows[0]!.request_id,
+      execution_attempt: 2, review_generation: 2, gate_attempt_id: targetGateId, requested_by: rows[0]!.requested_by,
+      target_gate_generation: 2, target_gate_execution_attempt: 2, target_gate_repository_id: run.repository_id,
+      target_gate_pr_number: run.pr_number, target_gate_coordinates: targetGateCoordinates,
+      target_gate_expected_app_id: 4385771, target_gate_current_attempt: true,
+      current_generation: 2, authoritative_gate_app_id: 4385771 };
+    const sourceReservation = { reservation_id: 'source-reservation', lifecycle_id: 'lifecycle',
+      run_id: run.run_id, execution_attempt: 1,
+      status: 'failed', completion_digest: rows[0]!.source_content_digest, head_sha: run.head_sha, base_sha: run.base_sha,
+      policy_digest: run.effective_policy_digest, config_digest: run.effective_config_digest, context_digest: snapshot,
+      repository_id: run.repository_id, owner: run.owner, repo: run.repo, pr_number: run.pr_number };
+    const targetReservation = { ...sourceReservation, reservation_id: 'target-reservation', execution_attempt: 2,
+      status: 'reserved', completion_digest: null };
+    const event = (row: any, target: boolean) => ({ event_id: `event-${row.request_id}-${target}`,
+      lifecycle_id: 'lifecycle',
+      reservation_id: target ? targetReservation.reservation_id : sourceReservation.reservation_id,
+      idempotency_key: `${row.request_id}:recheck-${target ? 'target-admitted' : 'requested'}`,
+      event_type: target ? 'finding.recheck_target_admitted' : 'finding.recheck_requested',
+      run_id: run.run_id, execution_attempt: target ? 2 : 1, repository_id: run.repository_id,
+      pr_number: run.pr_number, head_sha: run.head_sha, base_sha: run.base_sha,
+      policy_digest: run.effective_policy_digest, config_digest: run.effective_config_digest,
+      context_digest: snapshot, evidence_digest: row.request_digest, actor_digest: row.requested_by,
+      payload: target ? { requestId: row.request_id, requestDigest: row.request_digest, sourceRunId: run.run_id,
+        sourceExecutionAttempt: 1, sourceCompletionDigest: row.source_content_digest, sourceContextDigest: snapshot,
+        targetExecutionAttempt: 2, candidate: { headSha: run.head_sha, baseSha: run.base_sha,
+          policyDigest: run.effective_policy_digest, configDigest: run.effective_config_digest, contextDigest: snapshot } }
+        : { requestId: row.request_id, findingId: row.finding_id, sourceContentDigest: row.source_content_digest,
+          sourceReservationContextDigest: snapshot } });
+    const events = rows.flatMap((row) => [event(row, false), event(row, true)]);
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('FROM review_finding_rechecks request')) return { rows };
+      if (sql.includes('FROM review_finding_recheck_admissions admission')) return { rows: [admission] };
+      if (sql.includes('FROM review_pr_lifecycle_events')) return { rows: events };
+      if (sql.includes('FROM review_pr_review_reservations reservation')) return { rows: [sourceReservation, targetReservation] };
+      if (sql.includes('SELECT snapshot_digest, attempt')) return { rows: [{ snapshot_digest: snapshot, attempt: 2 }] };
+      throw new Error(`Unexpected loader query: ${sql}`);
+    });
+    expect(await loadValidatedDisputedFindingRechecks({ query }, run, 2)).toEqual(rows.map(request));
+    expect(base.run_id).toBe(run.run_id);
+    expect(query).toHaveBeenCalledTimes(5);
   });
   it('rejects nine rows rather than silently dropping one', async () => {
     const { run } = fixture(); const query = vi.fn().mockResolvedValue({ rows: Array.from({ length: 9 }, () => fixture().row) });
