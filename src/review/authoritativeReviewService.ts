@@ -6,11 +6,14 @@ import { AuthoritativeReviewReader, type ReviewRepositoryIdentity } from '../git
 import { getBoundedRepositoryToken } from '../github/boundedAppToken';
 import { trustedGitDiffSource } from '../github/largeDiffSourceWiring';
 import { GitHubReviewGateClient } from '../github/reviewGateClient';
+import { GitHubInstallationClient } from '../github/installationClient';
 import { AuthoritativePublishingResolver } from './authoritativePublishingResolver';
 import { createAuthoritativeCompletionContext, type AuthoritativeCompletionContextOptions } from './authoritativeCompletionContext';
 import { ReviewGatePublisher, type ReviewGatePublisherOptions } from './reviewGatePublisher';
 import type { ReviewAdmissionInput } from './reviewRun';
 import { sha256 } from './reviewCore';
+import { OperatorMaintenancePublisher } from './operatorMaintenancePublisher';
+import type { OperatorMaintenanceIdentity, OperatorMaintenancePolicyResolution, OperatorMaintenanceRepository } from './operatorMaintenanceContracts';
 
 export interface AuthoritativeReviewServiceOptions {
   config: AuthoritativeServiceConfig;
@@ -29,6 +32,13 @@ export interface AuthoritativeReviewServiceOptions {
   fetchImplementation?: typeof fetch;
   /** ADR 0002: resolves the review App's bot login for finding-thread author verification. */
   findingThreadAuthor?: (repository: ReviewRepositoryIdentity) => Promise<string | undefined>;
+  /** Trusted deployment-wide setting; callers never supply this value. */
+  passthroughEnabled?: boolean;
+  /** Durable storage for the separate no-review maintenance lane. */
+  operatorMaintenanceRepository?: OperatorMaintenanceRepository;
+  /** Fresh, App-authenticated queue reconstruction for durable group retries. */
+  verifyMergeGroupCurrent?(identity: OperatorMaintenanceIdentity,
+    policyResolution: OperatorMaintenancePolicyResolution): Promise<void>;
 }
 
 /** Additive control-plane wiring. Merely constructing this object does not
@@ -81,6 +91,29 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
     policyRepository: config.policyRepository, policyRef: config.policyRef, policyPath: config.policyPath,
     transport: config.transport, candidateReaderFactory: readerFactory, policyReaderFactory,
   });
+  if (options.passthroughEnabled === true && !options.operatorMaintenanceRepository) {
+    throw new Error('Operator maintenance mode requires durable maintenance storage');
+  }
+  const maintenance = options.passthroughEnabled === true && options.operatorMaintenanceRepository
+    ? new OperatorMaintenancePublisher({
+      enabled: true,
+      expectedAppIdFor: (identity) => expectedAppIdFor(identity),
+      repositoryIds,
+      resolver,
+      repository: options.operatorMaintenanceRepository,
+      ...(options.verifyMergeGroupCurrent ? { verifyMergeGroupCurrent: options.verifyMergeGroupCurrent } : {}),
+      clientFor: async (identity, expectedAppId) => {
+        if (expectedAppId !== expectedAppIdFor(identity)) {
+          throw new Error('Operator maintenance App identity does not match the enrolled repository');
+        }
+        const minted = await getBoundedRepositoryToken(authFor(identity), 'publish', {
+          fetchImplementation: options.fetchImplementation,
+        });
+        return new GitHubInstallationClient({ token: minted.token, baseUrl: options.baseUrl,
+          fetchImplementation: options.fetchImplementation });
+      },
+    })
+    : undefined;
   const resolveCompletion = createAuthoritativeCompletionContext({
     getStoredPrepared: options.getStoredPrepared,
     readerFactory, publishingResolver: resolver,
@@ -112,12 +145,19 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
   const tick = async (): Promise<void> => {
     await repository.reapTerminalAttempts();
     await repository.advanceProjectedAttempts();
-    await publisher.runOnce();
+    let failure: unknown;
+    try { await publisher.runOnce(); } catch (error) { failure = error; }
+    // No pending maintenance receipt may depend on an ingress retry. Reconcile
+    // its raw and Gate stages from the same bounded authoritative timer even
+    // when the ordinary review publisher has an independent transient error.
+    try { await maintenance?.runOnce(); } catch (error) { failure ??= error; }
+    if (failure !== undefined) throw failure;
   };
   return {
     resolver,
     admission: { expectedAppId: config.expectedAppId, acceptNewRequests: config.admissionEnabled,
-      repositoryIds, ...(publicAuthority ? { expectedAppIdFor } : {}), resolver },
+      repositoryIds, ...(publicAuthority ? { expectedAppIdFor } : {}), resolver,
+      ...(maintenance ? { maintenance } : {}) },
     completion: { verifier: createWorkerCompletionVerifier(), repository, resolve: resolveCompletion },
     validateAdmission: async (input) => {
       // The router's preparation can finish out of order across replicas. Only

@@ -250,6 +250,27 @@ export interface CompleteCheckOptions {
   annotations?: CheckRunAnnotation[];
 }
 
+export interface OperatorMaintenanceCheckInput {
+  owner: string;
+  repo: string;
+  headSha: string;
+  expectedAppId: number;
+  name: typeof CHECK_CONTEXT_RAW_REVIEW | typeof CHECK_CONTEXT_GATE;
+  externalId: string;
+  intentId: string;
+  title: string;
+  summary: string;
+}
+
+export interface OperatorMaintenanceCheckObservation {
+  id: number;
+  name: OperatorMaintenanceCheckInput['name'];
+  appId: number;
+  headSha: string;
+  externalId: string;
+  state: 'completed' | 'in_progress';
+}
+
 export interface GitHubPullRequestItem {
   number: number;
   title: string;
@@ -697,6 +718,124 @@ export class GitHubInstallationClient {
       }),
     }, reconcile ? { reconcile } : {});
     return Number(data.id);
+  }
+
+  /** Reads one service-owned maintenance check by its stable exact identity.
+   * It never treats another Review Yeti check on the same SHA as this intent. */
+  async reconcileOperatorMaintenanceCheck(input: OperatorMaintenanceCheckInput): Promise<OperatorMaintenanceCheckObservation | undefined> {
+    if (!Number.isSafeInteger(input.expectedAppId) || input.expectedAppId <= 0
+      || !/^[a-f0-9]{40}$/u.test(input.headSha)
+      || !/^review-yeti-maintenance:v1:[a-f0-9]{64}:(?:raw|gate)$/u.test(input.externalId)
+      || !/^operator-maintenance:v1:[a-f0-9]{64}$/u.test(input.intentId)
+      || input.externalId.split(':')[2] !== input.intentId.slice('operator-maintenance:v1:'.length)) {
+      throw new Error('Operator maintenance check identity is invalid');
+    }
+    const matches: any[] = [];
+    for (let page = 1; page <= 5; page += 1) {
+      const query = new URLSearchParams({
+        check_name: input.name, app_id: String(input.expectedAppId), filter: 'all',
+        per_page: '100', page: String(page),
+      });
+      const result = await this.request(`/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}`
+        + `/commits/${encodeURIComponent(input.headSha)}/check-runs?${query}`);
+      if (!Array.isArray(result?.check_runs)) throw new Error('Operator maintenance check lookup is incomplete');
+      matches.push(...result.check_runs.filter((run: any) => run?.name === input.name
+        && run?.head_sha === input.headSha && run?.external_id === input.externalId
+        && Number(run?.app?.id) === input.expectedAppId));
+      if (result.check_runs.length < 100) break;
+      if (page === 5) throw new Error('Operator maintenance check lookup exceeded bounded pagination');
+    }
+    if (matches.length > 1) throw new Error('Operator maintenance check identity is ambiguous');
+    if (matches.length === 0) return undefined;
+    const found = matches[0];
+    if (!Number.isSafeInteger(found.id) || found.id <= 0 || found?.output?.title !== input.title
+      || found?.output?.summary !== input.summary
+      || !['completed', 'in_progress', 'queued'].includes(found.status)
+      || (found.status === 'completed' && found.conclusion !== 'success')) {
+      throw new Error('Existing operator maintenance check does not prove the expected status signal');
+    }
+    return { id: found.id, name: input.name, appId: input.expectedAppId,
+      headSha: input.headSha, externalId: input.externalId,
+      state: found.status === 'completed' ? 'completed' : 'in_progress' };
+  }
+
+  /** Completes only a nonterminal check that was created by this exact
+   * maintenance intent. A lost POST acknowledgement can therefore reconcile
+   * and finish the original check ID instead of creating a duplicate. */
+  async completeOperatorMaintenanceCheck(input: OperatorMaintenanceCheckInput,
+    checkId: number): Promise<OperatorMaintenanceCheckObservation> {
+    if (!Number.isSafeInteger(checkId) || checkId <= 0) throw new Error('Operator maintenance check ID is invalid');
+    const path = `/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/check-runs/${checkId}`;
+    const current = await this.request(path);
+    if (current?.id !== checkId || current?.name !== input.name || current?.head_sha !== input.headSha
+      || current?.external_id !== input.externalId || Number(current?.app?.id) !== input.expectedAppId
+      || !['in_progress', 'queued'].includes(current?.status)
+      || current?.output?.title !== input.title || current?.output?.summary !== input.summary) {
+      throw new Error('Nonterminal operator check no longer matches its maintenance intent');
+    }
+    const data = await this.request(path, {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed', conclusion: 'success',
+        completed_at: new Date(this.now()).toISOString(), output: { title: input.title, summary: input.summary } }),
+    });
+    if (data?.id !== checkId || data?.name !== input.name || data?.head_sha !== input.headSha
+      || data?.external_id !== input.externalId || Number(data?.app?.id) !== input.expectedAppId
+      || data?.status !== 'completed' || data?.conclusion !== 'success'
+      || data?.output?.title !== input.title || data?.output?.summary !== input.summary) {
+      throw new Error('Operator maintenance check completion returned a mismatched identity');
+    }
+    return { id: checkId, name: input.name, appId: input.expectedAppId,
+      headSha: input.headSha, externalId: input.externalId, state: 'completed' };
+  }
+
+  /** Creates a completed official App check for an already durable maintenance
+   * intent. The stable external id is used only to reconcile an uncertain POST;
+   * this method never PATCHes or reuses a genuine review check. */
+  async publishOperatorMaintenanceCheck(input: OperatorMaintenanceCheckInput): Promise<OperatorMaintenanceCheckObservation> {
+    const existing = await this.reconcileOperatorMaintenanceCheck(input);
+    if (existing?.state === 'completed') return existing;
+    if (existing?.state === 'in_progress') return this.completeOperatorMaintenanceCheck(input, existing.id);
+    const title = validateCheckRunTitle(input.title);
+    const summary = input.summary.slice(0, 65_000);
+    if (!summary.includes('review-mode=passthrough') || !summary.includes('review-completed=false')
+      || !summary.includes('decision=SHIP')
+      || !summary.includes(`intent-id=${input.intentId}`)) {
+      throw new Error('Operator maintenance check marker is incomplete');
+    }
+    const reconcile = async () => {
+      const found = await this.reconcileOperatorMaintenanceCheck(input);
+      if (!found) return undefined;
+      const completed = found.state === 'in_progress'
+        ? await this.completeOperatorMaintenanceCheck(input, found.id) : found;
+      if (completed.state !== 'completed') throw new Error('Reconciled operator check is not complete');
+      // `request` turns this into an HTTP 200 response on an uncertain POST;
+      // preserve the GitHub response shape expected by the creation validator.
+      return { id: completed.id, name: completed.name, app: { id: completed.appId },
+        head_sha: completed.headSha, external_id: completed.externalId, status: 'completed',
+        conclusion: 'success', output: { title: input.title, summary: input.summary } };
+    };
+    const data = await this.request(`/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}/check-runs`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: input.name,
+        head_sha: input.headSha,
+        external_id: input.externalId,
+        status: 'completed',
+        conclusion: 'success',
+        completed_at: new Date(this.now()).toISOString(),
+        output: { title, summary },
+      }),
+    }, { reconcile });
+    const app = data?.app;
+    if (!Number.isSafeInteger(data?.id) || data.id <= 0 || data?.name !== input.name
+      || data?.head_sha !== input.headSha || data?.external_id !== input.externalId
+      || Number(app?.id) !== input.expectedAppId || data?.status !== 'completed'
+      || data?.conclusion !== 'success' || data?.output?.title !== title
+      || data?.output?.summary !== summary || !String(data?.output?.summary ?? '').includes(`intent-id=${input.intentId}`)) {
+      throw new Error('Operator maintenance check creation returned a mismatched identity');
+    }
+    return { id: data.id, name: input.name, appId: input.expectedAppId,
+      headSha: input.headSha, externalId: input.externalId, state: 'completed' };
   }
 
   async findGateCheck(

@@ -138,4 +138,37 @@ export class AuthoritativePublishingResolver {
       abort.abort();
     }
   }
+
+  /** Resolve a trusted service caller that has an enrolled repository/PR but
+   * whose authenticated event did not carry head/base coordinates (for
+   * example, GitHub's signed issue_comment event). The live coordinates are
+   * read through the same scoped reader and immediately rebound by `resolve`;
+   * callers cannot supply a policy or substitute a candidate between reads. */
+  async resolveCurrent(requested: Omit<RequestedReviewCandidate, 'headSha' | 'baseSha'>,
+    signal?: AbortSignal): Promise<AuthoritativePublishingResolution> {
+    const target = repositorySchema.extend({ prNumber: z.number().int().positive().safe() }).strict().parse(requested);
+    const abort = new AbortController();
+    const onAbort = () => abort.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => abort.abort(), this.timeoutMs);
+    try {
+      if (signal?.aborted) throw unavailable();
+      const repository = { repositoryId: target.repositoryId, owner: target.owner, repo: target.repo };
+      const reader = await this.candidateReaderFactory(repository, abort.signal);
+      const current = currentSchema.parse(await reader.currentCandidate({
+        ...repository, prNumber: target.prNumber,
+      }, abort.signal));
+      if (!current.open || current.draft
+        || current.repositoryId !== target.repositoryId || current.owner !== target.owner
+        || current.repo !== target.repo || current.prNumber !== target.prNumber) throw unavailable();
+      if (abort.signal.aborted) throw unavailable();
+      return await this.resolve({ ...target, headSha: current.headSha, baseSha: current.baseSha }, abort.signal);
+    } catch {
+      throw unavailable();
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      abort.abort();
+    }
+  }
 }

@@ -5,6 +5,8 @@ import {
 } from '../auth/authoritativeServiceIdentity';
 import type { GitHubWebhookConfig } from '../auth/githubWebhookConfig';
 import type { MergeGroupGateRepository, MergeGroupGateState } from '../persistence/mergeGroupGateRepository';
+import type { OperatorMaintenancePublisher } from './operatorMaintenancePublisher';
+import { createMergeGroupMaintenanceQueue, type MergeGroupMaintenanceQueue } from './mergeGroupMaintenanceQueue';
 import { createBoundedGitHubJsonClient, type GitHubJsonClient } from '../github/boundedGitHubJson';
 import {
   githubWebhookRepositorySchema, requireEnrolledGitHubWebhookRepository, UnenrolledGitHubWebhookIdentityError,
@@ -47,6 +49,8 @@ export interface MergeGroupGateOptions {
   fetchImplementation?: typeof fetch;
   baseUrl?: string;
   githubClientFor?(token: string): GitHubJsonClient;
+  operatorMaintenance?: Pick<OperatorMaintenancePublisher, 'request'>;
+  maintenanceQueue?: MergeGroupMaintenanceQueue;
 }
 
 export interface MergeGroupPassthroughReceipt {
@@ -55,6 +59,7 @@ export interface MergeGroupPassthroughReceipt {
   repository: string;
   headSha: string;
   baseSha: string;
+  maintenance: { status: 'published' | 'pending'; receipt: unknown };
 }
 
 async function mapConcurrent<T, U>(items: readonly T[], concurrency: number, operation: (item: T) => Promise<U>): Promise<U[]> {
@@ -149,15 +154,34 @@ export class MergeGroupGateInProgressError extends Error {
 }
 
 export function createMergeGroupGate(options: MergeGroupGateOptions) {
+  const maintenanceQueue = options.maintenanceQueue || createMergeGroupMaintenanceQueue({
+    config: options.config, tokenFor: options.tokenFor, fetchImplementation: options.fetchImplementation,
+    baseUrl: options.baseUrl, githubClientFor: options.githubClientFor,
+  });
   return async (payload: unknown): Promise<(MergeGroupGateState & { constituents: number }) | MergeGroupPassthroughReceipt> => {
     const identity = validatePayload(payload, options.config);
     const repositoryName = identity.repository.full_name;
     const repositoryId = identity.repository.id;
     const headSha = identity.merge_group.head_sha;
     if (options.config.passthroughEnabled === true) {
+      if (!options.operatorMaintenance) throw new Error('Operator maintenance publication is unavailable');
+      const groupIdentity = {
+        repositoryId, owner: identity.owner, repo: identity.repo, headSha,
+        baseSha: identity.merge_group.base_sha,
+        subject: { kind: 'merge_group' as const, headRef: identity.merge_group.head_ref, baseRef: identity.merge_group.base_ref },
+      };
+      const policyPullRequest = await maintenanceQueue.currentPolicyPullRequest(groupIdentity);
+      const maintenance = await options.operatorMaintenance.request({
+        source: 'github-app-webhook',
+        mergeGroup: {
+          identity: groupIdentity,
+          policyPullRequest,
+          verifyCurrent: async () => { await maintenanceQueue.verifyCurrent(groupIdentity, policyPullRequest); },
+        },
+      });
       return {
         status: 'passthrough', repositoryId, repository: repositoryName,
-        headSha, baseSha: identity.merge_group.base_sha,
+        headSha, baseSha: identity.merge_group.base_sha, maintenance,
       };
     }
     const claimToken = randomUUID();
