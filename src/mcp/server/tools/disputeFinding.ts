@@ -25,9 +25,10 @@ import { parseWorkerReviewCompletion, publishedFindingSeverity, workerReviewComp
 import { canonicalJson, sha256 } from '../../../review/reviewCore';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
 import { admitCompletedFindingRecheck, completedFindingRecheckCoordinates } from '../../../persistence/completedFindingRecheckAdmission';
+import { recordPrFindingRecheckRequest, reservePrFindingRecheckTarget } from '../../../persistence/reviewPrLifecycleRepository';
 import {
   disputedFindingRecheckDigest,
-  MAX_DISPUTE_RECHECKS_PER_REVIEW,
+  MAX_DISPUTE_RECHECKS_PER_BATCH,
   MAX_DISPUTE_RECHECK_ARGUMENT_CHARACTERS,
   loadValidatedDisputedFindingRechecks,
   type DisputedFindingRecheckUnsigned,
@@ -299,7 +300,7 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         async () => ({ repositoryId, prNumber: storedPrNumber }), async (client) => {
         const row = (await client.query(`
           WITH latest_run AS (
-            SELECT run_id, repository_id, owner, repo, pr_number, head_sha, base_sha,
+            SELECT run_id, repository_id, owner, repo, pr_number, head_sha, base_sha, snapshot_digest,
                    effective_policy_digest, effective_config_digest, attempt, status, created_at,
                    authoritative_gate_app_id, publication_mode, result_digest
               FROM review_runs
@@ -307,7 +308,8 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
              ORDER BY created_at DESC, run_id DESC
              LIMIT 1
           )
-          SELECT runs.*, outbox.execution_attempt AS outbox_execution_attempt, outbox.status AS outbox_status,
+          SELECT runs.*, outbox.delivery_id AS outbox_delivery_id,
+                 outbox.execution_attempt AS outbox_execution_attempt, outbox.status AS outbox_status,
                  completion.execution_attempt, completion.content_digest, completion.payload,
                  gate.attempt_id AS gate_attempt_id, gate.review_generation,
                  gate.worker_result_digest, gate.coordinates AS gate_coordinates,
@@ -391,7 +393,7 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         if (!task) throw new Error('Finding persona is not bound to a composed review task');
 
         const existing = (await client.query(
-          `SELECT request_id, finding_id, counter_argument_digest
+          `SELECT request_id, finding_id, counter_argument_digest, request_digest
              FROM review_finding_rechecks
             WHERE run_id = $1 AND source_execution_attempt = $2 AND task_id = $3
             FOR UPDATE`, [completion.runId, completion.executionAttempt, task.id],
@@ -406,6 +408,13 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
           if (!requests.some((request) => request.requestId === String(existing.request_id))) {
             throw new Error('Finding request source is unavailable');
           }
+          await recordPrFindingRecheckRequest(client, {
+            runId: completion.runId, sourceExecutionAttempt: completion.executionAttempt,
+            requestId: String(existing.request_id), findingId: canonicalFindingId,
+            actorDigest: sha256(caller.callerId), sourceContentDigest: digest,
+            sourceContextDigest: String(row.snapshot_digest),
+            requestDigest: String(existing.request_digest), at: (deps.now ?? Date.now)(),
+          });
           return { requestId: String(existing.request_id), completion, finding: matched.finding,
             findingId: canonicalFindingId };
         }
@@ -428,10 +437,11 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         }
 
         const count = Number((await client.query(
-          'SELECT COUNT(*)::int AS count FROM review_finding_rechecks WHERE run_id = $1', [completion.runId],
+          `SELECT COUNT(*)::int AS count FROM review_finding_rechecks
+            WHERE run_id = $1 AND source_execution_attempt = $2`, [completion.runId, completion.executionAttempt],
         )).rows[0]?.count ?? 0);
-        if (!Number.isSafeInteger(count) || count >= MAX_DISPUTE_RECHECKS_PER_REVIEW) {
-          throw new Error('The accepted review already has the maximum number of task re-reviews');
+        if (!Number.isSafeInteger(count) || count >= MAX_DISPUTE_RECHECKS_PER_BATCH) {
+          throw new Error('The current finding re-review batch has reached its bounded size');
         }
 
         const requestId = randomUUID();
@@ -464,6 +474,9 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
           counterArgumentDigest,
         };
         const requestDigest = disputedFindingRecheckDigest(unsigned);
+        const admittedAt = (deps.now ?? Date.now)();
+        const { executionAttempt: targetExecutionAttempt } = completedFindingRecheckCoordinates(
+          completion.executionAttempt, Number(row.review_generation));
         await client.query(
           `INSERT INTO review_finding_rechecks
              (request_id, run_id, source_execution_attempt, source_content_digest, source_plan_digest, source_gate_attempt_id,
@@ -480,7 +493,23 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         );
         await admitCompletedFindingRecheck(client, unsigned, {
           sourceGeneration: Number(row.review_generation), expectedAppId: authoritative.expectedAppId,
-          actorDigest: sha256(caller.callerId), now: (deps.now ?? Date.now)(),
+          actorDigest: sha256(caller.callerId), now: admittedAt,
+        });
+        await recordPrFindingRecheckRequest(client, {
+          runId: completion.runId, sourceExecutionAttempt: completion.executionAttempt,
+          requestId, findingId: canonicalFindingId, actorDigest: sha256(caller.callerId),
+          sourceContentDigest: digest, sourceContextDigest: String(row.snapshot_digest), requestDigest,
+          at: admittedAt,
+        });
+        await reservePrFindingRecheckTarget(client, {
+          repositoryId: completion.repositoryId, owner: completion.owner, repo: completion.repo,
+          prNumber: completion.prNumber, runId: completion.runId,
+          deliveryId: String(row.delivery_id ?? row.outbox_delivery_id), sourceExecutionAttempt: completion.executionAttempt,
+          executionAttempt: targetExecutionAttempt, requestId, requestDigest,
+          sourceContentDigest: digest, sourceContextDigest: String(row.snapshot_digest),
+          headSha: completion.headSha, baseSha: completion.baseSha,
+          policyDigest: completion.policyDigest, configDigest: completion.configDigest,
+          candidateContextDigest: String(row.snapshot_digest), actorDigest: sha256(caller.callerId), at: admittedAt,
         });
         return { requestId, completion, finding: matched.finding, findingId: canonicalFindingId };
       });

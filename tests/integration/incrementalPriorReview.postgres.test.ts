@@ -11,11 +11,10 @@ import {
   type StoredReviewGate,
   type TrustedGateCompletionContext,
 } from '../../src/persistence/reviewGateRepository';
-import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
-import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 import type { IncrementalVerificationInput } from '../../src/review/incrementalReview';
 import { sha256 } from '../../src/review/reviewCore';
 import { gateRecordFor, resolvedThreadsFor } from '../support/priorGateRecord';
+import { initializeOwnedReviewSchema } from '../support/ownedReviewSchema';
 import {
   workerReviewCompletionDigest,
   workerReviewEvidenceDigest,
@@ -74,19 +73,32 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
   async function insertRun(id: string, options: { status?: string; headSha?: string; baseSha?: string; prNumber?: number;
     receivedAt?: number; generation?: number; executionAttempt?: number; appId?: number | null } = {}): Promise<void> {
     const receivedAt = options.receivedAt ?? RECEIVED_AT;
+    const headSha = options.headSha ?? HEAD;
+    const baseSha = options.baseSha ?? BASE;
+    const prNumber = options.prNumber ?? 42;
+    const snapshotDigest = sha256(`${id}:${headSha}:${baseSha}`);
+    const deliveryId = `incremental-${id}`;
+    const identity = { runId: id, owner: 'exampleorg', repo: 'example-review-actions', prNumber,
+      headSha, baseSha, snapshotDigest, configDigest: CONFIG };
     await pool!.query(`
       INSERT INTO review_runs (
-        run_id, owner, repo, pr_number, head_sha, base_sha,
-        effective_policy_digest, publication_mode, status, attempt, repository_id,
-        effective_config_digest, received_at, terminal_deadline, authoritative_gate_app_id
-      ) VALUES ($1, 'exampleorg', 'example-review-actions', $2, $3, $4, $5, 'app-gate', $6, $7, 3210, $8,
-        to_timestamp($9/1000.0), to_timestamp(($9+900000)/1000.0), $10)
-    `, [id, options.prNumber ?? 42, options.headSha ?? HEAD, options.baseSha ?? BASE, POLICY, options.status ?? 'queued',
-      options.generation ?? 0, CONFIG, receivedAt, options.appId === undefined ? APP_ID : options.appId]);
+        run_id, identity_digest, owner, repo, pr_number, head_sha, base_sha, snapshot_digest, config_digest,
+        effective_policy_digest, effective_config_digest, identity, publication_mode, status, stage, attempt,
+        repository_id, delivery_id, received_at, terminal_deadline, authoritative_gate_app_id
+      ) VALUES ($1, $2, 'exampleorg', 'example-review-actions', $3, $4, $5, $6, $7, $8, $7, $9::jsonb,
+        'app-gate', $10, 'complete', $11, 3210, $12, to_timestamp($13/1000.0),
+        to_timestamp(($13+900000)/1000.0), $14)
+    `, [id, sha256(id), prNumber, headSha, baseSha, snapshotDigest, CONFIG, POLICY, JSON.stringify(identity),
+      options.status ?? 'queued', options.generation ?? 0, deliveryId, receivedAt,
+      options.appId === undefined ? APP_ID : options.appId]);
     await pool!.query(`
-      INSERT INTO review_dispatch_outbox (run_id, status, execution_attempt, worker_token_digest)
-      VALUES ($1, 'pending', $2, $3)
-    `, [id, options.executionAttempt ?? 0, TOKEN_DIGEST]);
+      INSERT INTO github_deliveries (delivery_id, event_name, repository_id, installation_id, payload_digest, run_id, received_at)
+      VALUES ($1, 'pull_request', 3210, 7002, $2, $3, to_timestamp($4/1000.0))
+    `, [deliveryId, sha256(deliveryId), id, receivedAt]);
+    await pool!.query(`
+      INSERT INTO review_dispatch_outbox (run_id, delivery_id, status, execution_attempt, worker_token_digest)
+      VALUES ($1, $2, 'pending', $3, $4)
+    `, [id, deliveryId, options.executionAttempt ?? 0, TOKEN_DIGEST]);
   }
 
   async function insertCompletion(event: WorkerReviewCompletion, createdAt: number,
@@ -123,34 +135,15 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
     const client = await pool.connect();
     try {
       await client.query(`CREATE SCHEMA "${schemaName}"`);
-      await client.query(`
-        CREATE TABLE review_runs (
-          run_id TEXT PRIMARY KEY, owner TEXT NOT NULL, repo TEXT NOT NULL, pr_number INTEGER NOT NULL,
-          head_sha TEXT NOT NULL, base_sha TEXT NOT NULL, effective_policy_digest TEXT NOT NULL,
-          publication_mode TEXT NOT NULL, status TEXT NOT NULL, attempt INTEGER NOT NULL,
-          repository_id BIGINT NOT NULL, effective_config_digest VARCHAR(64) NOT NULL,
-          received_at TIMESTAMPTZ NOT NULL, terminal_deadline TIMESTAMPTZ,
-          stage TEXT NOT NULL DEFAULT 'admission', result_digest VARCHAR(64), error_text TEXT,
-          artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
-          failure_diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb, lease_owner TEXT, lease_expires_at TIMESTAMPTZ,
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE review_dispatch_outbox (
-          run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id) ON DELETE CASCADE,
-          status TEXT NOT NULL, execution_attempt INTEGER NOT NULL DEFAULT 0,
-          worker_token_digest VARCHAR(64), lease_owner TEXT, lease_expires_at TIMESTAMPTZ,
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-      `);
-      await client.query(REVIEW_GATE_SCHEMA_SQL);
-      await client.query(REVIEW_EVENT_SCHEMA_SQL);
     } finally {
       client.release();
     }
+    await initializeOwnedReviewSchema(pool, schemaName);
   });
 
   afterEach(async () => {
-    await pool?.query('TRUNCATE review_event_outbox, review_event_sequence_counters, review_gate_attempts, review_worker_completions, review_dispatch_outbox, review_runs CASCADE');
+    await pool?.query(`TRUNCATE review_pr_lifecycles, review_event_outbox, review_event_sequence_counters,
+      review_gate_attempts, review_worker_completions, review_dispatch_outbox, review_runs CASCADE`);
   });
 
   afterAll(async () => {
