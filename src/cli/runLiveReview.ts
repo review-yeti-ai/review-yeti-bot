@@ -167,7 +167,7 @@ export interface SameHeadQualificationReceipt extends Omit<FullPanelQualificatio
   diffDigest: string;
   githubReads: number;
   verdictSource: 'canonical-production-policy';
-  severityCounts: { P0: number; P1: number; P2: number };
+  severityCounts: { P0: number; P1: number; P2: number; P3: number; NIT: number };
   findingFingerprintVersion: 'ReviewYetiFindingFingerprint.v1';
   findingFingerprints: QualificationFindingFingerprint[];
 }
@@ -860,6 +860,8 @@ function panelQualificationResultDigest(
     p0Count: number;
     p1Count: number;
     p2Count: number;
+    p3Count: number;
+    nitCount: number;
     totalFindings: number;
     findingFingerprints: QualificationFindingFingerprint[];
   },
@@ -890,6 +892,8 @@ function panelQualificationResultDigest(
         p0Count: canonical.p0Count,
         p1Count: canonical.p1Count,
         p2Count: canonical.p2Count,
+        p3Count: canonical.p3Count,
+        nitCount: canonical.nitCount,
         totalFindings: canonical.totalFindings,
         findingFingerprintVersion: FINDING_FINGERPRINT_VERSION,
         findingFingerprints: canonical.findingFingerprints,
@@ -1412,6 +1416,8 @@ export async function runSameHeadQualificationWorker(
       P0: canonical.metrics.p0Count,
       P1: canonical.metrics.p1Count,
       P2: canonical.metrics.p2Count,
+      P3: canonical.metrics.p3Count,
+      NIT: canonical.metrics.nitCount,
     },
     findingFingerprintVersion: FINDING_FINGERPRINT_VERSION,
     findingFingerprints,

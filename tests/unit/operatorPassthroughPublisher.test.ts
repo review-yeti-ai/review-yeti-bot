@@ -61,7 +61,8 @@ function checkNameFor(stage: OperatorPassthroughPublicationClaim['stage']) {
 
 function apiForPublication(
   publication: OperatorPassthroughPublicationClaim,
-  options: { failPost?: boolean; failPatch?: boolean; responseAppId?: number } = {},
+  options: { failPost?: boolean; failPatch?: boolean; responseAppId?: number;
+    existingChecks?: Record<string, unknown>[] } = {},
 ) {
   const name = checkNameFor(publication.stage);
   const id = publication.stage === 'review'
@@ -80,7 +81,8 @@ function apiForPublication(
     const url = new URL(String(input));
     const method = init?.method ?? 'GET';
     if (method === 'GET' && url.pathname.endsWith(`/commits/${publication.coordinates.headSha}/check-runs`)) {
-      return response({ total_count: 0, check_runs: [] });
+      const existingChecks = options.existingChecks ?? [];
+      return response({ total_count: existingChecks.length, check_runs: existingChecks });
     }
     if (method === 'POST' && url.pathname.endsWith('/check-runs')) {
       if (options.failPost) throw new Error(`connection ended after POST: ${TOKEN}`);
@@ -247,6 +249,47 @@ describe('OperatorPassthroughPublisher', () => {
       appId: APP_ID,
       headSha: candidate.headSha,
       externalId: stage === 'review' ? publication.reviewExternalId : publication.gateExternalId,
+      status: 'completed',
+      conclusion: 'success',
+    });
+  });
+
+  it('publishes a distinct operator pair without adopting or overwriting existing ordinary Review Yeti evidence', async () => {
+    const publication = claim({ stage: 'review' });
+    const ordinaryCheck = {
+      id: 7_800,
+      name: REVIEW_WORKER_CHECK_NAME,
+      app: { id: APP_ID },
+      head_sha: candidate.headSha,
+      external_id: `run_${'d'.repeat(32)}:a1`,
+      status: 'completed',
+      conclusion: 'failure',
+    };
+    const f = repositoryFor([publication]);
+    const api = apiForPublication(publication, { existingChecks: [ordinaryCheck] });
+    const publisher = publisherFor(f.repository, async () => api.client);
+
+    await expect(publisher.runOnce(publication.publicationId)).resolves.toMatchObject({ status: 'published' });
+    const requests = api.fetchImplementation.mock.calls.map(([input, init]) => ({
+      url: new URL(String(input)),
+      method: init?.method ?? 'GET',
+      body: init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined,
+    }));
+    const create = requests.find((request) => request.method === 'POST');
+    expect(create?.body).toMatchObject({
+      name: REVIEW_WORKER_CHECK_NAME,
+      head_sha: candidate.headSha,
+      external_id: publication.reviewExternalId,
+      status: 'in_progress',
+    });
+    expect(publication.reviewExternalId).not.toBe(ordinaryCheck.external_id);
+    expect(requests.some((request) => request.url.pathname.endsWith(`/check-runs/${ordinaryCheck.id}`)
+      && request.method === 'PATCH')).toBe(false);
+    expect(f.callbackResults.at(-1)).toMatchObject({
+      id: 7_901,
+      appId: APP_ID,
+      headSha: candidate.headSha,
+      externalId: publication.reviewExternalId,
       status: 'completed',
       conclusion: 'success',
     });

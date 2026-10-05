@@ -12,6 +12,7 @@ import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/revi
 import { sha256 } from '../../src/review/reviewCore';
 import type { ReviewDispatchClaim } from '../../src/review/reviewRun';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
+import { REVIEW_PR_LIFECYCLE_SCHEMA_SQL } from '../../src/persistence/reviewPrLifecycleSchema';
 import type { GatePublicationObservation } from '../../src/review/reviewGateContracts';
 import { REVIEW_GENERATION_RECOVERY_SCHEMA_SQL } from '../../src/persistence/reviewGenerationRecoverySchema';
 import { PREPARED_REVIEW_SCHEMA_SQL } from '../../src/persistence/preparedReviewRepository';
@@ -344,7 +345,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         if (!ownedSharedSchema.test(sharedSchema)) throw new Error('Refusing to remove an unowned test schema');
         await client.query(`DROP SCHEMA ${sharedSchema} CASCADE`);
       } else {
-        await client.query('DROP TABLE IF EXISTS pg_temp.review_finding_recheck_admissions, pg_temp.review_finding_rechecks, pg_temp.review_execution_checkpoints, pg_temp.review_worker_completions, pg_temp.review_event_outbox, pg_temp.review_event_sequence_counters, pg_temp.review_generation_recoveries, pg_temp.review_gate_attempts, pg_temp.prepared_review_policies, pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
+        await client.query('DROP TABLE IF EXISTS pg_temp.review_semantic_finding_events, pg_temp.review_pr_lifecycle_events, pg_temp.review_pr_review_reservations, pg_temp.review_pr_lifecycles, pg_temp.review_finding_recheck_admissions, pg_temp.review_finding_rechecks, pg_temp.review_execution_checkpoints, pg_temp.review_worker_completions, pg_temp.review_event_outbox, pg_temp.review_event_sequence_counters, pg_temp.review_generation_recoveries, pg_temp.review_gate_attempts, pg_temp.prepared_review_policies, pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
       }
       client.release();
       client = undefined;
@@ -433,6 +434,8 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await client.query(sharedSchema ? REVIEW_GENERATION_RECOVERY_SCHEMA_SQL : REVIEW_GENERATION_RECOVERY_SCHEMA_SQL.replaceAll('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
     await client.query(sharedSchema ? PREPARED_REVIEW_SCHEMA_SQL : PREPARED_REVIEW_SCHEMA_SQL.replace('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
     await client.query(sharedSchema ? REVIEW_EVENT_SCHEMA_SQL : REVIEW_EVENT_SCHEMA_SQL.replaceAll('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
+    await client.query(sharedSchema ? REVIEW_PR_LIFECYCLE_SCHEMA_SQL
+      : REVIEW_PR_LIFECYCLE_SCHEMA_SQL.replaceAll('CREATE TABLE IF NOT EXISTS', 'CREATE TEMP TABLE IF NOT EXISTS'));
 
     const transactionClient = {
       query: client.query.bind(client),
@@ -2337,6 +2340,9 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       configDigest: input.identity.configDigest, executionAttempt: claim.executionAttempt,
       failureClass: 'provider_error',
     }, { workerTokenDigest }, 1_003)).resolves.toEqual({ runId: admitted.run.runId, status: 'failed' });
+    expect((await client.query(`SELECT status, decision_receipt FROM review_pr_review_reservations
+      WHERE run_id = $1 AND execution_attempt = 1`, [admitted.run.runId])).rows[0])
+      .toEqual({ status: 'failed', decision_receipt: null });
 
     const [abandoned] = await repository.claimAbandonedPublishingRuns('matrix-reaper', 2_000, 1);
     expect(abandoned).toMatchObject({ runId: admitted.run.runId, executionAttempt: 1 });
@@ -2411,6 +2417,9 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
 
     await expect(repository.markWorkerSuccess(success, { workerTokenDigest }, 1_004))
       .resolves.toEqual({ runId: admitted.run.runId, status: 'succeeded' });
+    expect((await client.query(`SELECT status, decision_receipt FROM review_pr_review_reservations
+      WHERE run_id = $1 AND execution_attempt = 1`, [admitted.run.runId])).rows[0])
+      .toEqual({ status: 'completed', decision_receipt: null });
     await expect(repository.getRunStatus(admitted.run.runId, claim.executionAttempt)).resolves.toMatchObject({
       status: 'succeeded',
       isCurrentHead: true,
@@ -5130,6 +5139,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       }
       await client.query(`SET search_path TO "${schema}", pg_temp`);
       await peer.query(`SET search_path TO "${schema}", pg_temp`);
+      await client.query(REVIEW_PR_LIFECYCLE_SCHEMA_SQL);
       const peerRepository = new PostgresReviewDispatchRepository({ connect: async () => ({
         query: peer.query.bind(peer), release: () => {},
       }) }, peer, { lifecycleEvents: 'disabled' });

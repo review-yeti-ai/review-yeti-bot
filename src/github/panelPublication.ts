@@ -53,7 +53,7 @@ export function dedupeActionableFindings(
       : INLINE_SEVERITIES,
   );
 
-  const severityRank: Record<string, number> = { P0: 0, P1: 1, P2: 2 };
+  const severityRank: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3, NIT: 4 };
   const byKey = new Map<string, FindingWithPersona & { personas: string[] }>();
 
   for (const raw of findings) {

@@ -96,7 +96,7 @@ describe('qualification receipt comparison', () => {
       leftVerdict: 'FIX_FIRST',
       rightVerdict: 'BLOCK',
       findingsDelta: 2,
-      severityDelta: { P0: 0, P1: 1, P2: 1 },
+        severityDelta: { P0: 0, P1: 1, P2: 1, P3: 0, NIT: 0 },
       findingOverlap: {
         anchor: { matched: 1, leftOnly: 0, rightOnly: 2 },
         exact: { matched: 1, leftOnly: 0, rightOnly: 2 },
@@ -154,7 +154,7 @@ describe('qualification receipt comparison', () => {
     { findingFingerprints: undefined },
     { findingFingerprints: [fingerprint('x', '3')] },
     { findingFingerprints: [fingerprint('2', '3')], findingsCount: 2 },
-    { findingFingerprints: [{ ...fingerprint('2', '3'), severity: 'P3' }] },
+    { findingFingerprints: [{ ...fingerprint('2', '3'), severity: 'P4' }] },
   ])('fails closed on malformed finding fingerprint telemetry: %o', (overrides) => {
     expect(compareQualificationReceipts(receipt(), receipt(overrides))).toEqual({
       comparable: false,
@@ -174,5 +174,36 @@ describe('qualification receipt comparison', () => {
       receipt({ laneAttribution: explicitAliasLanes }),
       receipt({ laneAttribution: explicitAliasLanes }),
     )).toMatchObject({ comparable: true });
+  });
+
+  it('compares new P3 and NIT counts while keeping older v1 receipts readable', () => {
+    const newer = receipt({
+      verdict: 'SHIP',
+      findingsCount: 2,
+      severityCounts: { P0: 0, P1: 0, P2: 0, P3: 1, NIT: 1 },
+      findingFingerprints: [fingerprint('6', '7', 'NIT'), fingerprint('4', '5', 'P3')],
+    });
+
+    const result = compareQualificationReceipts(receipt({
+      verdict: 'SHIP',
+      findingsCount: 0,
+      severityCounts: { P0: 0, P1: 0, P2: 0 },
+      findingFingerprints: [],
+    }), newer);
+
+    expect(result).toMatchObject({
+      comparable: true,
+      severityDelta: { P0: 0, P1: 0, P2: 0, P3: 1, NIT: 1 },
+    });
+    expect(compareQualificationReceipts(receipt({
+      verdict: 'SHIP',
+      findingsCount: 0,
+      severityCounts: { P0: 0, P1: 0, P2: 0 },
+      findingFingerprints: [],
+    }), receipt({
+      findingsCount: 2,
+      severityCounts: { P0: 0, P1: 0, P2: 0 },
+      findingFingerprints: [fingerprint('6', '7', 'NIT'), fingerprint('4', '5', 'P3')],
+    }))).toMatchObject({ comparable: false, failureClass: 'qualification_receipt_invalid' });
   });
 });

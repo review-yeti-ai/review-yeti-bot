@@ -434,7 +434,7 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
       COUNT(*) FILTER (WHERE retired_at IS NOT NULL)::integer AS prematurely_retired
       FROM review_operator_passthrough_publications WHERE repository_id=$1`, [repositoryId]);
     expect(completed.rows[0]).toEqual({ requested: 501, distinct_prs: 501, first: 1, last: 501, prematurely_retired: 0 });
-  });
+  }, 30_000);
 
   it('starts one new cycle for the same retired service-reconciler delivery', async () => {
     const input = inputFor();

@@ -91,7 +91,7 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
       name: 'an invalid severity',
       finding: { severity: 'HIGH', path: 'src/auth/jwt.ts', line: 1, title: 'Synthetic', body: 'Synthetic.' },
       code: 'finding_severity_invalid',
-      hint: 'Use exactly one declared severity value: P0, P1, or P2. Do not relabel or infer severity.',
+      hint: 'Use exactly one declared severity value: P0, P1, P2, P3, or NIT. Do not relabel or infer severity.',
     },
   ])('uses a fixed $name hint in the existing correction budget and still rejects invalid output', async ({ finding, code, hint }) => {
     const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;

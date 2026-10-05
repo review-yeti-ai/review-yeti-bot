@@ -27,8 +27,12 @@ import { selectVerdictCacheSource } from './verdictCacheSource';
 import { coverageContractGateDecision, coverageContractGateDetailOf, PERSONA_COVERAGE_FAILURE_REASON } from '../review/coverageContractGate';
 import type { VerdictCacheVerificationInput } from '../review/verdictCache';
 import { canonicalJson, sha256 } from '../review/reviewCore';
-import { loadValidatedDisputedFindingRechecks, pendingDisputedFindingRechecks } from '../review/disputedFindingRecheck';
+import { loadValidatedDisputedFindingRechecks, pendingDisputedFindingRechecks,
+  type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import { parseReviewExecutionCheckpoint, reviewCheckpointMatchesCompletion } from '../review/reviewExecutionCheckpoint';
+import { evaluateFindingConvergence } from '../review/findingConvergence';
+import { affectedContextDigest } from '../review/semanticContext';
+import { recordTrustedPrReviewCompletion, reservePrReview } from './reviewPrLifecycleRepository';
 import {
   appendLifecycleEventForRun,
   requireLifecycleEventsMode,
@@ -49,7 +53,9 @@ function jsonValue(value: unknown): any {
   try { return JSON.parse(value); } catch { return undefined; }
 }
 
-async function acceptedDisputedFindingRechecksAreComplete(client: Queryable, event: ReturnType<typeof parseWorkerReviewCompletion>): Promise<boolean> {
+async function acceptedDisputedFindingRechecksAreComplete(
+  client: Queryable, event: ReturnType<typeof parseWorkerReviewCompletion>,
+): Promise<DisputedFindingRecheck[] | null> {
   try {
     const run = {
       run_id: event.runId,
@@ -63,32 +69,46 @@ async function acceptedDisputedFindingRechecksAreComplete(client: Queryable, eve
       effective_config_digest: event.configDigest,
     };
     const rechecks = await loadValidatedDisputedFindingRechecks(client, run, event.executionAttempt);
-    if (rechecks.length === 0) return true;
+    if (rechecks.length === 0) {
+      // A checkpoint receipt is independent evidence that this exact execution
+      // acknowledged a recheck. If every request/admission projection vanished,
+      // do not reinterpret that receipt as an ordinary clean review. Ignore
+      // receipts from older executions so later unrelated batches remain valid.
+      const checkpointRow = (await client.query(
+        'SELECT payload FROM review_execution_checkpoints WHERE run_id = $1', [event.runId],
+      )).rows[0];
+      if (checkpointRow) {
+        const checkpoint = parseReviewExecutionCheckpoint(jsonValue(checkpointRow.payload));
+        if (checkpoint.executionAttempt === event.executionAttempt
+          && (checkpoint.satisfiedFindingRecheckIds?.length ?? 0) > 0) return null;
+      }
+      return [];
+    }
     // A disputed finding must be revisited by a fresh task result. Incremental
     // and verdict-cache claims can carry prior conclusions across that task,
     // even when the worker also presents a checkpoint receipt for its lane.
     // Keep this service-side guard independent of the worker's normal policy
     // that disables those optimizations on resumed executions.
-    if (event.result.incremental !== undefined || event.result.verdictCache !== undefined) return false;
+    if (event.result.incremental !== undefined || event.result.verdictCache !== undefined) return null;
 
     const checkpointRow = (await client.query(
       'SELECT payload FROM review_execution_checkpoints WHERE run_id = $1', [event.runId],
     )).rows[0];
-    if (!checkpointRow) return false;
+    if (!checkpointRow) return null;
     const checkpoint = parseReviewExecutionCheckpoint(jsonValue(checkpointRow.payload));
-    if (!reviewCheckpointMatchesCompletion(checkpoint, event)) return false;
+    if (!reviewCheckpointMatchesCompletion(checkpoint, event)) return null;
 
-    if (pendingDisputedFindingRechecks(rechecks, checkpoint, event.executionAttempt).length > 0) return false;
+    if (pendingDisputedFindingRechecks(rechecks, checkpoint, event.executionAttempt).length > 0) return null;
 
     for (const recheck of rechecks) {
       const completed = checkpoint.completedTasks.filter((task) => task.id === recheck.taskId);
       const personas = event.result.personas.filter((persona) => persona.id === recheck.taskId && persona.evidenceSource !== 'shadow');
       if (completed.length !== 1 || personas.length !== 1 || personas[0]!.status !== 'COMPLETE'
-        || canonicalJson(personas[0]!.findings) !== canonicalJson(completed[0]!.findings)) return false;
+        || canonicalJson(personas[0]!.findings) !== canonicalJson(completed[0]!.findings)) return null;
     }
-    return true;
+    return rechecks;
   } catch {
-    return false;
+    return null;
   }
 }
 type TrustedCompletionResolver = (gate: StoredReviewGate, incremental?: IncrementalVerificationInput,
@@ -229,7 +249,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       stage = 'state-load';
       const result = await client.query(`SELECT gate.*, runs.status AS run_status,
           runs.attempt AS current_generation, runs.effective_config_digest, runs.received_at, runs.terminal_deadline,
-          runs.authoritative_gate_app_id, runs.artifacts,
+          runs.authoritative_gate_app_id, runs.artifacts, runs.delivery_id, runs.snapshot_digest,
           outbox.worker_token_digest, outbox.execution_attempt AS current_execution,
           outbox.status AS outbox_status
         FROM review_gate_attempts gate JOIN review_runs runs USING (run_id)
@@ -283,7 +303,8 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       // A dispute is never itself Gate evidence. If one was queued, the normal
       // authenticated completion must prove a completed target task and its
       // durable receipt before canonical arbitration can accept the result.
-      const disputedRechecksValid = await acceptedDisputedFindingRechecksAreComplete(client, event);
+      const acceptedDisputedRechecks = await acceptedDisputedFindingRechecksAreComplete(client, event);
+      const disputedRechecksValid = acceptedDisputedRechecks !== null;
 
       const deadline = new Date(row.terminal_deadline).getTime();
       const deadlineValid = Number.isFinite(deadline) && row.terminal_deadline != null && now < deadline;
@@ -352,6 +373,44 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         : { status: 'failure', eligible: false, reason: 'invalid-evidence' };
       if (decision.status === 'pending') throw new Error('Terminal gate result cannot remain pending');
 
+      const convergence = trusted && derived?.valid && timestampValid
+        ? evaluateFindingConvergence({ findings: derived.canonical.findings,
+          changedFiles: trusted.coverage.changedFiles, priorThreads: trusted.coverage.findingThreads ?? [] })
+        : undefined;
+      const semanticFindings = convergence?.entries.map((entry) => {
+        const finding = entry.finding as unknown as Record<string, unknown>;
+        const severityAdjusted = (entry as unknown as { severityAdjusted?: { from?: string; reason?: string } }).severityAdjusted;
+        const sourceSeverity = severityAdjusted?.from ?? String(finding.severity ?? entry.severity);
+        return {
+          fingerprint: entry.fingerprint,
+          path: String(finding.path ?? ''),
+          ...(Number.isSafeInteger(finding.line) ? { line: Number(finding.line) } : {}),
+          severity: String(entry.severity), sourceSeverity,
+          disposition: String(entry.status), blocking: Boolean(entry.blocking),
+          affectedContextDigest: affectedContextDigest(finding, trusted!.coverage.changedFiles),
+          sourceEvidence: {
+            finding, fingerprint: entry.fingerprint, disposition: entry.status,
+            resolution: entry.resolution ?? null,
+            matchedThread: entry.matchedThread ? {
+              threadId: entry.matchedThread.threadId ?? null,
+              fingerprint: entry.matchedThread.fingerprint,
+              resolved: entry.matchedThread.resolved,
+              outdated: entry.matchedThread.outdated,
+              resolution: entry.matchedThread.resolution ?? null,
+            } : null,
+          },
+          provenance: {
+            severityAdjusted: severityAdjusted ?? null,
+            matchedThreadId: entry.matchedThread?.threadId ?? null,
+            resolution: entry.resolution ?? null,
+            sourceCompletionDigest: resultDigest,
+          },
+        };
+      }) ?? [];
+      const reviewDecisionV2 = derived?.valid
+        ? (derived.evidence as unknown as { reviewDecision?: Record<string, unknown> }).reviewDecision
+        : undefined;
+
       // Persist a bounded diagnostic before retiring the worker execution. The
       // callback's persona error class is the only worker-supplied category we
       // trust; free-form provider context is redacted again at this boundary.
@@ -395,6 +454,36 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         VALUES ($1, $2, $3, $4::jsonb, $5)
         ON CONFLICT (run_id, execution_attempt) DO NOTHING`,
       [event.runId, event.executionAttempt, resultDigest, completionJson, Buffer.byteLength(completionJson, 'utf8')]);
+      stage = 'semantic-history';
+      const reservation = await reservePrReview(client, {
+        repositoryId: event.repositoryId, owner: event.owner, repo: event.repo, prNumber: event.prNumber,
+        runId: event.runId, executionAttempt: event.executionAttempt,
+        deliveryId: String(row.delivery_id), headSha: event.headSha, baseSha: event.baseSha,
+        policyDigest: event.policyDigest, configDigest: event.configDigest,
+        contextDigest: String(row.snapshot_digest), at: now,
+      });
+      await recordTrustedPrReviewCompletion(client, {
+        runId: event.runId, executionAttempt: event.executionAttempt,
+        status: decision.status === 'success' ? 'completed'
+          : decision.status === 'cancelled' ? 'cancelled' : 'failed',
+        completionDigest: resultDigest,
+        decisionReceipt: {
+          lifecycleSchema: 'review-yeti-pr-lifecycle.v1',
+          reservationId: reservation.reservationId,
+          runId: event.runId, executionAttempt: event.executionAttempt,
+          headSha: event.headSha, baseSha: event.baseSha,
+          policyDigest: event.policyDigest, configDigest: event.configDigest,
+          contextDigest: String(row.snapshot_digest),
+          gateDecision: decision,
+          gateEvidence: evidence ?? null,
+          ...(reviewDecisionV2 ? { reviewDecisionV2 } : {}),
+          ...(derived?.valid ? { serviceDerivedEvidence: derived.evidence } : {}),
+        },
+        findings: semanticFindings, at: now,
+        ...(acceptedDisputedRechecks === null ? {} : {
+          satisfiedRecheckRequestIds: acceptedDisputedRechecks.map((recheck) => recheck.requestId),
+        }),
+      });
       // Authenticated completion proves projection even when Kubernetes accepted
       // the Job before its dispatcher ACK. Keep 'projected' so a failed review's
       // explicit re-admission advances execution and receives a fresh Secret.

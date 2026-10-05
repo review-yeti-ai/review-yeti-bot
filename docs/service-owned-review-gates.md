@@ -218,9 +218,11 @@ It requires all of these service-owned inputs:
 
 `AUTHORITATIVE_REVIEW_ADMISSION_ENABLED=true` separately permits new enrolled
 review requests. Its default is false. While paused, enrolled app-gate requests
-return 503 before token mint/admission; they never silently use the legacy lane.
-Existing completion, reaping and publication keep draining. Unenrolled and
-nonpublishing legacy requests retain their existing route.
+return 503 before normal token mint/admission; they never silently use the
+legacy lane. When `REVIEW_YETI_PASSTHROUGH=true`, the eligible authenticated
+paths below instead record the explicit zero-lane SHIP exemption. Existing
+completion, reaping and publication keep draining. Unenrolled and nonpublishing
+legacy requests retain their existing route.
 
 ## Direct GitHub App webhook admission
 
@@ -234,14 +236,42 @@ finite Actions/OIDC repository and owner allowlists:
   `true` enables it, and other values prevent startup. After webhook signature,
   enrollment, event identity and trigger validation, eligible new App-webhook,
   merge-group, OIDC Action and authenticated MCP `trigger_review` requests
-  receive an explicit passthrough receipt.
-  The service starts no review, creates no Review Yeti verdict/check, and does
+  receive an explicit passthrough receipt. The service starts no review and does
   not claim or consume an Action generation. OIDC, expected-generation
   presence, recovery authority and timestamp checks still apply. The App
   operator remains enabled and responsive; completion and cancellation paths
   continue so in-flight work can drain. The setting does not enroll additional
   repositories. Set it back to `false` and roll out the service to resume normal
   admission.
+
+  **Passthrough is a durable, service-owned SHIP exemption.** Each eligible
+  authenticated request is re-resolved against GitHub and current policy, then
+  recorded with its exact repository, PR, head, base, policy digest, App
+  identity and source delivery in the append-only operator-passthrough ledger.
+  The durable publisher posts the official `Review Yeti` and, where required,
+  `Review Yeti Gate` checks with the `review-mode=passthrough` marker and a
+  publication-specific external ID. Their titles identify this as SHIP with no
+  review performed. This is an explicit operator exemption, not a completed
+  panel review: no provider, review worker, normal review run or generation is
+  started or consumed.
+
+  The exemption verdict is logically `SHIP` with zero expected and completed
+  lanes once the authenticated event is durably accepted. Its
+  `publication_state` remains `pending` and `merge_eligible` false until both
+  exact official check IDs are durably bound. Status consumers must preserve
+  that distinction. The publisher verifies the current open, non-draft
+  candidate and effective policy before publication, reserves each check
+  before creation, and reconciles uncertain creates without issuing duplicates.
+  A worker callback or caller-supplied digest cannot create an exemption.
+  Authenticated admission and bounded catch-up both use this one ledger and
+  publisher; merge-group checks bind the current ordered queue snapshot, pause
+  mode and every constituent's current paired checks.
+
+  When the pause is disabled, active exemptions are retired through the same
+  durable publisher before ordinary admission resumes. In-flight old publisher
+  work is fenced by the shared PR lock and exact candidate/policy checks. A
+  delayed or stale candidate cannot authorize a later head or policy. Keep the
+  pause enabled while this fail-open SHIP policy is intended.
 
 - `GITHUB_APP_WEBHOOK_ENABLED=true` mounts the signed route. It requires a
   32–1,024 byte `GITHUB_WEBHOOK_SECRET`, plus finite
