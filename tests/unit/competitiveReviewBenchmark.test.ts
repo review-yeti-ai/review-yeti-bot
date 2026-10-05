@@ -4,7 +4,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-// @ts-expect-error JavaScript benchmark adapter intentionally has no public TypeScript surface.
 import * as benchmark from '../../scripts/competitive-review-benchmark.mjs';
 
 const manifest = {
@@ -88,7 +87,7 @@ describe('competitive review benchmark input boundaries', () => {
     }], manifest, {
       judge: { kind: 'independent_human', protocolId: 'double-blind-v1' },
       judgments: [{ findingId: 'finding-1', verdict: 'valid' }],
-    });
+    } as any);
     expect(partiallyAdjudicated.precision).toBeNull();
     expect(partiallyAdjudicated.precision95).toBeNull();
     expect(partiallyAdjudicated.adjudicatedSubsetPrecision).toBe(1);
@@ -109,7 +108,7 @@ describe('competitive review benchmark input boundaries', () => {
         { findingId: 'finding-1', verdict: 'invalid' },
         { findingId: 'not-generated', verdict: 'valid' },
       ],
-    });
+    } as any);
     expect(ambiguousJudgments.precision).toBeNull();
     expect(ambiguousJudgments.adjudicatedSubsetPrecision).toBeNull();
     expect(ambiguousJudgments.adjudicatedSubsetPrecisionDenominator).toBe(0);
@@ -127,7 +126,7 @@ describe('competitive review benchmark input boundaries', () => {
         { findingId: 'finding-1', verdict: 'valid' },
         { findingId: 'foreign-finding', verdict: 'valid' },
       ],
-    });
+    } as any);
     expect(duplicateGeneratedIds.precision).toBeNull();
     expect(duplicateGeneratedIds.qualified).toBe(false);
 
@@ -137,15 +136,17 @@ describe('competitive review benchmark input boundaries', () => {
     }], manifest, {
       judge: { kind: 'independent_human', protocolId: 'double-blind-v1' },
       judgments: [{ findingId: 'finding-1', verdict: 'valid' }],
-    });
+    } as any);
     expect(adjudicated.precision).toBe(1);
     expect(adjudicated.adjudicatedSubsetPrecision).toBe(1);
     expect(adjudicated.qualified).toBe(true);
   });
 
   it('does not score a verifier result when its pinned source snapshot has omissions', async () => {
-    const testCase = benchmark.buildVerificationCases(referenceRows(), manifest)
+    const matchingTestCase = benchmark.buildVerificationCases(referenceRows(), manifest)
       .find((entry: any) => entry.context === 'Diff Level');
+    if (!matchingTestCase) throw new Error('diff-level fixture case missing');
+    const testCase = matchingTestCase;
     let verifierCalls = 0;
     const result = await benchmark.runActualVerificationCase(testCase, {
       changedFiles: [{ path: testCase.reference.path, patch: 'diff --git a/src/app.js b/src/app.js\n+changed' }],
@@ -161,7 +162,7 @@ describe('competitive review benchmark input boundaries', () => {
           return { outcomes: [{ verdict: 'CONFIRM', reason: 'confirmed' }], receipt: { usage: {} } };
         },
       },
-    });
+    } as any);
 
     expect(result.status).toBe('incomplete');
     expect(result.verdict).toBe('ABSTAIN');
@@ -277,6 +278,7 @@ describe('competitive review benchmark input boundaries', () => {
       },
       gracefulExit: { reason: 'model supplied arbitrary private text', completedTaskIds: [], pendingTaskIds: [] },
     });
+    if (!summary) throw new Error('panel summary fixture was not sanitized');
     const serialized = JSON.stringify(summary);
     expect(serialized).not.toContain('raw completion text');
     expect(serialized).not.toContain('raw verifier response');
