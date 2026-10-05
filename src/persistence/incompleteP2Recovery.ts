@@ -687,7 +687,11 @@ export async function loadIncompleteP2RecoveryContext(
         configDigest: identity.configDigest,
         executionAttempt: sourceAttempt,
         plan: completion.result.taskPlan,
-        completedTasks: completion.result.personas.map((persona) => ({ id: persona.id, findings: persona.findings })),
+        completedTasks: completion.result.personas.map((persona) => ({
+          id: persona.id,
+          findings: persona.findings,
+          ...(persona.sourceDelivery ? { sourceDelivery: persona.sourceDelivery } : {}),
+        })),
       };
       if (input.recoveryEvidence !== undefined) {
         // First admission: prove the immutable completion is exactly the
