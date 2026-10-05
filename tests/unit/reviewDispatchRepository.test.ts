@@ -823,7 +823,8 @@ describe('PostgresReviewDispatchRepository', () => {
   });
 
   it('fails the run atomically while retaining token-bound projected executions and terminalizing unbound executions', async () => {
-    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [{ run_id: row.run_id }] }));
+    const query = vi.fn(async (sql: string, _values?: unknown[]) => sql.startsWith('SELECT execution_attempt FROM review_pr_review_reservations')
+      ? { rows: [] } : { rows: [{ run_id: row.run_id }] });
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, { query });
     await expect(repository.markTerminal(
       row.run_id,
@@ -832,7 +833,7 @@ describe('PostgresReviewDispatchRepository', () => {
       1_000,
       'review job projection rejected',
     )).resolves.toBe(true);
-    expect(query).toHaveBeenCalledOnce();
+    expect(query).toHaveBeenCalledTimes(2);
     // Pin both branches: a bound token can represent a worker with a lost ACK.
     // Keep its digest/execution until explicit admission rotates them; an
     // unbound failure has no worker to replace and remains safely terminal.
@@ -847,7 +848,8 @@ describe('PostgresReviewDispatchRepository', () => {
   });
 
   it('binds durable markTerminal diagnostics when provided', async () => {
-    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [{ run_id: row.run_id }] }));
+    const query = vi.fn(async (sql: string, _values?: unknown[]) => sql.startsWith('SELECT execution_attempt FROM review_pr_review_reservations')
+      ? { rows: [] } : { rows: [{ run_id: row.run_id }] });
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, { query });
     const diagnostics = {
       reason: 'projection_rejected',
@@ -892,7 +894,9 @@ describe('PostgresReviewDispatchRepository', () => {
         worker_token_digest: tokenDigest,
         result_digest: null,
       }] }
-      : { rows: [{ run_id: row.run_id }] });
+      : sql.startsWith('UPDATE review_pr_review_reservations')
+        || sql.startsWith('SELECT status FROM review_pr_review_reservations')
+        ? { rows: [] } : { rows: [{ run_id: row.run_id }] });
     const { repository, transactionQuery, release } = workerFailureRepository(query);
 
     await expect(repository.markWorkerSuccess(success, { workerTokenDigest: tokenDigest }, 4_000)).resolves.toEqual({
@@ -900,7 +904,7 @@ describe('PostgresReviewDispatchRepository', () => {
       status: 'succeeded',
     });
 
-    expect(query).toHaveBeenCalledTimes(3);
+    expect(query).toHaveBeenCalledTimes(5);
     expect(transactionQuery.mock.calls[0][0]).toBe('BEGIN');
     expect(transactionQuery.mock.calls[1][1]).toEqual(['review-dispatch:123:42']);
     expect(transactionQuery.mock.calls.at(-1)?.[0]).toBe('COMMIT');
@@ -978,7 +982,8 @@ describe('PostgresReviewDispatchRepository', () => {
         execution_attempt: 0,
         worker_token_digest: tokenDigest,
       }] }
-      : { rows: [{ run_id: row.run_id }] });
+      : sql.startsWith('SELECT execution_attempt FROM review_pr_review_reservations')
+        ? { rows: [] } : { rows: [{ run_id: row.run_id }] });
     const { repository, transactionQuery, release } = workerFailureRepository(query);
     const failure = {
       version: 'WorkerTerminalFailure.v1' as const,
@@ -1000,7 +1005,7 @@ describe('PostgresReviewDispatchRepository', () => {
       runId: row.run_id,
       status: 'failed',
     });
-    expect(query).toHaveBeenCalledTimes(3);
+    expect(query).toHaveBeenCalledTimes(4);
     expect(transactionQuery.mock.calls[0][0]).toBe('BEGIN');
     expect(transactionQuery.mock.calls[1][1]).toEqual(['review-dispatch:123:42']);
     expect(transactionQuery.mock.calls.at(-1)?.[0]).toBe('COMMIT');

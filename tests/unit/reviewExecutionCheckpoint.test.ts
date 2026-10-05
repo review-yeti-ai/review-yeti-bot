@@ -93,7 +93,14 @@ describe('ReviewExecutionCheckpoint.v1', () => {
         return { rows: [{ status: 'running', worker_token_digest: sha256(token) }] };
       }
       if (sql.includes('effective_policy_digest')) return { rows: [admittedRun] };
+      // This run has no disputed-finding batch. Model each durable evidence
+      // source as empty so a missing fake cannot turn a valid empty batch into
+      // a temporary storage failure when the checkpoint is read.
       if (sql.includes('FROM review_finding_rechecks')) return { rows: [] };
+      if (sql.includes('FROM review_finding_recheck_admissions admission')) return { rows: [] };
+      if (sql.includes('FROM review_pr_lifecycle_events')) return { rows: [] };
+      if (sql.includes('FROM review_pr_review_reservations reservation')) return { rows: [] };
+      if (sql.startsWith('SELECT snapshot_digest, attempt FROM review_runs')) return { rows: [] };
       if (sql.includes('INSERT INTO review_execution_checkpoints')) {
         stored = JSON.parse(String(values?.[5]));
         return { rows: [{ revision: checkpoint.revision }] };
