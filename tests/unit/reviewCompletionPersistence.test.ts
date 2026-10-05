@@ -220,6 +220,11 @@ describe('worker completion persistence diagnostics', () => {
         }
         if (sql.startsWith('INSERT INTO review_pr_lifecycle_events')) return { rows: [{ event_id: 'event-1' }] };
         if (sql.includes('FROM review_finding_rechecks request')) return { rows: [] };
+        if (sql.includes('FROM review_finding_recheck_admissions admission')
+          || sql.includes('FROM review_pr_lifecycle_events')
+          || sql.includes('FROM review_pr_review_reservations reservation')
+          || sql.startsWith('SELECT snapshot_digest, attempt FROM review_runs')
+          || sql.includes('SELECT payload FROM review_execution_checkpoints')) return { rows: [] };
         // Ordinary attempt 2 has no retained-finding archive or incomplete Gate.
         if (sql.includes('FROM review_runs') && (sql.includes('SELECT repository_id, owner')
           || sql.includes('SELECT run_id, repository_id'))) {

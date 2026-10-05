@@ -13,10 +13,11 @@ import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
 import { reviewPrLockKey } from '../../src/persistence/reviewPrTransaction';
 import { findingRecheckAdmission } from '../support/findingRecheckAdmission';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
-import { reservePrReview } from '../../src/persistence/reviewPrLifecycleRepository';
+import { reservePrReview, recordPrFindingRecheckRequest, reservePrFindingRecheckTarget,
+  transitionPrReviewReservation } from '../../src/persistence/reviewPrLifecycleRepository';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
-import { transitionPrReviewReservation } from '../../src/persistence/reviewPrLifecycleRepository';
 import { disputedFindingRecheckDigest, loadValidatedDisputedFindingRechecks } from '../../src/review/disputedFindingRecheck';
+import { PostgresReviewGateRepository } from '../../src/persistence/reviewGateRepository';
 import { describeWithPostgres, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
 requireDatabaseUrlInCi();
@@ -189,6 +190,10 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
         repositoryId, owner, repo, prNumber, runId, executionAttempt: 2, deliveryId: 'disputed-source',
         headSha, baseSha, policyDigest, configDigest, contextDigest: persistedIdentity.snapshotDigest,
         at: Date.parse('2026-10-01T12:00:00.000Z'),
+      });
+      await transitionPrReviewReservation(lifecycleClient, {
+        runId, executionAttempt: 2, status: 'failed', completionDigest,
+        decisionReceipt: { gateDecision: { status: 'failure', eligible: false } },
       });
       await lifecycleClient.query('COMMIT');
     } catch (error) {
@@ -383,12 +388,38 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
       [nextGateId, runId, sourceAttempt, sourceAttempt + 1, repositoryId, prNumber,
         JSON.stringify(nextCoordinates), `batch-history-${sourceAttempt}`]);
       const receivedAt = Date.parse('2026-10-02T12:00:00.000Z') + sourceAttempt;
-      await pool!.query(`INSERT INTO review_finding_recheck_admissions
+      const actorDigest = sha256('synthetic-authorized-reviewer');
+      const lifecycleClient = await pool!.connect();
+      try {
+        await lifecycleClient.query('BEGIN');
+        await transitionPrReviewReservation(lifecycleClient, {
+          runId, executionAttempt: sourceAttempt, status: 'failed', completionDigest: sourceDigest,
+          decisionReceipt: { gateDecision: { status: 'failure', eligible: false } },
+        });
+        await recordPrFindingRecheckRequest(lifecycleClient, {
+          runId, sourceExecutionAttempt: sourceAttempt, requestId: recheckRequestId, findingId,
+          actorDigest, sourceContentDigest: sourceDigest, sourceContextDigest: persistedIdentity.snapshotDigest,
+          requestDigest,
+        });
+        await reservePrFindingRecheckTarget(lifecycleClient, {
+          repositoryId, owner, repo, prNumber, runId, deliveryId: `batch-history-${sourceAttempt}`,
+          sourceExecutionAttempt: sourceAttempt, executionAttempt: sourceAttempt + 1,
+          requestId: recheckRequestId, requestDigest, sourceContentDigest: sourceDigest,
+          sourceContextDigest: persistedIdentity.snapshotDigest, headSha, baseSha, policyDigest, configDigest,
+          candidateContextDigest: persistedIdentity.snapshotDigest, actorDigest,
+        });
+        await lifecycleClient.query('UPDATE review_runs SET attempt = $2 WHERE run_id = $1', [runId, sourceAttempt]);
+        await lifecycleClient.query(`INSERT INTO review_finding_recheck_admissions
         (run_id, source_execution_attempt, trigger_request_id, execution_attempt, review_generation,
          gate_attempt_id, requested_by, received_at, terminal_deadline)
         VALUES ($1,$2,$3,$4,$5,$6,$7,to_timestamp($8/1000.0),to_timestamp(($8+600000)/1000.0))`,
       [runId, sourceAttempt, recheckRequestId, sourceAttempt + 1, sourceAttempt, nextGateId,
-        sha256('synthetic-authorized-reviewer'), receivedAt]);
+        actorDigest, receivedAt]);
+        await lifecycleClient.query('COMMIT');
+      } catch (error) {
+        await lifecycleClient.query('ROLLBACK').catch(() => undefined);
+        throw error;
+      } finally { lifecycleClient.release(); }
       const currentBatch = await loadValidatedDisputedFindingRechecks(pool as never, {
         run_id: runId, repository_id: repositoryId, owner, repo, pr_number: prNumber,
         head_sha: headSha, base_sha: baseSha, effective_policy_digest: policyDigest,
@@ -398,6 +429,92 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
     }
     expect((await pool!.query('SELECT COUNT(*)::int AS count FROM review_finding_rechecks WHERE run_id=$1', [runId]))
       .rows[0].count).toBe(9);
+  }, 30_000);
+
+  it.each([
+    { fault: 'missing-admission-projection', pr: 1274 },
+    { fault: 'forged-target-event', pr: 1275 },
+    { fault: 'source-event-mismatch', pr: 1276 },
+    { fault: 'lost-ledger-with-current-checkpoint-receipt', pr: 1277 },
+  ] as const)('fails the Gate closed for $fault in the current admitted batch', async ({ fault, pr }) => {
+    const source = await seedReviewSource(pr);
+    const tool = createDisputeFindingTool({ transactionPool: pool as never,
+      authoritativePublishing: findingRecheckAdmission(source.sourceCompletion) });
+    const findingId = getReviewFindingId(source.sourceRunId, task.id, sourceFinding);
+    const result = await tool.execute({ owner, repo, pr_number: pr, finding_id: findingId,
+      counter_argument: `Recheck the exact source finding for PR ${pr}.` }, authenticatedContext(pr));
+    const receipt = JSON.parse((result.content[0] as { text: string }).text);
+    const admission = (await pool!.query(`SELECT gate_attempt_id FROM review_finding_recheck_admissions
+      WHERE run_id = $1 AND source_execution_attempt = 2`, [source.sourceRunId])).rows[0];
+    expect(admission).toBeTruthy();
+
+    const workerToken = `ghs_ws2_gate_${pr}`;
+    await pool!.query(`UPDATE review_runs SET status = 'running', attempt = 2 WHERE run_id = $1`, [source.sourceRunId]);
+    await pool!.query(`UPDATE review_dispatch_outbox SET status = 'projected', execution_attempt = 2,
+      worker_token_digest = $2 WHERE run_id = $1`, [source.sourceRunId, sha256(workerToken)]);
+    await pool!.query(`UPDATE review_gate_attempts SET creation_state = 'bound', check_id = $2,
+        desired_state = 'in_progress', desired_version = 2, published_version = 2
+      WHERE attempt_id = $1`, [admission.gate_attempt_id, 72000 + pr]);
+
+    const app = express();
+    app.use(express.json({ limit: '1mb' }));
+    app.post('/checkpoint', createReviewExecutionCheckpointHandler(pool as never));
+    const targetCheckpoint: ReviewExecutionCheckpoint = {
+      ...sourceCheckpoint, runId: source.sourceRunId, prNumber: pr, executionAttempt: 3, revision: 5,
+      completedTasks: [{ id: task.id, findings: [] }], satisfiedFindingRecheckIds: [receipt.request_id],
+    };
+    const checkpointWrite = await request(app).post('/checkpoint')
+      .set('Authorization', `Bearer ${workerToken}`).send(targetCheckpoint);
+    expect(checkpointWrite.status).toBe(200);
+
+    if (fault === 'missing-admission-projection') {
+      const deleted = await pool!.query(`DELETE FROM review_finding_recheck_admissions
+        WHERE run_id = $1 AND source_execution_attempt = 2 RETURNING run_id`, [source.sourceRunId]);
+      expect(deleted.rowCount).toBe(1);
+    } else if (fault === 'lost-ledger-with-current-checkpoint-receipt') {
+      await pool!.query(`DELETE FROM review_finding_recheck_admissions
+        WHERE run_id = $1 AND source_execution_attempt = 2`, [source.sourceRunId]);
+      await pool!.query(`DELETE FROM review_pr_lifecycle_events
+        WHERE idempotency_key IN ($1, $2)`, [
+        `${receipt.request_id}:recheck-requested`, `${receipt.request_id}:recheck-target-admitted`,
+      ]);
+      await pool!.query('DELETE FROM review_finding_rechecks WHERE request_id = $1', [receipt.request_id]);
+    } else if (fault === 'forged-target-event') {
+      await pool!.query(`UPDATE review_pr_lifecycle_events SET evidence_digest = $2
+        WHERE idempotency_key = $1`, [`${receipt.request_id}:recheck-target-admitted`, '0'.repeat(64)]);
+    } else {
+      await pool!.query(`UPDATE review_pr_lifecycle_events SET evidence_digest = $2
+        WHERE idempotency_key = $1`, [`${receipt.request_id}:recheck-requested`, '0'.repeat(64)]);
+    }
+
+    const identity = { run_id: source.sourceRunId, repository_id: repositoryId, owner, repo, pr_number: pr,
+      head_sha: headSha, base_sha: baseSha, effective_policy_digest: policyDigest,
+      effective_config_digest: configDigest };
+    if (fault === 'lost-ledger-with-current-checkpoint-receipt') {
+      await expect(loadValidatedDisputedFindingRechecks(pool as never, identity, 3)).resolves.toEqual([]);
+    } else {
+      await expect(loadValidatedDisputedFindingRechecks(pool as never, identity, 3)).rejects.toThrow();
+    }
+
+    const gateNow = Date.now() + 1_000;
+    const targetCompletion: WorkerReviewCompletion = { ...source.sourceCompletion, executionAttempt: 3,
+      result: { ...source.sourceCompletion.result, completedAt: new Date(gateNow - 500).toISOString(),
+        personas: [{ id: task.id, decision: 'APPROVE', status: 'COMPLETE', findings: [] }],
+        findingCount: 0, blockingFindingCount: 0 } };
+    const trusted = { current: { repositoryId, prNumber: pr, headSha, baseSha, policyDigest, open: true, draft: false },
+      coverage: { expectedPersonaIds: [task.id], reviewEngine: 'composed' as const, composedChangedPaths: ['src/auth/guard.ts'],
+        composedMaxTasks: 1, changedFiles: [{ path: 'src/auth/guard.ts',
+          patch: '@@ -0,0 +1 @@\n+export const guard = true;\n' }], coverageComplete: true, quorumSatisfied: true } };
+    const gateRepo = new PostgresReviewGateRepository(pool!, { lifecycleEvents: 'enabled' });
+    await expect(gateRepo.recordWorkerResult(targetCompletion, { workerTokenDigest: sha256(workerToken) },
+      async () => trusted, gateNow)).resolves.toBe('recorded');
+    const gateDecision = (await pool!.query(`SELECT decision FROM review_gate_attempts WHERE attempt_id = $1`,
+      [admission.gate_attempt_id])).rows[0].decision;
+    const targetReservation = (await pool!.query(`SELECT status, decision_receipt->'gateDecision' AS gate_decision
+      FROM review_pr_review_reservations WHERE run_id = $1 AND execution_attempt = 3`, [source.sourceRunId])).rows[0];
+    expect(gateDecision).toMatchObject({ status: 'failure', eligible: false, reason: 'invalid-evidence' });
+    expect(targetReservation).toMatchObject({ status: 'failed',
+      gate_decision: { status: 'failure', eligible: false, reason: 'invalid-evidence' } });
   }, 30_000);
 
   it.each([

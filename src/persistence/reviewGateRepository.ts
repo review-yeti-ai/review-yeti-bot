@@ -69,7 +69,21 @@ async function acceptedDisputedFindingRechecksAreComplete(
       effective_config_digest: event.configDigest,
     };
     const rechecks = await loadValidatedDisputedFindingRechecks(client, run, event.executionAttempt);
-    if (rechecks.length === 0) return [];
+    if (rechecks.length === 0) {
+      // A checkpoint receipt is independent evidence that this exact execution
+      // acknowledged a recheck. If every request/admission projection vanished,
+      // do not reinterpret that receipt as an ordinary clean review. Ignore
+      // receipts from older executions so later unrelated batches remain valid.
+      const checkpointRow = (await client.query(
+        'SELECT payload FROM review_execution_checkpoints WHERE run_id = $1', [event.runId],
+      )).rows[0];
+      if (checkpointRow) {
+        const checkpoint = parseReviewExecutionCheckpoint(jsonValue(checkpointRow.payload));
+        if (checkpoint.executionAttempt === event.executionAttempt
+          && (checkpoint.satisfiedFindingRecheckIds?.length ?? 0) > 0) return null;
+      }
+      return [];
+    }
     // A disputed finding must be revisited by a fresh task result. Incremental
     // and verdict-cache claims can carry prior conclusions across that task,
     // even when the worker also presents a checkpoint receipt for its lane.
