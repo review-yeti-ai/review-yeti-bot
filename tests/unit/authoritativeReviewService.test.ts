@@ -478,7 +478,7 @@ describe('gate publication identity and fresh success', () => {
 describe('dispatchIndex authoritative startup source contract', () => {
   const source = readFileSync(new URL('../../src/dispatchIndex.ts', import.meta.url), 'utf8');
   it('validates opt-in configuration before database initialization and conditionally wires separate routes', () => {
-    expect(source.indexOf('authoritativeServiceConfigFromEnv(environment, policy)'))
+    expect(source.indexOf('authoritativeServiceConfigFromEnv(environment, policy, dispatchConfig)'))
       .toBeLessThan(source.indexOf('new PostgresStore()'));
     expect(source).toMatch(/authoritativeConfig\s*\?\s*createAuthoritativeReviewService\(\{/u);
     expect(source).toMatch(/config:\s*authoritativeConfig,\s*appId,\s*privateKey,\s*baseUrl/u);

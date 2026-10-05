@@ -1,11 +1,19 @@
-import type { AuthoritativeReviewAdmission } from '../review/authoritativeServiceContracts';
 import { AUTHORITATIVE_REVIEW_APP_ID } from './authoritativeServiceIdentity';
+import {
+  PUBLIC_REVIEW_REPOSITORY,
+  PUBLIC_REVIEW_REPOSITORY_ID,
+  PUBLIC_REVIEW_APP_ID,
+} from '../config/repositoryReviewAuthorityConstants';
 
-export const PUBLIC_REVIEW_REPOSITORY = 'review-yeti-ai/review-yeti-bot';
-export const PUBLIC_REVIEW_REPOSITORY_ID = 1326169548;
-export const PUBLIC_REVIEW_APP_ID = 4552718;
+export { PUBLIC_REVIEW_REPOSITORY, PUBLIC_REVIEW_REPOSITORY_ID, PUBLIC_REVIEW_APP_ID }
+  from '../config/repositoryReviewAuthorityConstants';
 
 export interface ReviewAuthorityRepository { repositoryId: number; owner: string; repo: string }
+export interface ReviewAuthorityAdmission {
+  expectedAppId: number;
+  expectedAppIdFor?: (repository: ReviewAuthorityRepository) => number;
+  repositoryIds: readonly number[];
+}
 
 /** A configured credential never grants another repository this App's authority. */
 export function isPublicReviewRepository(repository: ReviewAuthorityRepository): boolean {
@@ -14,8 +22,7 @@ export function isPublicReviewRepository(repository: ReviewAuthorityRepository):
 }
 
 /** The callback is control-plane configuration, never part of a review request. */
-export function expectedReviewAppIdFor(admission: Pick<AuthoritativeReviewAdmission,
-  'expectedAppId' | 'expectedAppIdFor' | 'repositoryIds'>,
+export function expectedReviewAppIdFor(admission: ReviewAuthorityAdmission,
   repository: ReviewAuthorityRepository): number {
   if (!admission.repositoryIds.includes(repository.repositoryId)) {
     throw new Error('Repository is outside authoritative review admission');

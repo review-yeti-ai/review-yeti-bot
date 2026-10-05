@@ -103,7 +103,7 @@ describe('AuthoritativePublishingResolver', () => {
     expect(f.policyReaderFactory).not.toHaveBeenCalled();
   });
 
-  it.each([true, undefined])('requires observed public visibility for the pinned external repository (private=%s)', async isPrivate => {
+  it.each([true, undefined])('rejects a public target when observed visibility is private or absent (private=%s)', async isPrivate => {
     const publicRequested = { ...requested, repositoryId: 1326169548,
       owner: 'review-yeti-ai', repo: 'review-yeti-bot' };
     const f = fixture();

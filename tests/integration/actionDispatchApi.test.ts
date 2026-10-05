@@ -349,7 +349,7 @@ describe('POST /api/dispatch/action', () => {
     const fixture = app();
     const response = await request(fixture.instance)
       .post('/api/dispatch/action')
-      .set('Authorization', 'Bearer signed-oidc-token')
+      .set('Authorization', 'Bearer fixture')
       .send(body);
 
     expect(response.status).toBe(202);
@@ -372,7 +372,7 @@ describe('POST /api/dispatch/action', () => {
     const mismatch = app();
     const response = await request(mismatch.instance)
       .post('/api/dispatch/action')
-      .set('Authorization', 'Bearer signed-oidc-token')
+      .set('Authorization', 'Bearer fixture')
       .send({ ...body, repositoryId: 999 });
     expect(response.status).toBe(403);
     expect(mismatch.admission.admit).not.toHaveBeenCalled();
@@ -400,7 +400,7 @@ describe('POST /api/dispatch/action', () => {
     const fixture = app({ verifier: { verify: vi.fn(async () => centralVerified) } });
     const response = await request(fixture.instance)
       .post('/api/dispatch/action')
-      .set('Authorization', 'Bearer signed-oidc-token')
+      .set('Authorization', 'Bearer fixture')
       .send(centralBody);
 
     expect(response.status).toBe(202);
@@ -2003,7 +2003,8 @@ describe('repository-bound public App authority in the real dispatch route', () 
       authoritativePublishing: publicPublishing(AUTHORITATIVE_REVIEW_APP_ID), now: () => Date.parse(body.requestedAt) });
     const response = await request(fixture.instance).post('/api/dispatch/action').set('Authorization', 'Bearer synthetic-oidc')
       .send({ ...body, ...centralManualTarget, caller: { ...body.caller, workflowRef: centralManualClaims.workflow_ref, workflowSha: centralManualClaims.workflow_sha } });
-    expect(response.status).not.toBe(202);
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ error: 'External target requires authoritative App-gate publication' });
     expect(fixture.admission.admit).not.toHaveBeenCalled();
   });
 });

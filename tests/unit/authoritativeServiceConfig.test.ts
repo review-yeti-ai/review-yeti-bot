@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { authoritativeServiceConfigFromEnv, AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceConfig';
+import { authoritativeServiceConfigFromEnv as parseAuthoritativeServiceConfig, AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceConfig';
+import { actionDispatchConfigFromEnv } from '../../src/config/actionDispatchConfig';
 
 const marker = 'SYNTHETIC_PRIVATE_CONFIG';
 const source = { repositoryId: 987, owner: 'exampleorg', repo: 'example-review-actions', ref: 'refs/heads/main', path: 'policy/review.json' };
 const policy = { allowAppGate: true, repositoryIds: new Set(['123', '456']) };
 const error = 'Authoritative review service configuration is invalid';
+
+function authoritativeServiceConfigFromEnv(
+  input: Readonly<Record<string, string | undefined>>,
+  oidcPolicy: typeof policy,
+) {
+  const dispatchConfig = actionDispatchConfigFromEnv(input as unknown as NodeJS.ProcessEnv);
+  return parseAuthoritativeServiceConfig(input, oidcPolicy, dispatchConfig);
+}
 
 function env(overrides: Record<string, string | undefined> = {}) {
   return {
@@ -121,7 +130,8 @@ describe('authoritativeServiceConfigFromEnv', () => {
 
 
 describe('exact public repository service authority', () => {
-  const publicEnv = { ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: 'review-yeti-ai/review-yeti-bot', REVIEW_YETI_PUBLIC_TARGET_APP_ID: '4552718' };
+  const publicEnv = { ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: 'review-yeti-ai/review-yeti-bot',
+    REVIEW_YETI_PUBLIC_TARGET_APP_ID: '4552718', REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY: 'synthetic-public-app-key' };
   it('adds an explicit credential-free public authority without changing private enrollment', () => {
     const config = authoritativeServiceConfigFromEnv(env(publicEnv), policy)!;
     expect(config.repositoryIds).toEqual([123, 456]);
@@ -129,10 +139,27 @@ describe('exact public repository service authority', () => {
     expect([...policy.repositoryIds]).toEqual(['123', '456']);
   });
   it.each(['unknown/repository', '*', '', 'review-yeti-ai/another-repository', 'review-yeti-ai/review-yeti-bot,unknown/repo'])('rejects arbitrary target %j', target => {
-    expect(() => authoritativeServiceConfigFromEnv(env({ ...publicEnv, ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: target }), policy)).toThrow(error);
+    expect(() => actionDispatchConfigFromEnv(
+      env({ ...publicEnv, ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: target }) as unknown as NodeJS.ProcessEnv,
+    )).toThrow();
   });
   it.each(['7654321', '4552719', '', undefined])('rejects an unpinned App %j', appId => {
-    expect(() => authoritativeServiceConfigFromEnv(env({ ...publicEnv, REVIEW_YETI_PUBLIC_TARGET_APP_ID: appId }), policy)).toThrow(error);
+    expect(() => actionDispatchConfigFromEnv(
+      env({ ...publicEnv, REVIEW_YETI_PUBLIC_TARGET_APP_ID: appId }) as unknown as NodeJS.ProcessEnv,
+    )).toThrow();
+  });
+  it('derives public admission from the single parsed dispatch authority', () => {
+    const parsedDispatch = actionDispatchConfigFromEnv(env(publicEnv) as unknown as NodeJS.ProcessEnv);
+    const config = parseAuthoritativeServiceConfig(env(), policy, parsedDispatch)!;
+    expect(config.publicRepository).toEqual({ repositoryId: 1326169548, owner: 'review-yeti-ai', repo: 'review-yeti-bot', expectedAppId: 4552718 });
+  });
+  it('counts the public target in the total 100-repository admission bound', () => {
+    const privateIds = Array.from({ length: 101 }, (_, index) => String(index + 1));
+    const allowed = { ...policy, repositoryIds: new Set(privateIds) };
+    expect(authoritativeServiceConfigFromEnv(env({ ...publicEnv,
+      AUTHORITATIVE_REVIEW_REPOSITORY_IDS: privateIds.slice(0, 99).join(',') }), allowed)!.repositoryIds).toHaveLength(99);
+    expect(() => authoritativeServiceConfigFromEnv(env({ ...publicEnv,
+      AUTHORITATIVE_REVIEW_REPOSITORY_IDS: privateIds.slice(0, 100).join(',') }), allowed)).toThrow(error);
   });
   it('never enrolls the public ID under primary-App authority', () => {
     expect(() => authoritativeServiceConfigFromEnv(env({ AUTHORITATIVE_REVIEW_REPOSITORY_IDS: '1326169548' }),

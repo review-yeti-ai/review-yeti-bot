@@ -82,7 +82,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       ? { ...external, owner, repo, baseUrl }
       : { appId, privateKey, owner, repo, baseUrl };
   };
-  const authoritativeConfig = authoritativeServiceConfigFromEnv(environment, policy);
+  const authoritativeConfig = authoritativeServiceConfigFromEnv(environment, policy, dispatchConfig);
   // REL-1084: one configured age for both the worker's planning read and trusted verification.
   const incrementalMaxAgeMs = incrementalMaxAgeMsFrom(environment);
   // REL-1085: likewise one configured age for the verdict cache's planning read and verification.
