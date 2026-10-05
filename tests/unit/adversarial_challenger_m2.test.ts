@@ -22,11 +22,12 @@ import type { PanelResult } from '../../src/panel/types';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import { logger } from '../../src/utils/logger';
 import { DEFAULT_TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
 
 const HEAD_SHA = '1111111111111111111111111111111111111111';
 const BASE_SHA = '2222222222222222222222222222222222222222';
 const REPO_ID = 101;
-const APP_ID = 42;
+const APP_ID = AUTHORITATIVE_REVIEW_APP_ID;
 
 function makeSamplePolicyFile(reviewEngine?: 'composed' | 'panel' | 'dsh') {
   const rawContent = JSON.stringify({
