@@ -11,6 +11,11 @@ export type OperatorPassthroughTransport = 'github-app' | 'github-actions-oidc' 
 export type OperatorPassthroughCheckStage = 'review' | 'gate';
 export type OperatorPassthroughCheckState = 'reserved' | 'creating' | 'bound' | 'not-created';
 
+export const OPERATOR_PASSTHROUGH_REVIEW_TITLE = `${REVIEW_WORKER_CHECK_NAME}: SHIP (passthrough: no review performed)`;
+export const OPERATOR_PASSTHROUGH_GATE_TITLE = `${REVIEW_GATE_CHECK_NAME}: SHIP (operator passthrough SHIP)`;
+export const OPERATOR_PASSTHROUGH_MODE_MARKER = 'review-mode=passthrough';
+export const OPERATOR_PASSTHROUGH_ZERO_LANES_MARKER = 'Zero review lanes ran.';
+
 export interface OperatorPassthroughCandidate {
   owner: string;
   repo: string;
@@ -78,6 +83,28 @@ export interface StoredOperatorPassthroughPublication {
   retirementRequestedAt: number | null;
   retirementReason: 'pause-disabled' | 'normal-review-admitted' | 'candidate-changed' | null;
   retiredAt: number | null;
+}
+
+export interface OperatorPassthroughReadinessInput {
+  reviewCreationState: unknown;
+  reviewCheckId: unknown;
+  gateCreationState: unknown;
+  gateCheckId: unknown;
+  retirementRequestedAt: unknown;
+  retiredAt: unknown;
+}
+
+/** The single domain rule for when an operator-passthrough publication is ready to satisfy SHIP. */
+export function operatorPassthroughReadyForShip(publication: OperatorPassthroughReadinessInput): boolean {
+  const hasCheckId = (value: unknown): boolean => {
+    if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0;
+    if (typeof value !== 'string' || !/^[1-9][0-9]*$/u.test(value)) return false;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0;
+  };
+  return publication.retirementRequestedAt === null && publication.retiredAt === null
+    && publication.reviewCreationState === 'bound' && hasCheckId(publication.reviewCheckId)
+    && publication.gateCreationState === 'bound' && hasCheckId(publication.gateCheckId);
 }
 
 export interface OperatorPassthroughPublicationSnapshot extends StoredOperatorPassthroughPublication {
@@ -224,18 +251,30 @@ export function operatorPassthroughCheckMetadata(
   stage: OperatorPassthroughCheckStage,
 ): { title: string; summary: string } {
   const { owner, repo, prNumber, headSha, baseSha, policyDigest } = claim.coordinates;
-  const check = stage === 'review' ? 'Review Yeti' : 'Review Yeti Gate';
+  const check = stage === 'review' ? REVIEW_WORKER_CHECK_NAME : REVIEW_GATE_CHECK_NAME;
   return {
-    title: stage === 'review'
-      ? 'Review Yeti: SHIP (passthrough: no review performed)'
-      : 'Review Yeti Gate: SHIP (operator passthrough SHIP)',
+    title: operatorPassthroughCheckTitle(stage),
     summary: [
       `${check} published an explicit operator-passthrough SHIP exemption because the operator-wide pause is enabled.`,
-      'review-mode=passthrough',
-      'Zero review lanes ran. No provider review, Action worker, or review generation was started or consumed.',
+      OPERATOR_PASSTHROUGH_MODE_MARKER,
+      `${OPERATOR_PASSTHROUGH_ZERO_LANES_MARKER} No provider review, Action worker, or review generation was started or consumed.`,
       '',
       `Exact candidate: ${owner}/${repo}#${prNumber} at ${headSha} (base ${baseSha}; policy ${policyDigest}).`,
       `Publication cycle: ${claim.coordinates.publicationSequence}. Auditable exemption digest: ${claim.auditDigest}.`,
   ].join(' '),
   };
+}
+
+export function operatorPassthroughCheckTitle(stage: OperatorPassthroughCheckStage): string {
+  return stage === 'review' ? OPERATOR_PASSTHROUGH_REVIEW_TITLE : OPERATOR_PASSTHROUGH_GATE_TITLE;
+}
+
+/** Verify the producer-owned SHIP/no-review markers before accepting a check as passthrough evidence. */
+export function isOperatorPassthroughCheckOutput(value: unknown, stage: OperatorPassthroughCheckStage): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const output = value as Record<string, unknown>;
+  return output.title === operatorPassthroughCheckTitle(stage)
+    && typeof output.summary === 'string'
+    && output.summary.includes(OPERATOR_PASSTHROUGH_MODE_MARKER)
+    && output.summary.includes(OPERATOR_PASSTHROUGH_ZERO_LANES_MARKER);
 }

@@ -3,6 +3,7 @@ import { canonicalJson, sha256 } from '../review/reviewCore';
 import {
   operatorPassthroughIdentity,
   operatorPassthroughIdentityForCandidate,
+  operatorPassthroughReadyForShip,
   type OperatorPassthroughCandidate,
   type OperatorPassthroughCheckStage,
   type OperatorPassthroughCheckState,
@@ -321,8 +322,7 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
     const result = await this.pool.query('SELECT * FROM review_operator_passthrough_publications WHERE publication_id=$1', [publicationId]);
     if (!result.rows[0]) return null;
     const stored = storedFromRow(result.rows[0]);
-    return { ...stored, readyForShip: stored.retirementRequestedAt === null
-      && stored.reviewCreationState === 'bound' && stored.gateCreationState === 'bound' };
+    return { ...stored, readyForShip: operatorPassthroughReadyForShip(stored) };
   }
 
   async requestRetirement(candidate: Pick<OperatorPassthroughCandidate, 'repositoryId' | 'prNumber' | 'headSha'>,

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createGetReviewStatusTool } from '../../src/mcp/server/tools/getReviewStatus';
+import { operatorPassthroughReadyForShip } from '../../src/review/operatorPassthrough';
 
 const candidate = {
   publication_id: 'a'.repeat(64), audit_digest: 'b'.repeat(64),
@@ -10,6 +11,24 @@ const candidate = {
 };
 
 describe('get_review_status operator-passthrough projection', () => {
+  it.each([
+    ['both bound checks with numeric ids', {}, true],
+    ['database bigint strings', { reviewCheckId: '7001', gateCheckId: '7002' }, true],
+    ['an unresolved review check', { reviewCreationState: 'creating' }, false],
+    ['a missing gate id', { gateCheckId: null }, false],
+    ['a boolean check id', { reviewCheckId: true }, false],
+    ['a non-decimal check id', { reviewCheckId: '7e3' }, false],
+    ['a retirement request', { retirementRequestedAt: 1 }, false],
+    ['a retired publication', { retiredAt: 1 }, false],
+  ] as const)('uses one exact SHIP-readiness rule for %s', (_label, overrides, ready) => {
+    expect(operatorPassthroughReadyForShip({
+      reviewCreationState: 'bound', reviewCheckId: 7001,
+      gateCreationState: 'bound', gateCheckId: 7002,
+      retirementRequestedAt: null, retiredAt: null,
+      ...overrides,
+    })).toBe(ready);
+  });
+
   it('reports explicit zero-lane SHIP from the durable paired-check publication without inventing a run', async () => {
     const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [candidate] }));
     const result = await createGetReviewStatusTool({ query }, { passthroughEnabled: true })

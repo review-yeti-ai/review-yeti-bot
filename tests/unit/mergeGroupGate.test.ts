@@ -3,6 +3,11 @@ import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeService
 import { createMergeGroupGate, MergeGroupGateInProgressError } from '../../src/review/mergeGroupGate';
 import type { MergeGroupGatePriorPublication } from '../../src/persistence/mergeGroupGateRepository';
 import { canonicalJson, sha256 } from '../../src/review/reviewCore';
+import {
+  deriveOperatorPassthroughExternalId,
+  REVIEW_GATE_CHECK_NAME,
+  REVIEW_WORKER_CHECK_NAME,
+} from '../../src/review/reviewCheckIdentity';
 
 const GROUP_HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -11,12 +16,16 @@ const CURRENT_OPERATOR_PUBLICATION_ID = 'a'.repeat(64);
 const CURRENT_OPERATOR_AUDIT_DIGEST = 'b'.repeat(64);
 const OLD_OPERATOR_PUBLICATION_ID = 'e'.repeat(64);
 const OLD_OPERATOR_AUDIT_DIGEST = 'f'.repeat(64);
-const currentOperatorReviewId = `review-yeti-operator-passthrough:v1:${CURRENT_OPERATOR_PUBLICATION_ID}:${CURRENT_OPERATOR_AUDIT_DIGEST}`;
-const currentOperatorGateId = `review-yeti-gate:operator-v1:${CURRENT_OPERATOR_PUBLICATION_ID}:${CURRENT_OPERATOR_AUDIT_DIGEST}`;
+const currentOperatorReviewId = deriveOperatorPassthroughExternalId(
+  CURRENT_OPERATOR_PUBLICATION_ID, CURRENT_OPERATOR_AUDIT_DIGEST, REVIEW_WORKER_CHECK_NAME);
+const currentOperatorGateId = deriveOperatorPassthroughExternalId(
+  CURRENT_OPERATOR_PUBLICATION_ID, CURRENT_OPERATOR_AUDIT_DIGEST, REVIEW_GATE_CHECK_NAME);
 const currentOperatorReceipt = { publicationId: CURRENT_OPERATOR_PUBLICATION_ID,
   auditDigest: CURRENT_OPERATOR_AUDIT_DIGEST, mergeEligible: true };
-const oldOperatorReviewId = `review-yeti-operator-passthrough:v1:${OLD_OPERATOR_PUBLICATION_ID}:${OLD_OPERATOR_AUDIT_DIGEST}`;
-const oldOperatorGateId = `review-yeti-gate:operator-v1:${OLD_OPERATOR_PUBLICATION_ID}:${OLD_OPERATOR_AUDIT_DIGEST}`;
+const oldOperatorReviewId = deriveOperatorPassthroughExternalId(
+  OLD_OPERATOR_PUBLICATION_ID, OLD_OPERATOR_AUDIT_DIGEST, REVIEW_WORKER_CHECK_NAME);
+const oldOperatorGateId = deriveOperatorPassthroughExternalId(
+  OLD_OPERATOR_PUBLICATION_ID, OLD_OPERATOR_AUDIT_DIGEST, REVIEW_GATE_CHECK_NAME);
 const config = {
   secret: 'x'.repeat(64), admissionEnabled: true,
   repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),

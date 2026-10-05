@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GitHubReviewGateClient, type GitHubReviewGateClient as ReviewGateClient } from '../../src/github/reviewGateClient';
+import { AUTHORITATIVE_REVIEW_CHECK_NAME } from '../../src/auth/authoritativeServiceIdentity';
 import {
   REVIEW_GATE_CHECK_NAME,
   REVIEW_WORKER_CHECK_NAME,
+  deriveOperatorPassthroughExternalId,
   deriveReviewCheckExternalId,
   type ReviewGateCheck,
 } from '../../src/review/reviewCheckIdentity';
 import {
+  isOperatorPassthroughCheckOutput,
+  operatorPassthroughCheckMetadata,
   operatorPassthroughIdentityForCandidate,
   type OperatorPassthroughPublicationClaim,
   type OperatorPassthroughPublicationRepository,
@@ -153,6 +157,21 @@ function publisherFor(
 }
 
 describe('OperatorPassthroughPublisher', () => {
+  it('shares the authoritative review identity and output contract with merge-group verification', () => {
+    expect(REVIEW_WORKER_CHECK_NAME).toBe(AUTHORITATIVE_REVIEW_CHECK_NAME);
+    const publication = claim();
+    for (const [stage, checkName, storedExternalId] of [
+      ['review', REVIEW_WORKER_CHECK_NAME, publication.reviewExternalId],
+      ['gate', REVIEW_GATE_CHECK_NAME, publication.gateExternalId],
+    ] as const) {
+      expect(deriveOperatorPassthroughExternalId(publication.publicationId, publication.auditDigest, checkName))
+        .toBe(storedExternalId);
+      const output = operatorPassthroughCheckMetadata(publication, stage);
+      expect(isOperatorPassthroughCheckOutput(output, stage)).toBe(true);
+      expect(isOperatorPassthroughCheckOutput({ ...output, title: 'Review Yeti: SHIP' }, stage)).toBe(false);
+    }
+  });
+
   it('keeps normal failure evidence intact while the separate durable pause publisher emits SHIP', async () => {
     const failedReview = {
       verdict: 'BLOCK' as const,
