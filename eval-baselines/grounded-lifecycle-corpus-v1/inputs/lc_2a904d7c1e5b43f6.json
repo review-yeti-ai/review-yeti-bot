@@ -1,0 +1,210 @@
+{
+  "schemaVersion": "GroundedLifecycleInput.v1",
+  "caseId": "lc_2a904d7c1e5b43f6",
+  "source": {
+    "repository": {
+      "repositoryId": 73001,
+      "owner": "synthetic",
+      "repo": "fixture-project"
+    },
+    "baseSha": "db95eda4303656720a9b3b1779a9bc88f634401a",
+    "headSha": "2e0b7855fae1da30490e3cb3924503ad2f5b0382",
+    "changedPaths": [
+      "audience-contract.ts",
+      "router.ts"
+    ],
+    "revisions": [
+      {
+        "commitSha": "db95eda4303656720a9b3b1779a9bc88f634401a",
+        "treeSha": "9b73d6562083e49eacd4595a9ca45cb35ee57cb0",
+        "parentSha": null,
+        "commitTimestamp": 1700002000,
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "audience-contract.ts",
+            "mode": "100644",
+            "gitBlobSha": "09b0cdd7bb01578fde51711a03c86ad6efa9f7c4",
+            "sha256": "1508afe0d914b3c60579fefbda0503885b736f5f0932813b66a3d81dd6ca30a4",
+            "content": "export const DEFAULT_AUDIENCE = \"deny\";\n"
+          },
+          {
+            "path": "router.ts",
+            "mode": "100644",
+            "gitBlobSha": "aa0c9f249ab4f8261f82d37895a8655c2c45d41f",
+            "sha256": "c8aa01f40386e522448ffbffb75ab4944305c689083e922d3a4f11fbc8e953b8",
+            "content": "import { DEFAULT_AUDIENCE } from \"./audience-contract\";\n\nexport function requiredAudience(configured?: string): string {\n  return configured ?? DEFAULT_AUDIENCE;\n}\n\nexport function canAccess(claimed: string, required: string): boolean {\n  return required !== \"deny\" && claimed === required;\n}\n"
+          }
+        ]
+      },
+      {
+        "commitSha": "b656a04673bb196d94d81be7e8f651b7c31e93f8",
+        "treeSha": "9b73d6562083e49eacd4595a9ca45cb35ee57cb0",
+        "parentSha": "db95eda4303656720a9b3b1779a9bc88f634401a",
+        "commitTimestamp": 1700002060,
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "audience-contract.ts",
+            "mode": "100644",
+            "gitBlobSha": "09b0cdd7bb01578fde51711a03c86ad6efa9f7c4",
+            "sha256": "1508afe0d914b3c60579fefbda0503885b736f5f0932813b66a3d81dd6ca30a4",
+            "content": "export const DEFAULT_AUDIENCE = \"deny\";\n"
+          },
+          {
+            "path": "router.ts",
+            "mode": "100644",
+            "gitBlobSha": "aa0c9f249ab4f8261f82d37895a8655c2c45d41f",
+            "sha256": "c8aa01f40386e522448ffbffb75ab4944305c689083e922d3a4f11fbc8e953b8",
+            "content": "import { DEFAULT_AUDIENCE } from \"./audience-contract\";\n\nexport function requiredAudience(configured?: string): string {\n  return configured ?? DEFAULT_AUDIENCE;\n}\n\nexport function canAccess(claimed: string, required: string): boolean {\n  return required !== \"deny\" && claimed === required;\n}\n"
+          }
+        ]
+      },
+      {
+        "commitSha": "2e0b7855fae1da30490e3cb3924503ad2f5b0382",
+        "treeSha": "0d0e6b5f5b768440e6855b171bbc0e2b31ae78dd",
+        "parentSha": "b656a04673bb196d94d81be7e8f651b7c31e93f8",
+        "commitTimestamp": 1700002120,
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "audience-contract.ts",
+            "mode": "100644",
+            "gitBlobSha": "0b7bfb89a0a4ca784969c105301e081e01905853",
+            "sha256": "7bed29cdcc22529b40ad50efe165ef5672fe52ec3cf8d3737a3f67daafb418eb",
+            "content": "export const DEFAULT_AUDIENCE = \"public\";\n"
+          },
+          {
+            "path": "router.ts",
+            "mode": "100644",
+            "gitBlobSha": "20cdaf2039c47d337ee6dede41ca1ca84f07b652",
+            "sha256": "db9360c422fb7f5dda5cc5bfc564b213e3a0440acca398e3ea244f5f804a0770",
+            "content": "import { DEFAULT_AUDIENCE } from \"./audience-contract\";\n\nexport function requiredAudience(configured?: string): string {\n  return configured ?? DEFAULT_AUDIENCE;\n}\n\nexport function canAccess(claimed: string, required: string): boolean {\n  return required === \"public\" || claimed === required;\n}\n"
+          }
+        ]
+      }
+    ],
+    "patches": [
+      {
+        "path": "audience-contract.ts",
+        "patch": "diff --git a/audience-contract.ts b/audience-contract.ts\nindex 09b0cdd..0b7bfb8 100644\n--- a/audience-contract.ts\n+++ b/audience-contract.ts\n@@ -1 +1 @@\n-export const DEFAULT_AUDIENCE = \"deny\";\n+export const DEFAULT_AUDIENCE = \"public\";\n",
+        "sha256": "d0d452914f1fbc6febe5456ee0e3241b10a687d809a67c0399c734a9c0e07314"
+      },
+      {
+        "path": "router.ts",
+        "patch": "diff --git a/router.ts b/router.ts\nindex aa0c9f2..20cdaf2 100644\n--- a/router.ts\n+++ b/router.ts\n@@ -5,5 +5,5 @@ export function requiredAudience(configured?: string): string {\n }\n \n export function canAccess(claimed: string, required: string): boolean {\n-  return required !== \"deny\" && claimed === required;\n+  return required === \"public\" || claimed === required;\n }",
+        "sha256": "159dc35681cb804a6c7074c53c0c91386a147a96b515edf01e581585c15db14d"
+      }
+    ],
+    "policyDigest": "6c2da692c1bbed23960be0c572532b3153b4884f0c4e767baacf3b12e8060fb9",
+    "configDigest": "6bb326310387cb7549d7b1a466a998c9f5c5a28b6a419ed47234231783256b66",
+    "contextDigest": "7164e127c939cf9b0a8af169f26a8e6bb8a88b089bfac9a1ef8ad40ff3367136"
+  },
+  "candidates": [
+    {
+      "severity": "P1",
+      "path": "router.ts",
+      "line": 8,
+      "title": "A missing route audience grants access to the default public audience",
+      "claimType": "generic",
+      "fingerprint": "fp1_be07bdcd68f15ae90af702f1"
+    }
+  ],
+  "history": {
+    "sourceObservation": {
+      "validation": "accepted",
+      "snapshot": {
+        "version": "PrLifecycleHistorySnapshot.v1",
+        "snapshotId": "e253f36a-d97f-42b1-a56c-32ec39fee99f",
+        "runId": "run_e50bcdd762dd242cb08d8ff44ade6d8c",
+        "executionAttempt": 1,
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project",
+        "prNumber": 41,
+        "headSha": "2e0b7855fae1da30490e3cb3924503ad2f5b0382",
+        "baseSha": "db95eda4303656720a9b3b1779a9bc88f634401a",
+        "policyDigest": "6c2da692c1bbed23960be0c572532b3153b4884f0c4e767baacf3b12e8060fb9",
+        "configDigest": "6bb326310387cb7549d7b1a466a998c9f5c5a28b6a419ed47234231783256b66",
+        "contextDigest": "7164e127c939cf9b0a8af169f26a8e6bb8a88b089bfac9a1ef8ad40ff3367136",
+        "eventCount": 2,
+        "findingCount": 1,
+        "eventOmittedCount": 0,
+        "findingOmittedCount": 0,
+        "legacyOmittedCount": 0,
+        "eventsDigest": "a195d687882bd06f1c7e3aa8cd7e4d0066c5d0970fd3988994695078859f774f",
+        "findingsDigest": "69eb321e291508d0e5aa0303f139e05464195a1a2b047c4e8efa9b67ffae5631",
+        "expiresAt": "2030-01-01T00:00:00.000Z"
+      },
+      "digestMatches": true
+    },
+    "load": {
+      "status": "complete",
+      "snapshotId": "e253f36a-d97f-42b1-a56c-32ec39fee99f",
+      "contextDigest": "7164e127c939cf9b0a8af169f26a8e6bb8a88b089bfac9a1ef8ad40ff3367136",
+      "events": [
+        {
+          "eventId": "ee73b08b-7264-4ba0-a80a-94d1780e83fa",
+          "eventType": "finding-observed",
+          "runId": "run_3acaa4ef93620c5276b51527bed4c7ff",
+          "executionAttempt": 1,
+          "headSha": "b656a04673bb196d94d81be7e8f651b7c31e93f8",
+          "baseSha": "db95eda4303656720a9b3b1779a9bc88f634401a",
+          "policyDigest": "6c2da692c1bbed23960be0c572532b3153b4884f0c4e767baacf3b12e8060fb9",
+          "configDigest": "6bb326310387cb7549d7b1a466a998c9f5c5a28b6a419ed47234231783256b66",
+          "contextDigest": "7164e127c939cf9b0a8af169f26a8e6bb8a88b089bfac9a1ef8ad40ff3367136",
+          "evidenceDigest": "1662c3104eb5659072b5e4f649742072832369376d2e48bdb830c8692dc5dfa8",
+          "verificationStatus": "confirmed"
+        },
+        {
+          "eventId": "b83170be-22f0-4ab6-af60-6745ba5e7935",
+          "eventType": "finding-resolution-recorded",
+          "runId": "run_a8f351be6c73f470c57259a164ae4297",
+          "executionAttempt": 1,
+          "headSha": "b656a04673bb196d94d81be7e8f651b7c31e93f8",
+          "baseSha": "db95eda4303656720a9b3b1779a9bc88f634401a",
+          "policyDigest": "6c2da692c1bbed23960be0c572532b3153b4884f0c4e767baacf3b12e8060fb9",
+          "configDigest": "6bb326310387cb7549d7b1a466a998c9f5c5a28b6a419ed47234231783256b66",
+          "contextDigest": "7164e127c939cf9b0a8af169f26a8e6bb8a88b089bfac9a1ef8ad40ff3367136",
+          "evidenceDigest": "e793cb78edb94684f17f0cdc41a826e46f87b3927c72292b5ef7838c0a7f7a9b",
+          "verificationStatus": "contradicted",
+          "verification": {
+            "findingEventId": "b69ee6e0-077e-4854-aace-f246f1d8c2c9",
+            "fingerprint": "fp1_be07bdcd68f15ae90af702f1",
+            "status": "contradicted",
+            "currentAffectedContextDigest": "7164e127c939cf9b0a8af169f26a8e6bb8a88b089bfac9a1ef8ad40ff3367136",
+            "sourceAffectedContextDigest": "7164e127c939cf9b0a8af169f26a8e6bb8a88b089bfac9a1ef8ad40ff3367136"
+          }
+        }
+      ],
+      "findings": [
+        {
+          "findingEventId": "b69ee6e0-077e-4854-aace-f246f1d8c2c9",
+          "fingerprint": "fp1_be07bdcd68f15ae90af702f1",
+          "path": "router.ts",
+          "regionStart": 1,
+          "regionEnd": 1,
+          "firstSeenHead": "b656a04673bb196d94d81be7e8f651b7c31e93f8",
+          "lastSeenHead": "b656a04673bb196d94d81be7e8f651b7c31e93f8",
+          "affectedContextDigest": "7164e127c939cf9b0a8af169f26a8e6bb8a88b089bfac9a1ef8ad40ff3367136",
+          "sourceSeverity": "P2",
+          "effectiveSeverity": "P2",
+          "disposition": "resolved",
+          "blocking": false,
+          "verificationStatus": "contradicted",
+          "evidenceDigest": "323ac89118e82a1211c9fe9611ffddf04c89b84f6832fd1b3d753848f9693a58"
+        }
+      ],
+      "eventCount": 2,
+      "findingCount": 1,
+      "loadedEventCount": 2,
+      "loadedFindingCount": 1,
+      "eventOmittedCount": 0,
+      "findingOmittedCount": 0,
+      "legacyOmittedCount": 0,
+      "eventsDigest": "a195d687882bd06f1c7e3aa8cd7e4d0066c5d0970fd3988994695078859f774f",
+      "findingsDigest": "69eb321e291508d0e5aa0303f139e05464195a1a2b047c4e8efa9b67ffae5631",
+      "omissions": []
+    }
+  }
+}
