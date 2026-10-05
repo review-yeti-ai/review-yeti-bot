@@ -1,8 +1,48 @@
 import { describe, expect, it } from 'vitest';
 import { planFindingPublication } from '../../src/review/findingPublication';
-import { changedLineNumbers, sanitizeFinding, validateReviewFindings } from '../../src/review/reviewCore';
+import { changedLineNumbers, computeArbitration, sanitizeFinding, validateReviewFindings } from '../../src/review/reviewCore';
+import { REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
 
 describe('review core diff parsing', () => {
+  it('keeps an evidence-backed P1 blocking even with one reporter and low confidence', () => {
+    const result = computeArbitration([{
+      id: 'security', decision: 'FINDINGS', findings: [{
+        severity: 'P1', path: 'src/guard.ts', line: 10, title: 'Private profile leaks to anonymous caller',
+        body: 'An unauthenticated request returns private account fields.', confidence: 1,
+        blockerEvidence: {
+          trigger: 'An unauthenticated request reaches this handler without a valid session.',
+          impact: 'The caller receives private profile fields belonging to another account.',
+          violatedContract: 'Profile data is returned only to the signed in account owner.',
+        },
+      }],
+    }], 1, {
+      changedFiles: [{ path: 'src/guard.ts', patch: '@@ -1 +10 @@\n+return profile;' }],
+      coverageComplete: true,
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+    });
+    expect(result.findings[0]).toMatchObject({ severity: 'P1', confidence: 1 });
+    expect(result.metrics.p1Count).toBe(1);
+  });
+
+  it('moves a P1 claim without trigger, impact and contract evidence to advisory P2 with provenance', () => {
+    const result = computeArbitration([{
+      id: 'security', decision: 'FINDINGS', findings: [{
+        severity: 'P1', path: 'src/guard.ts', line: 10, title: 'Potentially unsafe behavior',
+        body: 'This may cause a problem for callers.',
+        blockerEvidence: { trigger: 'Unknown', impact: '', violatedContract: 'Unstated' },
+      }],
+    }], 1, {
+      changedFiles: [{ path: 'src/guard.ts', patch: '@@ -1 +10 @@\n+return profile;' }],
+      coverageComplete: true,
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+    });
+    expect(result.findings[0]).toMatchObject({
+      severity: 'P2', severityAdjusted: { from: 'P1', reason: expect.stringContaining('blocker evidence') },
+    });
+    expect(result.metrics.p1Count).toBe(0);
+    expect(result.metrics.p2Count).toBe(1);
+  });
+
   it('does not advance changed line numbers for no-newline metadata', () => {
     const patch = [
       '@@ -1,2 +10,3 @@',

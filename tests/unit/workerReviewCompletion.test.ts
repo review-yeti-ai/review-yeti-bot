@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { findingFingerprint } from '../../src/review/findingConvergence';
+import { createReviewDecisionV2, REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
 import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import { MAX_CHANGED_FILE_PATCH_BYTES } from '../../src/review/reviewEvidenceLimits';
 import {
@@ -90,6 +91,29 @@ function thrownComposedFailure(): WorkerReviewCompletion {
 const composedContract: TrustedReviewCoverageContract = {
   ...contract, reviewEngine: 'composed', composedChangedPaths: ['src/example.ts'], composedMaxTasks: 8,
 };
+const v2Contract: TrustedReviewCoverageContract = { ...contract, reviewDecisionPolicy: REVIEW_SEVERITY_POLICY_V2 };
+
+function withDecision(input: WorkerReviewCompletion, overrides: Record<string, unknown> = {}): WorkerReviewCompletion {
+  const findings = input.result.personas.flatMap((persona) => persona.findings);
+  const counts = { p0Count: 0, p1Count: 0, p2Count: 0, p3Count: 0, nitCount: 0 };
+  for (const finding of findings) {
+    if (finding.severity === 'P0') counts.p0Count++;
+    else if (finding.severity === 'P1') counts.p1Count++;
+    else if (finding.severity === 'P2') counts.p2Count++;
+    else if (finding.severity === 'P3') counts.p3Count++;
+    else if (finding.severity === 'NIT') counts.nitCount++;
+  }
+  return { ...input, result: { ...input.result, reviewDecision: createReviewDecisionV2({
+    schemaVersion: 'review-yeti-decision.v2', policyVersion: REVIEW_SEVERITY_POLICY_V2,
+    policyDigest: expectedCoordinates.policyDigest,
+    coverageComplete: input.result.coverageComplete,
+    quorumSatisfied: input.result.quorumSatisfied,
+    infrastructureFailure: input.result.personas.some((persona) => persona.decision === 'ERROR'),
+    expectedLanes: 2,
+    completedLanes: input.result.personas.filter((persona) => persona.decision !== 'ERROR').length,
+    counts, ...overrides,
+  }) } } as WorkerReviewCompletion;
+}
 
 describe('composed infrastructure failure without a returned task plan', () => {
   it.each(['rate_limit', 'transport', 'provider_error', 'timeout'] as const)(
@@ -746,5 +770,59 @@ describe('ADR 0002: the Gate derives required P2s with the same convergence as t
 
   it('still counts it when the thread is only resolved, without a reason', () => {
     expect(derive(withP2(), { ...contract, findingThreads: [thread({ resolved: true })] }).evidence).toMatchObject({ p2Count: 1 });
+  });
+});
+
+describe('versioned v2 worker/Gate decision agreement', () => {
+  it('accepts a complete advisory-only review and retains P2/P3/NIT receipt counts', () => {
+    const input = completion({ result: { ...completion().result, findingCount: 3,
+      personas: [lane('security', { decision: 'FINDINGS', findings: [
+        { severity: 'P2', path: 'src/example.ts', line: 1, title: 'Lower impact input edge case', body: 'One caller receives a less useful error.' },
+        { severity: 'P3', path: 'src/example.ts', line: 2, title: 'Clarify local name', body: 'A clearer name would help maintenance.' },
+        { severity: 'NIT', path: 'src/example.ts', line: 1, title: 'Optional formatting polish', body: 'Whitespace could match neighboring style.' },
+      ] }), lane('architecture')] } });
+    const result = derive(withDecision(input), v2Contract);
+    expect(result).toMatchObject({ valid: true, evidence: { verdict: 'SHIP', p2Count: 0,
+      reviewDecision: { classification: 'SHIP', eligible: true, counts: { p2Count: 1, p3Count: 1, nitCount: 1 } } } });
+  });
+
+  it('blocks one evidence-backed P1 and fails closed on a forged eligible receipt or count', () => {
+    const finding = { severity: 'P1', path: 'src/example.ts', line: 1, title: 'Missing authorization check',
+      body: 'An anonymous caller can read another user record.', blockerEvidence: {
+        trigger: 'A request with no authenticated session reaches this handler.',
+        impact: 'It returns another account holder private data to the caller.',
+        violatedContract: 'Account data is readable only to its authenticated owner.',
+      } };
+    const input = withDecision(completion({ result: { ...completion().result, verdict: 'FIX_FIRST', findingCount: 1,
+      blockingFindingCount: 1, personas: [lane('security', { decision: 'FINDINGS', findings: [finding] }), lane('architecture')] } }));
+    expect(derive(input, v2Contract)).toMatchObject({ valid: true, evidence: {
+      verdict: 'FIX_FIRST', p1Count: 1, reviewDecision: { blocking: true, eligible: false },
+    } });
+    const receipt = input.result.reviewDecision!;
+    const forged = { ...input, result: { ...input.result,
+      reviewDecision: { ...receipt, eligible: true },
+    } } as WorkerReviewCompletion;
+    expectInvalid(derive(forged, v2Contract), /decision receipt disagrees/u);
+    const changedCounts = { ...input, result: { ...input.result,
+      reviewDecision: { ...receipt, counts: { ...receipt.counts, p2Count: 1 } },
+    } } as WorkerReviewCompletion;
+    expectInvalid(derive(changedCounts, v2Contract), /decision receipt disagrees/u);
+  });
+
+  it('requires the explicit trusted policy and a receipt; malformed activation fails closed', () => {
+    expectInvalid(derive(withDecision(completion())), /not enabled by trusted policy/u);
+    expectInvalid(derive(completion(), v2Contract), /receipt is required/u);
+    expect(() => derive(completion(), { ...contract,
+      reviewDecisionPolicy: 'review-yeti-severity.v3' as typeof REVIEW_SEVERITY_POLICY_V2,
+    })).toThrow(/policy is unsupported/u);
+  });
+
+  it('keeps a zero-finding review with incomplete coverage ineligible', () => {
+    const input = completion({ result: { ...completion().result, coverageComplete: false, quorumSatisfied: false,
+      verdict: undefined, findingCount: undefined, blockingFindingCount: undefined } });
+    const result = derive(withDecision(input), v2Contract);
+    expect(result).toMatchObject({ valid: true, evidence: { verdict: 'BLOCK', coverageComplete: false,
+      quorumSatisfied: false, p0Count: 0, p1Count: 0,
+      reviewDecision: { classification: 'INCOMPLETE_REVIEW', eligible: false, reason: 'incomplete-review' } } });
   });
 });

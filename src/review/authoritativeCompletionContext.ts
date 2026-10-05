@@ -14,6 +14,7 @@ import { routedLanesOf, verifyVerdictCacheClaim, type VerdictCacheVerificationIn
 import { canonicalJson } from './reviewCore';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import { resolveComposedMaxTasks } from '../reviewTaskContract';
+import { REVIEW_SEVERITY_POLICY_V2 } from './reviewDecision';
 import {
   TrustedCompletionResolutionError,
   isDeterministicCompletionFailure,
@@ -278,8 +279,14 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
         catch { checkDeadline(); findingThreads = undefined; }
       }
       checkDeadline();
+      // `severity_policy` is projected and digest-bound by the prepared-config path. Read it only
+      // after `checkedPrepared` verified that source; a worker payload or environment field cannot
+      // opt itself into the new convergence semantics.
+      const reviewDecisionPolicy = (stored.config as unknown as { severity_policy?: unknown }).severity_policy
+        === REVIEW_SEVERITY_POLICY_V2 ? REVIEW_SEVERITY_POLICY_V2 : undefined;
       return { current: { ...final, policyDigest }, coverage: {
         expectedPersonaIds, changedFiles: files,
+        ...(reviewDecisionPolicy ? { reviewDecisionPolicy } : {}),
         ...(findingThreads ? { findingThreads } : {}),
         ...(stored.config.review_engine === 'composed' ? {
           reviewEngine: 'composed' as const,

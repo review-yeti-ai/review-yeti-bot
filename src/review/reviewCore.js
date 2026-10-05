@@ -88,17 +88,38 @@ function normalizeFindingReplacement(raw) {
   return result;
 }
 
+function normalizeBlockerEvidence(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const required = ['trigger', 'impact', 'violatedContract'];
+  const values = {};
+  for (const key of required) {
+    if (typeof raw[key] !== 'string') return undefined;
+    const value = raw[key].trim();
+    if (value.length < 12 || value.length > 2_000) return undefined;
+    values[key] = value;
+  }
+  return values;
+}
+
+function hasCompleteBlockerEvidence(finding) {
+  return Boolean(normalizeBlockerEvidence(finding?.blockerEvidence));
+}
+
 function sanitizeFinding(raw, changedFiles) {
   if (!raw || typeof raw !== 'object') return null;
   if (!Array.isArray(changedFiles)) {
-    if (!['P0', 'P1', 'P2'].includes(raw.severity)) return null;
+    if (!['P0', 'P1', 'P2', 'P3', 'NIT'].includes(raw.severity)) return null;
     const { replacementCode, startLine, ...finding } = raw;
-    return { ...finding, severity: raw.severity, ...normalizeFindingReplacement(raw) };
+    const result = { ...finding, severity: raw.severity, ...normalizeFindingReplacement(raw) };
+    const blockerEvidence = normalizeBlockerEvidence(raw.blockerEvidence);
+    if (blockerEvidence) result.blockerEvidence = blockerEvidence;
+    else delete result.blockerEvidence;
+    return result;
   }
   const path = normalizePath(raw.path);
   const changed = changedFiles.find((file) => normalizePath(file.path) === path);
   if (!path || !changed) return null;
-  const severity = ['P0', 'P1', 'P2'].includes(raw.severity) ? raw.severity : null;
+  const severity = ['P0', 'P1', 'P2', 'P3', 'NIT'].includes(raw.severity) ? raw.severity : null;
   const line = Number(raw.line);
   if (!severity || !Number.isInteger(line) || line < 1) return null;
 
@@ -114,12 +135,14 @@ function sanitizeFinding(raw, changedFiles) {
   const body = typeof raw.body === 'string' ? raw.body.trim() : '';
   if (!title || !body) return null;
   const result = { severity, path, line, title, body, ...normalizeFindingReplacement({ ...raw, line }) };
+  const blockerEvidence = normalizeBlockerEvidence(raw.blockerEvidence);
+  if (blockerEvidence) result.blockerEvidence = blockerEvidence;
   if (typeof raw.suggestion === 'string' && raw.suggestion.trim()) result.suggestion = raw.suggestion.trim();
   if (typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)) result.confidence = raw.confidence;
   return result;
 }
 
-const SEVERITY_RANK = { P0: 0, P1: 1, P2: 2 };
+const SEVERITY_RANK = { P0: 0, P1: 1, P2: 2, P3: 3, NIT: 4 };
 
 /**
  * Title phrases that name a code-quality or process concern rather than a defect in shipped
@@ -231,8 +254,28 @@ function downgradeUnverifiedPremise(finding) {
  * keep after this. The prior-review gate (REL-1084, `publishedFindingSeverity`) calls this same
  * function, so the two cannot drift.
  */
-function publishFinding(finding) {
-  return downgradeUnverifiedPremise(calibrateSeverity(finding));
+function publishFinding(finding, options = {}) {
+  if (options.severityPolicyVersion === 'review-yeti-severity.v2') {
+    if (finding.severity !== 'P0' && finding.severity !== 'P1') return finding;
+    // V2 makes the evidence contract explicit: a P0/P1 survives exactly when its structured
+    // trigger, impact and violated contract are present. Confidence and phrasing heuristics do
+    // not demote a blocker after that contract has been met.
+    if (hasCompleteBlockerEvidence(finding)) return finding;
+    return {
+      ...finding,
+      severityAdjusted: {
+        from: finding.severity,
+        reason: 'missing or insufficient blocker evidence (trigger, impact and violated contract)',
+      },
+      severity: 'P2',
+    };
+  }
+  // P3/NIT are only advisory under the explicitly activated v2 contract. If a newer worker emits
+  // either value against a legacy receipt, normalize it to the historical required P2 behavior.
+  const legacyFinding = finding?.severity === 'P3' || finding?.severity === 'NIT'
+    ? { ...finding, severity: 'P2', severityAdjusted: { from: finding.severity, reason: 'v2 policy is not active' } }
+    : finding;
+  return downgradeUnverifiedPremise(calibrateSeverity(legacyFinding));
 }
 
 /**
@@ -302,8 +345,8 @@ function validateReviewFindings(rawFindings, changedFiles) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       return { valid: false, findings: [], index, error: 'finding must be an object' };
     }
-    if (!['P0', 'P1', 'P2'].includes(raw.severity)) {
-      return { valid: false, findings: [], index, error: 'finding severity must be P0, P1, or P2' };
+    if (!['P0', 'P1', 'P2', 'P3', 'NIT'].includes(raw.severity)) {
+      return { valid: false, findings: [], index, error: 'finding severity must be P0, P1, P2, P3, or NIT' };
     }
     const path = normalizePath(raw.path);
     if (!path) {
@@ -352,6 +395,8 @@ function validateReviewFindings(rawFindings, changedFiles) {
       body: raw.body.trim(),
       ...normalizeFindingReplacement(raw),
     };
+    const blockerEvidence = normalizeBlockerEvidence(raw.blockerEvidence);
+    if (blockerEvidence) finding.blockerEvidence = blockerEvidence;
     if (typeof raw.suggestion === 'string' && raw.suggestion.trim()) finding.suggestion = raw.suggestion.trim();
     if (typeof raw.confidence === 'number' && Number.isFinite(raw.confidence)) finding.confidence = raw.confidence;
     if (typeof raw.recommendation === 'string' && raw.recommendation.trim()) finding.recommendation = raw.recommendation.trim();
@@ -415,14 +460,18 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   // unverified premise, then collapse paraphrases. Severity of a cluster is the highest any
   // reporter kept after these per-finding passes, so one lane naming the real, verified defect is
   // enough to keep it P1 even when another lane only filed the same claim as a question.
-  const findings = clusterFindings(rawFindings.map(publishFinding), options);
+  const findings = clusterFindings(rawFindings.map((finding) => publishFinding(finding, options)), options);
   let p0Count = 0;
   let p1Count = 0;
   let p2Count = 0;
+  let p3Count = 0;
+  let nitCount = 0;
   for (const finding of findings) {
     if (finding.severity === 'P0') p0Count += 1;
     else if (finding.severity === 'P1') p1Count += 1;
     else if (finding.severity === 'P2') p2Count += 1;
+    else if (finding.severity === 'P3') p3Count += 1;
+    else if (finding.severity === 'NIT') nitCount += 1;
   }
 
   const panelSize = resolvePanelSize(options.panelSize, completedResults.length);
@@ -451,13 +500,16 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   } else if (p0Count > 0) {
     candidateVerdict = 'BLOCK';
     rationale = `Blocked on ${p0Count} critical P0 finding(s).`;
+  } else if (options.severityPolicyVersion === 'review-yeti-severity.v2' && p1Count > 0) {
+    candidateVerdict = 'FIX_FIRST';
+    rationale = `Changes requested for ${p1Count} verified P1 finding(s).`;
   } else if (p1Count >= blockP1) {
     candidateVerdict = 'BLOCK';
     rationale = `Blocked on ${p1Count} P1 finding(s) across ${panelSize} reviewer(s), at or above the blocking threshold of ${blockP1}.`;
   } else if (p1Count > 0) {
     candidateVerdict = 'FIX_FIRST';
     rationale = `Changes requested for ${p1Count} P1 finding(s) and ${p2Count} P2 nit(s).`;
-  } else if (p2BlocksMerge && p2Count >= fixP2) {
+  } else if (options.severityPolicyVersion !== 'review-yeti-severity.v2' && p2BlocksMerge && p2Count >= fixP2) {
     candidateVerdict = 'FIX_FIRST';
     rationale = `Changes requested for ${p2Count} P2 finding(s) across ${panelSize} reviewer(s), at or above the nit threshold of ${fixP2}.`;
   }
@@ -516,7 +568,7 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
     // bounds its fingerprint list on raw output, and clustering must not be able
     // to bring a runaway panel back under that bound.
     rawFindings,
-    metrics: { p0Count, p1Count, p2Count, totalFindings: findings.length, rawFindingCount: rawFindings.length },
+    metrics: { p0Count, p1Count, p2Count, p3Count, nitCount, totalFindings: findings.length, rawFindingCount: rawFindings.length },
     findings,
   };
 }

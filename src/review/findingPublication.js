@@ -3,12 +3,14 @@
 const { canonicalJson, sha256, normalizeFindingReplacement } = require('./reviewCore');
 const { compareClaims } = require('./claimSimilarity');
 
-const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2 });
+const SEVERITY_RANK = Object.freeze({ P0: 0, P1: 1, P2: 2, P3: 3, NIT: 4 });
 const INLINE_SEVERITIES = Object.freeze(Object.keys(SEVERITY_RANK));
 const SEVERITY_ALIASES = Object.freeze({
   P0: 'P0',
   P1: 'P1',
   P2: 'P2',
+  P3: 'P2',
+  NIT: 'P2',
   CRITICAL: 'P0',
   MAJOR: 'P1',
   MINOR: 'P2',
