@@ -131,6 +131,8 @@ function stateRow(executionAttempt = 2) {
     authoritative_gate_app_id: APP_ID,
     received_at: '2026-09-29T11:59:00.000Z',
     terminal_deadline: '2026-09-29T12:10:00.000Z',
+    delivery_id: 'delivery-incomplete-p2-fixture',
+    snapshot_digest: '9'.repeat(64),
   };
 }
 
@@ -145,11 +147,41 @@ function repositoryFixture(executionAttempt = 2) {
       }
       if (sql.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [] };
       if (sql.startsWith('SELECT gate.*, runs.status')) return { rows: [stateRow(executionAttempt)] };
+      if (sql.startsWith('INSERT INTO review_pr_lifecycles')) {
+        return { rows: [{ lifecycle_id: 'lifecycle-1', owner: 'example', repo: 'candidate' }] };
+      }
+      if (sql.startsWith('INSERT INTO review_pr_review_reservations')) {
+        return { rows: [{ reservation_id: 'reservation-1', status: 'reserved' }] };
+      }
+      if (sql.startsWith('SELECT reservation_id, lifecycle_id, delivery_id')) {
+        return { rows: [{ reservation_id: 'reservation-1', lifecycle_id: 'lifecycle-1',
+          delivery_id: 'delivery-incomplete-p2-fixture', head_sha: HEAD, base_sha: BASE,
+          policy_digest: POLICY, config_digest: CONFIG, context_digest: '9'.repeat(64), status: 'reserved' }] };
+      }
+      if (sql.startsWith('UPDATE review_pr_review_reservations')) {
+        return { rows: [{ lifecycle_id: 'lifecycle-1', reservation_id: 'reservation-1',
+          head_sha: HEAD, base_sha: BASE, policy_digest: POLICY, config_digest: CONFIG,
+          context_digest: '9'.repeat(64) }] };
+      }
+      if (sql.includes('FROM review_pr_lifecycles WHERE lifecycle_id = $1')) {
+        return { rows: [{ repository_id: 123, owner: 'example', repo: 'candidate', pr_number: 42 }] };
+      }
+      if (sql.startsWith('SELECT r.reservation_id, r.lifecycle_id, l.repository_id')) {
+        return { rows: [{ reservation_id: 'reservation-1', lifecycle_id: 'lifecycle-1', repository_id: 123,
+          pr_number: 42, head_sha: HEAD, base_sha: BASE, policy_digest: POLICY, config_digest: CONFIG,
+          context_digest: '9'.repeat(64), owner: 'example', repo: 'candidate' }] };
+      }
+      if (sql.startsWith('INSERT INTO review_pr_lifecycle_events')) return { rows: [{ event_id: 'event-1' }] };
       if (sql.startsWith('SELECT repository_id, pr_number, received_at, authoritative_gate_app_id')) {
         return { rows: [{ repository_id: 123, pr_number: 42, received_at: '2026-09-29T11:59:00.000Z', authoritative_gate_app_id: APP_ID }] };
       }
       if (sql.includes('FROM review_worker_completions completions')) return { rows: [] };
       if (sql.includes('FROM review_finding_rechecks request')) return { rows: [] };
+      if (sql.includes('FROM review_finding_recheck_admissions admission')
+        || sql.includes('FROM review_pr_lifecycle_events')
+        || sql.includes('FROM review_pr_review_reservations reservation')
+        || sql.startsWith('SELECT snapshot_digest, attempt FROM review_runs')
+        || sql.includes('SELECT payload FROM review_execution_checkpoints')) return { rows: [] };
       if (sql.startsWith('UPDATE review_gate_attempts')
         || sql.startsWith('INSERT INTO review_worker_completions')
         || sql.startsWith('UPDATE review_dispatch_outbox')
@@ -211,6 +243,15 @@ describe('incomplete P2 recovery Gate enforcement', () => {
     expect(gateDecision(fixture.calls)).toEqual({ status: 'success', eligible: true, reason: 'clean-review' });
     expect(fixture.calls.some(({ sql }) => sql === 'COMMIT')).toBe(true);
     expect(fixture.calls.some(({ sql }) => sql === 'ROLLBACK')).toBe(false);
+    const reservationInsert = fixture.calls.find(({ sql }) => sql.startsWith('INSERT INTO review_pr_review_reservations'));
+    expect(reservationInsert?.values).toEqual([
+      expect.any(String), 'lifecycle-1', RUN, 2, 'delivery-incomplete-p2-fixture', HEAD, BASE, POLICY, CONFIG,
+      '9'.repeat(64), NOW,
+    ]);
+    expect(fixture.calls.filter(({ sql }) => sql.startsWith('INSERT INTO review_pr_lifecycle_events'))
+      .map(({ values }) => values?.[4])).toEqual([
+      'review.reserved', 'review.completed', 'review.completion_recorded',
+    ]);
     expect(recoveryMocks.load).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       runId: RUN, executionAttempt: 2, repositoryId: 123, expectedAppId: APP_ID,
       identity: expect.objectContaining({ owner: 'example', repo: 'candidate', prNumber: 42,

@@ -71,6 +71,9 @@ function setup() {
   let recheckRow: Record<string, unknown> | undefined;
   let gateCurrentAttempt = true;
   let admissionCreated = false;
+  let admissionRow: Record<string, unknown> | undefined;
+  let targetGateCoordinates: Record<string, unknown> | undefined;
+  const lifecycleEvents: Array<Record<string, unknown>> = [];
   let terminalSourceCompletionBytes = canonicalJson(sourcePayload);
   const transactionClient = {
     query: vi.fn(async (sql: string, values?: unknown[]) => {
@@ -97,12 +100,21 @@ function setup() {
           effective_policy_digest: identity.policyDigest, attempt: 2, worker_execution_attempt: 2 }] };
       }
       if (sql.includes('INSERT INTO review_gate_attempts')) {
-        return { rows: [{ coordinates: JSON.parse(String(values?.[7])), review_generation: 2, expected_app_id: 4385771,
+        targetGateCoordinates = JSON.parse(String(values?.[7]));
+        return { rows: [{ coordinates: targetGateCoordinates, review_generation: 2, expected_app_id: 4385771,
           external_id: 'fresh-gate', check_id: null, creation_state: 'reserved', desired_state: 'queued',
           desired_version: 0, published_version: -1, current_attempt: true }] };
       }
       if (sql.includes('INSERT INTO review_finding_recheck_admissions')) {
         admissionCreated = true;
+        admissionRow = {
+          run_id: values?.[0], source_execution_attempt: values?.[1], trigger_request_id: values?.[2],
+          execution_attempt: values?.[3], review_generation: values?.[4], gate_attempt_id: values?.[5],
+          requested_by: values?.[6], target_gate_generation: 2, target_gate_execution_attempt: 2,
+          target_gate_repository_id: identity.repositoryId, target_gate_pr_number: identity.prNumber,
+          target_gate_coordinates: targetGateCoordinates, target_gate_expected_app_id: 4385771,
+          target_gate_current_attempt: true, current_generation: 2, authoritative_gate_app_id: 4385771,
+        };
         return { rows: [] };
       }
       if (sql.includes('WITH latest_run AS')) {
@@ -122,6 +134,7 @@ function setup() {
           admitted_review_generation: admissionCreated ? 2 : null,
           outbox_execution_attempt: admissionCreated ? 1 : 0,
           outbox_status: admissionCreated ? 'pending' : 'terminal',
+          snapshot_digest: '9'.repeat(64), outbox_delivery_id: 'delivery-recheck-source',
           execution_attempt: 1,
           content_digest: sourceDigest,
           payload: sourcePayload,
@@ -191,7 +204,65 @@ function setup() {
         };
         return { rows: [] };
       }
+      if (sql.startsWith('SELECT r.reservation_id, r.lifecycle_id, l.repository_id')) {
+        return { rows: [{ reservation_id: 'source-reservation-1', lifecycle_id: 'lifecycle-1',
+          repository_id: identity.repositoryId, pr_number: identity.prNumber,
+          head_sha: identity.headSha, base_sha: identity.baseSha, policy_digest: identity.policyDigest,
+          config_digest: identity.configDigest, context_digest: '9'.repeat(64),
+          owner: identity.owner, repo: identity.repo, status: 'failed', completion_digest: sourceDigest }] };
+      }
+      if (sql.startsWith('INSERT INTO review_pr_lifecycles')) {
+        return { rows: [{ lifecycle_id: 'lifecycle-1', owner: identity.owner, repo: identity.repo }] };
+      }
+      if (sql.startsWith('INSERT INTO review_pr_review_reservations')) {
+        return { rows: [{ reservation_id: 'target-reservation-2', status: 'reserved' }] };
+      }
+      if (sql.startsWith('SELECT reservation_id, lifecycle_id, delivery_id')) {
+        return { rows: [{ reservation_id: 'target-reservation-2', lifecycle_id: 'lifecycle-1',
+          delivery_id: 'delivery-recheck-source', head_sha: identity.headSha, base_sha: identity.baseSha,
+          policy_digest: identity.policyDigest, config_digest: identity.configDigest,
+          context_digest: '9'.repeat(64), status: 'reserved' }] };
+      }
+      if (sql.startsWith('INSERT INTO review_pr_lifecycle_events')) {
+        const [eventId, lifecycleId, reservationId, idempotencyKey, eventType, runId, executionAttempt,
+          repositoryId, prNumber, headSha, baseSha, policyDigest, configDigest, contextDigest, evidenceDigest,
+          actorDigest, _verificationStatus, payload] = values ?? [];
+        if (eventType === 'finding.recheck_requested' || eventType === 'finding.recheck_target_admitted') {
+          lifecycleEvents.push({ event_id: eventId, lifecycle_id: lifecycleId,
+            reservation_id: reservationId, idempotency_key: idempotencyKey,
+            event_type: eventType, run_id: runId, execution_attempt: executionAttempt,
+            repository_id: repositoryId, pr_number: prNumber, head_sha: headSha, base_sha: baseSha,
+            policy_digest: policyDigest, config_digest: configDigest, context_digest: contextDigest,
+            evidence_digest: evidenceDigest, actor_digest: actorDigest,
+            payload: JSON.parse(String(payload)) });
+        }
+        return { rows: [{ event_id: 'event-1' }] };
+      }
       if (sql.includes('SELECT request.*')) return { rows: recheckRow ? [recheckRow] : [] };
+      if (sql.includes('FROM review_finding_recheck_admissions admission')) {
+        return { rows: admissionRow ? [admissionRow] : [] };
+      }
+      if (sql.includes('FROM review_pr_lifecycle_events')) {
+        return { rows: lifecycleEvents.filter((event) => Number(event.execution_attempt) === Number(values?.[1])
+          || Number(event.execution_attempt) === Number(values?.[2])) };
+      }
+      if (sql.includes('FROM review_pr_review_reservations reservation')) {
+        return { rows: [
+          { reservation_id: 'source-reservation-1', lifecycle_id: 'lifecycle-1', run_id: identity.runId, execution_attempt: 1,
+            status: 'failed', completion_digest: sourceDigest, decision_receipt: { status: 'failure' },
+            head_sha: identity.headSha, base_sha: identity.baseSha,
+            policy_digest: identity.policyDigest, config_digest: identity.configDigest, context_digest: '9'.repeat(64),
+            repository_id: identity.repositoryId, owner: identity.owner, repo: identity.repo, pr_number: identity.prNumber },
+          ...(admissionCreated ? [{ reservation_id: 'target-reservation-2', lifecycle_id: 'lifecycle-1',
+            run_id: identity.runId, execution_attempt: 2, status: 'reserved', completion_digest: null,
+            decision_receipt: null, head_sha: identity.headSha, base_sha: identity.baseSha,
+            policy_digest: identity.policyDigest, config_digest: identity.configDigest, context_digest: '9'.repeat(64),
+            repository_id: identity.repositoryId, owner: identity.owner, repo: identity.repo, pr_number: identity.prNumber }] : []),
+        ] };
+      }
+      if (sql.includes('SELECT snapshot_digest, attempt')) {
+        return { rows: [{ snapshot_digest: '9'.repeat(64), attempt: admissionCreated ? 2 : 1 }] };
+      }
       if (sql.includes('SELECT runs.status, outbox.worker_token_digest')) {
         return { rows: [{ status: 'running', worker_token_digest: sha256(workerToken) }] };
       }
@@ -326,6 +397,16 @@ describe('REL-1265 dispute re-review flow', () => {
     expect(adjudicateDispute).not.toHaveBeenCalled();
     expect(f.calls.some(({ sql }) => /UPDATE\s+review_worker_completions/iu.test(sql))).toBe(false);
     expect(f.calls.some(({ sql }) => sql.includes('INSERT INTO review_finding_recheck_admissions'))).toBe(true);
+    const targetReservation = f.calls.find(({ sql }) => sql.startsWith('INSERT INTO review_pr_review_reservations'));
+    expect(targetReservation?.values).toEqual([
+      expect.any(String), 'lifecycle-1', identity.runId, 2, 'delivery-recheck-source',
+      identity.headSha, identity.baseSha, identity.policyDigest, identity.configDigest,
+      '9'.repeat(64), expect.any(Number),
+    ]);
+    expect(f.calls.filter(({ sql }) => sql.startsWith('INSERT INTO review_pr_lifecycle_events'))
+      .map(({ values }) => values?.[4])).toEqual([
+      'finding.recheck_requested', 'review.reserved', 'finding.recheck_target_admitted',
+    ]);
     expect(f.sourceBytes).toBe(sourceBytesBefore);
     expect(workerReviewCompletionDigest(f.sourcePayload)).toBe(digestBefore);
 

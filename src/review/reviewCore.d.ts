@@ -2,7 +2,7 @@ export type CanonicalVerdict = 'SHIP' | 'FIX_FIRST' | 'BLOCK';
 export type ReviewStatus = CanonicalVerdict | 'INCOMPLETE_REVIEW';
 
 export interface ReviewFinding {
-  severity: 'P0' | 'P1' | 'P2';
+  severity: 'P0' | 'P1' | 'P2' | 'P3' | 'NIT';
   path: string;
   line: number;
   title: string;
@@ -13,10 +13,12 @@ export interface ReviewFinding {
   /** First new-file line to replace; omitted means line. */
   startLine?: number;
   confidence?: number;
+  /** Structured evidence required for a P0/P1 under `review-yeti-severity.v2`. */
+  blockerEvidence?: { trigger: string; impact: string; violatedContract: string };
   /** Number of persona lanes whose findings collapsed into this one (>= 1 after arbitration). */
   reporters?: number;
   /** Present when arbitration re-filed a P1 as P2 on an advisory-claim title. */
-  severityAdjusted?: { from: 'P1'; reason: string };
+  severityAdjusted?: { from: 'P0' | 'P1' | 'P2' | 'P3' | 'NIT'; reason: string };
   /** Original severity before an unverified-premise downgrade; present only with downgrade_reason. */
   downgradedFrom?: 'P0' | 'P1';
   /** Present when arbitration re-filed a P0/P1 as P2 because its body hedged on an unverified premise. */
@@ -55,7 +57,7 @@ export interface CanonicalArbitration {
   rationale: string;
   thresholds: { blockP1: number; fixP2: number };
   rawFindings: CanonicalFinding[];
-  metrics: { p0Count: number; p1Count: number; p2Count: number; totalFindings: number; rawFindingCount: number };
+  metrics: { p0Count: number; p1Count: number; p2Count: number; p3Count: number; nitCount: number; totalFindings: number; rawFindingCount: number };
   findings: ReviewFinding[];
 }
 
@@ -74,6 +76,8 @@ export interface ArbitrationOptions {
    * reusing the clean-panel "Quorum satisfied" sentence (REL-491).
    */
   p2BlocksMerge?: boolean;
+  /** Present only when the trusted prepared policy explicitly activates v2 semantics. */
+  severityPolicyVersion?: 'review-yeti-severity.v2';
   /**
    * Overrides the panel-size the blocking/nit thresholds scale from (see `resolvePanelSize` in
    * `reviewCore.js`). Required from any caller whose `personaResults.length` is not a count of
@@ -104,7 +108,7 @@ export const UNVERIFIED_PREMISE_PHRASES: readonly string[];
 export function hasUnverifiedPremise(text: string): boolean;
 export function downgradeUnverifiedPremise(finding: ReviewFinding): ReviewFinding;
 /** Every per-finding pass `computeArbitration` applies before clustering: the published severity. */
-export function publishFinding(finding: ReviewFinding): ReviewFinding;
+export function publishFinding(finding: ReviewFinding, options?: ArbitrationOptions): ReviewFinding;
 export function clusterFindings(findings: ReviewFinding[]): ReviewFinding[];
 export interface ReviewFindingsValidation {
   valid: boolean;

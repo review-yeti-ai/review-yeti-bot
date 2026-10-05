@@ -28,14 +28,20 @@ const centralPolicySchema = z.object({
   schema: z.string().regex(/^[a-z0-9][a-z0-9-]*\.review-policy\.v1$/u),
   review_yeti: z.object({
     personas: z.string().min(1).max(2_000),
+    profile: z.enum(['chill', 'balanced', 'assertive']).optional(),
+    severity_policy: z.literal('review-yeti-severity.v2').optional(),
     budget: z.object({
       max_investigation_turns: z.number().int().positive().max(100),
       max_reviewed_lockfile_patch_chars: z.number().int()
         .min(DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS)
         .max(HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS)
-        .optional(),
+      .optional(),
     }),
   }),
+  repository_overrides: z.record(
+    z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u),
+    z.object({ severity_policy: z.literal('review-yeti-severity.v2').optional() }).passthrough(),
+  ).optional(),
 });
 
 export interface PreparedPublishingPolicy {
@@ -69,15 +75,33 @@ export function parsePreparedReviewExecution(json: string, expectedDigest: strin
  * central policy or credentials. The existing DOKS Bifrost provider selection
  * and turn clamp remain owned by the shared worker resolver. */
 export function preparePublishingPolicy(file: ImmutableReviewPolicyFile,
-  transport: PreparedPublishingPolicy['transport']): PreparedPublishingPolicy {
+  transport: PreparedPublishingPolicy['transport'],
+  trustedTarget?: { owner: string; repo: string }): PreparedPublishingPolicy {
   try {
     const resolvedTransport = transportSchema.parse(transport);
     const source = reviewPolicySourceSchema.parse(file.source);
     if (typeof file.content !== 'string' || Buffer.byteLength(file.content, 'utf8') > 256 * 1024
       || createHash('sha256').update(file.content).digest('hex') !== source.contentDigest) throw new Error();
     const raw: unknown = JSON.parse(file.content);
-    centralPolicySchema.parse(raw);
-    const effective = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: file.content }, { ...resolvedTransport, apiKey: '' });
+    const parsedPolicy = centralPolicySchema.parse(raw);
+    const trustedRepository = trustedTarget
+      ? `${z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u).parse(trustedTarget.owner)}/${z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u).parse(trustedTarget.repo)}`
+      : undefined;
+    const matchingOverrides = trustedRepository === undefined ? [] : Object.entries(parsedPolicy.repository_overrides ?? {})
+      .filter(([repository]) => repository.toLowerCase() === trustedRepository.toLowerCase());
+    if (matchingOverrides.length > 1) throw new Error('duplicate canonical repository override');
+    const selectedOverride = matchingOverrides[0]?.[1];
+    const selectedSeverityPolicy = selectedOverride?.severity_policy ?? parsedPolicy.review_yeti.severity_policy;
+    const rawPolicy = raw as Record<string, any>;
+    const effectivePolicy = {
+      ...rawPolicy,
+      review_yeti: {
+        ...rawPolicy.review_yeti,
+        ...(selectedSeverityPolicy === undefined ? {} : { severity_policy: selectedSeverityPolicy }),
+      },
+    };
+    const effectivePolicyJson = JSON.stringify(effectivePolicy);
+    const effective = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: effectivePolicyJson }, { ...resolvedTransport, apiKey: '' });
     const config = ctReviewConfigV3Schema.parse(effective);
     const expectedPersonaIds = config.personas.filter((persona) => persona.enabled).map((persona) => persona.id);
     if (expectedPersonaIds.length === 0 || expectedPersonaIds.length > 64
@@ -87,7 +111,12 @@ export function preparePublishingPolicy(file: ImmutableReviewPolicyFile,
       version: 'PreparedPublishingPolicy.v1', config, expectedPersonaIds, transport: resolvedTransport,
       policy: fingerprintTrustedReviewPolicy({
         effectiveConfig: { config, transport: resolvedTransport },
-        effectivePolicy: { central: raw, execution: { provider: 'bifrost', ...resolvedTransport } },
+        effectivePolicy: {
+          central: raw,
+          targetRepository: selectedOverride === undefined ? null : trustedRepository?.toLowerCase() ?? null,
+          selectedRepositoryOverride: selectedOverride ?? null,
+          execution: { provider: 'bifrost', ...resolvedTransport },
+        },
         sources: [source],
       }),
     };

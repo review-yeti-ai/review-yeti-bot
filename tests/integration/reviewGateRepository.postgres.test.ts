@@ -27,6 +27,7 @@ import {
 } from '../../src/persistence/reviewGateRepository';
 import { reviewDispatchPrLockKey } from '../../src/persistence/reviewCiPersistence';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
+import { REVIEW_PR_LIFECYCLE_SCHEMA_SQL } from '../../src/persistence/reviewPrLifecycleSchema';
 import { REVIEW_GENERATION_RECOVERY_SCHEMA_SQL } from '../../src/persistence/reviewGenerationRecoverySchema';
 import { REVIEW_CI_SCHEMA_SQL } from '../../src/persistence/reviewCiSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
@@ -43,6 +44,8 @@ import { getReviewFindingId } from '../../src/mcp/server/tools/findingIdentity';
 import { disputedFindingRecheckDigest } from '../../src/review/disputedFindingRecheck';
 import { INCREMENTAL_REVIEW_CLAIM_VERSION } from '../../src/review/incrementalReviewClaim';
 import { VERDICT_CACHE_CLAIM_VERSION } from '../../src/review/verdictCacheClaim';
+import { recordPrFindingRecheckRequest, reservePrFindingRecheckTarget, reservePrReview,
+  transitionPrReviewReservation } from '../../src/persistence/reviewPrLifecycleRepository';
 
 const databaseUrl = postgresDatabaseUrl();
 const describeWithPostgres = describeWithPostgresShared;
@@ -53,6 +56,15 @@ const WORKER_PROOF = { workerTokenDigest: 'd'.repeat(64) };
 const RECEIVED_AT = Date.parse('2026-09-09T12:00:00.000Z');
 const COMPLETED_AT = RECEIVED_AT + 60_000;
 const ENABLED_LIFECYCLE_EVENTS = { lifecycleEvents: 'enabled' as const };
+async function withGlobalMaintenanceAvailability<T>(action: () => Promise<T>): Promise<T> {
+  const previous = process.env['REVIEW_YETI_PASSTHROUGH'];
+  process.env['REVIEW_YETI_PASSTHROUGH'] = 'true';
+  try { return await action(); }
+  finally {
+    if (previous === undefined) delete process.env['REVIEW_YETI_PASSTHROUGH'];
+    else process.env['REVIEW_YETI_PASSTHROUGH'] = previous;
+  }
+}
 // PostgreSQL advisory locks are database-global, not scoped by this suite's
 // random search_path schema. Use a high randomized repository id so concurrent
 // Postgres files cannot make reaper try-lock assertions intermittently skip a
@@ -97,10 +109,11 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       INSERT INTO review_runs (
         run_id, owner, repo, pr_number, head_sha, base_sha,
         effective_policy_digest, publication_mode, status, attempt, repository_id,
-        effective_config_digest, received_at, terminal_deadline, authoritative_gate_app_id
+        effective_config_digest, delivery_id, snapshot_digest, received_at, terminal_deadline, authoritative_gate_app_id
       ) VALUES ($1, 'exampleorg', 'example-review-actions', $2, $3, $4,
-        $5, 'app-gate', 'queued', $6, $7, $8, to_timestamp($9/1000.0), to_timestamp(($9+900000)/1000.0), $10)
-    `, [id, prNumber, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64), generation, repositoryId, CONFIG_DIGEST, RECEIVED_AT, APP_ID]);
+        $5, 'app-gate', 'queued', $6, $7, $8, $9, $10, to_timestamp($11/1000.0), to_timestamp(($11+900000)/1000.0), $12)
+    `, [id, prNumber, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64), generation, repositoryId,
+      CONFIG_DIGEST, `delivery-${id}`, sha256(`snapshot-${id}`), RECEIVED_AT, APP_ID]);
     await pool!.query(`
       INSERT INTO review_dispatch_outbox (run_id, status, execution_attempt)
       VALUES ($1, 'pending', $2)
@@ -175,6 +188,8 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
           attempt INTEGER NOT NULL,
           repository_id BIGINT NOT NULL,
           effective_config_digest VARCHAR(64) NOT NULL,
+          delivery_id TEXT,
+          snapshot_digest VARCHAR(64),
           received_at TIMESTAMPTZ NOT NULL,
           terminal_deadline TIMESTAMPTZ,
           stage TEXT NOT NULL DEFAULT 'admission',
@@ -199,6 +214,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         );
       `);
       await client.query(REVIEW_GATE_SCHEMA_SQL);
+      await client.query(REVIEW_PR_LIFECYCLE_SCHEMA_SQL);
       await client.query(REVIEW_GENERATION_RECOVERY_SCHEMA_SQL);
       await client.query(REVIEW_EVENT_SCHEMA_SQL);
     } finally {
@@ -207,7 +223,9 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
   });
 
   afterEach(async () => {
-    await pool?.query('TRUNCATE review_event_outbox, review_event_sequence_counters, review_gate_attempts, review_dispatch_outbox, review_runs CASCADE');
+    await pool?.query(`TRUNCATE review_pr_lifecycle_events, review_semantic_finding_events,
+      review_pr_review_reservations, review_pr_lifecycles, review_event_outbox,
+      review_event_sequence_counters, review_gate_attempts, review_dispatch_outbox, review_runs CASCADE`);
   });
 
   afterAll(async () => {
@@ -1085,6 +1103,8 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         finding: sourceFinding, counterArgument, counterArgumentDigest: sha256(counterArgument),
       };
       const requestDigest = disputedFindingRecheckDigest(unsigned);
+      const actorDigest = sha256('authenticated-test-actor');
+      const sourceContextDigest = sha256(`snapshot-${id}`);
 
       // This fixture pins the production a2→a3 numbering: logical run generations are 1→2,
       // while the worker executions and Gate IDs are g1-e2→g2-e3.
@@ -1110,11 +1130,11 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
          policy_digest, config_digest, finding_id, persona_id, task_id, finding, counter_argument,
          counter_argument_digest, request_digest, requested_by)
         VALUES ($1, $2, 2, $3, $4, $5, $6, $7, $8, 42, $9, $10, $11, $12, $13, $14, $15,
-          $16::jsonb, $17, $18, $19, 'rel1265-gate-test')`,
+          $16::jsonb, $17, $18, $19, $20)`,
       [unsigned.requestId, id, sourceDigest, unsigned.sourcePlanDigest, sourceCoordinates.attemptId,
         REPOSITORY_ID, unsigned.owner, unsigned.repo, unsigned.headSha, unsigned.baseSha, unsigned.policyDigest,
         CONFIG_DIGEST, findingId, task.id, task.id, JSON.stringify(sourceFinding), counterArgument,
-        unsigned.counterArgumentDigest, requestDigest]);
+        unsigned.counterArgumentDigest, requestDigest, actorDigest]);
       await pool!.query(`INSERT INTO review_gate_attempts
         (attempt_id, run_id, review_generation, execution_attempt, repository_id, pr_number, expected_app_id,
          coordinates, external_id, check_id, creation_state, desired_state, desired_version, published_version,
@@ -1122,6 +1142,29 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         VALUES ($1, $2, 2, 3, $3, 42, $4, $5::jsonb, $6, 72002, 'bound', 'queued', 0, -1, true)`,
       [currentCoordinates.attemptId, id, REPOSITORY_ID, APP_ID, JSON.stringify(currentCoordinates),
         deriveReviewGateExternalId(currentCoordinates)]);
+      await reservePrReview(pool!, {
+        repositoryId: REPOSITORY_ID, owner: unsigned.owner, repo: unsigned.repo, prNumber: unsigned.prNumber,
+        runId: id, executionAttempt: 2, deliveryId: `delivery-${id}`, headSha: unsigned.headSha,
+        baseSha: unsigned.baseSha, policyDigest: unsigned.policyDigest, configDigest: unsigned.configDigest,
+        contextDigest: sourceContextDigest,
+      });
+      await transitionPrReviewReservation(pool!, { runId: id, executionAttempt: 2, status: 'failed',
+        completionDigest: sourceDigest, decisionReceipt: { gateDecision: { status: 'failure', eligible: false } } });
+      await recordPrFindingRecheckRequest(pool!, { runId: id, sourceExecutionAttempt: 2,
+        requestId: unsigned.requestId, findingId, actorDigest, sourceContentDigest: sourceDigest,
+        sourceContextDigest, requestDigest });
+      await reservePrFindingRecheckTarget(pool!, { repositoryId: REPOSITORY_ID,
+        owner: unsigned.owner, repo: unsigned.repo, prNumber: unsigned.prNumber, runId: id,
+        deliveryId: `delivery-${id}`, sourceExecutionAttempt: 2, executionAttempt: 3,
+        requestId: unsigned.requestId, requestDigest, sourceContentDigest: sourceDigest,
+        sourceContextDigest, headSha: unsigned.headSha, baseSha: unsigned.baseSha,
+        policyDigest: unsigned.policyDigest, configDigest: unsigned.configDigest,
+        candidateContextDigest: sourceContextDigest, actorDigest });
+      await pool!.query(`INSERT INTO review_finding_recheck_admissions
+        (run_id, source_execution_attempt, trigger_request_id, execution_attempt, review_generation,
+         gate_attempt_id, requested_by, received_at, terminal_deadline)
+        VALUES ($1, 2, $2, 3, 2, $3, $4, to_timestamp(100 / 1000.0), to_timestamp(9999999 / 1000.0))`,
+      [id, unsigned.requestId, currentCoordinates.attemptId, actorDigest]);
 
       if (receiptPersisted) {
         const checkpoint = {
@@ -1693,11 +1736,12 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     });
 
     it.each(['headSha', 'baseSha', 'policyDigest', 'closed'] as const)(
-      'cancels against current trusted %s changes without reviving the candidate', async (field) => {
+      'keeps current trusted %s checks active when maintenance availability is enabled', async (field) => {
         const { id, repository, event, resolve, trusted } = await completionFixture();
         if (field === 'closed') trusted.current.open = false;
         else trusted.current[field] = 'f'.repeat(field === 'policyDigest' ? 64 : 40);
-        await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+        await expect(withGlobalMaintenanceAvailability(() =>
+          repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT))).resolves.toBe('recorded');
         expectTerminalState(await snapshot(id), event, 'cancelled', field === 'closed' ? 'pull-request-closed' : 'candidate-superseded');
         const cancelled = await snapshot(id);
         await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT + 1_000)).resolves.toBe('ignored');
@@ -1911,6 +1955,13 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       }, COMPLETED_AT)).rejects.toMatchObject({ stage: 'trusted-completion-resolution' });
       expect(await snapshot(id)).toEqual(before);
       await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+      expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
+    });
+
+    it('does not treat global maintenance availability as a worker-completion waiver', async () => {
+      const { id, repository, event, resolve } = await completionFixture();
+      await expect(withGlobalMaintenanceAvailability(() =>
+        repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT))).resolves.toBe('recorded');
       expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
     });
 

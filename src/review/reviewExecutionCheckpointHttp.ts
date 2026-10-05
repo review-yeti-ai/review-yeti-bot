@@ -5,7 +5,7 @@ import {
   parseReviewExecutionCheckpoint,
   type ReviewExecutionCheckpoint,
 } from './reviewExecutionCheckpoint';
-import { MAX_DISPUTE_RECHECKS_PER_REVIEW, MAX_DISPUTE_RECHECK_RESPONSE_BYTES } from './disputedFindingRecheckLimits';
+import { MAX_DISPUTE_RECHECKS_PER_BATCH, MAX_DISPUTE_RECHECK_RESPONSE_BYTES } from './disputedFindingRecheckLimits';
 import { parseDisputedFindingRecheck, type DisputedFindingRecheck } from './disputedFindingRecheck';
 
 export interface ReviewExecutionCheckpointAdapter {
@@ -51,7 +51,7 @@ export class HttpReviewExecutionCheckpointAdapter implements ReviewExecutionChec
       : Array.isArray(json.disputedFindingRechecks)
       ? json.disputedFindingRechecks.map(parseDisputedFindingRecheck)
       : (() => { throw new Error('Invalid disputed finding re-review response'); })();
-    if (disputedFindingRechecks.length > MAX_DISPUTE_RECHECKS_PER_REVIEW || (disputedFindingRechecks.length > 0 && !checkpoint)) {
+    if (disputedFindingRechecks.length > MAX_DISPUTE_RECHECKS_PER_BATCH || (disputedFindingRechecks.length > 0 && !checkpoint)) {
       throw new Error('Invalid disputed finding re-review response');
     }
     return { checkpoint, disputedFindingRechecks };

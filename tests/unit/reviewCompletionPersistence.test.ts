@@ -40,6 +40,7 @@ function enrolledStateRow() {
     run_status: 'queued', outbox_status: 'pending', effective_config_digest: event.configDigest,
     current_generation: 2, authoritative_gate_app_id: 77, artifacts: {},
     received_at: '2026-09-09T11:59:00.000Z', terminal_deadline: '2026-09-09T12:10:00.000Z',
+    delivery_id: 'delivery-fixture-1', snapshot_digest: 'a'.repeat(64),
   };
 }
 
@@ -73,7 +74,7 @@ describe('worker completion persistence diagnostics', () => {
     expect(workerCompletionPersistenceStages).toEqual([
       'transaction-begin', 'binding-lookup', 'advisory-lock', 'state-load',
       'trusted-completion-resolution', 'gate-update', 'completion-insert',
-      'outbox-update', 'run-update', 'lifecycle-append',
+      'semantic-history', 'outbox-update', 'run-update', 'lifecycle-append',
       'eligible-completion-hook', 'commit',
     ]);
   });
@@ -170,6 +171,7 @@ describe('worker completion persistence diagnostics', () => {
       .map((substage) => ({ stage: 'trusted-completion-resolution', resolver: true, substage })),
     { stage: 'gate-update', matches: (sql: string) => sql.startsWith('UPDATE review_gate_attempts') },
     { stage: 'completion-insert', matches: (sql: string) => sql.startsWith('INSERT INTO review_worker_completions') },
+    { stage: 'semantic-history', matches: (sql: string) => sql.startsWith('INSERT INTO review_pr_lifecycles') },
     { stage: 'outbox-update', matches: (sql: string) => sql.startsWith('UPDATE review_dispatch_outbox') },
     { stage: 'run-update', matches: (sql: string) => sql.startsWith('UPDATE review_runs') },
     { stage: 'lifecycle-append', lifecycleEvents: 'enabled' as const,
@@ -189,7 +191,40 @@ describe('worker completion persistence diagnostics', () => {
         if (sql.startsWith('SELECT repository_id, pr_number')) return { rows: [{ repository_id: 123, pr_number: 42 }] };
         if (sql.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [] };
         if (sql.startsWith('SELECT gate.*, runs.status')) return { rows: [state] };
+        if (sql.startsWith('INSERT INTO review_pr_lifecycles')) {
+          return { rows: [{ lifecycle_id: 'lifecycle-1', owner: 'exampleorg', repo: 'example' }] };
+        }
+        if (sql.startsWith('INSERT INTO review_pr_review_reservations')) {
+          return { rows: [{ reservation_id: 'reservation-1', status: 'reserved' }] };
+        }
+        if (sql.startsWith('SELECT reservation_id, lifecycle_id, delivery_id')) {
+          return { rows: [{ reservation_id: 'reservation-1', lifecycle_id: 'lifecycle-1', delivery_id: state.delivery_id,
+            head_sha: state.coordinates.headSha, base_sha: state.coordinates.baseSha,
+            policy_digest: state.coordinates.policyDigest, config_digest: state.coordinates.configDigest,
+            context_digest: state.snapshot_digest, status: 'reserved' }] };
+        }
+        if (sql.startsWith('UPDATE review_pr_review_reservations')) {
+          return { rows: [{ lifecycle_id: 'lifecycle-1', reservation_id: 'reservation-1',
+            head_sha: state.coordinates.headSha, base_sha: state.coordinates.baseSha,
+            policy_digest: state.coordinates.policyDigest, config_digest: state.coordinates.configDigest,
+            context_digest: state.snapshot_digest }] };
+        }
+        if (sql.includes('FROM review_pr_lifecycles WHERE lifecycle_id = $1')) {
+          return { rows: [{ repository_id: 123, owner: 'exampleorg', repo: 'example', pr_number: 42 }] };
+        }
+        if (sql.startsWith('SELECT r.reservation_id, r.lifecycle_id, l.repository_id')) {
+          return { rows: [{ reservation_id: 'reservation-1', lifecycle_id: 'lifecycle-1', repository_id: 123,
+            pr_number: 42, head_sha: state.coordinates.headSha, base_sha: state.coordinates.baseSha,
+            policy_digest: state.coordinates.policyDigest, config_digest: state.coordinates.configDigest,
+            context_digest: state.snapshot_digest, owner: 'exampleorg', repo: 'example' }] };
+        }
+        if (sql.startsWith('INSERT INTO review_pr_lifecycle_events')) return { rows: [{ event_id: 'event-1' }] };
         if (sql.includes('FROM review_finding_rechecks request')) return { rows: [] };
+        if (sql.includes('FROM review_finding_recheck_admissions admission')
+          || sql.includes('FROM review_pr_lifecycle_events')
+          || sql.includes('FROM review_pr_review_reservations reservation')
+          || sql.startsWith('SELECT snapshot_digest, attempt FROM review_runs')
+          || sql.includes('SELECT payload FROM review_execution_checkpoints')) return { rows: [] };
         // Ordinary attempt 2 has no retained-finding archive or incomplete Gate.
         if (sql.includes('FROM review_runs') && (sql.includes('SELECT repository_id, owner')
           || sql.includes('SELECT run_id, repository_id'))) {

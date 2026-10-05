@@ -1308,7 +1308,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       const attempt = (personaAttempts.get(persona) || 0) + 1;
       personaAttempts.set(persona, attempt);
       const body = persona === 'sec-lane' && attempt === 1
-        ? { decision: 'FINDINGS', findings: [{ severity: 'P3', path: 'src/security/auth.ts', line: 1, title: 'Invalid severity', body: 'This must be corrected.' }] }
+        ? { decision: 'FINDINGS', findings: [{ severity: 'HIGH', path: 'src/security/auth.ts', line: 1, title: 'Invalid severity', body: 'This must be corrected.' }] }
         : { decision: 'APPROVE', findings: [] };
       return {
         model: opts.model,

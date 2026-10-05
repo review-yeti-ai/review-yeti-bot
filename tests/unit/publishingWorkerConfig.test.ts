@@ -5,6 +5,8 @@ import {
   STATIC_FALLBACK_ECOSYSTEM_PATHS,
 } from '../../src/config/publishingWorkerConfig';
 import { CompiledDomainIndex, loadCompiledIndex } from '../../src/pipeline/domainIndex';
+import { resolveComposedEngineMaxTurns, resolveTaskTurnCeiling } from '../../src/panel/composedEngine';
+import { resolveComposedMaxTasks } from '../../src/reviewTaskContract';
 
 describe('publishingWorkerConfig', () => {
   it('keeps the default lockfile cap implicit and projects an explicitly admitted bounded cap', () => {
@@ -177,8 +179,6 @@ describe('publishingWorkerConfig', () => {
             max_tasks: 4,
             max_turns_total: 20,
             max_turns_per_task: 3,
-            require_security_task: true,
-            task_dimensions: ['security', 'performance'],
           },
         },
       }),
@@ -189,14 +189,14 @@ describe('publishingWorkerConfig', () => {
       max_tasks: 4,
       max_turns_total: 20,
       max_turns_per_task: 3,
-      task_dimensions: ['security', 'performance'],
     });
-    // `require_security_task` is present in the policy blob above and is deliberately NOT
-    // projected. The composed plan's security floor is the defence against a diff that coaxes the
-    // model into skipping auth review (ADR 0639); it is heuristic-derived and not satisfiable by a
-    // corrective turn. A boolean policy key for it would offer exactly one meaningful value --
-    // false -- so the key does not exist, and a policy that sets it is ignored rather than obeyed.
-    expect(config.composed).not.toHaveProperty('require_security_task');
+  });
+
+  it.each(['task_dimensions', 'require_security_task'])('rejects unsupported composed policy key %s', (key) => {
+    const transport = { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' };
+    expect(() => resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'security', review_engine: 'composed', composed: { [key]: ['security'] },
+    } }) }, transport)).toThrow(/review policy could not be parsed/u);
   });
 
   it.each(['dsh', 'deepseek-harness'])('uses composed only for an explicit %s fallback while preserving the public panel default', (engine) => {
@@ -214,13 +214,76 @@ describe('publishingWorkerConfig', () => {
     } }) }, transport)).toThrow(/review policy could not be parsed/u);
   });
 
-  it('falls back to panel for an unrecognized review_engine value (fail-inert, not fail-open to a guess)', () => {
-    const config = resolveWorkerConfig({
-      REVIEW_YETI_POLICY_JSON: JSON.stringify({
-        review_yeti: { personas: 'security', budget: { max_investigation_turns: 5 }, review_engine: 'yolo' },
-      }),
-    }, { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' });
-    expect(config.review_engine).toBe('panel');
+  it('projects a truthful versioned effective receipt for the central composed policy', () => {
+    const config = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'architecture,security,documentation',
+      budget: { max_investigation_turns: 20, max_reviewed_lockfile_patch_chars: 65_536 },
+      profile: 'balanced',
+      review_engine: 'dsh',
+      fallback_review_engine: 'composed',
+      severity_policy: 'review-yeti-severity.v2',
+      transports: [{ name: 'bifrost', enabled: true, reasoning_effort: 'medium' }],
+      mcp_servers: [
+        { id: 'ct-impact', enabled: true },
+        { id: 'honcho-memory', enabled: true },
+      ],
+    } }) }, { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' });
+
+    expect(config.review_engine).toBe('composed');
+    expect(config.severity_policy).toBe('review-yeti-severity.v2');
+    expect(config.reviewer_effort).toBe('medium');
+    expect(config.reviewers.providers[0].effort).toBe('medium');
+    expect(config.personas.find((persona) => persona.id === 'documentation')?.charter).toBe('builtin:docs');
+    expect(config.review_configuration_receipt).toMatchObject({
+      schema: 'review-yeti-effective-config.v1',
+      requested: {
+        profile: 'balanced', review_engine: 'dsh', severity_policy: 'review-yeti-severity.v2',
+        bifrost_reasoning_effort: 'medium', mcp_servers: ['ct-impact', 'honcho-memory'],
+      },
+      effective: {
+        review_engine: 'composed', severity_policy: 'review-yeti-severity.v2',
+        profile: { value: 'balanced', applied: false },
+        provider: {
+          id: 'bifrost', model: 'test-model', requested_effort: 'medium',
+          upstream_observed_model: 'unknown', upstream_observed_effort: 'unknown',
+        },
+        memory: { state: 'not_loaded', configured_servers: ['ct-impact', 'honcho-memory'], loaded_servers: [] },
+        personas: [
+          { requested: 'architecture', id: 'arch-lane', charter: 'builtin:architecture' },
+          { requested: 'security', id: 'sec-lane', charter: 'builtin:security' },
+          { requested: 'documentation', id: 'documentation', charter: 'builtin:docs' },
+        ],
+        composed_budget: {
+          source: 'engine_defaults', configured_overrides: {}, central_policy_total_turns: 100,
+          central_policy_max_tasks: 8, plan_turns: 4, base_task_turns: 12, dynamic_task_turns_max: 18,
+          max_concurrent_tasks: 3, total_turns_hard_cap: 200,
+          operator_total_turn_override: 'COMPOSED_ENGINE_MAX_TURNS',
+        },
+        worker_limits: {
+          effective_investigation_turns: 15, effective_reviewed_lockfile_patch_chars: 65_536,
+        },
+      },
+    });
+    expect(config.default_max_turns).toBe(15);
+    expect(config.max_reviewed_lockfile_patch_chars).toBe(65_536);
+    const composed = config.composed ?? {};
+    expect(resolveComposedEngineMaxTurns({} as NodeJS.ProcessEnv, composed.max_turns_total)).toBe(100);
+    expect(resolveComposedMaxTasks(composed.max_tasks)).toBe(8);
+    expect(resolveTaskTurnCeiling(composed.max_turns_per_task, 18, 1)).toBe(12);
+    expect(resolveTaskTurnCeiling(composed.max_turns_per_task, 18, 4)).toBe(18);
+    expect(config.composed).toEqual({});
+    expect(JSON.stringify(config)).not.toContain('apiKey');
+  });
+
+  it('rejects unrecognized review engines and unsupported Bifrost reasoning effort instead of substituting defaults', () => {
+    const transport = { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' };
+    expect(() => resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'security', review_engine: 'yolo',
+    } }) }, transport)).toThrow(/review policy could not be parsed/u);
+    expect(() => resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'security', review_engine: 'composed',
+      transports: [{ name: 'bifrost', enabled: true, reasoning_effort: 'none' }],
+    } }) }, transport)).toThrow(/review policy could not be parsed/u);
   });
 
   it('fails closed on a malformed REVIEW_YETI_POLICY_JSON instead of silently falling back to the default6 panel roster', () => {

@@ -48,6 +48,7 @@ import { loadIncompleteP2RecoveryContext, requiredIncompleteP2RecoveryDigest } f
 import { REVIEW_DISPATCH_OUTBOX_STATUS } from './reviewDispatchStatus';
 import { MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT } from '../review/incompleteP2RecoveryLimits';
 import { isTrustedMcpStaticAdminRecoveryOrigin } from '../review/mcpStaticAdminRecoveryOrigin';
+import { releaseActivePrReviewReservations, reservePrReview, transitionPrReviewReservation } from './reviewPrLifecycleRepository';
 
 interface QueryResult {
   rows: any[];
@@ -1511,6 +1512,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           }
           await this.appendLifecycle(client, String(supersededRow.run_id), 'review.lifecycle.superseded', input.receivedAt,
             { stage: 'superseded', terminal_class: 'candidate_superseded' });
+          await releaseActivePrReviewReservations(client, {
+            runId: String(supersededRow.run_id), status: 'superseded',
+            reason: 'candidate-superseded', at: input.receivedAt,
+          });
         }
       }
 
@@ -1572,6 +1577,23 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           WHERE run_id = $1 AND status = 'pending'`,
         [runRow.run_id, input.dispatchPriority === 'expedited' ? 1 : 0, input.receivedAt],
       );
+      const reservationTarget = await client.query(`SELECT runs.status AS run_status,
+          outbox.status AS outbox_status, outbox.execution_attempt + 1 AS execution_attempt
+        FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
+        WHERE runs.run_id = $1`, [runRow.run_id]);
+      const reservationRow = reservationTarget.rows[0];
+      if (reservationRow && ['queued', 'running'].includes(String(reservationRow.run_status))
+        && ['pending', 'claimed', 'projected'].includes(String(reservationRow.outbox_status))) {
+        await reservePrReview(client, {
+          repositoryId: input.repositoryId, owner: input.identity.owner, repo: input.identity.repo,
+          prNumber: input.identity.prNumber, runId: String(runRow.run_id),
+          executionAttempt: Number(reservationRow.execution_attempt), deliveryId: input.deliveryId,
+          headSha: input.identity.headSha, baseSha: input.identity.baseSha,
+          policyDigest: String(runRow.effective_policy_digest),
+          configDigest: String(runRow.effective_config_digest),
+          contextDigest: input.identity.snapshotDigest, at: input.receivedAt,
+        });
+      }
       for (const evidence of generationRecovery) {
         await persistGenerationRecoveryEvidence(client, String(runRow.run_id), evidence,
           input.receivedAt, input.expectedGeneration ?? evidence.generation);
@@ -1885,6 +1907,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       for (const row of result.rows as Record<string, unknown>[]) {
         await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.terminal', now,
           { stage: 'terminal', terminal_class: 'non_publishable_deadline', retry_class: 'reaper' });
+        await releaseActivePrReviewReservations(client, {
+          runId: String(row.run_id), status: 'failed', reason: 'non-publishable-deadline', at: now,
+        });
       }
       return result.rows.length;
     });
@@ -1967,6 +1992,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       for (const row of result.rows as Record<string, unknown>[]) {
         await PostgresReviewGateRepository.cancelForClosedPullRequestInTransaction(
           client, String(row.run_id), input.now);
+        await releaseActivePrReviewReservations(client, {
+          runId: String(row.run_id), status: row.authoritative_gate_app_id == null ? 'cancelled' : 'superseded',
+          reason: input.merged ? 'pull-request-merged' : 'pull-request-closed', at: input.now,
+        });
         await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.terminal', input.now, {
           stage: 'terminal',
           terminal_class: row.authoritative_gate_app_id == null
@@ -2021,6 +2050,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       if (retired.rows.length) {
         await PostgresReviewGateRepository.cancelForUnreviewablePullRequestInTransaction(
           client, runId, now, 'candidate-superseded');
+        await releaseActivePrReviewReservations(client, {
+          runId, status: 'superseded', reason: 'candidate-superseded', at: now,
+        });
         await this.appendLifecycle(client, runId, 'review.lifecycle.superseded', now,
           { stage: 'terminal', terminal_class: 'superseded_or_closed' });
       }
@@ -2212,6 +2244,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       await PostgresReviewGateRepository.cancelForUnreviewablePullRequestInTransaction(
         client, String(row.run_id), input.now, input.gateReason,
       );
+      await releaseActivePrReviewReservations(client, {
+        runId: String(row.run_id), status: 'cancelled', reason: input.gateReason, at: input.now,
+      });
       if (row.cancel_propagated_at) {
         await client.query(
           `UPDATE review_runs SET cancel_propagated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`,
@@ -2362,6 +2397,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             `outbox_delivery_sha256:${outboxDeliveryDigest}`,
           ],
         });
+        await releaseActivePrReviewReservations(client, {
+          runId: run.runId, status: 'failed', reason: 'delivery-identity-mismatch', at: now,
+        });
         await client.query('COMMIT');
         getMetrics().reviewReaperDeliveryIdentityMismatches.add(1);
         logger.warn('Quarantined abandoned review with mismatched delivery identity', {
@@ -2426,6 +2464,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           stage: 'terminal',
           terminal_class: 'superseded_by_newer_check',
           retry_class: 'reaper_retired',
+        });
+        await releaseActivePrReviewReservations(client, {
+          runId: run.runId, status: 'superseded', reason: 'newer-check-superseded', at: now,
         });
         await client.query('COMMIT');
         getMetrics().reviewReaperSupersededAttempts.add(1);
@@ -2492,6 +2533,16 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       } else {
         await this.appendLifecycle(client, run.runId, 'review.lifecycle.retrying', now,
           { stage: 'gate_publication', retry_class: 'creation_unconfirmed' });
+      }
+      if (outcome === 'authoritative-success') {
+        await transitionPrReviewReservation(client, {
+          runId: run.runId, executionAttempt: run.executionAttempt, status: 'completed',
+          reason: 'authoritative-success-reconciled', at: now,
+        });
+      } else if (outcome === 'failure-existing' || outcome === 'failure-published') {
+        await releaseActivePrReviewReservations(client, {
+          runId: run.runId, status: 'failed', reason: 'abandoned-review-failure-reconciled', at: now,
+        });
       }
       await client.query('COMMIT');
       return { reconciled: true, outcome };
@@ -2633,6 +2684,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       if (result.rows.length > 0) {
         await this.appendLifecycle(client, runId, 'review.lifecycle.terminal', now,
           { stage: 'terminal', terminal_class: 'dispatch_failure' });
+        await releaseActivePrReviewReservations(client, {
+          runId, status: 'failed', reason: 'dispatch-failure', at: now,
+        });
       }
       return result.rows.length > 0;
     });
@@ -2848,6 +2902,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     if (transitioned.rows.length !== 1) throw new Error('worker success transition lost its locked identity');
     await this.appendLifecycle(client, input.runId, 'review.lifecycle.terminal', now,
       { stage: 'terminal', terminal_class: 'success', result_digest: resultDigest });
+    await transitionPrReviewReservation(client, {
+      runId: input.runId, executionAttempt: input.executionAttempt, status: 'completed',
+      reason: 'worker-terminal-success', at: now,
+    });
     return { runId: input.runId, status: 'succeeded' };
   }
 
@@ -2956,6 +3014,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     if (transitioned.rows.length !== 1) throw new Error('worker failure transition lost its locked identity');
     await this.appendLifecycle(client, input.runId, 'review.lifecycle.terminal', now,
       { stage: 'terminal', terminal_class: input.failureClass });
+    await releaseActivePrReviewReservations(client, {
+      runId: input.runId, status: 'failed', reason: input.failureClass, at: now,
+    });
     return { runId: input.runId, status: 'failed' };
   }
 
