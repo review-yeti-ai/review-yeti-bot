@@ -122,6 +122,7 @@ function setup() {
           admitted_review_generation: admissionCreated ? 2 : null,
           outbox_execution_attempt: admissionCreated ? 1 : 0,
           outbox_status: admissionCreated ? 'pending' : 'terminal',
+          snapshot_digest: '9'.repeat(64), outbox_delivery_id: 'delivery-recheck-source',
           execution_attempt: 1,
           content_digest: sourceDigest,
           payload: sourcePayload,
@@ -191,6 +192,26 @@ function setup() {
         };
         return { rows: [] };
       }
+      if (sql.startsWith('SELECT r.reservation_id, r.lifecycle_id, l.repository_id')) {
+        return { rows: [{ reservation_id: 'source-reservation-1', lifecycle_id: 'lifecycle-1',
+          repository_id: identity.repositoryId, pr_number: identity.prNumber,
+          head_sha: identity.headSha, base_sha: identity.baseSha, policy_digest: identity.policyDigest,
+          config_digest: identity.configDigest, context_digest: '9'.repeat(64),
+          owner: identity.owner, repo: identity.repo }] };
+      }
+      if (sql.startsWith('INSERT INTO review_pr_lifecycles')) {
+        return { rows: [{ lifecycle_id: 'lifecycle-1', owner: identity.owner, repo: identity.repo }] };
+      }
+      if (sql.startsWith('INSERT INTO review_pr_review_reservations')) {
+        return { rows: [{ reservation_id: 'target-reservation-2', status: 'reserved' }] };
+      }
+      if (sql.startsWith('SELECT reservation_id, lifecycle_id, delivery_id')) {
+        return { rows: [{ reservation_id: 'target-reservation-2', lifecycle_id: 'lifecycle-1',
+          delivery_id: 'delivery-recheck-source', head_sha: identity.headSha, base_sha: identity.baseSha,
+          policy_digest: identity.policyDigest, config_digest: identity.configDigest,
+          context_digest: '9'.repeat(64), status: 'reserved' }] };
+      }
+      if (sql.startsWith('INSERT INTO review_pr_lifecycle_events')) return { rows: [{ event_id: 'event-1' }] };
       if (sql.includes('SELECT request.*')) return { rows: recheckRow ? [recheckRow] : [] };
       if (sql.includes('SELECT runs.status, outbox.worker_token_digest')) {
         return { rows: [{ status: 'running', worker_token_digest: sha256(workerToken) }] };
@@ -326,6 +347,16 @@ describe('REL-1265 dispute re-review flow', () => {
     expect(adjudicateDispute).not.toHaveBeenCalled();
     expect(f.calls.some(({ sql }) => /UPDATE\s+review_worker_completions/iu.test(sql))).toBe(false);
     expect(f.calls.some(({ sql }) => sql.includes('INSERT INTO review_finding_recheck_admissions'))).toBe(true);
+    const targetReservation = f.calls.find(({ sql }) => sql.startsWith('INSERT INTO review_pr_review_reservations'));
+    expect(targetReservation?.values).toEqual([
+      expect.any(String), 'lifecycle-1', identity.runId, 2, 'delivery-recheck-source',
+      identity.headSha, identity.baseSha, identity.policyDigest, identity.configDigest,
+      '9'.repeat(64), expect.any(Number),
+    ]);
+    expect(f.calls.filter(({ sql }) => sql.startsWith('INSERT INTO review_pr_lifecycle_events'))
+      .map(({ values }) => values?.[4])).toEqual([
+      'finding.recheck_requested', 'review.reserved', 'finding.recheck_target_admitted',
+    ]);
     expect(f.sourceBytes).toBe(sourceBytesBefore);
     expect(workerReviewCompletionDigest(f.sourcePayload)).toBe(digestBefore);
 

@@ -440,6 +440,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         VALUES ($1, $2, $3, $4::jsonb, $5)
         ON CONFLICT (run_id, execution_attempt) DO NOTHING`,
       [event.runId, event.executionAttempt, resultDigest, completionJson, Buffer.byteLength(completionJson, 'utf8')]);
+      stage = 'semantic-history';
       const reservation = await reservePrReview(client, {
         repositoryId: event.repositoryId, owner: event.owner, repo: event.repo, prNumber: event.prNumber,
         runId: event.runId, executionAttempt: event.executionAttempt,
@@ -447,7 +448,6 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         policyDigest: event.policyDigest, configDigest: event.configDigest,
         contextDigest: String(row.snapshot_digest), at: now,
       });
-      stage = 'semantic-history';
       await recordTrustedPrReviewCompletion(client, {
         runId: event.runId, executionAttempt: event.executionAttempt,
         status: decision.status === 'success' ? 'completed'
