@@ -279,12 +279,18 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         throw error;
       }
       if ('status' in result) {
-        return passthroughReceipt(eventName, delivery, {
+        const receipt = await passthroughReceipt(eventName, delivery, {
           repositoryId: result.repositoryId,
           repository: result.repository,
           headSha: result.headSha,
           baseSha: result.baseSha,
         });
+        const [owner, repo] = result.repository.split('/');
+        if (!options.passthroughShip || !owner || !repo) return receipt;
+        const passthroughCheck = await options.passthroughShip.publishMergeGroup({
+          owner, repo, repositoryId: result.repositoryId, headSha: result.headSha,
+        });
+        return { ...receipt, passthroughCheck };
       }
       return { status: result.conclusion, checkId: result.checkId, constituents: result.constituents };
     }

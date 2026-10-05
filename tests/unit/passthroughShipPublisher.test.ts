@@ -238,3 +238,58 @@ describe('passthrough webhook wiring', () => {
     expect(admit).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('passthrough merge-queue check', () => {
+  const GROUP = { owner: 'exampleorg', repo: 'dashboard', repositoryId: REPO_ID, headSha: 'd'.repeat(40) };
+  const canonical = `review-yeti-merge-group:${REPO_ID}:${GROUP.headSha}`;
+
+  it('posts a completed/success Review Yeti check with the canonical queue identity', async () => {
+    const fake = fakeGitHub();
+    const { publisher: p } = publisher(fake);
+    const result = await p.publishMergeGroup(GROUP);
+    expect(result).toMatchObject({ status: 'published', reviewMode: 'passthrough' });
+    expect(fake.writes).toHaveLength(1);
+    expect(fake.writes[0].body).toMatchObject({
+      name: 'Review Yeti', head_sha: GROUP.headSha, external_id: canonical, status: 'completed', conclusion: 'success',
+    });
+    expect(typeof fake.writes[0].body.completed_at).toBe('string');
+    expect(fake.writes[0].body.output.summary).toContain(PASSTHROUGH_REVIEW_MODE_MARKER);
+    expect((await p.publishMergeGroup(GROUP)).status).toBe('already_published');
+    expect(fake.writes).toHaveLength(1);
+  });
+
+  it('never overrides a different official check on the queue commit', async () => {
+    const fake = fakeGitHub({ existing: [{
+      id: 3, name: 'Review Yeti', app: APP, head_sha: GROUP.headSha, status: 'completed', conclusion: 'failure',
+      external_id: 'something-else',
+    }] });
+    const { publisher: p } = publisher(fake);
+    expect(await p.publishMergeGroup(GROUP)).toEqual({ status: 'skipped', reason: 'existing_review_evidence' });
+    expect(fake.writes).toHaveLength(0);
+  });
+
+  it('is requested by the webhook for an enrolled merge_group delivery during passthrough', async () => {
+    const ship = { publish: vi.fn(), publishMergeGroup: vi.fn(async () => ({ status: 'published', checkId: 11, reviewMode: 'passthrough' })) };
+    const config = { secret: SECRET, admissionEnabled: true, passthroughEnabled: true,
+      repositoryIds: new Set([String(REPO_ID)]), ownerIds: new Set(['57884877']) };
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config, admission: { admit: vi.fn() } as any, passthroughShip: ship as any,
+      mergeGroupGate: async () => ({ status: 'passthrough', repositoryId: REPO_ID, repository: 'exampleorg/dashboard',
+        headSha: GROUP.headSha, baseSha: BASE }),
+    });
+    const instance = createActionDispatchApp({
+      verifier: { verify: vi.fn() } as any, admission: { admit: vi.fn() } as any,
+      resolveInstallationId: vi.fn(), databaseReady: vi.fn(async () => true),
+      allowAppGate: true, githubWebhook: { secret: SECRET, onEvent },
+    });
+    const body = { action: 'checks_requested' };
+    const raw = JSON.stringify(body);
+    const response = await request(instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json').set('X-GitHub-Event', 'merge_group').set('X-GitHub-Delivery', 'delivery-mg')
+      .set('X-Hub-Signature-256', `sha256=${createHmac('sha256', SECRET).update(raw).digest('hex')}`).send(raw);
+    expect(response.status).toBe(200);
+    expect(ship.publishMergeGroup).toHaveBeenCalledWith({ ...GROUP });
+    expect(ship.publish).not.toHaveBeenCalled();
+    expect(response.body).toMatchObject({ status: 'passthrough', passthroughCheck: { checkId: 11 } });
+  });
+});
