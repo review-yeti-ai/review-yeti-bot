@@ -347,6 +347,100 @@ describe('trigger_review governed admission', () => {
     expect(data.message).toContain('engine: panel');
   });
 
+  it('preserves the complete authoritative policy for an idempotent engine request', async () => {
+    const identity = {
+      owner: 'exampleorg', repo: 'example-api', prNumber: 5135,
+      headSha: HEAD_SHA, baseSha: BASE_SHA,
+    };
+    const prepared = {
+      version: 'PreparedPublishingPolicy.v1',
+      policy: {
+        effectivePolicyDigest: POLICY_DIGEST,
+        effectiveConfigDigest: 'd'.repeat(64),
+        sources: [{
+          repositoryId: 190468701,
+          repository: 'exampleorg/example-api',
+          sha: HEAD_SHA,
+          path: '.exampleorg/review-policy.json',
+          contentDigest: 'e'.repeat(64),
+        }],
+      },
+      config: {
+        review_engine: 'composed',
+        default_max_turns: 7,
+        composed: { max_tasks: 4, max_turns_total: 12 },
+      },
+      expectedPersonaIds: ['sec-lane', 'arch-lane'],
+      transport: { baseUrl: 'https://gateway.example.invalid/v1', model: 'service-selected-model' },
+    };
+    const original = structuredClone(prepared);
+    const admit = vi.fn(async (input: any) => {
+      expect(input.authoritativeGate.prepared).toEqual(original);
+      return { run: { runId: `run_${'e'.repeat(32)}` } };
+    });
+    const resolve = vi.fn(async () => ({ identity, prepared }));
+    const tool = createTriggerReviewTool({
+      queryableDatabase: { query: vi.fn(async () => ({ rows: [] })) },
+      admissionRepository: { admit } as any,
+      resolveGitHubPullRequest: vi.fn(async () => ({
+        headSha: HEAD_SHA, baseSha: BASE_SHA,
+        repositoryId: 190468701, installationId: 2222,
+      })),
+      authoritativePublishing: {
+        expectedAppId: 4385771,
+        repositoryIds: [190468701],
+        resolver: { resolve },
+      },
+    } as any);
+
+    await tool.execute({ ...request, review_engine: 'composed' });
+
+    expect(admit).toHaveBeenCalledOnce();
+    expect(prepared).toEqual(original);
+  });
+
+  it('refuses an engine that differs from the authoritative effective engine', async () => {
+    const identity = {
+      owner: 'exampleorg', repo: 'example-api', prNumber: 5135,
+      headSha: HEAD_SHA, baseSha: BASE_SHA,
+    };
+    const prepared = {
+      policy: {
+        effectivePolicyDigest: POLICY_DIGEST,
+        effectiveConfigDigest: 'd'.repeat(64),
+        sources: [{
+          repositoryId: 190468701,
+          repository: 'exampleorg/example-api',
+          sha: HEAD_SHA,
+          path: '.exampleorg/review-policy.json',
+          contentDigest: 'e'.repeat(64),
+        }],
+      },
+      config: { review_engine: 'panel' },
+      transport: { baseUrl: 'https://gateway.example.invalid/v1', model: 'service-selected-model' },
+      expectedPersonaIds: ['sec-lane'],
+    };
+    const admit = vi.fn();
+    const tool = createTriggerReviewTool({
+      admissionRepository: { admit } as any,
+      resolveGitHubPullRequest: vi.fn(async () => ({
+        headSha: HEAD_SHA, baseSha: BASE_SHA,
+        repositoryId: 190468701, installationId: 2222,
+      })),
+      authoritativePublishing: {
+        expectedAppId: 4385771,
+        repositoryIds: [190468701],
+        resolver: { resolve: vi.fn(async () => ({ identity, prepared })) },
+      },
+    } as any);
+
+    await expect(tool.execute({ ...request, review_engine: 'composed' })).rejects.toThrow(
+      'Requested review_engine is not permitted by the authoritative policy',
+    );
+    expect(prepared.config.review_engine).toBe('panel');
+    expect(admit).not.toHaveBeenCalled();
+  });
+
   it('preserves backward compatibility when review_engine is omitted', async () => {
     const identity = {
       owner: 'exampleorg', repo: 'example-api', prNumber: 5135,
@@ -417,6 +511,8 @@ describe('trigger_review governed admission', () => {
       review_yeti: {
         personas: 'security,architecture',
         budget: { max_investigation_turns: 5 },
+        review_engine: 'composed',
+        composed: { max_tasks: 4, max_turns_total: 12 },
       },
     });
     const policyFile = {
@@ -453,7 +549,18 @@ describe('trigger_review governed admission', () => {
       }),
     });
 
-    const admit = vi.fn(async () => ({ run: { runId: `run_${'e'.repeat(32)}` } }));
+    const expected = await resolver.resolve({
+      repositoryId: 190468701,
+      owner: 'exampleorg',
+      repo: 'example-api',
+      prNumber: 5135,
+      headSha: HEAD_SHA,
+      baseSha: BASE_SHA,
+    });
+    const admit = vi.fn(async (input: any) => {
+      expect(input.authoritativeGate.prepared).toEqual(expected.prepared);
+      return { run: { runId: `run_${'e'.repeat(32)}` } };
+    });
 
     const tool = createTriggerReviewTool({
       queryableDatabase: { query: vi.fn(async () => ({ rows: [] })) },
