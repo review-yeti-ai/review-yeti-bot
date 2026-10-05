@@ -1,3 +1,4 @@
+import { expectedReviewAppIdFor } from '../auth/repositoryReviewAuthority';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { ReviewDispatchRepository } from '../persistence/reviewDispatchRepository';
@@ -343,7 +344,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         identity: resolved?.identity || legacyIdentity,
         ...(resolved && authoritative ? {
           effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
-          authoritativeGate: { expectedAppId: authoritative.expectedAppId, prepared: resolved.prepared },
+          authoritativeGate: { expectedAppId: expectedReviewAppIdFor(authoritative, requested), prepared: resolved.prepared },
         } : {}),
       });
       return {
@@ -461,7 +462,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
           identity: resolved?.identity || buildReviewRunIdentity(requested),
           ...(resolved && authoritative ? {
             effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
-            authoritativeGate: { expectedAppId: authoritative.expectedAppId, prepared: resolved.prepared },
+            authoritativeGate: { expectedAppId: expectedReviewAppIdFor(authoritative, requested), prepared: resolved.prepared },
           } : {}),
         });
         return {
@@ -648,7 +649,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
             identity: resolved?.identity || buildReviewRunIdentity(requested),
             ...(resolved && authoritative ? {
               effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
-              authoritativeGate: { expectedAppId: authoritative.expectedAppId, prepared: resolved.prepared },
+              authoritativeGate: { expectedAppId: expectedReviewAppIdFor(authoritative, requested), prepared: resolved.prepared },
             } : {}),
           });
           return { status: admission.status, deliveryId: delivery, prNumber, headSha: pr.head.sha };
@@ -720,7 +721,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
             identity: resolved?.identity || buildReviewRunIdentity(requested),
             ...(resolved && authoritative ? {
               effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
-              authoritativeGate: { expectedAppId: authoritative.expectedAppId, prepared: resolved.prepared },
+              authoritativeGate: { expectedAppId: expectedReviewAppIdFor(authoritative, requested), prepared: resolved.prepared },
             } : {}),
           });
           return { status: admission.status, deliveryId: delivery, prNumber, headSha: pr.head.sha, reason: 'opt_out_label_removed' };
@@ -801,7 +802,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       identity: resolved?.identity || buildReviewRunIdentity(requested),
       ...(resolved && authoritative ? {
         effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
-        authoritativeGate: { expectedAppId: authoritative.expectedAppId, prepared: resolved.prepared },
+        authoritativeGate: { expectedAppId: expectedReviewAppIdFor(authoritative, requested), prepared: resolved.prepared },
       } : {}),
       ...(payload.action === 'ready_for_review' && resolved?.prepared.config.review_engine === 'composed'
         ? { gracefulComposedContinuationOrigin: { kind: 'github_pull_request_ready_for_review' as const } } : {}),

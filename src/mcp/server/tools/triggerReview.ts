@@ -1,3 +1,4 @@
+import { expectedReviewAppIdFor } from '../../../auth/repositoryReviewAuthority';
 import { randomUUID } from 'node:crypto';
 import { TERMINAL_DEADLINE_MS } from '../../../config/terminalDeadline';
 import {
@@ -241,7 +242,7 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
           ...(resolved && authoritative ? {
             effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
             authoritativeGate: {
-              expectedAppId: authoritative.expectedAppId,
+              expectedAppId: expectedReviewAppIdFor(authoritative, requested),
               prepared: resolved.prepared,
             },
           } : {}),

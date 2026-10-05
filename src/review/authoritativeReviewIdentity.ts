@@ -50,6 +50,8 @@ export interface CurrentReviewCandidate {
   baseSha: string;
   open: boolean;
   draft: boolean;
+  /** Current GitHub repository visibility evidence when the REST response includes it. */
+  private?: boolean;
 }
 
 const candidateSchema = z.object({
@@ -61,6 +63,7 @@ const candidateSchema = z.object({
   baseSha: sha,
   open: z.boolean(),
   draft: z.boolean(),
+  private: z.boolean().optional(),
 }).strict();
 
 function normalizeSources(input: TrustedResolvedReviewPolicy['sources']): TrustedResolvedReviewPolicy['sources'] {

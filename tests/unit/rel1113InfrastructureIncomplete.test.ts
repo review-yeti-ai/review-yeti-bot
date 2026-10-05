@@ -14,6 +14,13 @@ import {
   requeueAuthoritativeInfrastructureIncomplete,
   type RunRetryContext,
 } from '../../src/review/recoverablePanelRetry';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
+import {
+  PUBLIC_REVIEW_APP_ID,
+  PUBLIC_REVIEW_REPOSITORY,
+  PUBLIC_REVIEW_REPOSITORY_ID,
+  expectedReviewAppIdFor,
+} from '../../src/auth/repositoryReviewAuthority';
 import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/reviewAdmission';
 import { formatIncompleteInfrastructureTitle, isRecoverableFailureTitle, MAX_CHECK_RUN_TITLE_CHARACTERS } from '../../src/review/reviewCheckIdentity';
 import type { WorkerReviewCompletion, WorkerReviewResult } from '../../src/review/workerReviewCompletion';
@@ -23,7 +30,7 @@ const NOW = Date.parse('2026-09-24T18:28:53.000Z');
 const identity = buildReviewRunIdentity({ owner: 'exampleorg', repo: 'example-meta', prNumber: 3446,
   headSha: '6b560284'.padEnd(40, '0'), baseSha: 'c'.repeat(40) });
 const RUN_ID = deriveReviewRunId(identity);
-const EXPECTED_APP_ID = 777;
+const EXPECTED_APP_ID = AUTHORITATIVE_REVIEW_APP_ID;
 
 /** The example-meta#3446 result: 2 lanes, 1 completed clean, 1 lost to a gateway 502, 0 findings. */
 function infraResult(overrides: Partial<WorkerReviewResult> = {}): WorkerReviewResult {
@@ -149,6 +156,119 @@ describe('REL-1113 authoritative infrastructure re-attempt', () => {
       retryRequested: true, retryAfterExecutionAttempt: 1, availableAt: NOW + 30_000, identity,
       authoritativeGate: { expectedAppId: EXPECTED_APP_ID, prepared },
     }));
+  });
+
+  it('retries the exact public repository under its dedicated App identity', async () => {
+    const [owner, repo] = PUBLIC_REVIEW_REPOSITORY.split('/');
+    const publicIdentity = buildReviewRunIdentity({ owner, repo, prNumber: 17,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) });
+    const event: WorkerReviewCompletion = {
+      ...completion(), runId: deriveReviewRunId(publicIdentity), repositoryId: PUBLIC_REVIEW_REPOSITORY_ID,
+      owner, repo, prNumber: 17, headSha: publicIdentity.headSha, baseSha: publicIdentity.baseSha,
+    };
+    const context: RunRetryContext = {
+      publicationMode: 'app-gate', authoritativeGateAppId: PUBLIC_REVIEW_APP_ID,
+      repositoryId: PUBLIC_REVIEW_REPOSITORY_ID, installationId: 55, identity: publicIdentity,
+      runStatus: 'failed', errorText: AUTHORITATIVE_INFRASTRUCTURE_FAILURE_ERROR_TEXT,
+    };
+    const admit = vi.fn(async () => ({}) as never);
+    const resolve = vi.fn(async () => ({ identity: publicIdentity, prepared }));
+    const resolver = { resolve } as never;
+    const authoritative = {
+      expectedAppId: EXPECTED_APP_ID,
+      expectedAppIdFor: (selected: { repositoryId: number; owner: string; repo: string }) =>
+        selected.repositoryId === PUBLIC_REVIEW_REPOSITORY_ID ? PUBLIC_REVIEW_APP_ID : EXPECTED_APP_ID,
+      repositoryIds: [PUBLIC_REVIEW_REPOSITORY_ID],
+      resolver,
+    };
+
+    await expect(requeueAuthoritativeInfrastructureIncomplete({
+      event, now: NOW, repository: { admit, readRunRetryContext: vi.fn(async () => context) },
+      authoritative, logger: { error: vi.fn(), info: vi.fn() },
+    })).resolves.toBe('requeued');
+    expect(admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      authoritativeGate: { expectedAppId: PUBLIC_REVIEW_APP_ID, prepared },
+    }));
+    expect(expectedReviewAppIdFor(authoritative, { repositoryId: PUBLIC_REVIEW_REPOSITORY_ID, owner, repo }))
+      .toBe(PUBLIC_REVIEW_APP_ID);
+  });
+
+  it.each([
+    { repositoryId: PUBLIC_REVIEW_REPOSITORY_ID, owner: 'other-org', repo: 'other-repo' },
+    { repositoryId: 123, owner: 'review-yeti-ai', repo: 'review-yeti-bot' },
+  ])('rejects a partial match of the public name and immutable ID %j', (repository) => {
+    const authoritative = {
+      expectedAppId: EXPECTED_APP_ID,
+      expectedAppIdFor: (selected: { repositoryId: number; owner: string; repo: string }) =>
+        selected.repositoryId === PUBLIC_REVIEW_REPOSITORY_ID ? PUBLIC_REVIEW_APP_ID : EXPECTED_APP_ID,
+      repositoryIds: [PUBLIC_REVIEW_REPOSITORY_ID, 123],
+      resolver: { resolve: vi.fn() } as never,
+    };
+    expect(() => expectedReviewAppIdFor(authoritative, repository)).toThrow(
+      'Public review repository identity is invalid',
+    );
+  });
+
+  it('does not use the dedicated public App for another enrolled repository', () => {
+    const authoritative = {
+      expectedAppId: EXPECTED_APP_ID,
+      expectedAppIdFor: () => PUBLIC_REVIEW_APP_ID,
+      repositoryIds: [123],
+      resolver: { resolve: vi.fn() } as never,
+    };
+    expect(() => expectedReviewAppIdFor(authoritative, { repositoryId: 123, owner: 'exampleorg', repo: 'example-api' }))
+      .toThrow('Repository review App authority is invalid');
+  });
+
+  it('preserves the immutable private App for an enrolled private repository', () => {
+    const repository = { repositoryId: 123, owner: 'exampleorg', repo: 'example-api' };
+    const authoritative = {
+      expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
+      repositoryIds: [123],
+      resolver: { resolve: vi.fn() } as never,
+    };
+    expect(expectedReviewAppIdFor(authoritative, repository)).toBe(AUTHORITATIVE_REVIEW_APP_ID);
+  });
+
+  it('rejects an alternate App for an enrolled private repository', () => {
+    const authoritative = {
+      expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
+      expectedAppIdFor: () => PUBLIC_REVIEW_APP_ID,
+      repositoryIds: [123],
+      resolver: { resolve: vi.fn() } as never,
+    };
+    expect(() => expectedReviewAppIdFor(authoritative,
+      { repositoryId: 123, owner: 'exampleorg', repo: 'example-api' }))
+      .toThrow('Repository review App authority is invalid');
+  });
+
+  it('does not retry a public run recorded under the private publisher App', async () => {
+    const [owner, repo] = PUBLIC_REVIEW_REPOSITORY.split('/');
+    const publicIdentity = buildReviewRunIdentity({ owner, repo, prNumber: 18,
+      headSha: 'c'.repeat(40), baseSha: 'd'.repeat(40) });
+    const event: WorkerReviewCompletion = {
+      ...completion(), runId: deriveReviewRunId(publicIdentity), repositoryId: PUBLIC_REVIEW_REPOSITORY_ID,
+      owner, repo, prNumber: 18, headSha: publicIdentity.headSha, baseSha: publicIdentity.baseSha,
+    };
+    const context: RunRetryContext = {
+      publicationMode: 'app-gate', authoritativeGateAppId: EXPECTED_APP_ID,
+      repositoryId: PUBLIC_REVIEW_REPOSITORY_ID, installationId: 55, identity: publicIdentity,
+      runStatus: 'failed', errorText: AUTHORITATIVE_INFRASTRUCTURE_FAILURE_ERROR_TEXT,
+    };
+    const admit = vi.fn(async () => ({}) as never);
+    const resolve = vi.fn(async () => ({ identity: publicIdentity, prepared }));
+    await expect(requeueAuthoritativeInfrastructureIncomplete({
+      event, now: NOW, repository: { admit, readRunRetryContext: vi.fn(async () => context) },
+      authoritative: {
+        expectedAppId: EXPECTED_APP_ID,
+        expectedAppIdFor: (selected) => selected.repositoryId === PUBLIC_REVIEW_REPOSITORY_ID
+          ? PUBLIC_REVIEW_APP_ID : EXPECTED_APP_ID,
+        repositoryIds: [PUBLIC_REVIEW_REPOSITORY_ID], resolver: { resolve } as never,
+      },
+      logger: { error: vi.fn(), info: vi.fn() },
+    })).resolves.toBe('run-not-infrastructure-failure');
+    expect(resolve).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
   });
 
   it('attempts exhausted: no re-admission (the INCOMPLETE check stands)', async () => {

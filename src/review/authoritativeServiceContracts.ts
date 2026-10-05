@@ -5,12 +5,14 @@ import type { WorkerReviewCompletion, WorkerReviewEvidence } from './workerRevie
 import { sha256 } from './reviewCore';
 import type { IncrementalVerificationInput } from './incrementalReview';
 import type { VerdictCacheVerificationInput } from './verdictCache';
+import type { ReviewAuthorityRepository } from '../auth/repositoryReviewAuthority';
 
 export interface WorkerCompletionVerifier {
   verify(token: string, event: WorkerTerminalFailure | WorkerTerminalSuccess | WorkerReviewCompletion | WorkerReviewEvidence): Promise<WorkerCompletionProof>;
 }
 export interface AuthoritativeReviewAdmission {
   expectedAppId: number;
+  expectedAppIdFor?: (repository: ReviewAuthorityRepository) => number;
   acceptNewRequests?: boolean;
   repositoryIds: readonly number[];
   resolver: Pick<AuthoritativePublishingResolver, 'resolve'>;

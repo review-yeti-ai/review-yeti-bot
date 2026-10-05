@@ -303,7 +303,7 @@ describe('createAuthoritativeReviewService wiring', () => {
     const f = fixture();
     createAuthoritativeReviewService(f.options);
     mocks.mint.mockRejectedValue(new Error('mint unavailable'));
-    await expect(resolverOptions().candidateReaderFactory(f.config.policyRepository, new AbortController().signal))
+    await expect(resolverOptions().policyReaderFactory(f.config.policyRepository, new AbortController().signal))
       .rejects.toThrow('mint unavailable');
     expect(mocks.readerConstructor).not.toHaveBeenCalled();
   });
@@ -494,5 +494,71 @@ describe('dispatchIndex authoritative startup source contract', () => {
     expect(source).toMatch(/if\s*\(authoritativeTimer\)\s*clearInterval\(authoritativeTimer\)/u);
     expect(source).toContain("process.once('SIGTERM'");
     expect(source).toContain("process.once('SIGINT'");
+  });
+});
+
+
+describe('per-repository authoritative App routing', () => {
+  const publicRepository = { repositoryId: 1326169548, owner: 'review-yeti-ai', repo: 'review-yeti-bot', expectedAppId: 4552718 };
+  function publicFixture() {
+    const f = fixture();
+    f.config.publicRepository = publicRepository;
+    return { ...f, options: { ...f.options, publicAppCredentials: { appId: '4552718', privateKey: 'synthetic-public-key' } } };
+  }
+  it('uses one publisher, exact public candidate credentials, and primary policy credentials', async () => {
+    const f = publicFixture();
+    const service = createAuthoritativeReviewService(f.options);
+    expect(mocks.publisherConstructor).toHaveBeenCalledTimes(1);
+    expect(service.admission.repositoryIds).toEqual([123, 456, 1326169548]);
+    expect(service.admission.expectedAppId).toBe(APP_ID);
+    expect(service.admission.expectedAppIdFor!(publicRepository)).toBe(4552718);
+    expect(service.admission.expectedAppIdFor!(candidate)).toBe(APP_ID);
+    const signal = new AbortController().signal;
+    await resolverOptions().candidateReaderFactory(publicRepository, signal);
+    await resolverOptions().policyReaderFactory(f.config.policyRepository, signal);
+    expect(mocks.mint.mock.calls.map(([auth]) => [auth.appId, auth.owner, auth.repo])).toEqual([
+      ['4552718', publicRepository.owner, publicRepository.repo], [String(APP_ID), 'central', 'policies'],
+    ]);
+    expect(f.config.repositoryIds).toEqual([123, 456]);
+  });
+  it.each([
+    { ...publicRepository, repositoryId: 123 }, { ...publicRepository, repo: 'unknown' },
+    { ...publicRepository, owner: 'unknown' }, { repositoryId: 999, owner: 'unknown', repo: 'target' },
+  ])('rejects mismatched/unknown candidate identities before mint %j', async selected => {
+    const f = publicFixture();
+    const service = createAuthoritativeReviewService(f.options);
+    expect(() => service.admission.expectedAppIdFor!(selected)).toThrow();
+    await expect(resolverOptions().candidateReaderFactory(selected, new AbortController().signal)).rejects.toThrow();
+    expect(mocks.mint).not.toHaveBeenCalled();
+  });
+  it.each([String(APP_ID), '4552719', ''])('rejects wrong dedicated credential App %s at startup', appId => {
+    const f = publicFixture();
+    f.options.publicAppCredentials.appId = appId;
+    expect(() => createAuthoritativeReviewService(f.options)).toThrow('Dedicated public review identity is invalid');
+    expect(mocks.mint).not.toHaveBeenCalled();
+  });
+  it('fails a public gate carrying the primary App without minting or publishing', async () => {
+    const f = publicFixture();
+    createAuthoritativeReviewService(f.options);
+    await expect(publisherOptions().clientFor({ ...f.gate, coordinates: { ...f.gate.coordinates, ...publicRepository } }))
+      .rejects.toThrow('Gate publication is outside the enrolled identity');
+    expect(mocks.mint).not.toHaveBeenCalled();
+  });
+  it('publishes an exact public gate under only the dedicated App', async () => {
+    const f = publicFixture();
+    const { expectedAppId: _appId, ...identity } = publicRepository;
+    const selected = { ...candidate, ...identity, private: false };
+    mocks.currentCandidate.mockResolvedValue(selected);
+    createAuthoritativeReviewService(f.options);
+    await publisherOptions().clientFor({ ...f.gate, expectedAppId: 4552718, coordinates: { ...f.gate.coordinates, ...publicRepository } });
+    expect(publishMints()).toHaveLength(1);
+    expect(publishMints()[0][0]).toMatchObject({ appId: '4552718', owner: publicRepository.owner, repo: publicRepository.repo });
+    expect(mocks.clientConstructor).toHaveBeenLastCalledWith(expect.objectContaining({ expectedAppId: 4552718 }));
+  });
+  it('rejects a dedicated-App gate for a private enrolled repository', async () => {
+    const f = publicFixture();
+    createAuthoritativeReviewService(f.options);
+    await expect(publisherOptions().clientFor({ ...f.gate, expectedAppId: 4552718 })).rejects.toThrow('Gate publication is outside the enrolled identity');
+    expect(mocks.mint).not.toHaveBeenCalled();
   });
 });

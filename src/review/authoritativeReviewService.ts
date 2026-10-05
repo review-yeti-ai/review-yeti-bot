@@ -1,3 +1,4 @@
+import { PUBLIC_REVIEW_APP_ID, PUBLIC_REVIEW_REPOSITORY, PUBLIC_REVIEW_REPOSITORY_ID, isPublicReviewRepository, type ReviewAuthorityRepository } from '../auth/repositoryReviewAuthority';
 import type { AuthoritativeServiceConfig } from '../auth/authoritativeServiceConfig';
 import { createWorkerCompletionVerifier, type AuthoritativeReviewAdmission,
   type AuthoritativeReviewCompletion } from './authoritativeServiceContracts';
@@ -19,6 +20,7 @@ export interface AuthoritativeReviewServiceOptions {
     advanceProjectedAttempts(now?: number, limit?: number): Promise<number>;
   };
   getStoredPrepared: AuthoritativeCompletionContextOptions['getStoredPrepared'];
+  publicAppCredentials?: { appId: string; privateKey: string };
   appId: string;
   privateKey: string;
   baseUrl: string;
@@ -26,7 +28,7 @@ export interface AuthoritativeReviewServiceOptions {
   /** Transport seam only. No candidate request can supply it. */
   fetchImplementation?: typeof fetch;
   /** ADR 0002: resolves the review App's bot login for finding-thread author verification. */
-  findingThreadAuthor?: () => Promise<string | undefined>;
+  findingThreadAuthor?: (repository: ReviewRepositoryIdentity) => Promise<string | undefined>;
 }
 
 /** Additive control-plane wiring. Merely constructing this object does not
@@ -43,23 +45,45 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
   if (Number(options.appId) !== config.expectedAppId || !options.workerId.trim()) {
     throw new Error('Authoritative service identity does not match its configuration');
   }
-  const authFor = (repository: Pick<ReviewRepositoryIdentity, 'owner' | 'repo'>) => ({
-    appId: options.appId, privateKey: options.privateKey, baseUrl: options.baseUrl,
-    owner: repository.owner, repo: repository.repo,
-  });
+  const publicAuthority = config.publicRepository;
+  const publicCredentials = options.publicAppCredentials;
+  if (publicAuthority && (!isPublicReviewRepository(publicAuthority)
+    || publicAuthority.expectedAppId !== PUBLIC_REVIEW_APP_ID
+    || publicCredentials?.appId !== String(PUBLIC_REVIEW_APP_ID) || !publicCredentials.privateKey)) {
+    throw new Error('Dedicated public review identity is invalid');
+  }
+  const repositoryIds = [...config.repositoryIds, ...(publicAuthority ? [publicAuthority.repositoryId] : [])];
+  const expectedAppIdFor = (selected: ReviewAuthorityRepository): number => {
+    if (publicAuthority && isPublicReviewRepository(selected)) return PUBLIC_REVIEW_APP_ID;
+    if (selected.repositoryId === PUBLIC_REVIEW_REPOSITORY_ID || `${selected.owner}/${selected.repo}` === PUBLIC_REVIEW_REPOSITORY || !config.repositoryIds.includes(selected.repositoryId)) {
+      throw new Error('Repository is outside authoritative review admission');
+    }
+    return config.expectedAppId;
+  };
+  const authFor = (selected: ReviewRepositoryIdentity, policyRead = false) => {
+    if (policyRead && (selected.repositoryId !== config.policyRepository.repositoryId
+      || selected.owner !== config.policyRepository.owner || selected.repo !== config.policyRepository.repo)) {
+      throw new Error('Policy repository identity differs from configuration');
+    }
+    const credentials = !policyRead && expectedAppIdFor(selected) === PUBLIC_REVIEW_APP_ID
+      ? publicCredentials! : { appId: options.appId, privateKey: options.privateKey };
+    return { ...credentials, baseUrl: options.baseUrl, owner: selected.owner, repo: selected.repo };
+  };
   // REL-1080: the same git-derived large-diff source the worker uses for a 406.
   const gitDiffSource = trustedGitDiffSource(process.env, options.baseUrl);
-  const readerFactory = async (repository: ReviewRepositoryIdentity, signal: AbortSignal) => {
-    const minted = await getBoundedRepositoryToken(authFor(repository), 'read', {
+  const makeReader = async (repository: ReviewRepositoryIdentity, signal: AbortSignal, policyRead = false) => {
+    const minted = await getBoundedRepositoryToken(authFor(repository, policyRead), 'read', {
       signal, fetchImplementation: options.fetchImplementation,
     });
     return new AuthoritativeReviewReader({ token: minted.token, baseUrl: options.baseUrl,
       fetchImplementation: options.fetchImplementation, ...(gitDiffSource ? { gitDiffSource } : {}),
-      ...(options.findingThreadAuthor ? { findingThreadAuthor: options.findingThreadAuthor } : {}) });
+      ...(options.findingThreadAuthor ? { findingThreadAuthor: () => options.findingThreadAuthor!(repository) } : {}) });
   };
+  const readerFactory = (repository: ReviewRepositoryIdentity, signal: AbortSignal) => makeReader(repository, signal);
+  const policyReaderFactory = (repository: ReviewRepositoryIdentity, signal: AbortSignal) => makeReader(repository, signal, true);
   const resolver = new AuthoritativePublishingResolver({
     policyRepository: config.policyRepository, policyRef: config.policyRef, policyPath: config.policyPath,
-    transport: config.transport, candidateReaderFactory: readerFactory, policyReaderFactory: readerFactory,
+    transport: config.transport, candidateReaderFactory: readerFactory, policyReaderFactory,
   });
   const resolveCompletion = createAuthoritativeCompletionContext({
     getStoredPrepared: options.getStoredPrepared,
@@ -68,7 +92,7 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
   const publisher = new ReviewGatePublisher({
     repository, workerId: options.workerId, clientFactoryTimeoutMs: 45_000,
     clientFor: async (gate) => {
-      if (gate.expectedAppId !== config.expectedAppId || !config.repositoryIds.includes(gate.coordinates.repositoryId)) {
+      if (!repositoryIds.includes(gate.coordinates.repositoryId) || gate.expectedAppId !== expectedAppIdFor(gate.coordinates)) {
         throw new Error('Gate publication is outside the enrolled identity');
       }
       // An accepted terminal result can wait durably while GitHub is unavailable.
@@ -97,15 +121,15 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
   return {
     resolver,
     admission: { expectedAppId: config.expectedAppId, acceptNewRequests: config.admissionEnabled,
-      repositoryIds: [...config.repositoryIds], resolver },
+      repositoryIds, ...(publicAuthority ? { expectedAppIdFor } : {}), resolver },
     completion: { verifier: createWorkerCompletionVerifier(), repository, resolve: resolveCompletion },
     validateAdmission: async (input) => {
       // The router's preparation can finish out of order across replicas. Only
       // this fresh read under the shared admission lock may authorize retirement
       // of another candidate. Neither request timestamps nor head ordering do.
-      if (!config.admissionEnabled || input.publicationMode !== 'app-gate'
-        || input.authoritativeGate?.expectedAppId !== config.expectedAppId
-        || !config.repositoryIds.includes(input.repositoryId)) {
+      if (!repositoryIds.includes(input.repositoryId) || !config.admissionEnabled || input.publicationMode !== 'app-gate'
+        || input.authoritativeGate?.expectedAppId !== expectedAppIdFor({ ...input.identity, repositoryId: input.repositoryId })
+        || !repositoryIds.includes(input.repositoryId)) {
         throw new Error('Authoritative admission is outside the active identity');
       }
       const { owner, repo, prNumber, headSha, baseSha } = input.identity;
