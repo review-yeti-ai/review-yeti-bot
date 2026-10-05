@@ -113,6 +113,14 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
       to_regclass('review_operator_passthrough_events') IS NOT NULL AS events`);
 
     expect(result.rows[0]).toEqual({ publications: true, events: true });
+
+    const statusIndex = await pool!.query(`SELECT indexdef FROM pg_indexes
+      WHERE schemaname=$1 AND indexname='review_operator_passthrough_status_idx'`, [schemaName]);
+    expect(statusIndex.rows).toHaveLength(1);
+    expect(statusIndex.rows[0].indexdef)
+      .toMatch(/USING btree \(owner, repo, pr_number, publication_sequence DESC, created_at DESC\)/u);
+    expect(statusIndex.rows[0].indexdef).toContain('retirement_requested_at IS NULL');
+    expect(statusIndex.rows[0].indexdef).toContain('retired_at IS NULL');
   });
 
   it('keeps canonical candidate coordinates and rejects persisted identity tampering', async () => {

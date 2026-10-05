@@ -20,6 +20,7 @@ import {
   matchesReviewStatusIdentity,
 } from '../reviewStatusVerdict';
 import { normalizeOperationalTelemetry, type OperationalTelemetry } from '../../../review/workerCompletion';
+import { operatorPassthroughReadyForShip } from '../../../review/operatorPassthrough';
 import { REVIEW_DISPATCH_OUTBOX_STATUS } from '../../../persistence/reviewDispatchStatus';
 
 export interface ReviewStatusDbClient {
@@ -283,8 +284,14 @@ async function operatorPassthroughStatus(db: ReviewStatusDbClient, input: GetRev
       active_projection: null, message: 'Operator SHIP publication identity is unavailable',
     } satisfies ReviewStatusOutput);
   }
-  const mergeEligible = row.review_creation_state === 'bound' && row.gate_creation_state === 'bound'
-    && row.review_check_id != null && row.gate_check_id != null;
+  const mergeEligible = operatorPassthroughReadyForShip({
+    reviewCreationState: row.review_creation_state,
+    reviewCheckId: row.review_check_id,
+    gateCreationState: row.gate_creation_state,
+    gateCheckId: row.gate_check_id,
+    retirementRequestedAt: row.retirement_requested_at,
+    retiredAt: row.retired_at,
+  });
   const gateCheckId = row.gate_check_id == null ? null : Number(row.gate_check_id);
   const reviewCheckId = row.review_check_id == null ? null : Number(row.review_check_id);
   return buildToolResultJson({

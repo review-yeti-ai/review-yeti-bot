@@ -3,7 +3,12 @@ import { z } from 'zod';
 import {
   AUTHORITATIVE_REVIEW_APP_ID, AUTHORITATIVE_REVIEW_APP_SLUG, AUTHORITATIVE_REVIEW_CHECK_NAME,
 } from '../auth/authoritativeServiceIdentity';
-import { REVIEW_GATE_CHECK_NAME } from './reviewCheckIdentity';
+import {
+  deriveOperatorPassthroughExternalId,
+  isOperatorPassthroughExternalId,
+  REVIEW_GATE_CHECK_NAME,
+  REVIEW_WORKER_CHECK_NAME,
+} from './reviewCheckIdentity';
 import type { GitHubWebhookConfig } from '../auth/githubWebhookConfig';
 import type { MergeGroupGateRepository, MergeGroupGateState } from '../persistence/mergeGroupGateRepository';
 import { createBoundedGitHubJsonClient, type GitHubJsonClient } from '../github/boundedGitHubJson';
@@ -11,7 +16,10 @@ import {
   githubWebhookRepositorySchema, requireEnrolledGitHubWebhookRepository, UnenrolledGitHubWebhookIdentityError,
 } from '../auth/githubWebhookIdentity';
 import { canonicalJson, sha256 } from './reviewCore';
-import type { OperatorPassthroughAdmissionReceipt } from './operatorPassthrough';
+import {
+  isOperatorPassthroughCheckOutput,
+  type OperatorPassthroughAdmissionReceipt,
+} from './operatorPassthrough';
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const positiveInteger = z.number().int().positive().safe();
@@ -183,8 +191,7 @@ function exactReviewFailure(checks: any, expectedHead: string,
   if (latest?.status !== 'completed' || latest?.conclusion !== 'success') {
     return 'latest exact-head Review Yeti check is not successful';
   }
-  const latestIsOperatorPassthrough = typeof latest.external_id === 'string'
-    && latest.external_id.startsWith('review-yeti-operator-passthrough:v1:');
+  const latestIsOperatorPassthrough = isOperatorPassthroughExternalId(latest.external_id);
   const allowOperatorPassthrough = operatorReceipt !== undefined;
   if (allowOperatorPassthrough && (!operatorReceipt.mergeEligible
     || !/^[a-f0-9]{64}$/u.test(operatorReceipt.publicationId)
@@ -192,7 +199,7 @@ function exactReviewFailure(checks: any, expectedHead: string,
     return 'current operator SHIP publication is not durably ready';
   }
   const expectedReviewExternalId = operatorReceipt
-    ? `review-yeti-operator-passthrough:v1:${operatorReceipt.publicationId}:${operatorReceipt.auditDigest}`
+    ? deriveOperatorPassthroughExternalId(operatorReceipt.publicationId, operatorReceipt.auditDigest, REVIEW_WORKER_CHECK_NAME)
     : undefined;
   if (allowOperatorPassthrough && (!latestIsOperatorPassthrough || latest.external_id !== expectedReviewExternalId)) {
     return 'latest exact-head Review Yeti check does not match the current durable operator SHIP publication';
@@ -202,12 +209,8 @@ function exactReviewFailure(checks: any, expectedHead: string,
   }
   if (latestIsOperatorPassthrough) {
     const output = latest.output && typeof latest.output === 'object' ? latest.output : {};
-    const title = typeof output.title === 'string' ? output.title : '';
-    const summary = typeof output.summary === 'string' ? output.summary : '';
     if (!allowOperatorPassthrough || latest.external_id !== expectedReviewExternalId
-      || !title.startsWith('Review Yeti: SHIP (passthrough: no review performed)')
-      || !summary.includes('review-mode=passthrough') || !summary.includes('Zero review lanes ran.')
-      || !/review-yeti-operator-passthrough:v1:[a-f0-9]{64}:[a-f0-9]{64}$/u.test(latest.external_id)) {
+      || !isOperatorPassthroughCheckOutput(output, 'review')) {
       return 'latest Review Yeti check is not an active, exact operator-passthrough SHIP';
     }
     const gates = checks.check_runs.filter((run: any) => run?.name === REVIEW_GATE_CHECK_NAME
@@ -216,10 +219,9 @@ function exactReviewFailure(checks: any, expectedHead: string,
     const gate = [...gates].sort((left: any, right: any) => Number(left.id) - Number(right.id)).at(-1);
     const gateOutput = gate?.output && typeof gate.output === 'object' ? gate.output : {};
     return gate?.status === 'completed' && gate?.conclusion === 'success'
-      && gate?.external_id === `review-yeti-gate:operator-v1:${operatorReceipt.publicationId}:${operatorReceipt.auditDigest}`
-      && typeof gateOutput.title === 'string' && gateOutput.title.startsWith('Review Yeti Gate: SHIP (operator passthrough SHIP)')
-      && typeof gateOutput.summary === 'string' && gateOutput.summary.includes('review-mode=passthrough')
-      && gateOutput.summary.includes('Zero review lanes ran.')
+      && gate?.external_id === deriveOperatorPassthroughExternalId(operatorReceipt.publicationId,
+        operatorReceipt.auditDigest, REVIEW_GATE_CHECK_NAME)
+      && isOperatorPassthroughCheckOutput(gateOutput, 'gate')
       ? undefined : 'paired exact-head Review Yeti Gate passthrough check is not successful';
   }
   return undefined;

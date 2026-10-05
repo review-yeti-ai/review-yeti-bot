@@ -44,6 +44,9 @@ export const OPERATOR_PASSTHROUGH_SCHEMA_SQL = `
     ON review_operator_passthrough_publications (available_at, lease_expires_at, created_at)
     WHERE (review_creation_state NOT IN ('bound','not-created') OR gate_creation_state NOT IN ('bound','not-created'))
       OR (retirement_requested_at IS NOT NULL AND retired_at IS NULL);
+  CREATE INDEX IF NOT EXISTS review_operator_passthrough_status_idx
+    ON review_operator_passthrough_publications (owner, repo, pr_number, publication_sequence DESC, created_at DESC)
+    WHERE retirement_requested_at IS NULL AND retired_at IS NULL;
   CREATE TABLE IF NOT EXISTS review_operator_passthrough_events (
     delivery_id TEXT PRIMARY KEY CHECK (length(delivery_id) BETWEEN 1 AND 256),
     publication_id VARCHAR(64) NOT NULL REFERENCES review_operator_passthrough_publications(publication_id),

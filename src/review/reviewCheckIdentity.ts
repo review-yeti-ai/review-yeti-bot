@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { REVIEW_CI_CHECK_NAME } from './reviewCi';
 import type { ReviewGateCoordinates } from './reviewGateContracts';
+import { AUTHORITATIVE_REVIEW_CHECK_NAME } from '../auth/authoritativeServiceIdentity';
 import {
   INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX,
   MAX_CHECK_RUN_TITLE_CHARACTERS,
@@ -11,7 +12,7 @@ export { REVIEW_CI_CHECK_NAME } from './reviewCi';
 export type { ReviewGateCoordinates } from './reviewGateContracts';
 export const REVIEW_GATE_CHECK_NAME = 'Review Yeti Gate';
 /** The official App-owned worker check, also used for the zero-lane operator exemption. */
-export const REVIEW_WORKER_CHECK_NAME = 'Review Yeti';
+export const REVIEW_WORKER_CHECK_NAME = AUTHORITATIVE_REVIEW_CHECK_NAME;
 
 /** GitHub's hard maximum for the output.title field on a Check Run (owned by `./laneInfrastructure`). */
 export { MAX_CHECK_RUN_TITLE_CHARACTERS } from './laneInfrastructure';
@@ -103,6 +104,7 @@ export function isAllowlistedWorkflowRef(
 }
 
 export type ReviewCheckName = typeof REVIEW_WORKER_CHECK_NAME | typeof REVIEW_GATE_CHECK_NAME | typeof REVIEW_CI_CHECK_NAME;
+export type OperatorPassthroughCheckName = typeof REVIEW_WORKER_CHECK_NAME | typeof REVIEW_GATE_CHECK_NAME;
 export type ReviewGatePendingStatus = 'queued' | 'in_progress';
 export type ReviewGateTerminalConclusion = 'success' | 'failure' | 'cancelled' | 'timed_out';
 export type ReviewGateObservedConclusion = ReviewGateTerminalConclusion
@@ -156,6 +158,28 @@ export interface ReviewGateCheck {
   status: 'queued' | 'in_progress' | 'completed';
   conclusion: ReviewGateObservedConclusion | null;
   htmlUrl?: string;
+}
+
+const OPERATOR_REVIEW_EXTERNAL_ID_PREFIX = 'review-yeti-operator-passthrough:v1:';
+const OPERATOR_GATE_EXTERNAL_ID_PREFIX = 'review-yeti-gate:operator-v1:';
+
+/** Derive a service-owned check identity when only the durable publication receipt is available. */
+export function deriveOperatorPassthroughExternalId(
+  publicationId: string,
+  auditDigest: string,
+  checkName: OperatorPassthroughCheckName,
+): string {
+  if (!/^[a-f0-9]{64}$/u.test(publicationId) || !/^[a-f0-9]{64}$/u.test(auditDigest)) {
+    throw new Error('GitHub Review Yeti operator passthrough identity is invalid');
+  }
+  return checkName === REVIEW_GATE_CHECK_NAME
+    ? `${OPERATOR_GATE_EXTERNAL_ID_PREFIX}${publicationId}:${auditDigest}`
+    : `${OPERATOR_REVIEW_EXTERNAL_ID_PREFIX}${publicationId}:${auditDigest}`;
+}
+
+/** Identify the operator-owned namespace without copying its wire prefix into consumers. */
+export function isOperatorPassthroughExternalId(value: unknown): value is string {
+  return typeof value === 'string' && value.startsWith(OPERATOR_REVIEW_EXTERNAL_ID_PREFIX);
 }
 
 const GITHUB_NAME = /^[A-Za-z0-9_.-]+$/u;
@@ -254,9 +278,7 @@ export function deriveReviewCheckExternalId(coordinates: ReviewCheckCoordinates,
   if (coordinates !== null && typeof coordinates === 'object' && 'kind' in coordinates
     && coordinates.kind === 'operator-passthrough') {
     const normalized = validateReviewCheckCoordinates(coordinates, checkName) as OperatorPassthroughCheckCoordinates;
-    return checkName === REVIEW_GATE_CHECK_NAME
-      ? `review-yeti-gate:operator-v1:${normalized.publicationId}:${normalized.auditDigest}`
-      : `review-yeti-operator-passthrough:v1:${normalized.publicationId}:${normalized.auditDigest}`;
+    return deriveOperatorPassthroughExternalId(normalized.publicationId, normalized.auditDigest, checkName as OperatorPassthroughCheckName);
   }
   if (checkName === REVIEW_GATE_CHECK_NAME) {
     const normalized = validateReviewCheckCoordinates(coordinates, checkName) as ReviewGateCoordinates;
