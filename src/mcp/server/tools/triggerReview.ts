@@ -13,7 +13,7 @@ import {
   type TriggerReviewInput,
   type TriggerReviewOutput,
 } from './schemas';
-import { sha256 } from '../../../review/reviewCore';
+import { canonicalJson, sha256 } from '../../../review/reviewCore';
 import { buildReviewRunIdentity, deriveReviewRunId } from '../../../review/reviewAdmission';
 import type { AuthoritativePublishingResolver } from '../../../review/authoritativePublishingResolver';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
@@ -138,7 +138,7 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
         throw new Error('trigger_review requires authoritative publishing admission');
       }
       if (incomplete_p2_recovery === true
-        && (authoritative?.acceptNewRequests !== true
+        && ((authoritative?.acceptNewRequests !== true && deps.passthroughEnabled !== true)
           || !authoritative.repositoryIds?.includes(repositoryId))) {
         throw new Error('Incomplete P2 recovery requires an active authoritative repository admission');
       }
@@ -171,6 +171,16 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
       const resolvedRunId = deriveReviewRunId(resolvedIdentity);
 
       if (deps.passthroughEnabled === true) {
+        if (!resolved || !authoritative?.recordOperatorPassthrough) {
+          throw new Error('Operator SHIP publication requires current authoritative candidate resolution');
+        }
+        const deliveryId = `mcp:${randomUUID()}`;
+        const exemption = await authoritative.recordOperatorPassthrough({
+          requested,
+          event: { transport: 'mcp', eventName: 'trigger_review', deliveryId,
+            deliveryDigest: sha256(canonicalJson({ deliveryId, repositoryId, owner, repo, pull_number,
+              headSha, baseSha, caller: context?.identity ?? 'configured-authenticator' })) },
+        });
         return buildToolResultJson({
           dispatched: false,
           job_crd_created: false,
@@ -181,8 +191,17 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
           repo,
           pull_number,
           head_sha: headSha,
-          message: 'Review request acknowledged; operator passthrough is enabled, so no review was started.',
-        });
+          verdict: exemption.verdict,
+          expected_lanes: exemption.expectedLanes,
+          completed_lanes: exemption.completedLanes,
+          publication_id: exemption.publicationId,
+          audit_digest: exemption.auditDigest,
+          publication_state: exemption.publicationState,
+          review_check_id: exemption.reviewCheckId,
+          gate_check_id: exemption.gateCheckId,
+          merge_eligible: exemption.mergeEligible,
+          message: `Operator pause authorized an explicit SHIP exemption for ${owner}/${repo}#${pull_number}; 0 review lanes ran; official check publication is ${exemption.publicationState}.`,
+        } satisfies TriggerReviewOutput);
       }
 
       // 2. Active Run Conflict Detection

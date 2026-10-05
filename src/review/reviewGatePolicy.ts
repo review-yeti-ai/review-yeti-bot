@@ -135,14 +135,12 @@ export function evaluateReviewGate(input: {
   current: ReviewGateCandidate & { open: boolean; draft: boolean };
   evidence?: ReviewGateEvidence;
   acceptance?: ReviewRiskAcceptance;
-  passthrough?: boolean;
 }): ReviewGateDecision {
-  const { candidate, current, evidence, acceptance, passthrough } = input;
+  const { candidate, current, evidence, acceptance } = input;
   const invalid = { status: 'failure', eligible: false, reason: 'invalid-evidence' } as const;
   if (!candidateValid(candidate) || !candidateValid(current)
     || typeof current.open !== 'boolean' || typeof current.draft !== 'boolean') return invalid;
   if (!current.open) return { status: 'cancelled', eligible: false, reason: 'pull-request-closed' };
-  if (passthrough === true) return { status: 'success', eligible: true, reason: 'passthrough' };
   if (candidate.repositoryId !== current.repositoryId || candidate.prNumber !== current.prNumber
     || candidate.headSha !== current.headSha || candidate.baseSha !== current.baseSha
     || candidate.policyDigest !== current.policyDigest) {

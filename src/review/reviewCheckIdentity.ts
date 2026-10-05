@@ -10,6 +10,8 @@ import {
 export { REVIEW_CI_CHECK_NAME } from './reviewCi';
 export type { ReviewGateCoordinates } from './reviewGateContracts';
 export const REVIEW_GATE_CHECK_NAME = 'Review Yeti Gate';
+/** The official App-owned worker check, also used for the zero-lane operator exemption. */
+export const REVIEW_WORKER_CHECK_NAME = 'Review Yeti';
 
 /** GitHub's hard maximum for the output.title field on a Check Run (owned by `./laneInfrastructure`). */
 export { MAX_CHECK_RUN_TITLE_CHARACTERS } from './laneInfrastructure';
@@ -100,7 +102,7 @@ export function isAllowlistedWorkflowRef(
   return policy.workflowRefs.has('*') || policy.workflowRefs.has(workflowRef);
 }
 
-export type ReviewCheckName = typeof REVIEW_GATE_CHECK_NAME | typeof REVIEW_CI_CHECK_NAME;
+export type ReviewCheckName = typeof REVIEW_WORKER_CHECK_NAME | typeof REVIEW_GATE_CHECK_NAME | typeof REVIEW_CI_CHECK_NAME;
 export type ReviewGatePendingStatus = 'queued' | 'in_progress';
 export type ReviewGateTerminalConclusion = 'success' | 'failure' | 'cancelled' | 'timed_out';
 export type ReviewGateObservedConclusion = ReviewGateTerminalConclusion
@@ -126,7 +128,23 @@ export interface ReviewCiCheckCoordinates {
   epoch: number;
 }
 
-export type ReviewCheckCoordinates = ReviewGateCoordinates | ReviewCiCheckCoordinates;
+/** A policy- and candidate-bound operator exemption has its own identity namespace.
+ * It intentionally carries no run ID, attempt, or Action generation. */
+export interface OperatorPassthroughCheckCoordinates {
+  kind: 'operator-passthrough';
+  owner: string;
+  repo: string;
+  repositoryId: number;
+  prNumber: number;
+  headSha: string;
+  baseSha: string;
+  policyDigest: string;
+  publicationId: string;
+  publicationSequence: number;
+  auditDigest: string;
+}
+
+export type ReviewCheckCoordinates = ReviewGateCoordinates | ReviewCiCheckCoordinates | OperatorPassthroughCheckCoordinates;
 
 /** Structural GitHub-check observation used by domain and persistence ports. */
 export interface ReviewGateCheck {
@@ -202,7 +220,18 @@ function validateCommonCoordinates(input: unknown): Omit<ReviewGateCoordinates, 
 export function validateReviewCheckCoordinates(input: unknown, checkName: ReviewCheckName): ReviewCheckCoordinates {
   const common = validateCommonCoordinates(input);
   const candidate = input as Record<string, unknown>;
-  if (checkName === REVIEW_GATE_CHECK_NAME) {
+  if (candidate.kind === 'operator-passthrough') {
+    if ((checkName !== REVIEW_WORKER_CHECK_NAME && checkName !== REVIEW_GATE_CHECK_NAME)
+      || !/^[a-f0-9]{64}$/u.test(String(candidate.publicationId))
+      || !Number.isSafeInteger(candidate.publicationSequence) || (candidate.publicationSequence as number) < 1
+      || !/^[a-f0-9]{64}$/u.test(String(candidate.auditDigest))) {
+      throw new Error('GitHub Review Yeti operator passthrough identity is invalid');
+    }
+    return { ...common, kind: 'operator-passthrough',
+      publicationId: candidate.publicationId as string, publicationSequence: candidate.publicationSequence as number,
+      auditDigest: candidate.auditDigest as string };
+  }
+  if (checkName === REVIEW_GATE_CHECK_NAME || checkName === REVIEW_WORKER_CHECK_NAME) {
     const runId = requiredText(candidate.runId, 'run id', 512);
     const attemptId = requiredText(candidate.attemptId, 'attempt id', 512);
     if (!EXACT_RUN_ID.test(runId)) throw new Error('GitHub Review Yeti gate run id is invalid');
@@ -222,6 +251,13 @@ export function validateReviewCheckCoordinates(input: unknown, checkName: Review
 }
 
 export function deriveReviewCheckExternalId(coordinates: ReviewCheckCoordinates, checkName: ReviewCheckName): string {
+  if (coordinates !== null && typeof coordinates === 'object' && 'kind' in coordinates
+    && coordinates.kind === 'operator-passthrough') {
+    const normalized = validateReviewCheckCoordinates(coordinates, checkName) as OperatorPassthroughCheckCoordinates;
+    return checkName === REVIEW_GATE_CHECK_NAME
+      ? `review-yeti-gate:operator-v1:${normalized.publicationId}:${normalized.auditDigest}`
+      : `review-yeti-operator-passthrough:v1:${normalized.publicationId}:${normalized.auditDigest}`;
+  }
   if (checkName === REVIEW_GATE_CHECK_NAME) {
     const normalized = validateReviewCheckCoordinates(coordinates, checkName) as ReviewGateCoordinates;
     const canonical = JSON.stringify([
@@ -237,6 +273,10 @@ export function deriveReviewCheckExternalId(coordinates: ReviewCheckCoordinates,
       normalized.executionAttempt,
     ]);
     return `review-yeti-gate:v1:${createHash('sha256').update(canonical, 'utf8').digest('hex')}`;
+  }
+  if (checkName === REVIEW_WORKER_CHECK_NAME) {
+    const normalized = validateReviewCheckCoordinates(coordinates, checkName) as ReviewGateCoordinates;
+    return `${normalized.runId}:a${normalized.executionAttempt}`;
   }
   const normalized = validateReviewCheckCoordinates(coordinates, checkName) as ReviewCiCheckCoordinates;
   const canonical = JSON.stringify([

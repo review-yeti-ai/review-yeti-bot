@@ -50,6 +50,7 @@ function fixture(overrides: Record<string, any> = {}) {
     currentPullRequestFor: overrides.currentPullRequestFor || (async () => ({
       open: true, draft: false, headSha: claim.headSha,
     })),
+    isDispatchPaused: overrides.isDispatchPaused,
     workerId: 'dispatcher-a',
     workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`,
     namespace: 'ct-review-qualification',
@@ -61,6 +62,26 @@ function fixture(overrides: Record<string, any> = {}) {
 }
 
 describe('ReviewJobDispatchEngine', () => {
+  it('does not claim queued app-gate work while operator pause is enabled, then resumes after it is cleared', async () => {
+    let paused = true;
+    const claimNext = vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const }));
+    const { engine, projector, repository } = fixture({
+      isDispatchPaused: () => paused,
+      repository: { claimNext },
+    });
+
+    await expect(engine.runOnce()).resolves.toEqual({ status: 'idle' });
+    expect(claimNext).not.toHaveBeenCalled();
+    expect(projector.ensure).not.toHaveBeenCalled();
+
+    paused = false;
+    await expect(engine.runOnce()).resolves.toEqual({
+      status: 'projected', runId: claim.runId, projectionName: `ct-review-${'1'.repeat(32)}`,
+    });
+    expect(claimNext).toHaveBeenCalledOnce();
+    expect(repository.markProjected).toHaveBeenCalledOnce();
+  });
+
   it('claims one row, builds the fail-closed contract, and records the deterministic projection', async () => {
     const { engine, repository, projector } = fixture();
     await expect(engine.runOnce()).resolves.toEqual({

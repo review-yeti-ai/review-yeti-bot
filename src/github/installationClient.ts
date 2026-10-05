@@ -815,7 +815,8 @@ export class GitHubInstallationClient {
    * worker-token owner's App JWT, and holds the durable attempt's row lock.
    * Never choose a check by its display name alone or replace a newer verdict.
    */
-  async failAbandonedCheck(run: AbandonedPublishingRun, publisherAppId: number, signal: AbortSignal):
+  async failAbandonedCheck(run: AbandonedPublishingRun, publisherAppId: number, signal: AbortSignal,
+    options: { allowCreate?: boolean } = {}):
     Promise<AbandonedCheckRecoveryOutcome> {
     try {
       // Validate the persisted admission, not the current process's default:
@@ -945,7 +946,7 @@ export class GitHubInstallationClient {
 
       const visible = await observeEventually();
       if (visible) return visible;
-      if (run.recoveryOnly) return 'creation-unconfirmed';
+      if (run.recoveryOnly || options.allowCreate === false) return 'creation-unconfirmed';
 
       try {
         const created = await request(`${base}/check-runs`, { method: 'POST', body: JSON.stringify({

@@ -40,11 +40,17 @@ export interface AuthoritativePublishingResolverOptions {
 
 function unavailable(): Error { return new Error('Authoritative publishing resolution unavailable'); }
 
+/** A complete GitHub read proved this exact candidate is no longer current. */
+export class AuthoritativeCandidateChangedError extends Error {
+  constructor() { super('Authoritative publishing candidate changed'); this.name = 'AuthoritativeCandidateChangedError'; }
+}
+
 function matchingCandidate(requested: RequestedReviewCandidate, observed: CurrentReviewCandidate): CurrentReviewCandidate {
   const current = currentSchema.parse(observed);
-  if (!current.open || Object.entries(requested).some(([key, value]) => current[key as keyof RequestedReviewCandidate] !== value)
+  if (!current.open || current.draft
+    || Object.entries(requested).some(([key, value]) => current[key as keyof RequestedReviewCandidate] !== value)
     || (isPublicReviewRepository(requested) && current.private !== false)) {
-    throw unavailable();
+    throw new AuthoritativeCandidateChangedError();
   }
   return current;
 }
@@ -125,11 +131,47 @@ export class AuthoritativePublishingResolver {
     };
     try {
       return await Promise.race([resolve(), expired]);
-    } catch {
+    } catch (error) {
       // Never attach a cause or echo reader/factory errors, tokens, request
       // values, policy contents or transport response bodies.
+      if (error instanceof AuthoritativeCandidateChangedError) throw error;
       throw unavailable();
     } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
+      abort.abort();
+    }
+  }
+
+  /** Read current GitHub coordinates for a bounded service reconciliation seed.
+   * The returned tuple must still pass `resolve` before it can authorize SHIP. */
+  async readCurrentCandidate(seed: Pick<RequestedReviewCandidate, 'repositoryId' | 'owner' | 'repo' | 'prNumber'>,
+    signal?: AbortSignal): Promise<CurrentReviewCandidate> {
+    const target = repositorySchema.extend({ prNumber: z.number().int().positive().safe() }).parse(seed);
+    const abort = new AbortController();
+    const deadline = performance.now() + this.timeoutMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    const expired = new Promise<never>((_, reject) => {
+      onAbort = () => { abort.abort(); reject(unavailable()); };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      timer = setTimeout(onAbort, this.timeoutMs);
+      if (signal?.aborted) onAbort();
+    });
+    const read = async (): Promise<CurrentReviewCandidate> => {
+      if (abort.signal.aborted || performance.now() >= deadline) throw unavailable();
+      const reader = await this.candidateReaderFactory({ repositoryId: target.repositoryId,
+        owner: target.owner, repo: target.repo }, abort.signal);
+      const current = currentSchema.parse(await reader.currentCandidate({ ...target }, abort.signal));
+      if (current.repositoryId !== target.repositoryId || current.owner !== target.owner
+        || current.repo !== target.repo || current.prNumber !== target.prNumber || performance.now() >= deadline) {
+        throw unavailable();
+      }
+      return current;
+    };
+    try { return await Promise.race([read(), expired]); }
+    catch { throw unavailable(); }
+    finally {
       if (timer !== undefined) clearTimeout(timer);
       if (onAbort) signal?.removeEventListener('abort', onAbort);
       abort.abort();

@@ -156,7 +156,7 @@ describe('createAuthoritativeReviewService wiring', () => {
       const input = admissionInput(f);
       const service = createAuthoritativeReviewService(f.options);
       mocks.currentCandidate.mockResolvedValue({ ...candidate, ...change });
-      await expect(service.validateAdmission(input)).rejects.toThrow('Authoritative publishing resolution unavailable');
+      await expect(service.validateAdmission(input)).rejects.toThrow('Authoritative publishing candidate changed');
       expect(publishMints()).toHaveLength(0);
     });
 
@@ -408,7 +408,7 @@ describe('gate publication identity and fresh success', () => {
     const f = fixture();
     createAuthoritativeReviewService(f.options);
     mocks.currentCandidate.mockResolvedValueOnce(candidate).mockResolvedValueOnce({ ...candidate, ...changed });
-    await expect(publisherOptions().clientFor(f.gate)).rejects.toThrow('Authoritative publishing resolution unavailable');
+    await expect(publisherOptions().clientFor(f.gate)).rejects.toThrow('Authoritative publishing candidate changed');
     expect(mocks.currentCandidate).toHaveBeenCalledTimes(2);
     expect(publishMints()).toEqual([]);
     expect(mocks.clientConstructor).not.toHaveBeenCalled();

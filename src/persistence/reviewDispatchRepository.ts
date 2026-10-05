@@ -216,6 +216,9 @@ export const ABANDONED_RECOVERY_LEASE_MS = 60_000;
 export interface ReviewDispatchRepositoryOptions extends ReviewLifecycleEventsOptions {
   /** Trusted service read/validation only; invoked under the candidate's PR lock before any admission writes. */
   validateAuthoritativeAdmission?: (input: ReviewAdmissionInput) => Promise<void>;
+  /** Retire same-head operator successes in this already locked admission transaction. */
+  retireOperatorPassthroughInTransaction?: (client: { query(sql: string, values?: unknown[]): Promise<QueryResult> },
+    input: ReviewAdmissionInput, now: number) => Promise<void>;
   /** Defaults to 30 seconds; safe integer values are clamped to 250–30,000 ms. */
   admissionValidationTimeoutMs?: number;
   /** Require central app-gate callers to supply the exact generation. */
@@ -777,6 +780,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     const timeoutMs = options.admissionValidationTimeoutMs ?? 30_000;
     if (!Number.isSafeInteger(timeoutMs)
       || (options.validateAuthoritativeAdmission !== undefined && typeof options.validateAuthoritativeAdmission !== 'function')
+      || (options.retireOperatorPassthroughInTransaction !== undefined
+        && typeof options.retireOperatorPassthroughInTransaction !== 'function')
       || (options.resolveGenerationRecovery !== undefined && typeof options.resolveGenerationRecovery !== 'function')) {
       throw new Error('Invalid authoritative admission validation configuration');
     }
@@ -1222,6 +1227,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       );
       if (input.authoritativeGate) {
         await this.validateAuthoritativeAdmission(input);
+        await this.options.retireOperatorPassthroughInTransaction?.(client, input, input.receivedAt);
         await this.refuseUnretainedOrdinaryRetry(client, input, runId);
         await savePreparedPublishingPolicy(client, input.authoritativeGate.prepared);
       }

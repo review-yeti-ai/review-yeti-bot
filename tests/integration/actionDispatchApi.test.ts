@@ -80,6 +80,12 @@ const centralManualTarget = {
   expectedGeneration: 2,
 } as const;
 
+const operatorPassthroughReceipt = {
+  status: 'accepted', verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
+  publicationId: 'f'.repeat(64), auditDigest: 'e'.repeat(64), publicationState: 'published',
+  reviewCheckId: 5001, gateCheckId: 5002, mergeEligible: true,
+} as const;
+
 function app(overrides: Record<string, any> = {}) {
   const verifier = { verify: vi.fn(async () => verified), ...(overrides.verifier || {}) };
   const admission = { admit: vi.fn(async () => ({
@@ -193,31 +199,40 @@ const terminalSuccessResult = {
 } as const;
 
 describe('POST /api/dispatch/action', () => {
-  it('acknowledges an authenticated Action dispatch without resolving or admitting new work', async () => {
+  it('publishes an authenticated exact-candidate operator SHIP without admitting or allocating a generation', async () => {
     const resolveInstallationId = vi.fn(async () => 456);
+    const resolve = vi.fn(async () => { throw new Error('candidate resolver is owned by recordOperatorPassthrough'); });
+    const recordOperatorPassthrough = vi.fn(async (_input: any) => operatorPassthroughReceipt);
     const admission = { admit: vi.fn(async () => { throw new Error('must not admit'); }) };
     const fixture = app({
       passthroughEnabled: true,
+      allowAppGate: true,
       resolveInstallationId,
       admission,
       authoritativePublishing: {
         expectedAppId: 789,
         repositoryIds: [123],
         acceptNewRequests: false,
-        resolver: { resolve: vi.fn(async () => { throw new Error('must not resolve'); }) },
+        resolver: { resolve },
+        recordOperatorPassthrough,
       },
     });
     const response = await request(fixture.instance)
       .post('/api/dispatch/action')
       .set('Authorization', 'Bearer signed-oidc-token')
-      .send({ ...body, expectedGeneration: 999 });
+      .send({ ...body, publishMode: 'app-gate', expectedGeneration: 999 });
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({
+    expect(response.body).toMatchObject({
       version: 'ActionDispatchPassthrough.v1',
       status: 'passthrough',
       reason: 'operator_global_passthrough',
       reviewStarted: false,
+      verdict: 'SHIP',
+      expectedLanes: 0,
+      completedLanes: 0,
+      publicationState: 'published',
+      mergeEligible: true,
       deliveryId: body.deliveryId,
       eventName: body.caller.eventName,
       repositoryId: body.repositoryId,
@@ -229,14 +244,24 @@ describe('POST /api/dispatch/action', () => {
       callerKind: 'direct',
     });
     expect(response.body).not.toHaveProperty('runId');
+    expect(response.body).not.toHaveProperty('expectedGeneration');
     expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
     expect(fixture.admission.admit).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(recordOperatorPassthrough).toHaveBeenCalledOnce();
+    expect(recordOperatorPassthrough.mock.calls[0]?.[0]).toMatchObject({
+      requested: { repositoryId: 123, owner: 'exampleorg', repo: 'example-api', prNumber: 42,
+        headSha: body.headSha, baseSha: body.baseSha },
+      event: { transport: 'github-actions-oidc', eventName: 'workflow_dispatch',
+        deliveryId: `github-actions-oidc:${body.deliveryId}`, deliveryDigest: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+    });
   });
 
-  it('does not compare or consume the supplied central generation during passthrough', async () => {
+  it('does not compare or consume the authenticated central generation during paused SHIP', async () => {
     const claims = centralManualClaims;
     const resolveInstallationId = vi.fn(async () => 456);
     const resolve = vi.fn(async () => { throw new Error('must not resolve'); });
+    const recordOperatorPassthrough = vi.fn(async (_input: any) => operatorPassthroughReceipt);
     const admission = { admit: vi.fn(async () => { throw new Error('must not admit'); }) };
     const fixture = app({
       passthroughEnabled: true,
@@ -251,6 +276,7 @@ describe('POST /api/dispatch/action', () => {
         repositoryIds: [1326169548],
         acceptNewRequests: false,
         resolver: { resolve },
+        recordOperatorPassthrough,
       },
     });
     const response = await request(fixture.instance)
@@ -278,6 +304,12 @@ describe('POST /api/dispatch/action', () => {
     expect(resolveInstallationId).not.toHaveBeenCalled();
     expect(resolve).not.toHaveBeenCalled();
     expect(admission.admit).not.toHaveBeenCalled();
+    expect(recordOperatorPassthrough).toHaveBeenCalledOnce();
+    expect(recordOperatorPassthrough.mock.calls[0]?.[0].requested).toEqual({
+      repositoryId: 1326169548, owner: 'review-yeti-ai', repo: 'review-yeti-bot', prNumber: 42,
+      headSha: body.headSha, baseSha: body.baseSha,
+    });
+    expect(recordOperatorPassthrough.mock.calls[0]?.[0].event.transport).toBe('github-actions-oidc');
   });
 
   it('still enforces OIDC and expected-generation presence before passthrough', async () => {
