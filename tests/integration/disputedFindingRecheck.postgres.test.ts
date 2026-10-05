@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
 import express from 'express';
@@ -13,6 +13,8 @@ import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
 import { reviewPrLockKey } from '../../src/persistence/reviewPrTransaction';
 import { findingRecheckAdmission } from '../support/findingRecheckAdmission';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
+import { reservePrReview } from '../../src/persistence/reviewPrLifecycleRepository';
+import { disputedFindingRecheckDigest, loadValidatedDisputedFindingRechecks } from '../../src/review/disputedFindingRecheck';
 import { describeWithPostgres, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
 requireDatabaseUrlInCi();
@@ -111,6 +113,19 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
       (run_id, execution_attempt, content_digest, payload, byte_length)
       VALUES ($1, 2, $2, $3::jsonb, $4)`,
     [runId, completionDigest, JSON.stringify(completion), Buffer.byteLength(sourceBytes, 'utf8')]);
+    const lifecycleClient = await pool!.connect();
+    try {
+      await lifecycleClient.query('BEGIN');
+      await reservePrReview(lifecycleClient, {
+        repositoryId, owner, repo, prNumber, runId, executionAttempt: 2, deliveryId: 'disputed-source',
+        headSha, baseSha, policyDigest, configDigest, contextDigest: persistedIdentity.snapshotDigest,
+        at: Date.parse('2026-10-01T12:00:00.000Z'),
+      });
+      await lifecycleClient.query('COMMIT');
+    } catch (error) {
+      await lifecycleClient.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally { lifecycleClient.release(); }
     await pool!.query(`INSERT INTO review_execution_checkpoints
       (run_id, execution_attempt, revision, head_sha, config_digest, payload, byte_length)
       VALUES ($1, 2, 4, $2, $3, $4::jsonb, $5)`,
@@ -151,6 +166,19 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
       .rejects.toThrow('A different dispute re-review is already queued for this task');
     expect((await pool!.query('SELECT count(*)::int AS count FROM review_finding_rechecks WHERE run_id = $1', [runId])).rows[0].count)
       .toBe(1);
+    const recheckAudit = (await pool!.query(`SELECT event_type, actor_digest, context_digest, evidence_digest
+      FROM review_pr_lifecycle_events WHERE event_type = 'finding.recheck_requested'`)).rows[0];
+    expect(recheckAudit).toMatchObject({ event_type: 'finding.recheck_requested',
+      actor_digest: sha256(context.caller.callerId), context_digest: persistedIdentity.snapshotDigest,
+      evidence_digest: disputedFindingRecheckDigest({
+        requestId: first.request_id, runId, sourceExecutionAttempt: 2, sourceContentDigest: completionDigest,
+        sourcePlanDigest: sha256(canonicalJson(completion.result.taskPlan)), sourceGateAttemptId: gateAttemptId,
+        repositoryId, owner, repo, prNumber, headSha, baseSha, policyDigest, configDigest,
+        findingId, personaId: task.id, taskId: task.id,
+        finding: { severity: sourceFinding.severity, path: sourceFinding.path, line: sourceFinding.line,
+          title: sourceFinding.title, body: sourceFinding.body },
+        counterArgument: input.counter_argument, counterArgumentDigest: sha256(input.counter_argument),
+      }) });
 
     const storedSourceBefore = (await pool!.query(`SELECT content_digest, payload FROM review_worker_completions
       WHERE run_id = $1 AND execution_attempt = 2`, [runId])).rows[0];
@@ -215,5 +243,72 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
     const storedCheckpoint = (await pool!.query('SELECT payload FROM review_execution_checkpoints WHERE run_id = $1', [runId])).rows[0].payload;
     expect(storedCheckpoint).toMatchObject({ executionAttempt: 3, satisfiedFindingRecheckIds: [first.request_id],
       completedTasks: [{ id: task.id, findings: [] }] });
+
+    // More than eight legitimate rechecks can happen over a PR's life. Each
+    // exact source completion receives its own bounded batch, and the loader
+    // returns only the batch admitted for that execution attempt.
+    for (let sourceAttempt = 3; sourceAttempt <= 10; sourceAttempt += 1) {
+      const sourceCompletion: WorkerReviewCompletion = { ...completion, executionAttempt: sourceAttempt };
+      const sourceDigest = workerReviewCompletionDigest(sourceCompletion);
+      await pool!.query(`INSERT INTO review_worker_completions
+        (run_id, execution_attempt, content_digest, payload, byte_length)
+        VALUES ($1, $2, $3, $4::jsonb, $5)`,
+      [runId, sourceAttempt, sourceDigest, JSON.stringify(sourceCompletion), Buffer.byteLength(JSON.stringify(sourceCompletion), 'utf8')]);
+      const sourceGate = (await pool!.query(`UPDATE review_gate_attempts SET
+          creation_state = 'bound', check_id = COALESCE(check_id, $3), worker_result_digest = $4,
+          desired_state = 'failure', desired_version = GREATEST(desired_version, 2),
+          published_version = GREATEST(published_version, 2), current_attempt = true
+        WHERE run_id = $1 AND execution_attempt = $2
+        RETURNING attempt_id`, [runId, sourceAttempt, 62000 + sourceAttempt, sourceDigest])).rows[0];
+      expect(sourceGate).toBeTruthy();
+      const recheckRequestId = randomUUID();
+      const sourcePlanDigest = sha256(canonicalJson(sourceCompletion.result.taskPlan));
+      const counterArgument = `Verify the changed authorization boundary again for source attempt ${sourceAttempt}.`;
+      const recheck = {
+        requestId: recheckRequestId, runId, sourceExecutionAttempt: sourceAttempt,
+        sourceContentDigest: sourceDigest, sourcePlanDigest, sourceGateAttemptId: String(sourceGate.attempt_id),
+        repositoryId, owner, repo, prNumber, headSha, baseSha, policyDigest, configDigest,
+        findingId, personaId: task.id, taskId: task.id,
+        finding: { severity: sourceFinding.severity, path: sourceFinding.path, line: sourceFinding.line,
+          title: sourceFinding.title, body: sourceFinding.body },
+        counterArgument, counterArgumentDigest: sha256(counterArgument),
+      };
+      const requestDigest = disputedFindingRecheckDigest(recheck);
+      await pool!.query(`INSERT INTO review_finding_rechecks
+        (request_id, run_id, source_execution_attempt, source_content_digest, source_plan_digest, source_gate_attempt_id,
+         repository_id, owner, repo, pr_number, head_sha, base_sha, policy_digest, config_digest,
+         finding_id, persona_id, task_id, finding, counter_argument, counter_argument_digest, request_digest, requested_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20,$21,$22)`,
+      [recheckRequestId, runId, sourceAttempt, sourceDigest, sourcePlanDigest, sourceGate.attempt_id,
+        repositoryId, owner, repo, prNumber, headSha, baseSha, policyDigest, configDigest, findingId,
+        task.id, task.id, JSON.stringify(recheck.finding), counterArgument, recheck.counterArgumentDigest,
+        requestDigest, sha256('synthetic-authorized-reviewer')]);
+      const nextGateId = `${runId}-g${sourceAttempt}-e${sourceAttempt + 1}`;
+      await pool!.query(`UPDATE review_gate_attempts SET current_attempt = false WHERE run_id = $1 AND execution_attempt = $2`,
+        [runId, sourceAttempt]);
+      const nextCoordinates = { ...gateCoordinates, executionAttempt: sourceAttempt + 1,
+        attemptId: nextGateId };
+      await pool!.query(`INSERT INTO review_gate_attempts
+        (attempt_id, run_id, review_generation, execution_attempt, repository_id, pr_number, expected_app_id,
+         coordinates, external_id, creation_state, desired_state, desired_version, published_version, current_attempt)
+        VALUES ($1,$2,$3,$4,$5,$6,4385771,$7::jsonb,$8,'reserved','queued',0,-1,true)`,
+      [nextGateId, runId, sourceAttempt, sourceAttempt + 1, repositoryId, prNumber,
+        JSON.stringify(nextCoordinates), `batch-history-${sourceAttempt}`]);
+      const receivedAt = Date.parse('2026-10-02T12:00:00.000Z') + sourceAttempt;
+      await pool!.query(`INSERT INTO review_finding_recheck_admissions
+        (run_id, source_execution_attempt, trigger_request_id, execution_attempt, review_generation,
+         gate_attempt_id, requested_by, received_at, terminal_deadline)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,to_timestamp($8/1000.0),to_timestamp(($8+600000)/1000.0))`,
+      [runId, sourceAttempt, recheckRequestId, sourceAttempt + 1, sourceAttempt, nextGateId,
+        sha256('synthetic-authorized-reviewer'), receivedAt]);
+      const currentBatch = await loadValidatedDisputedFindingRechecks(pool as never, {
+        run_id: runId, repository_id: repositoryId, owner, repo, pr_number: prNumber,
+        head_sha: headSha, base_sha: baseSha, effective_policy_digest: policyDigest,
+        effective_config_digest: configDigest,
+      }, sourceAttempt + 1);
+      expect(currentBatch.map((item) => item.requestId)).toEqual([recheckRequestId]);
+    }
+    expect((await pool!.query('SELECT COUNT(*)::int AS count FROM review_finding_rechecks WHERE run_id=$1', [runId]))
+      .rows[0].count).toBe(9);
   }, 30_000);
 });

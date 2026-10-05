@@ -25,9 +25,10 @@ import { parseWorkerReviewCompletion, publishedFindingSeverity, workerReviewComp
 import { canonicalJson, sha256 } from '../../../review/reviewCore';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
 import { admitCompletedFindingRecheck, completedFindingRecheckCoordinates } from '../../../persistence/completedFindingRecheckAdmission';
+import { recordPrFindingRecheckRequest } from '../../../persistence/reviewPrLifecycleRepository';
 import {
   disputedFindingRecheckDigest,
-  MAX_DISPUTE_RECHECKS_PER_REVIEW,
+  MAX_DISPUTE_RECHECKS_PER_BATCH,
   MAX_DISPUTE_RECHECK_ARGUMENT_CHARACTERS,
   loadValidatedDisputedFindingRechecks,
   type DisputedFindingRecheckUnsigned,
@@ -299,7 +300,7 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         async () => ({ repositoryId, prNumber: storedPrNumber }), async (client) => {
         const row = (await client.query(`
           WITH latest_run AS (
-            SELECT run_id, repository_id, owner, repo, pr_number, head_sha, base_sha,
+            SELECT run_id, repository_id, owner, repo, pr_number, head_sha, base_sha, snapshot_digest,
                    effective_policy_digest, effective_config_digest, attempt, status, created_at,
                    authoritative_gate_app_id, publication_mode, result_digest
               FROM review_runs
@@ -391,7 +392,7 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         if (!task) throw new Error('Finding persona is not bound to a composed review task');
 
         const existing = (await client.query(
-          `SELECT request_id, finding_id, counter_argument_digest
+          `SELECT request_id, finding_id, counter_argument_digest, request_digest
              FROM review_finding_rechecks
             WHERE run_id = $1 AND source_execution_attempt = $2 AND task_id = $3
             FOR UPDATE`, [completion.runId, completion.executionAttempt, task.id],
@@ -406,6 +407,13 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
           if (!requests.some((request) => request.requestId === String(existing.request_id))) {
             throw new Error('Finding request source is unavailable');
           }
+          await recordPrFindingRecheckRequest(client, {
+            runId: completion.runId, sourceExecutionAttempt: completion.executionAttempt,
+            requestId: String(existing.request_id), findingId: canonicalFindingId,
+            actorDigest: sha256(caller.callerId), sourceContentDigest: digest,
+            sourceContextDigest: String(row.snapshot_digest),
+            requestDigest: String(existing.request_digest), at: (deps.now ?? Date.now)(),
+          });
           return { requestId: String(existing.request_id), completion, finding: matched.finding,
             findingId: canonicalFindingId };
         }
@@ -428,10 +436,11 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         }
 
         const count = Number((await client.query(
-          'SELECT COUNT(*)::int AS count FROM review_finding_rechecks WHERE run_id = $1', [completion.runId],
+          `SELECT COUNT(*)::int AS count FROM review_finding_rechecks
+            WHERE run_id = $1 AND source_execution_attempt = $2`, [completion.runId, completion.executionAttempt],
         )).rows[0]?.count ?? 0);
-        if (!Number.isSafeInteger(count) || count >= MAX_DISPUTE_RECHECKS_PER_REVIEW) {
-          throw new Error('The accepted review already has the maximum number of task re-reviews');
+        if (!Number.isSafeInteger(count) || count >= MAX_DISPUTE_RECHECKS_PER_BATCH) {
+          throw new Error('The current finding re-review batch has reached its bounded size');
         }
 
         const requestId = randomUUID();
@@ -481,6 +490,12 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         await admitCompletedFindingRecheck(client, unsigned, {
           sourceGeneration: Number(row.review_generation), expectedAppId: authoritative.expectedAppId,
           actorDigest: sha256(caller.callerId), now: (deps.now ?? Date.now)(),
+        });
+        await recordPrFindingRecheckRequest(client, {
+          runId: completion.runId, sourceExecutionAttempt: completion.executionAttempt,
+          requestId, findingId: canonicalFindingId, actorDigest: sha256(caller.callerId),
+          sourceContentDigest: digest, sourceContextDigest: String(row.snapshot_digest), requestDigest,
+          at: (deps.now ?? Date.now)(),
         });
         return { requestId, completion, finding: matched.finding, findingId: canonicalFindingId };
       });

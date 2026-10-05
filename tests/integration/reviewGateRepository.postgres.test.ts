@@ -27,6 +27,7 @@ import {
 } from '../../src/persistence/reviewGateRepository';
 import { reviewDispatchPrLockKey } from '../../src/persistence/reviewCiPersistence';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
+import { REVIEW_PR_LIFECYCLE_SCHEMA_SQL } from '../../src/persistence/reviewPrLifecycleSchema';
 import { REVIEW_GENERATION_RECOVERY_SCHEMA_SQL } from '../../src/persistence/reviewGenerationRecoverySchema';
 import { REVIEW_CI_SCHEMA_SQL } from '../../src/persistence/reviewCiSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
@@ -97,10 +98,11 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       INSERT INTO review_runs (
         run_id, owner, repo, pr_number, head_sha, base_sha,
         effective_policy_digest, publication_mode, status, attempt, repository_id,
-        effective_config_digest, received_at, terminal_deadline, authoritative_gate_app_id
+        effective_config_digest, delivery_id, snapshot_digest, received_at, terminal_deadline, authoritative_gate_app_id
       ) VALUES ($1, 'exampleorg', 'example-review-actions', $2, $3, $4,
-        $5, 'app-gate', 'queued', $6, $7, $8, to_timestamp($9/1000.0), to_timestamp(($9+900000)/1000.0), $10)
-    `, [id, prNumber, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64), generation, repositoryId, CONFIG_DIGEST, RECEIVED_AT, APP_ID]);
+        $5, 'app-gate', 'queued', $6, $7, $8, $9, $10, to_timestamp($11/1000.0), to_timestamp(($11+900000)/1000.0), $12)
+    `, [id, prNumber, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64), generation, repositoryId,
+      CONFIG_DIGEST, `delivery-${id}`, sha256(`snapshot-${id}`), RECEIVED_AT, APP_ID]);
     await pool!.query(`
       INSERT INTO review_dispatch_outbox (run_id, status, execution_attempt)
       VALUES ($1, 'pending', $2)
@@ -175,6 +177,8 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
           attempt INTEGER NOT NULL,
           repository_id BIGINT NOT NULL,
           effective_config_digest VARCHAR(64) NOT NULL,
+          delivery_id TEXT,
+          snapshot_digest VARCHAR(64),
           received_at TIMESTAMPTZ NOT NULL,
           terminal_deadline TIMESTAMPTZ,
           stage TEXT NOT NULL DEFAULT 'admission',
@@ -199,6 +203,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         );
       `);
       await client.query(REVIEW_GATE_SCHEMA_SQL);
+      await client.query(REVIEW_PR_LIFECYCLE_SCHEMA_SQL);
       await client.query(REVIEW_GENERATION_RECOVERY_SCHEMA_SQL);
       await client.query(REVIEW_EVENT_SCHEMA_SQL);
     } finally {
@@ -207,7 +212,9 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
   });
 
   afterEach(async () => {
-    await pool?.query('TRUNCATE review_event_outbox, review_event_sequence_counters, review_gate_attempts, review_dispatch_outbox, review_runs CASCADE');
+    await pool?.query(`TRUNCATE review_pr_lifecycle_events, review_semantic_finding_events,
+      review_pr_review_reservations, review_pr_lifecycles, review_event_outbox,
+      review_event_sequence_counters, review_gate_attempts, review_dispatch_outbox, review_runs CASCADE`);
   });
 
   afterAll(async () => {
@@ -1122,6 +1129,11 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         VALUES ($1, $2, 2, 3, $3, 42, $4, $5::jsonb, $6, 72002, 'bound', 'queued', 0, -1, true)`,
       [currentCoordinates.attemptId, id, REPOSITORY_ID, APP_ID, JSON.stringify(currentCoordinates),
         deriveReviewGateExternalId(currentCoordinates)]);
+      await pool!.query(`INSERT INTO review_finding_recheck_admissions
+        (run_id, source_execution_attempt, trigger_request_id, execution_attempt, review_generation,
+         gate_attempt_id, requested_by, received_at, terminal_deadline)
+        VALUES ($1, 2, $2, 3, 2, $3, $4, to_timestamp(100 / 1000.0), to_timestamp(9999999 / 1000.0))`,
+      [id, unsigned.requestId, currentCoordinates.attemptId, sha256('authenticated-test-actor')]);
 
       if (receiptPersisted) {
         const checkpoint = {

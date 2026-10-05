@@ -53,7 +53,11 @@ async function readCheckpoint(queryable: Queryable, runId: string): Promise<Revi
 async function assertSatisfiedReceipts(queryable: Queryable, checkpoint: ReviewExecutionCheckpoint,
   previous: ReviewExecutionCheckpoint | null): Promise<void> {
   const currentIds = checkpointSatisfiedIds(checkpoint);
-  const priorIds = checkpointSatisfiedIds(previous);
+  // Receipt ids belong to the bounded batch admitted for one execution. A
+  // later execution starts a new batch; the prior batch remains in the
+  // immutable lifecycle/recheck ledgers instead of inflating every checkpoint.
+  const priorIds = previous?.executionAttempt === checkpoint.executionAttempt
+    ? checkpointSatisfiedIds(previous) : new Set<string>();
   if ([...priorIds].some((requestId) => !currentIds.has(requestId))) {
     throw new Error('Checkpoint cannot remove a completed disputed finding receipt');
   }
@@ -78,8 +82,11 @@ export function createReviewExecutionCheckpointHandler(queryable: CheckpointData
           const checkpoint = await readCheckpoint(client, read.data.runId);
           if (checkpoint) assertRunIdentity(run, checkpoint);
           const rechecks = await validatedRechecks(client, run, read.data.executionAttempt);
-          const pending = pendingDisputedFindingRechecks(rechecks, checkpoint, read.data.executionAttempt);
-          return { status: 200 as const, checkpoint, disputedFindingRechecks: pending };
+          const batchCheckpoint = checkpoint && checkpoint.executionAttempt !== read.data.executionAttempt
+            ? { ...checkpoint, satisfiedFindingRecheckIds: [] }
+            : checkpoint;
+          const pending = pendingDisputedFindingRechecks(rechecks, batchCheckpoint, read.data.executionAttempt);
+          return { status: 200 as const, checkpoint: batchCheckpoint, disputedFindingRechecks: pending };
         });
         if (result.status === 403) return response.status(403).json({ error: 'Worker is not authorized for this execution' });
         return response.status(200).json({ version: 'ReviewExecutionCheckpointReadResult.v1',
