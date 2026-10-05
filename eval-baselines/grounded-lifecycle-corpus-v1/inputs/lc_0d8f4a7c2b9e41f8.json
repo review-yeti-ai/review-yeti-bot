@@ -1,0 +1,218 @@
+{
+  "schemaVersion": "GroundedLifecycleInput.v1",
+  "caseId": "lc_0d8f4a7c2b9e41f8",
+  "source": {
+    "repository": {
+      "repositoryId": 73001,
+      "owner": "synthetic",
+      "repo": "fixture-project"
+    },
+    "baseSha": "b5bf7b68ece2f674d88356749aa4575edc5e510d",
+    "headSha": "c9b23312180a753ed222814a7ec4380ae0e850a5",
+    "changedPaths": [
+      "download-policy.ts",
+      "download-route.ts"
+    ],
+    "revisions": [
+      {
+        "commitSha": "b5bf7b68ece2f674d88356749aa4575edc5e510d",
+        "treeSha": "b76776c5d87f7678ef2e925177730a9c37f08ab5",
+        "parentSha": null,
+        "commitTimestamp": 1700000000,
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "download-policy.ts",
+            "mode": "100644",
+            "gitBlobSha": "21213f75752068eb3838525f44907772074e8b6f",
+            "sha256": "1dbaf097871e604df1637fe351d46e3769dc8c6d8d1e78ff83b835786d0e05e2",
+            "content": "export function resolveDownloadPath(root: string, requested: string): string | null {\n  const resolved = resolve(root, requested);\n  return resolved.startsWith(root) ? resolved : null;\n}\n"
+          },
+          {
+            "path": "download-route.ts",
+            "mode": "100644",
+            "gitBlobSha": "986dab8bc24734a03ea3942d1364a18c376b5df6",
+            "sha256": "b5f631dd27fe74363a5824d5301e3e680146c0c9d103096938a169f04b4fc710",
+            "content": "import { resolveDownloadPath } from \"./download-policy\";\n\nexport function openDownload(root: string, name: string, readFile: (path: string) => string) {\n  const path = resolveDownloadPath(root, name);\n  if (path === null || !path.startsWith(root)) throw new Error(\"invalid download path\");\n  return readFile(path);\n}\n"
+          },
+          {
+            "path": "metrics.ts",
+            "mode": "100644",
+            "gitBlobSha": "f731ba448482ccbbb27574d2e7b7c62bf7656bcd",
+            "sha256": "f9f8ba25e2adb2a11be16b3d94afb93163c68949228caf889cd53b66c97b4ebf",
+            "content": "export function average(values: number[]): number {\n  return values.reduce((sum, value) => sum + value, 0) / values.length;\n}\n"
+          }
+        ]
+      },
+      {
+        "commitSha": "c9b23312180a753ed222814a7ec4380ae0e850a5",
+        "treeSha": "bb86fe263ea163c2aea1842c91e3540b36594107",
+        "parentSha": "b5bf7b68ece2f674d88356749aa4575edc5e510d",
+        "commitTimestamp": 1700000060,
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "download-policy.ts",
+            "mode": "100644",
+            "gitBlobSha": "fc654fd1c7db2ffc52300e0ab1c052d2f27a369c",
+            "sha256": "9a4c7f323e728a43e5bb260bb3613b910ef51d273a73053a73469ebc914ce9f4",
+            "content": "import { relative, resolve, sep, isAbsolute } from \"node:path\";\n\nexport function resolveDownloadPath(root: string, requested: string): string | null {\n  const rootPath = resolve(root);\n  const resolved = resolve(rootPath, requested);\n  const relativePath = relative(rootPath, resolved);\n  if (relativePath === \"\" || relativePath === \"..\" || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) return null;\n  return resolved;\n}\n"
+          },
+          {
+            "path": "download-route.ts",
+            "mode": "100644",
+            "gitBlobSha": "42443549bbe8125690b48584222068f96004b606",
+            "sha256": "c74de9b38708646e6e21a2eaaff7aab133d8679d8eac87101a99861a44c02090",
+            "content": "import { resolveDownloadPath } from \"./download-policy\";\n\nexport function openDownload(root: string, name: string, readFile: (path: string) => string) {\n  const path = resolveDownloadPath(root, name);\n  if (path === null) throw new Error(\"invalid download path\");\n  return readFile(path);\n}\n"
+          },
+          {
+            "path": "metrics.ts",
+            "mode": "100644",
+            "gitBlobSha": "f731ba448482ccbbb27574d2e7b7c62bf7656bcd",
+            "sha256": "f9f8ba25e2adb2a11be16b3d94afb93163c68949228caf889cd53b66c97b4ebf",
+            "content": "export function average(values: number[]): number {\n  return values.reduce((sum, value) => sum + value, 0) / values.length;\n}\n"
+          }
+        ]
+      }
+    ],
+    "patches": [
+      {
+        "path": "download-policy.ts",
+        "patch": "diff --git a/download-policy.ts b/download-policy.ts\nindex 21213f7..fc654fd 100644\n--- a/download-policy.ts\n+++ b/download-policy.ts\n@@ -1,4 +1,9 @@\n+import { relative, resolve, sep, isAbsolute } from \"node:path\";\n+\n export function resolveDownloadPath(root: string, requested: string): string | null {\n-  const resolved = resolve(root, requested);\n-  return resolved.startsWith(root) ? resolved : null;\n+  const rootPath = resolve(root);\n+  const resolved = resolve(rootPath, requested);\n+  const relativePath = relative(rootPath, resolved);\n+  if (relativePath === \"\" || relativePath === \"..\" || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) return null;\n+  return resolved;\n }\n",
+        "sha256": "439e267b3f6ad3eb7f9f9485183c41d22be2ea47a135dcf76b404ee850110b7d"
+      },
+      {
+        "path": "download-route.ts",
+        "patch": "diff --git a/download-route.ts b/download-route.ts\nindex 986dab8..4244354 100644\n--- a/download-route.ts\n+++ b/download-route.ts\n@@ -2,6 +2,6 @@ import { resolveDownloadPath } from \"./download-policy\";\n \n export function openDownload(root: string, name: string, readFile: (path: string) => string) {\n   const path = resolveDownloadPath(root, name);\n-  if (path === null || !path.startsWith(root)) throw new Error(\"invalid download path\");\n+  if (path === null) throw new Error(\"invalid download path\");\n   return readFile(path);\n }",
+        "sha256": "22b77c457ad70f379d5b6de7b6b9757acd86789901fa415ff052d2e506eff188"
+      }
+    ],
+    "policyDigest": "4abc928407403a23b0ae9eba3aaa94a4c5445e1da6e13c4420b4bde22577d9b2",
+    "configDigest": "7dec9172fdd415d216710ce3e0f0a488217dcda8b70748a134ea0d5b35456313",
+    "contextDigest": "85d8b97d6c70a356ddd1a910a64166ae80b433eaf197c476f22727ae87260457"
+  },
+  "candidates": [
+    {
+      "severity": "P1",
+      "path": "download-route.ts",
+      "line": 5,
+      "title": "Sibling directory bypasses the download root check",
+      "claimType": "generic",
+      "fingerprint": "fp1_4031cbb387921c66930b97c8"
+    },
+    {
+      "severity": "P2",
+      "path": "metrics.ts",
+      "line": 2,
+      "title": "Empty samples produce a non-finite average",
+      "claimType": "generic",
+      "fingerprint": "fp1_89603d199c4eab79b7d8ede9"
+    }
+  ],
+  "history": {
+    "sourceObservation": {
+      "validation": "accepted",
+      "snapshot": {
+        "version": "PrLifecycleHistorySnapshot.v1",
+        "snapshotId": "fe3c5040-bbdb-4b9e-a7dd-bb2d919c06d0",
+        "runId": "run_7a2aca16fc504e490ae9e89b8f69f5f3",
+        "executionAttempt": 1,
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project",
+        "prNumber": 41,
+        "headSha": "c9b23312180a753ed222814a7ec4380ae0e850a5",
+        "baseSha": "b5bf7b68ece2f674d88356749aa4575edc5e510d",
+        "policyDigest": "4abc928407403a23b0ae9eba3aaa94a4c5445e1da6e13c4420b4bde22577d9b2",
+        "configDigest": "7dec9172fdd415d216710ce3e0f0a488217dcda8b70748a134ea0d5b35456313",
+        "contextDigest": "85d8b97d6c70a356ddd1a910a64166ae80b433eaf197c476f22727ae87260457",
+        "eventCount": 2,
+        "findingCount": 2,
+        "eventOmittedCount": 0,
+        "findingOmittedCount": 0,
+        "legacyOmittedCount": 0,
+        "eventsDigest": "66e256f396f9a835d951d4c73db6987e5b9413e349d4c78b1ba5c9ca4f8dbe16",
+        "findingsDigest": "dfa1c5416f217b2ee8171e7c85c54ee40366eb0d11e94e97120b67e619d5ce23",
+        "expiresAt": "2030-01-01T00:00:00.000Z"
+      },
+      "digestMatches": true
+    },
+    "load": {
+      "status": "complete",
+      "snapshotId": "fe3c5040-bbdb-4b9e-a7dd-bb2d919c06d0",
+      "contextDigest": "85d8b97d6c70a356ddd1a910a64166ae80b433eaf197c476f22727ae87260457",
+      "events": [
+        {
+          "eventId": "f01597d3-4be8-403d-ad75-dcee4313eac0",
+          "eventType": "finding-observed",
+          "runId": "run_78f1d84e40b264ff62f51ee1bcdd9c02",
+          "executionAttempt": 1,
+          "headSha": "b5bf7b68ece2f674d88356749aa4575edc5e510d",
+          "baseSha": "b5bf7b68ece2f674d88356749aa4575edc5e510d",
+          "policyDigest": "4abc928407403a23b0ae9eba3aaa94a4c5445e1da6e13c4420b4bde22577d9b2",
+          "configDigest": "7dec9172fdd415d216710ce3e0f0a488217dcda8b70748a134ea0d5b35456313",
+          "contextDigest": "85d8b97d6c70a356ddd1a910a64166ae80b433eaf197c476f22727ae87260457",
+          "evidenceDigest": "acfc26ad56069c522c458e87e3a1a4650747b1c4efc8bb6edc0de1a193890331",
+          "verificationStatus": "confirmed"
+        },
+        {
+          "eventId": "c39710b0-b124-412f-abb1-e2b1818c594b",
+          "eventType": "finding-observed",
+          "runId": "run_6c4d0240eab163617688ce33dbea9d38",
+          "executionAttempt": 1,
+          "headSha": "b5bf7b68ece2f674d88356749aa4575edc5e510d",
+          "baseSha": "b5bf7b68ece2f674d88356749aa4575edc5e510d",
+          "policyDigest": "4abc928407403a23b0ae9eba3aaa94a4c5445e1da6e13c4420b4bde22577d9b2",
+          "configDigest": "7dec9172fdd415d216710ce3e0f0a488217dcda8b70748a134ea0d5b35456313",
+          "contextDigest": "85d8b97d6c70a356ddd1a910a64166ae80b433eaf197c476f22727ae87260457",
+          "evidenceDigest": "ace0611da61aa249dec5b86200e5dc6aeabc82aaaa29e090f0cd84617c32e9de",
+          "verificationStatus": "confirmed"
+        }
+      ],
+      "findings": [
+        {
+          "findingEventId": "9dfbf3c4-1e3b-48ef-af08-b57c03f6ea04",
+          "fingerprint": "fp1_4031cbb387921c66930b97c8",
+          "path": "download-route.ts",
+          "regionStart": 1,
+          "regionEnd": 1,
+          "firstSeenHead": "b5bf7b68ece2f674d88356749aa4575edc5e510d",
+          "lastSeenHead": "b5bf7b68ece2f674d88356749aa4575edc5e510d",
+          "affectedContextDigest": "85d8b97d6c70a356ddd1a910a64166ae80b433eaf197c476f22727ae87260457",
+          "sourceSeverity": "P1",
+          "effectiveSeverity": "P1",
+          "disposition": "open",
+          "blocking": true,
+          "verificationStatus": "confirmed",
+          "evidenceDigest": "aa5b9e33a4457250721c381ed5719d010c28659dc634da27b7017acf1f4a9c7b"
+        },
+        {
+          "findingEventId": "55ccd914-5dbe-46a5-a403-b7eba4355339",
+          "fingerprint": "fp1_89603d199c4eab79b7d8ede9",
+          "path": "metrics.ts",
+          "regionStart": 1,
+          "regionEnd": 1,
+          "firstSeenHead": "b5bf7b68ece2f674d88356749aa4575edc5e510d",
+          "lastSeenHead": "b5bf7b68ece2f674d88356749aa4575edc5e510d",
+          "affectedContextDigest": "85d8b97d6c70a356ddd1a910a64166ae80b433eaf197c476f22727ae87260457",
+          "sourceSeverity": "P2",
+          "effectiveSeverity": "P2",
+          "disposition": "open",
+          "blocking": false,
+          "verificationStatus": "confirmed",
+          "evidenceDigest": "f7d794ad065c614350d8e30ba5232ff369fdfb851dd7ab37548047e44e41e878"
+        }
+      ],
+      "eventCount": 2,
+      "findingCount": 2,
+      "loadedEventCount": 2,
+      "loadedFindingCount": 2,
+      "eventOmittedCount": 0,
+      "findingOmittedCount": 0,
+      "legacyOmittedCount": 0,
+      "eventsDigest": "66e256f396f9a835d951d4c73db6987e5b9413e349d4c78b1ba5c9ca4f8dbe16",
+      "findingsDigest": "dfa1c5416f217b2ee8171e7c85c54ee40366eb0d11e94e97120b67e619d5ce23",
+      "omissions": []
+    }
+  }
+}

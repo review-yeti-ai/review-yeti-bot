@@ -1,0 +1,344 @@
+{
+  "schemaVersion": "GroundedLifecycleOracle.v1",
+  "cases": {
+    "lc_0d8f4a7c2b9e41f8": {
+      "expectation": {
+        "groundedReviewReceipt": {
+          "version": "GroundedReviewReceipt.v1",
+          "coverage": {
+            "complete": true
+          },
+          "history": {
+            "status": "complete"
+          },
+          "verification": {
+            "version": "GroundedIndependentVerification.v1",
+            "candidates": 1,
+            "confirmed": 0,
+            "contradicted": 1,
+            "insufficient": 0,
+            "unverifiedBlockerCount": 0,
+            "coverageComplete": true,
+            "outcomes": [
+              {
+                "fingerprint": "fp1_4031cbb387921c66930b97c8",
+                "severity": "P1",
+                "status": "contradicted",
+                "relatedDiffPaths": [
+                  "download-policy.ts",
+                  "download-route.ts"
+                ]
+              }
+            ],
+            "budget": {
+              "totalCalls": 100,
+              "callsPerTask": 12,
+              "concurrency": 18,
+              "callTimeoutMs": 180000,
+              "stageBudgetMs": 300000
+            },
+            "expectedCallsMaximum": 1
+          }
+        },
+        "reviewDecisionClass": "SHIP"
+      }
+    },
+    "lc_13b6e2d6a9084f51": {
+      "expectation": {
+        "groundedReviewReceipt": {
+          "version": "GroundedReviewReceipt.v1",
+          "coverage": {
+            "complete": true
+          },
+          "history": {
+            "status": "complete"
+          },
+          "verification": {
+            "version": "GroundedIndependentVerification.v1",
+            "candidates": 0,
+            "confirmed": 0,
+            "contradicted": 0,
+            "insufficient": 0,
+            "unverifiedBlockerCount": 0,
+            "coverageComplete": true,
+            "outcomes": [],
+            "budget": {
+              "totalCalls": 100,
+              "callsPerTask": 12,
+              "concurrency": 18,
+              "callTimeoutMs": 180000,
+              "stageBudgetMs": 300000
+            },
+            "expectedCallsMaximum": 0
+          }
+        },
+        "reviewDecisionClass": "SHIP"
+      }
+    },
+    "lc_2a904d7c1e5b43f6": {
+      "expectation": {
+        "groundedReviewReceipt": {
+          "version": "GroundedReviewReceipt.v1",
+          "coverage": {
+            "complete": true
+          },
+          "history": {
+            "status": "complete"
+          },
+          "verification": {
+            "version": "GroundedIndependentVerification.v1",
+            "candidates": 1,
+            "confirmed": 1,
+            "contradicted": 0,
+            "insufficient": 0,
+            "unverifiedBlockerCount": 0,
+            "coverageComplete": true,
+            "outcomes": [
+              {
+                "fingerprint": "fp1_be07bdcd68f15ae90af702f1",
+                "severity": "P1",
+                "status": "confirmed",
+                "relatedDiffPaths": [
+                  "audience-contract.ts",
+                  "router.ts"
+                ]
+              }
+            ],
+            "budget": {
+              "totalCalls": 100,
+              "callsPerTask": 12,
+              "concurrency": 18,
+              "callTimeoutMs": 180000,
+              "stageBudgetMs": 300000
+            },
+            "expectedCallsMaximum": 1
+          }
+        },
+        "reviewDecisionClass": "BLOCK"
+      }
+    },
+    "lc_38e1a5d904bf62c7": {
+      "expectation": {
+        "groundedReviewReceipt": {
+          "version": "GroundedReviewReceipt.v1",
+          "coverage": {
+            "complete": true
+          },
+          "history": {
+            "status": "unavailable"
+          },
+          "verification": {
+            "version": "GroundedIndependentVerification.v1",
+            "candidates": 1,
+            "confirmed": 1,
+            "contradicted": 0,
+            "insufficient": 0,
+            "unverifiedBlockerCount": 0,
+            "coverageComplete": true,
+            "outcomes": [
+              {
+                "fingerprint": "fp1_24989c96fded6cc7b0b1e011",
+                "severity": "P1",
+                "status": "confirmed",
+                "relatedDiffPaths": [
+                  "quota-policy.ts"
+                ]
+              }
+            ],
+            "budget": {
+              "totalCalls": 100,
+              "callsPerTask": 12,
+              "concurrency": 18,
+              "callTimeoutMs": 180000,
+              "stageBudgetMs": 300000
+            },
+            "expectedCallsMaximum": 1
+          }
+        },
+        "reviewDecisionClass": "BLOCK"
+      }
+    },
+    "lc_41c8d2f709ae35b6": {
+      "expectation": {
+        "groundedReviewReceipt": {
+          "version": "GroundedReviewReceipt.v1",
+          "coverage": {
+            "complete": true
+          },
+          "history": {
+            "status": "partial"
+          },
+          "verification": {
+            "version": "GroundedIndependentVerification.v1",
+            "candidates": 1,
+            "confirmed": 1,
+            "contradicted": 0,
+            "insufficient": 0,
+            "unverifiedBlockerCount": 0,
+            "coverageComplete": true,
+            "outcomes": [
+              {
+                "fingerprint": "fp1_66cc4b8052675fba99f2b4a3",
+                "severity": "P1",
+                "status": "confirmed",
+                "relatedDiffPaths": [
+                  "manifest-reader.ts"
+                ]
+              }
+            ],
+            "budget": {
+              "totalCalls": 100,
+              "callsPerTask": 12,
+              "concurrency": 18,
+              "callTimeoutMs": 180000,
+              "stageBudgetMs": 300000
+            },
+            "expectedCallsMaximum": 1
+          }
+        },
+        "reviewDecisionClass": "BLOCK"
+      }
+    },
+    "lc_5b2f07c913de4a68": {
+      "expectation": {
+        "groundedReviewReceipt": {
+          "version": "GroundedReviewReceipt.v1",
+          "coverage": {
+            "complete": true
+          },
+          "history": {
+            "status": "complete"
+          },
+          "verification": {
+            "version": "GroundedIndependentVerification.v1",
+            "candidates": 1,
+            "confirmed": 1,
+            "contradicted": 0,
+            "insufficient": 0,
+            "unverifiedBlockerCount": 0,
+            "coverageComplete": true,
+            "outcomes": [
+              {
+                "fingerprint": "fp1_4e1c5447364f6985ccd1f53f",
+                "severity": "P1",
+                "status": "confirmed",
+                "relatedDiffPaths": [
+                  "lease-policy.ts"
+                ]
+              }
+            ],
+            "budget": {
+              "totalCalls": 100,
+              "callsPerTask": 12,
+              "concurrency": 18,
+              "callTimeoutMs": 180000,
+              "stageBudgetMs": 300000
+            },
+            "expectedCallsMaximum": 1
+          }
+        },
+        "reviewDecisionClass": "BLOCK",
+        "repeatExpectation": {
+          "identicalRuns": 2,
+          "stableFingerprint": "fp1_4e1c5447364f6985ccd1f53f",
+          "stableStatus": "confirmed",
+          "stableDecisionClass": "BLOCK"
+        }
+      }
+    },
+    "lc_6d10a4e82f739b05": {
+      "expectation": {
+        "groundedReviewReceipt": {
+          "version": "GroundedReviewReceipt.v1",
+          "coverage": {
+            "complete": true
+          },
+          "history": {
+            "status": "complete"
+          },
+          "verification": {
+            "version": "GroundedIndependentVerification.v1",
+            "candidates": 1,
+            "confirmed": 1,
+            "contradicted": 0,
+            "insufficient": 0,
+            "unverifiedBlockerCount": 0,
+            "coverageComplete": true,
+            "outcomes": [
+              {
+                "fingerprint": "fp1_0e41206481d3c60a046b8e3c",
+                "severity": "P2",
+                "status": "confirmed",
+                "relatedDiffPaths": [
+                  "audience-policy.ts",
+                  "audience-policy.test.ts"
+                ],
+                "decisionEffect": "advisory-nonblocking",
+                "blocking": false
+              }
+            ],
+            "budget": {
+              "totalCalls": 100,
+              "callsPerTask": 12,
+              "concurrency": 18,
+              "callTimeoutMs": 180000,
+              "stageBudgetMs": 300000
+            },
+            "expectedCallsMaximum": 1
+          }
+        },
+        "reviewDecisionClass": "SHIP"
+      }
+    },
+    "lc_7a3c5e91d4b8062f": {
+      "expectation": {
+        "groundedReviewReceipt": {
+          "version": "GroundedReviewReceipt.v1",
+          "coverage": {
+            "complete": true
+          },
+          "history": {
+            "status": "complete"
+          },
+          "verification": {
+            "version": "GroundedIndependentVerification.v1",
+            "candidates": 1,
+            "confirmed": 1,
+            "contradicted": 0,
+            "insufficient": 0,
+            "unverifiedBlockerCount": 0,
+            "coverageComplete": true,
+            "outcomes": [
+              {
+                "fingerprint": "fp1_bdba25f15ec3ad2c97a2cb3a",
+                "severity": "P1",
+                "status": "confirmed",
+                "relatedDiffPaths": [
+                  "audience-contract.ts",
+                  "route-policy.ts"
+                ],
+                "decisionEffect": "blocking",
+                "blocking": true,
+                "requiredEvidenceRefs": [
+                  "base:route-policy.ts",
+                  "head:route-policy.ts",
+                  "diff:route-policy.ts",
+                  "diff:audience-contract.ts"
+                ]
+              }
+            ],
+            "budget": {
+              "totalCalls": 100,
+              "callsPerTask": 12,
+              "concurrency": 18,
+              "callTimeoutMs": 180000,
+              "stageBudgetMs": 300000
+            },
+            "expectedCallsMaximum": 1
+          }
+        },
+        "reviewDecisionClass": "BLOCK"
+      }
+    }
+  }
+}
