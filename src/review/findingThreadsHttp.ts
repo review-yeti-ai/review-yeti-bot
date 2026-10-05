@@ -1,24 +1,31 @@
 /**
  * ADR 0002: the worker side of `POST /api/dispatch/finding-threads`, a sibling of the completion
- * endpoint authenticated with the same per-run bearer. Best effort by contract: a failure here is
- * logged by the caller and never changes the published check.
+ * endpoint authenticated with the same per-run bearer. Legacy v1 publication is best effort; v2
+ * publication retries are safe and a failure is surfaced as an unsuccessful raw check update.
  */
 import { isGitHubInstallationToken } from '../github/githubTransportPolicy';
 import { validateWorkerCompletionEndpoint } from './workerCompletion';
 import {
-  findingThreadsReadResultSchema, findingThreadsResultSchema, type FindingThreadsRequest,
+  FINDING_THREADS_REQUEST_V2_VERSION, findingThreadsReadResultSchema, findingThreadsResultSchema,
+  type FindingThreadsPublishRequest,
 } from './findingThreadsContract';
 import type { PriorFindingThread } from './findingConvergence';
 
 export interface FindingThreadsPublisher {
-  publish(request: Omit<FindingThreadsRequest, 'version' | 'runId' | 'executionAttempt'>, signal?: AbortSignal):
+  publish(request: FindingThreadsPublishRequest, signal?: AbortSignal):
     Promise<{ created: number; skipped: number; resolved: number }>;
   /** The review App's own finding threads, author-verified by the service (the only source whose
    * resolutions may satisfy a P2). Optional so a test double may implement publication only. */
   read?(headSha: string, signal?: AbortSignal): Promise<PriorFindingThread[]>;
 }
 
-function unavailable(): Error { return new Error('Finding threads could not be published'); }
+class FindingThreadsHttpError extends Error {
+  constructor(readonly retryable: boolean) {
+    super('Finding threads could not be published');
+  }
+}
+
+function unavailable(retryable = false): FindingThreadsHttpError { return new FindingThreadsHttpError(retryable); }
 
 /** `https://host/api/dispatch/completion` -> `https://host/api/dispatch/finding-threads`. */
 export function findingThreadsEndpointFor(completionEndpoint: string): string {
@@ -58,10 +65,21 @@ export class HttpFindingThreadsPublisher implements FindingThreadsPublisher {
     return parsed.threads as PriorFindingThread[];
   }
 
-  async publish(request: Omit<FindingThreadsRequest, 'version' | 'runId' | 'executionAttempt'>, signal?: AbortSignal):
+  async publish(request: FindingThreadsPublishRequest, signal?: AbortSignal):
     Promise<{ created: number; skipped: number; resolved: number }> {
-    const parsed = findingThreadsResultSchema.parse(await this.post({ version: 'FindingThreadsRequest.v1',
-      runId: this.options.runId, executionAttempt: this.options.executionAttempt, ...request }, signal));
+    const version = 'reviewDecision' in request ? FINDING_THREADS_REQUEST_V2_VERSION : 'FindingThreadsRequest.v1';
+    const payload = { version, runId: this.options.runId, executionAttempt: this.options.executionAttempt, ...request };
+    let result: unknown;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        result = await this.post(payload, signal);
+        break;
+      } catch (error) {
+        if (version !== FINDING_THREADS_REQUEST_V2_VERSION || attempt > 0 || signal?.aborted
+          || !(error instanceof FindingThreadsHttpError) || !error.retryable) throw unavailable();
+      }
+    }
+    const parsed = findingThreadsResultSchema.parse(result);
     if (parsed.runId !== this.options.runId) throw unavailable();
     return { created: parsed.created, skipped: parsed.skipped, resolved: parsed.resolved };
   }
@@ -82,11 +100,13 @@ export class HttpFindingThreadsPublisher implements FindingThreadsPublisher {
       });
       if (response.status !== 200) {
         void response.body?.cancel().catch(() => undefined);
-        throw unavailable();
+        throw unavailable(response.status === 502 || response.status === 503 || response.status === 504);
       }
-      return await response.json();
-    } catch {
-      throw unavailable();
+      try { return await response.json(); }
+      catch { throw unavailable(true); }
+    } catch (error) {
+      if (error instanceof FindingThreadsHttpError) throw error;
+      throw unavailable(true);
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);

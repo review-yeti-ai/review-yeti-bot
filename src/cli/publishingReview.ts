@@ -2458,7 +2458,7 @@ export async function runPublishingReviewWorker(
       // finding can exist for it and the verdict describes less than the diff. That
       // is the "absent capability, green check" shape: fail closed and name the
       // headers, rather than publish a verdict over a partial review.
-      const conclusion = unreadable.length > 0
+      let conclusion = unreadable.length > 0
         ? ('failure' as const)
         : notApplicable
           ? ('neutral' as const)
@@ -2617,7 +2617,7 @@ export async function runPublishingReviewWorker(
     // check is red, so the two never read as "SHIP" next to a failure again.
     const requiredP2Only = String(verdict).toUpperCase() === 'SHIP' && criticalCount === 0
       && convergence.counts.requiredP2 > 0;
-    const title = notApplicable
+    let title = notApplicable
       ? 'Review Yeti: NO_REVIEW (not applicable)'
       : gracefulPartial
         ? 'Review Yeti: INCOMPLETE (partial evidence published)'
@@ -2724,7 +2724,7 @@ export async function runPublishingReviewWorker(
           `- Attempt ${source.executionAttempt}: ${source.rawFindingCount} raw P2 finding(s); [original App check](https://github.com/${identity.owner}/${identity.repoName}/pull/${identity.prNumber}/checks?check_run_id=${source.workerCheckId}); Gate \`${source.gateCheckId}\`; worker result \`${source.workerResultDigest}\`.`),
       ].join('\n'));
     }
-    const checkText = [renderFindingsMarkdown(findings, blocking.length, convergenceNotes,
+    let checkText = [renderFindingsMarkdown(findings, blocking.length, convergenceNotes,
       reviewDecisionPolicy ? { advisoryLimit: 5 } : {}),
       ...(p2RecoveryContext ? ['### Retained P2 observations (original evidence)',
         'These original observations remain advisory and were supplied to the full review above. Their source records are immutable; this section does not attribute them to a new reviewer.',
@@ -2986,12 +2986,23 @@ export async function runPublishingReviewWorker(
       // acknowledgement can never leave a green raw check over an unrecorded
       // verdict: the catch path's fail-closed terminal failure is then the
       // only published conclusion.
+      let threadPublicationFailed = false;
       if (authoritative) {
-        // Finding-thread authorization requires an active execution. Completion
-        // retires it, so the bounded best-effort write must precede that callback.
-        // Thread delivery never changes the verdict or completion-before-check invariant.
-        await publishThreads();
+        // Legacy thread writes retain their v1 active-execution contract. V2 writes carry no
+        // authority of their own: the service accepts them only after it has durably validated
+        // this exact completion and re-read the live pull-request head.
+        if (!reviewDecisionPolicy) await publishThreads();
         await reportReviewResult(buildReviewResult());
+        if (reviewDecisionPolicy && reviewDecisionReceipt) {
+          threadPublicationFailed = !(await publishThreads());
+        }
+      }
+      if (threadPublicationFailed) {
+        const notice = '### Required conversation update failed\nThe service could not publish current verified blockers or retire advisory conversations for this exact head. The raw Review Yeti check is failing until the thread update succeeds.';
+        conclusion = 'failure';
+        title = 'Review Yeti: verified thread update failed';
+        summaryParts.push(notice);
+        checkText = `${checkText}\n\n${notice}`;
       }
       await deps.checkClient.completeCheck({
       owner: identity.owner,
@@ -3028,20 +3039,25 @@ export async function runPublishingReviewWorker(
           };
         }),
     });
-      // ADR 0002: publish this head's new required findings as review threads (through the service,
-      // which holds the only `pull_requests: write` token) and let it resolve the bot's own outdated
-      // threads whose finding was not reported again. Best effort: failure is only logged, never
-      // an approval gate. Legacy publication stays after the raw check; authoritative publication
-      // runs before completion retires its execution. Skip an unread prior thread state.
-      async function publishThreads(): Promise<void> {
-        if (deps.findingThreads && findingThreadsRead && !notApplicable && !gracefulPartial && !unreportedNoVerdict) {
+      // ADR 0002: publish this head's required findings as review threads through the service,
+      // which holds the only `pull_requests: write` token. V1 retains its historical best-effort
+      // behavior. V2 reports completion first, then requests service-derived thread publication;
+      // a failed request makes the raw check visibly fail and can be retried idempotently.
+      async function publishThreads(): Promise<boolean> {
+        if (reviewDecisionPolicy && !reviewDecisionReceipt) return true;
+        const v2 = Boolean(reviewDecisionPolicy && reviewDecisionReceipt);
+        const publisher = deps.findingThreads;
+        const publishEnabled = Boolean(publisher && (v2 || findingThreadsRead)
+          && !notApplicable && !gracefulPartial && !unreportedNoVerdict);
+        if (v2 && !publishEnabled) return false;
+        if (publishEnabled && publisher) {
           try {
             const publish = convergence.entries
-              .filter((entry) => entry.status === 'new' && entry.blocking
+              .filter((entry) => entry.blocking && (entry.status === 'new'
+                || (v2 && entry.status === 'carried' && entry.matchedThread?.resolved === true))
                 && typeof entry.finding.path === 'string' && Number.isSafeInteger(Number(entry.finding.line))
                 && String(entry.finding.title || '').length > 0 && String(entry.finding.title).length <= 1_000
                 && String(entry.finding.body || '').length > 0)
-              .slice(0, MAX_FINDING_THREADS_PER_REQUEST)
               .map((entry) => ({
                 fingerprint: entry.fingerprint,
                 severity: entry.severity,
@@ -3057,16 +3073,30 @@ export async function runPublishingReviewWorker(
                   ] : []),
                 ].join('\n\n').slice(0, 16_000),
               }));
-            const reported = [...new Set(convergence.entries.map((entry) => entry.fingerprint))].slice(0, MAX_REPORTED_FINGERPRINTS);
-            const published = await deps.findingThreads.publish({ headSha: identity.headSha, publish, reported }, deps.signal);
+            const reported = [...new Set(convergence.entries.map((entry) => entry.fingerprint))];
+            const request = v2 && reviewDecisionReceipt
+              ? {
+                headSha: identity.headSha, baseSha: identity.baseSha,
+                repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repoName,
+                prNumber: identity.prNumber,
+                policyDigest: value(env, 'REVIEW_POLICY_DIGEST') || '',
+                configDigest: value(env, 'REVIEW_CONFIG_DIGEST') || '',
+                reviewDecision: reviewDecisionReceipt,
+              }
+              : { headSha: identity.headSha, publish: publish.slice(0, MAX_FINDING_THREADS_PER_REQUEST),
+                reported: reported.slice(0, MAX_REPORTED_FINGERPRINTS) };
+            const published = await publisher.publish(request, deps.signal);
             logger.info('Finding review threads published', { runId: identity.runId, ...published });
+            return true;
           } catch (error) {
             logger.warn('Finding review threads were not published', {
               runId: identity.runId,
               reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
             });
+            return !v2;
           }
         }
+        return !v2;
       }
       if (!authoritative) await publishThreads();
     }

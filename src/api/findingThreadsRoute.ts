@@ -8,12 +8,17 @@
  * the one `findingFingerprint` derives from its own content, and the head must be the run's head.
  */
 import type { Request, Response } from 'express';
-import { sha256 } from '../review/reviewCore';
+import { canonicalJson, sha256 } from '../review/reviewCore';
 import { findingFingerprint } from '../review/findingConvergence';
 import { workerExecutionAuthorized, type Queryable } from '../persistence/incrementalPriorReview';
-import { findingThreadsReadRequestSchema, findingThreadsRequestSchema } from '../review/findingThreadsContract';
+import { getPreparedPublishingPolicy } from '../persistence/preparedReviewRepository';
+import { constantTimeDigestEqual } from '../utils/constantTimeDigest';
+import { evaluateReviewDecisionV2, REVIEW_SEVERITY_POLICY_V2 } from '../review/reviewDecision';
+import { findingThreadsReadRequestSchema, findingThreadsRequestSchema, type FindingThreadsRequestV2 } from '../review/findingThreadsContract';
+import { reviewGateBlockingFindingsSchema } from '../review/reviewGatePolicy';
 import {
   publishFindingThreads,
+  readCurrentPullRequestHead,
   readFindingThreads,
   resolveFindingThread,
   type FindingThreadTransport,
@@ -47,8 +52,12 @@ export function createFindingThreadsHandler(options: FindingThreadsRouteOptions)
     const read = findingThreadsReadRequestSchema.safeParse(request.body);
     const parsed = read.success ? undefined : findingThreadsRequestSchema.safeParse(request.body);
     if (!read.success && !parsed?.success) return response.status(400).json({ error: 'Invalid finding-threads request' });
-    const input = read.success ? { ...read.data, publish: [], reported: [] } : parsed!.data!;
-    if (input.publish.some((finding) => findingFingerprint(finding) !== finding.fingerprint)) {
+    const input = read.success ? read.data : parsed!.data!;
+    if (!read.success && input.version === 'FindingThreadsRequest.v2') {
+      return publishV2FindingThreads(options, response, input, token);
+    }
+    if (!read.success && input.version === 'FindingThreadsRequest.v1'
+      && input.publish.some((finding) => findingFingerprint(finding) !== finding.fingerprint)) {
       return response.status(400).json({ error: 'Finding fingerprint does not match its content' });
     }
     let run: { owner: string; repo: string; prNumber: number; headSha: string } | undefined;
@@ -72,6 +81,7 @@ export function createFindingThreadsHandler(options: FindingThreadsRouteOptions)
         return response.status(200).json({ version: 'FindingThreadsReadResult.v1', runId: input.runId,
           threads: existing.slice(0, 500) });
       }
+      if (input.version !== 'FindingThreadsRequest.v1') return response.status(400).json({ error: 'Invalid finding-threads request' });
       const published = await publishFindingThreads(transport, pr, input.publish, existing);
       // Resolve only the bot's own threads GitHub already marks outdated whose finding this head did
       // not report: the anchored code changed and the defect is gone. A current-line thread stays
@@ -98,4 +108,133 @@ export function createFindingThreadsHandler(options: FindingThreadsRouteOptions)
       return response.status(503).json({ error: 'Finding threads are temporarily unavailable' });
     }
   };
+}
+
+function jsonObject(value: unknown): Record<string, unknown> | null {
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) as unknown : value;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch { return null; }
+}
+
+async function publishV2FindingThreads(options: FindingThreadsRouteOptions, response: Response,
+  input: FindingThreadsRequestV2, token: string): Promise<Response> {
+  let row: Record<string, unknown> | undefined;
+  try {
+    const stored = await options.db.query(`SELECT runs.repository_id, runs.owner, runs.repo, runs.pr_number,
+        runs.head_sha, runs.base_sha, runs.effective_policy_digest, runs.effective_config_digest,
+        runs.status AS run_status, runs.result_digest, outbox.worker_token_digest,
+        outbox.execution_attempt AS previous_execution_attempt, gate.coordinates AS gate_coordinates,
+        gate.evidence AS gate_evidence, gate.decision AS gate_decision,
+        gate.worker_result_digest AS gate_worker_result_digest,
+        completion.execution_attempt AS completion_execution_attempt,
+        completion.content_digest AS completion_content_digest
+      FROM review_runs runs
+      JOIN review_dispatch_outbox outbox USING (run_id)
+      JOIN review_gate_attempts gate ON gate.run_id = runs.run_id AND gate.current_attempt
+      JOIN review_worker_completions completion ON completion.run_id = runs.run_id
+        AND completion.execution_attempt = $2
+      WHERE runs.run_id = $1 AND gate.coordinates->>'executionAttempt' = $2::text`,
+    [input.runId, input.executionAttempt]);
+    row = stored.rows[0] as Record<string, unknown> | undefined;
+  } catch {
+    return response.status(503).json({ error: 'Finding threads are temporarily unavailable' });
+  }
+  if (!row || !constantTimeDigestEqual(row.worker_token_digest, sha256(token))) {
+    return response.status(403).json({ error: 'Worker is not authorized for this execution' });
+  }
+  const coordinates = jsonObject(row.gate_coordinates);
+  const evidence = jsonObject(row.gate_evidence);
+  const gateDecision = jsonObject(row.gate_decision);
+  const runMatches = Number(row.repository_id) === input.repositoryId
+    && String(row.owner) === input.owner && String(row.repo) === input.repo
+    && Number(row.pr_number) === input.prNumber && String(row.head_sha) === input.headSha
+    && String(row.base_sha) === input.baseSha
+    && String(row.effective_policy_digest) === input.policyDigest
+    && String(row.effective_config_digest) === input.configDigest
+    && Number(row.previous_execution_attempt) + 1 === input.executionAttempt
+    && Number(row.completion_execution_attempt) === input.executionAttempt
+    && ['succeeded', 'failed'].includes(String(row.run_status))
+    && Boolean(row.result_digest) && row.result_digest === row.gate_worker_result_digest
+    && row.result_digest === row.completion_content_digest;
+  const coordinateMatches = coordinates !== null
+    && ['runId', 'repositoryId', 'owner', 'repo', 'prNumber', 'headSha', 'baseSha', 'policyDigest', 'configDigest', 'executionAttempt']
+      .every((key) => coordinates[key] === input[key as keyof FindingThreadsRequestV2]);
+  if (!runMatches || !coordinateMatches || !gateDecision
+    || !['success', 'failure'].includes(String(gateDecision.status))) {
+    return response.status(409).json({ error: 'Finding-thread decision does not match the accepted review completion' });
+  }
+
+  let prepared;
+  try { prepared = await getPreparedPublishingPolicy(options.db, input.policyDigest); }
+  catch { return response.status(503).json({ error: 'Finding threads are temporarily unavailable' }); }
+  if (!prepared || prepared.policy.effectiveConfigDigest !== input.configDigest
+    || prepared.config.severity_policy !== REVIEW_SEVERITY_POLICY_V2) {
+    return response.status(403).json({ error: 'Severity-v2 finding threads are not enabled for this run' });
+  }
+
+  const storedDecision = evidence?.reviewDecision;
+  const evaluated = evaluateReviewDecisionV2(storedDecision);
+  const blockers = evidence?.blockingFingerprints;
+  const blockerFindings = reviewGateBlockingFindingsSchema.safeParse(evidence?.blockingFindings);
+  const validBlockers = Array.isArray(blockers) && blockers.every((value) => typeof value === 'string'
+    && /^fp1_[a-f0-9]{24}$/u.test(value)) && new Set(blockers).size === blockers.length;
+  const trustedFindings = blockerFindings.success ? blockerFindings.data : [];
+  const findingFingerprints = trustedFindings.map((finding) => finding.fingerprint).sort();
+  const blockersSorted = validBlockers ? [...blockers as string[]].sort() : [];
+  if (!evidence || !evaluated.valid || canonicalJson(evaluated.decision) !== canonicalJson(input.reviewDecision)
+    || canonicalJson(storedDecision) !== canonicalJson(input.reviewDecision)
+    || input.reviewDecision.policyDigest !== input.policyDigest
+    || input.reviewDecision.policyVersion !== REVIEW_SEVERITY_POLICY_V2
+    || !input.reviewDecision.coverageComplete || !input.reviewDecision.quorumSatisfied
+    || input.reviewDecision.infrastructureFailure
+    || input.reviewDecision.expectedLanes === 0
+    || input.reviewDecision.completedLanes !== input.reviewDecision.expectedLanes
+    || !validBlockers
+    || !blockerFindings.success
+    || canonicalJson(findingFingerprints) !== canonicalJson(blockersSorted)
+    || trustedFindings.some((finding) => findingFingerprint(finding) !== finding.fingerprint)
+    || (blockers as string[]).length !== input.reviewDecision.counts.p0Count + input.reviewDecision.counts.p1Count) {
+    return response.status(409).json({ error: 'Finding-thread decision is not backed by complete current evidence' });
+  }
+  const currentBlockers = new Set(blockers as string[]);
+
+  try {
+    const transport = await options.transportFor(input.owner, input.repo);
+    const pr = { owner: input.owner, repo: input.repo, prNumber: input.prNumber, headSha: input.headSha };
+    // Completion may race a new GitHub head. Never publish or close a conversation from a stale run.
+    const existing = await readFindingThreads(transport, pr);
+    if (await readCurrentPullRequestHead(transport, pr) !== input.headSha) {
+      return response.status(409).json({ error: 'Pull request head moved after review completion' });
+    }
+    const publishable = trustedFindings.map((finding) => {
+      const proof = [
+        `Verified trigger: ${finding.blockerEvidence.trigger}`,
+        `Consequence: ${finding.blockerEvidence.impact}`,
+        `Violated contract: ${finding.blockerEvidence.violatedContract}`,
+      ].join('\n');
+      const bodyLimit = Math.max(0, 15_900 - proof.length);
+      return { ...finding, body: `${finding.body.slice(0, bodyLimit)}\n\n${proof}`.slice(0, 16_000) };
+    });
+    const published = await publishFindingThreads(transport, pr, publishable, existing, publishable.length);
+    const mayRetireAdvisories = input.reviewDecision.coverageComplete && input.reviewDecision.quorumSatisfied
+      && !input.reviewDecision.infrastructureFailure && input.reviewDecision.expectedLanes > 0
+      && input.reviewDecision.completedLanes === input.reviewDecision.expectedLanes;
+    const stale = existing.filter((thread) => {
+      if (!transport.botLogin || thread.resolved || !thread.threadId || currentBlockers.has(thread.fingerprint)) return false;
+      if (mayRetireAdvisories && (thread.severity === 'P2' || thread.severity === 'P3' || thread.severity === 'NIT')) return true;
+      return false;
+    });
+    let resolved = 0;
+    for (let offset = 0; offset < stale.length; offset += RESOLVE_CONCURRENCY) {
+      await Promise.all(stale.slice(offset, offset + RESOLVE_CONCURRENCY)
+        .map((thread) => resolveFindingThread(transport, thread.threadId!)));
+      resolved += Math.min(RESOLVE_CONCURRENCY, stale.length - offset);
+    }
+    return response.status(200).json({ version: 'FindingThreadsResult.v2', runId: input.runId,
+      created: published.created, skipped: published.skipped, resolved });
+  } catch {
+    logger.warn('Verified v2 finding threads could not be published or migrated', { runId: input.runId });
+    return response.status(503).json({ error: 'Verified v2 finding threads could not be published or migrated' });
+  }
 }

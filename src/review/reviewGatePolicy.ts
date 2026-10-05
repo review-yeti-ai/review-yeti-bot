@@ -1,4 +1,22 @@
 import { evaluateReviewDecisionV2, type ReviewDecisionV2 } from './reviewDecision';
+import { z } from 'zod';
+
+/** Canonical service-derived P0/P1 payload retained for the post-completion thread publisher. */
+export const reviewGateBlockingFindingSchema = z.object({
+  fingerprint: z.string().regex(/^fp1_[a-f0-9]{24}$/u),
+  severity: z.enum(['P0', 'P1']),
+  path: z.string().min(1).max(4_000),
+  line: z.number().int().positive().safe(),
+  title: z.string().min(1).max(4_000),
+  body: z.string().min(1).max(16_000),
+  blockerEvidence: z.object({
+    trigger: z.string().min(12).max(2_000),
+    impact: z.string().min(12).max(2_000),
+    violatedContract: z.string().min(12).max(2_000),
+  }).strict(),
+}).strict();
+export const reviewGateBlockingFindingsSchema = z.array(reviewGateBlockingFindingSchema).max(400);
+export type ReviewGateBlockingFinding = z.infer<typeof reviewGateBlockingFindingSchema>;
 
 /** Pure eligibility policy. Inputs must be collected by the trusted service,
  * never taken from a label, dispatch payload or candidate-produced artifact. */
@@ -28,6 +46,10 @@ export interface ReviewGateEvidence {
   p2Count: number;
   /** Present only when the trusted effective policy selected the v2 severity contract. */
   reviewDecision?: ReviewDecisionV2;
+  /** Canonical current-head P0/P1 identities, computed by the trusted completion resolver. */
+  blockingFingerprints?: string[];
+  /** Canonical current-head P0/P1 content and blocker proof, computed by the trusted resolver. */
+  blockingFindings?: ReviewGateBlockingFinding[];
   /** Only a centrally verified exemption may replace a completed panel. */
   exemption?: { kind: 'recap-only' | 'no-reviewable-content'; auditDigest: string };
   expectedLanes: number;
