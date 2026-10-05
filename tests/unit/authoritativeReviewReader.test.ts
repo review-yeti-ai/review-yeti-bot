@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthoritativeReviewReader, MAX_AUTHORITATIVE_DIFF_BYTES } from '../../src/github/authoritativeReviewReader';
+import { renderFindingMarker } from '../../src/review/findingConvergence';
 
 const TOKEN = 'ghs_authoritative-reader.header_segment.signature-with-dash';
 const PRIVATE_BODY = 'private-server-response-marker';
@@ -175,6 +176,99 @@ describe('AuthoritativeReviewReader', () => {
     ])('rejects inconsistent or malformed upstream PR %j', async (change) => {
       const { reader, fetcher } = fixture(jsonResponse(pullBody(change)));
       await expect(reader.currentCandidate(PR)).rejects.toThrow();
+      expect(fetcher).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('findingThreads', () => {
+    const fingerprint = `fp1_${'d'.repeat(24)}`;
+    const humanReason = 'Intentional: the existing generator regression already covers this exact path.';
+    const thread = {
+      id: 'THREAD_42', isResolved: true, isOutdated: false, path: 'src/mod.ts', line: 3,
+      comments: { nodes: [
+        { author: { login: 'review-app', __typename: 'Bot' },
+          body: renderFindingMarker({ fingerprint, severity: 'P2', title: 'Generator coverage' }) },
+        { author: { login: 'author1', __typename: 'User' }, body: humanReason, createdAt: '2026-10-05T00:00:00Z' },
+      ] },
+    };
+    const response = () => jsonResponse({ data: { repository: { pullRequest: { reviewThreads: {
+      pageInfo: { hasNextPage: false, endCursor: null }, nodes: [thread],
+    } } } } });
+    function threadFixture(author?: () => Promise<string | undefined>) {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response());
+      const reader = new AuthoritativeReviewReader({ token: TOKEN, baseUrl: API, timeoutMs: 250,
+        fetchImplementation: fetcher, ...(author ? { findingThreadAuthor: author } : {}) });
+      return { reader, fetcher };
+    }
+
+    it('reads the requested PR and retains verified bot identity plus the human disposition', async () => {
+      const author = vi.fn(async () => 'review-app[bot]');
+      const { reader, fetcher } = threadFixture(author);
+      await expect(reader.findingThreads(PR)).resolves.toEqual([{
+        threadId: 'THREAD_42', fingerprint, severity: 'P2', path: 'src/mod.ts', line: 3,
+        title: 'Generator coverage', body: '', resolved: true, outdated: false,
+        resolution: { author: 'author1', reason: humanReason, at: '2026-10-05T00:00:00Z' },
+      }]);
+      expect(author).toHaveBeenCalledOnce();
+      expect(fetcher).toHaveBeenCalledExactlyOnceWith('https://github.example.invalid/api/graphql',
+        expect.objectContaining({ method: 'POST', redirect: 'error' }));
+      expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body)).variables)
+        .toEqual({ owner: TARGET.owner, repo: TARGET.repo, pr: PR.prNumber, after: null });
+    });
+
+    it.each([
+      { prNumber: 0 }, { prNumber: -1 }, { prNumber: 1.5 }, { prNumber: Number.MAX_SAFE_INTEGER + 1 },
+      { prNumber: Number.NaN }, { prNumber: Infinity }, { prNumber: '42' }, { prNumber: null },
+      { repositoryId: 0 }, { owner: '..' }, { repo: 'owner/repo' }, { candidatePolicy: 'untrusted' },
+    ])('rejects malformed finding-thread coordinates %j before author lookup or I/O', async (change) => {
+      const author = vi.fn(async () => 'review-app[bot]');
+      const { reader, fetcher } = threadFixture(author);
+      await expect(reader.findingThreads({ ...PR, ...change } as typeof PR)).rejects.toThrow(/identity or response invalid/u);
+      expect(author).not.toHaveBeenCalled();
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it.each(['absent', 'undefined', 'rejected'] as const)('does not satisfy a resolution when bot identity is %s', async (kind) => {
+      const author = kind === 'absent' ? undefined : kind === 'undefined'
+        ? async () => undefined : async () => { throw new Error('identity unavailable'); };
+      const { reader, fetcher } = threadFixture(author);
+      const threads = await reader.findingThreads(PR);
+      expect(threads).toHaveLength(1);
+      expect(threads[0]).toMatchObject({ fingerprint, resolved: true });
+      expect(threads[0]).not.toHaveProperty('resolution');
+      expect(fetcher).toHaveBeenCalledOnce();
+    });
+
+    it('does not admit another bot\'s finding as the configured App\'s disposition', async () => {
+      const { reader } = threadFixture(async () => 'different-review-app[bot]');
+      await expect(reader.findingThreads(PR)).resolves.toEqual([]);
+    });
+
+    it('propagates an operation abort to the finding-thread request and releases its timer', async () => {
+      const { reader, fetcher } = threadFixture(async () => 'review-app[bot]');
+      let requestSignal: AbortSignal | undefined;
+      fetcher.mockReset();
+      fetcher.mockImplementationOnce(async (_url, init) => new Promise<Response>((_resolve, reject) => {
+        requestSignal = init?.signal ?? undefined;
+        requestSignal?.addEventListener('abort', () => reject(new Error('request aborted')), { once: true });
+      }));
+      const abort = new AbortController();
+      const pending = rejected(reader.findingThreads(PR, abort.signal));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(requestSignal?.aborted).toBe(false);
+      abort.abort();
+      expect((await pending).message).toBe('request aborted');
+      expect(requestSignal?.aborted).toBe(true);
+      expect(fetcher).toHaveBeenCalledOnce();
+    });
+
+    it('does not turn a failed GraphQL read into a satisfied finding', async () => {
+      const { reader, fetcher } = threadFixture(async () => 'review-app[bot]');
+      fetcher.mockReset();
+      fetcher.mockResolvedValueOnce(jsonResponse({ errors: [{ message: PRIVATE_BODY }] }));
+      const error = await rejected(reader.findingThreads(PR));
+      expect(error.message).toBe('GitHub finding-thread GraphQL request returned errors');
+      expectRedacted(error);
       expect(fetcher).toHaveBeenCalledOnce();
     });
   });
