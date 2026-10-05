@@ -714,6 +714,9 @@ describe('executeComposedReview', () => {
     expect(partial.personas.map((lane) => lane.id)).toEqual(['auth']);
     expect(partial.unreportedLanes).toEqual([expect.objectContaining({ id: 'tests', failureClass: 'timeout' })]);
     expect(saved.at(-1)).toMatchObject({ revision: 2, completedTasks: [{ id: 'auth', findings: [] }] });
+    expect(partial.personas[0].sourceDelivery).toEqual(saved.at(-1).completedTasks[0].sourceDelivery);
+    expect(partial.personas[0].sourceDelivery).toMatchObject({ taskId: 'auth', complete: true,
+      headSha: 'a'.repeat(40), files: [{ path: 'src/auth/guard.ts', ranges: [[0, CODE_FILES[0].patch.length]] }] });
 
     const resumeCalls = vi.fn(async (payload: any) => {
       const text = lastText(payload.messages);

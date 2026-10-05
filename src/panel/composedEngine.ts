@@ -1721,7 +1721,7 @@ export function buildGracefulComposedPanelResult(input: {
   checkpointPersistenceFailed?: boolean;
 }): PanelResult {
   const providerId = resolveComposedProviderId(input.config);
-  const completed = new Map(input.snapshot.completedTasks.map((task) => [task.id, task.findings]));
+  const completed = new Map(input.snapshot.completedTasks.map((task) => [task.id, task]));
   const completedTaskIds = input.snapshot.plan.filter((task) => completed.has(task.id)).map((task) => task.id);
   const pendingTasks = input.snapshot.plan.filter((task) => !completed.has(task.id));
   return {
@@ -1730,14 +1730,15 @@ export function buildGracefulComposedPanelResult(input: {
     applicablePersonaIds: input.snapshot.plan.map((task) => task.id),
     taskPlan: input.snapshot.plan,
     personas: input.snapshot.plan.flatMap((task) => {
-      const findings = completed.get(task.id);
-      return findings ? [{
+      const completedTask = completed.get(task.id);
+      return completedTask ? [{
         id: task.id,
         required: true,
         providerId,
         model: 'closeout-checkpoint',
-        decision: findings.length > 0 ? 'FINDINGS' as const : 'APPROVE' as const,
-        findings,
+        decision: completedTask.findings.length > 0 ? 'FINDINGS' as const : 'APPROVE' as const,
+        findings: completedTask.findings,
+        ...(completedTask.sourceDelivery ? { sourceDelivery: completedTask.sourceDelivery } : {}),
         usage: null,
         costUSD: null,
         durationMs: 0,
