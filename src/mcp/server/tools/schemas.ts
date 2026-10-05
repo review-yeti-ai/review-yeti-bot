@@ -244,12 +244,23 @@ export const TriggerReviewInputSchema = z.object({
 
 export type TriggerReviewInput = z.infer<typeof TriggerReviewInputSchema>;
 
-export interface TriggerReviewOutput {
-  dispatched: boolean;
+export type TriggerReviewOutput = {
+  dispatched: true;
   attempt_id: string;
   job_crd_created: boolean;
   message: string;
-}
+} | {
+  dispatched: false;
+  job_crd_created: false;
+  status: 'passthrough';
+  reason: 'operator_global_passthrough';
+  review_started: false;
+  owner: string;
+  repo: string;
+  pull_number: number;
+  head_sha: string;
+  message: string;
+};
 
 // =============================================================================
 // 5. cancel_review
@@ -468,4 +479,3 @@ export const PurgeCacheInputSchema = z.object({
 }).strict();
 
 export type PurgeCacheInput = z.infer<typeof PurgeCacheInputSchema>;
-

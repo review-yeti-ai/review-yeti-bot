@@ -1,3 +1,5 @@
+import { reviewYetiPassthroughEnabledFromEnv } from './reviewYetiPassthrough';
+
 export const SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY = 'review-yeti-ai/review-yeti-bot';
 export const SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY_ID = 1326169548;
 
@@ -18,6 +20,8 @@ export interface McpServerConfig {
 }
 
 export interface ActionDispatchConfig {
+  /** Skip new review admission after caller authentication and request validation. */
+  passthroughEnabled: boolean;
   requireExpectedGeneration: boolean;
   centralExternalRepositories: ReadonlyMap<string, number>;
   centralExternalAppCredentials?: {
@@ -41,6 +45,7 @@ export function parsePositiveInteger(
 }
 
 interface ActionDispatchEnvironment {
+  REVIEW_YETI_PASSTHROUGH?: string;
   ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION?: string;
   ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES?: string;
   REVIEW_YETI_PUBLIC_TARGET_APP_ID?: string;
@@ -93,6 +98,7 @@ export function centralExternalTargetConfigFromEnv(
 export function actionDispatchConfigFromEnv(
   environment: NodeJS.ProcessEnv | ActionDispatchEnvironment = process.env,
 ): ActionDispatchConfig {
+  const passthroughEnabled = reviewYetiPassthroughEnabledFromEnv(environment);
   const value = environment.ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION;
   let requireExpectedGeneration: boolean;
   if (value === undefined || value === '' || value === 'false') requireExpectedGeneration = false;
@@ -149,6 +155,7 @@ export function actionDispatchConfigFromEnv(
   );
 
   return {
+    passthroughEnabled,
     requireExpectedGeneration,
     centralExternalRepositories,
     ...(centralExternalAppCredentials ? { centralExternalAppCredentials } : {}),

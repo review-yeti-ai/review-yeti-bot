@@ -189,6 +189,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       admissionRepository: repository,
       modelClient,
       triggerDeps: {
+        passthroughEnabled: dispatchConfig.passthroughEnabled,
         authoritativePublishing: authoritative?.admission,
         resolveGitHubPullRequest: async (owner: string, repo: string, pullNumber: number) => {
           const credentials = { appId, privateKey, owner, repo, baseUrl };
@@ -222,6 +223,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     verifier,
     admission: repository,
     allowAppGate: policy.allowAppGate,
+    passthroughEnabled: dispatchConfig.passthroughEnabled,
     requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
     centralExternalRepositories: dispatchConfig.centralExternalRepositories,
     mcpConfig: dispatchConfig.mcp,

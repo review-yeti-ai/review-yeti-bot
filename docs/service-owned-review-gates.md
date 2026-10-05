@@ -229,6 +229,20 @@ The dedicated dispatch service can receive signed GitHub App deliveries at
 job. This transport is independently default-off and preserves the existing
 finite Actions/OIDC repository and owner allowlists:
 
+- `REVIEW_YETI_PASSTHROUGH` is an operator-owned process setting for temporary
+  global no-review operation. It defaults to `false`; only the exact value
+  `true` enables it, and other values prevent startup. After webhook signature,
+  enrollment, event identity and trigger validation, eligible new App-webhook,
+  merge-group, OIDC Action and authenticated MCP `trigger_review` requests
+  receive an explicit passthrough receipt.
+  The service starts no review, creates no Review Yeti verdict/check, and does
+  not claim or consume an Action generation. OIDC, expected-generation
+  presence, recovery authority and timestamp checks still apply. The App
+  operator remains enabled and responsive; completion and cancellation paths
+  continue so in-flight work can drain. The setting does not enroll additional
+  repositories. Set it back to `false` and roll out the service to resume normal
+  admission.
+
 - `GITHUB_APP_WEBHOOK_ENABLED=true` mounts the signed route. It requires a
   32–1,024 byte `GITHUB_WEBHOOK_SECRET`, plus finite
   `GITHUB_APP_WEBHOOK_REPOSITORY_IDS` and `GITHUB_APP_WEBHOOK_OWNER_IDS` values
