@@ -28,13 +28,14 @@ const BASE_SHA = '2222222222222222222222222222222222222222';
 const REPO_ID = 190468701;
 const APP_ID = 4385771;
 
-function makeSamplePolicyFile(reviewEngine?: 'composed' | 'panel') {
+function makeSamplePolicyFile(reviewEngine?: 'composed' | 'panel' | 'dsh') {
   const rawContent = JSON.stringify({
     schema: 'exampleorg.review-policy.v1',
     review_yeti: {
       personas: 'security,architecture,perf',
       budget: { max_investigation_turns: 5 },
       ...(reviewEngine ? { review_engine: reviewEngine } : {}),
+      ...(reviewEngine === 'dsh' ? { fallback_review_engine: 'composed' } : {}),
     },
   });
   const contentDigest = createHash('sha256').update(rawContent).digest('hex');
@@ -144,7 +145,7 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
   // =========================================================================
   describe('SUITE 2: Authoritative admission re-fingerprinting and config coherence', () => {
     it('EMP-M2-CRYPTO-01: re-fingerprints prepared policy and matches verifyPreparedPublishingConfig', async () => {
-      const policyFile = makeSamplePolicyFile('composed');
+      const policyFile = makeSamplePolicyFile('dsh');
       const preparedPolicy = preparePublishingPolicy(policyFile, sampleTransport);
 
       const candidate = {
@@ -304,7 +305,7 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
     });
 
     it('EMP-M2-RESOLVER-01: explicit engine requests must match the strict resolver policy', async () => {
-      const createTool = (reviewEngine?: 'composed' | 'panel') => {
+      const createTool = (reviewEngine?: 'composed' | 'panel' | 'dsh') => {
         const policyFile = makeSamplePolicyFile(reviewEngine);
         const resolver = new AuthoritativePublishingResolver({
           policyRepository: { repositoryId: REPO_ID, owner: 'exampleorg', repo: 'example-api' },
@@ -361,7 +362,8 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
         .rejects.toThrow(/not permitted by the authoritative policy/);
       expect(defaultTool.admit).toHaveBeenCalledOnce();
 
-      const composedTool = createTool('composed');
+      // The resolver normalizes the legacy DSH intent to its permitted composed fallback.
+      const composedTool = createTool('dsh');
       const composedResult = await composedTool.tool.execute(request('composed'));
       expect(JSON.parse((composedResult.content[0] as any).text)).toMatchObject({ dispatched: true });
       expect(JSON.parse((composedResult.content[0] as any).text).message).toContain('engine: composed');
