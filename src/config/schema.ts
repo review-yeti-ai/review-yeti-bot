@@ -211,6 +211,8 @@ const BuiltinCharterEnum = z.enum([
   'builtin:finops',
   'builtin:red-team',
   'builtin:skeptic',
+  'builtin:docs',
+  'builtin:docs-compliance',
 ]);
 
 export const providerSchema = z.object({
@@ -595,11 +597,6 @@ export type ReviewEngineName = z.infer<typeof reviewEngineSchema>;
  * policy can lower these, never raise them. `max_tasks`, `max_turns_total`, and `max_findings_total`
  * are wired into `composedEngine.ts`, and `max_turns_per_task` clamps each task's own turn budget.
  *
- * `task_dimensions` is projected and validated for forward-compatible policy authoring but is not
- * yet consumed -- the plan turn still seeds from the engine's own `TASK_DIMENSIONS`. Stated here
- * rather than left to be discovered: a config key that silently does nothing is a lie in the
- * operator's surface.
- *
  * There is deliberately NO `require_security_task` key. The composed plan's security floor -- any
  * file the deterministic classifier puts in the security lane must be covered by a `security`
  * task -- is the defence against a diff whose own text coaxes the model into skipping auth review
@@ -612,9 +609,65 @@ export const composedEngineConfigSchema = z.object({
   max_turns_total: z.number().int().positive().max(200).optional(),
   max_turns_per_task: z.number().int().positive().max(50).optional(),
   max_findings_total: z.number().int().positive().max(500).optional(),
-  task_dimensions: z.array(z.string().min(1)).min(1).optional(),
 }).strict();
 export type ComposedEngineConfig = z.infer<typeof composedEngineConfigSchema>;
+
+const effectiveReviewConfigReceiptSchema = z.object({
+  schema: z.literal('review-yeti-effective-config.v1'),
+  requested: z.object({
+    profile: z.enum(['chill', 'balanced', 'assertive']),
+    review_engine: z.string().min(1),
+    severity_policy: z.string().optional(),
+    personas: z.array(z.string().min(1)),
+    bifrost_reasoning_effort: z.string().optional(),
+    mcp_servers: z.array(z.string().min(1)),
+    max_investigation_turns: z.number().int().positive(),
+    max_reviewed_lockfile_patch_chars: z.number().int().positive().nullable(),
+  }).strict(),
+  effective: z.object({
+    review_engine: reviewEngineSchema,
+    severity_policy: z.literal('review-yeti-severity.v2').optional(),
+    profile: z.object({
+      value: z.enum(['chill', 'balanced', 'assertive']),
+      applied: z.boolean(),
+      reason: z.string().min(1),
+    }).strict(),
+    provider: z.object({
+      id: z.literal('bifrost'),
+      model: z.string().min(1),
+      requested_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
+      upstream_observed_model: z.literal('unknown'),
+      upstream_observed_effort: z.literal('unknown'),
+    }).strict(),
+    personas: z.array(z.object({
+      requested: z.string().min(1),
+      id: z.string().min(1),
+      charter: z.string().min(1),
+    }).strict()),
+    memory: z.object({
+      state: z.enum(['not_loaded', 'runtime_dependent']),
+      configured_servers: z.array(z.string().min(1)),
+      loaded_servers: z.array(z.string().min(1)),
+      reason: z.string().min(1),
+    }).strict(),
+    composed_budget: z.object({
+      source: z.literal('engine_defaults'),
+      configured_overrides: composedEngineConfigSchema,
+      central_policy_total_turns: z.number().int().positive(),
+      central_policy_max_tasks: z.number().int().positive(),
+      plan_turns: z.number().int().positive(),
+      base_task_turns: z.number().int().positive(),
+      dynamic_task_turns_max: z.number().int().positive(),
+      max_concurrent_tasks: z.number().int().positive(),
+      total_turns_hard_cap: z.number().int().positive(),
+      operator_total_turn_override: z.literal('COMPOSED_ENGINE_MAX_TURNS'),
+    }).strict(),
+    worker_limits: z.object({
+      effective_investigation_turns: z.number().int().positive(),
+      effective_reviewed_lockfile_patch_chars: z.number().int().positive().nullable(),
+    }).strict(),
+  }).strict(),
+}).strict();
 
 const ctReviewConfigV3ObjectSchema = z.object({
   version: z.union([z.literal(3), z.literal('3')]).transform(() => 3 as const),
@@ -655,7 +708,9 @@ const ctReviewConfigV3ObjectSchema = z.object({
   evidence: evidenceSchema.optional(),
   pre_checks: preChecksSchema.optional(),
   review_engine: reviewEngineSchema.optional(),
+  severity_policy: z.literal('review-yeti-severity.v2').optional(),
   composed: composedEngineConfigSchema.optional(),
+  review_configuration_receipt: effectiveReviewConfigReceiptSchema.optional(),
 
   reviewers: z.object({
     execution: z.literal('personas'),
