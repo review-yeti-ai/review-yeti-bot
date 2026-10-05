@@ -372,8 +372,8 @@ function queryableForGracefulComposedPrior() {
     plan,
     completedTasks: completion.result.personas.map((persona: any) => ({
       id: persona.id,
-      findings: persona.findings,
-      sourceDelivery: persona.sourceDelivery,
+      findings: structuredClone(persona.findings),
+      sourceDelivery: structuredClone(persona.sourceDelivery),
     })),
   };
   Object.assign(row, {
@@ -610,7 +610,15 @@ describe('incomplete P2 recovery context', () => {
         delete fixture.sourceRows[0].payload.result.personas[0].sourceDelivery;
         fixture.resultDigest = resealCompletion(fixture);
       } else {
+        const completion = fixture.sourceRows[0].payload;
+        const intactCompletionDigest = workerReviewCompletionDigest(completion);
+        const completionReceipt = completion.result.personas[0].sourceDelivery;
+        const checkpointReceipt = fixture.sourceRows[0].checkpoint_payload.completedTasks[0].sourceDelivery;
+        expect(checkpointReceipt).not.toBe(completionReceipt);
         fixture.sourceRows[0].checkpoint_payload.completedTasks[0].sourceDelivery.files[0].patchDigest = '9'.repeat(64);
+        expect(workerReviewCompletionDigest(completion)).toBe(intactCompletionDigest);
+        expect(fixture.sourceRows[0].content_digest).toBe(intactCompletionDigest);
+        expect(fixture.sourceRows[0].gate_worker_result_digest).toBe(intactCompletionDigest);
       }
       await expect(loadGracefulFixture(fixture)).rejects.toThrow();
     });
