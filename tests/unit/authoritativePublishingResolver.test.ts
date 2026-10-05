@@ -89,11 +89,11 @@ describe('AuthoritativePublishingResolver', () => {
   });
 
   it('uses the GitHub-verified candidate identity to select a trusted severity canary', async () => {
-    const target = { ...requested, owner: 'exampleorg', repo: 'example-review-actions' };
+    const target = { ...requested, owner: 'exampleorg', repo: 'review-yeti-canary' };
     const f = fixture();
     f.currentCandidate.mockResolvedValue({ ...target, open: true, draft: false });
     f.immutablePolicyFile.mockResolvedValue(file(JSON.stringify({ ...rawPolicy,
-      repository_overrides: { 'exampleorg/example-review-actions': { severity_policy: 'review-yeti-severity.v2' } },
+      repository_overrides: { 'exampleorg/review-yeti-canary': { severity_policy: 'review-yeti-severity.v2' } },
     })));
 
     const result = await f.resolver.resolve(target);
@@ -106,7 +106,7 @@ describe('AuthoritativePublishingResolver', () => {
 
   it('rejects a caller-selected canary repository when the GitHub candidate read returns another repository', async () => {
     const f = fixture();
-    const spoofed = { ...requested, owner: 'exampleorg', repo: 'example-review-actions' };
+    const spoofed = { ...requested, owner: 'exampleorg', repo: 'review-yeti-canary' };
     expectRedacted(await rejection(f.resolver.resolve(spoofed)));
     expect(f.policyReaderFactory).not.toHaveBeenCalled();
     expect(f.immutablePolicyFile).not.toHaveBeenCalled();

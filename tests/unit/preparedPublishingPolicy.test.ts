@@ -46,11 +46,11 @@ describe('trusted prepared publishing policy', () => {
     const source = file({ schema: 'exampleorg.review-policy.v1', review_yeti: {
       personas: 'security,testing', budget: { max_investigation_turns: 20 },
     }, repository_overrides: {
-      'exampleorg/example-review-actions': { severity_policy: 'review-yeti-severity.v2' },
+      'exampleorg/review-yeti-canary': { severity_policy: 'review-yeti-severity.v2' },
     } });
     const noTarget = preparePublishingPolicy(source, transport);
-    const canary = preparePublishingPolicy(source, transport, { owner: 'exampleorg', repo: 'example-review-actions' });
-    const unrelated = preparePublishingPolicy(source, transport, { owner: 'exampleorg', repo: 'example-meta' });
+    const canary = preparePublishingPolicy(source, transport, { owner: 'exampleorg', repo: 'review-yeti-canary' });
+    const unrelated = preparePublishingPolicy(source, transport, { owner: 'exampleorg', repo: 'unrelated-review-repo' });
 
     expect(noTarget.config.severity_policy).toBeUndefined();
     expect(canary.config.severity_policy).toBe('review-yeti-severity.v2');
@@ -118,7 +118,7 @@ describe('trusted prepared publishing policy', () => {
     { schema: 'unknown' },
     { schema: 'exampleorg.review-policy.v1', review_yeti: { personas: 'security', budget: { max_investigation_turns: 0 } } },
     { schema: 'exampleorg.review-policy.v1', review_yeti: { personas: 'security', budget: { max_investigation_turns: 5 } },
-      repository_overrides: { 'exampleorg/example-review-actions': { severity_policy: 'not-v2' } } },
+      repository_overrides: { 'exampleorg/review-yeti-canary': { severity_policy: 'not-v2' } } },
     policyWithReviewYeti({ personas: 'security', budget: { max_investigation_turns: 5, max_reviewed_lockfile_patch_chars: 19_999 } }),
     policyWithReviewYeti({ personas: 'security', budget: { max_investigation_turns: 5, max_reviewed_lockfile_patch_chars: 65_537 } }),
     policyWithReviewYeti({ personas: 'security', budget: { max_investigation_turns: 5, max_reviewed_lockfile_patch_chars: '65536' } }),
