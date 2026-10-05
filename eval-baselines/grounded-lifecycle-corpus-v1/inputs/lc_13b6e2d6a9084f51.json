@@ -1,0 +1,172 @@
+{
+  "schemaVersion": "GroundedLifecycleInput.v1",
+  "caseId": "lc_13b6e2d6a9084f51",
+  "source": {
+    "repository": {
+      "repositoryId": 73001,
+      "owner": "synthetic",
+      "repo": "fixture-project"
+    },
+    "baseSha": "2e6836c32f24a7992ebe257cb45c016baa85a25e",
+    "headSha": "e75cb98e36ecc53bccf72faf3e829c8a437e15e2",
+    "changedPaths": [
+      "README.md"
+    ],
+    "revisions": [
+      {
+        "commitSha": "2e6836c32f24a7992ebe257cb45c016baa85a25e",
+        "treeSha": "c847ff29abcba060b47f4d792d4ea789ae731f0a",
+        "parentSha": null,
+        "commitTimestamp": 1700001000,
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "README.md",
+            "mode": "100644",
+            "gitBlobSha": "3c233e81ecb90f11eadfd986e83015369255c1a7",
+            "sha256": "949499243f20aa4733ae4bcd5bb1d31942ba12fa1dc4ea28d1cb71499155b372",
+            "content": "# Synthetic cache sample\n\nThe sample documents the cache window.\n"
+          },
+          {
+            "path": "cache-window.ts",
+            "mode": "100644",
+            "gitBlobSha": "768d27dc5495a163e21b9aeeb17f8cfd792e3a4e",
+            "sha256": "9167c48ba95aa405c21dfecc0d8e687ce6e1263e3c27771ea0fc47dd64c05692",
+            "content": "export function shouldReuse(createdAt: number, now: number): boolean {\n  return now - createdAt < 60;\n}\n"
+          }
+        ]
+      },
+      {
+        "commitSha": "e75cb98e36ecc53bccf72faf3e829c8a437e15e2",
+        "treeSha": "b82c44d8d8228451708d75793c8de653fd4acf51",
+        "parentSha": "2e6836c32f24a7992ebe257cb45c016baa85a25e",
+        "commitTimestamp": 1700001060,
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "README.md",
+            "mode": "100644",
+            "gitBlobSha": "4489cf64e8663e6252db1a438d3d6cb4b8c800b8",
+            "sha256": "b5b89b25fb08b3b9142dff7265cd4ed24edf67d872a2d70d67fce0cd0ef22127",
+            "content": "# Synthetic cache sample\n\nThe sample documents a sixty-second cache window.\n"
+          },
+          {
+            "path": "cache-window.ts",
+            "mode": "100644",
+            "gitBlobSha": "768d27dc5495a163e21b9aeeb17f8cfd792e3a4e",
+            "sha256": "9167c48ba95aa405c21dfecc0d8e687ce6e1263e3c27771ea0fc47dd64c05692",
+            "content": "export function shouldReuse(createdAt: number, now: number): boolean {\n  return now - createdAt < 60;\n}\n"
+          }
+        ]
+      }
+    ],
+    "patches": [
+      {
+        "path": "README.md",
+        "patch": "diff --git a/README.md b/README.md\nindex 3c233e8..4489cf6 100644\n--- a/README.md\n+++ b/README.md\n@@ -1,3 +1,3 @@\n # Synthetic cache sample\n \n-The sample documents the cache window.\n+The sample documents a sixty-second cache window.",
+        "sha256": "422789ed1357f6234be2aaf91431808a484ba3ed0b2822682b39a3bd85ac0529"
+      }
+    ],
+    "policyDigest": "d4339ac7c01eca71d4cf70348cec8c1d1e5c6738a7597211d57098ea343c5de7",
+    "configDigest": "ffee1f4548e6f7143335d06b3793eefd63f5a597783de75bf4a75ad120afce54",
+    "contextDigest": "d433c1f1b3e0412f2ee59dc07d5b6cc6b9b5805e3753cfdac7fd2162165da5fe"
+  },
+  "candidates": [],
+  "history": {
+    "sourceObservation": {
+      "validation": "accepted",
+      "snapshot": {
+        "version": "PrLifecycleHistorySnapshot.v1",
+        "snapshotId": "b10a5ad4-9a16-4f52-a7c1-693ca5e587ac",
+        "runId": "run_dd157821545958177f264a1207fc3469",
+        "executionAttempt": 1,
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project",
+        "prNumber": 41,
+        "headSha": "e75cb98e36ecc53bccf72faf3e829c8a437e15e2",
+        "baseSha": "2e6836c32f24a7992ebe257cb45c016baa85a25e",
+        "policyDigest": "d4339ac7c01eca71d4cf70348cec8c1d1e5c6738a7597211d57098ea343c5de7",
+        "configDigest": "ffee1f4548e6f7143335d06b3793eefd63f5a597783de75bf4a75ad120afce54",
+        "contextDigest": "d433c1f1b3e0412f2ee59dc07d5b6cc6b9b5805e3753cfdac7fd2162165da5fe",
+        "eventCount": 2,
+        "findingCount": 1,
+        "eventOmittedCount": 0,
+        "findingOmittedCount": 0,
+        "legacyOmittedCount": 0,
+        "eventsDigest": "7a126970e49a001030fa9c66a830a424d665001231ffb0e705be7b7b6d3afaad",
+        "findingsDigest": "2796d55dfb8d04a753c7326001fbf1d5402571bfb46c74e0921b8ea1236b495b",
+        "expiresAt": "2030-01-01T00:00:00.000Z"
+      },
+      "digestMatches": true
+    },
+    "load": {
+      "status": "complete",
+      "snapshotId": "b10a5ad4-9a16-4f52-a7c1-693ca5e587ac",
+      "contextDigest": "d433c1f1b3e0412f2ee59dc07d5b6cc6b9b5805e3753cfdac7fd2162165da5fe",
+      "events": [
+        {
+          "eventId": "d3001f98-83b2-4c3f-a496-cf8cd4f80e75",
+          "eventType": "finding-observed",
+          "runId": "run_13f8925eb7cea9a809704c3e88e2b563",
+          "executionAttempt": 1,
+          "headSha": "2e6836c32f24a7992ebe257cb45c016baa85a25e",
+          "baseSha": "2e6836c32f24a7992ebe257cb45c016baa85a25e",
+          "policyDigest": "d4339ac7c01eca71d4cf70348cec8c1d1e5c6738a7597211d57098ea343c5de7",
+          "configDigest": "ffee1f4548e6f7143335d06b3793eefd63f5a597783de75bf4a75ad120afce54",
+          "contextDigest": "d433c1f1b3e0412f2ee59dc07d5b6cc6b9b5805e3753cfdac7fd2162165da5fe",
+          "evidenceDigest": "4f6138203cb0400631d55e3c1e032972b2b81388d6c8da25dd79d8244490a06e",
+          "verificationStatus": "confirmed"
+        },
+        {
+          "eventId": "c7739bad-9598-4dd8-aef2-23c93b3d0745",
+          "eventType": "finding-resolution-recorded",
+          "runId": "run_8da09b346f274cc209dab2b3ca8e6a97",
+          "executionAttempt": 1,
+          "headSha": "e75cb98e36ecc53bccf72faf3e829c8a437e15e2",
+          "baseSha": "2e6836c32f24a7992ebe257cb45c016baa85a25e",
+          "policyDigest": "d4339ac7c01eca71d4cf70348cec8c1d1e5c6738a7597211d57098ea343c5de7",
+          "configDigest": "ffee1f4548e6f7143335d06b3793eefd63f5a597783de75bf4a75ad120afce54",
+          "contextDigest": "d433c1f1b3e0412f2ee59dc07d5b6cc6b9b5805e3753cfdac7fd2162165da5fe",
+          "evidenceDigest": "71514e2f0aa6577d397bdd22996a5db082d14c3148e6f6924be5008784ca69b7",
+          "verificationStatus": "contradicted",
+          "verification": {
+            "findingEventId": "304c9c10-86b2-4615-a01b-834568e0c190",
+            "fingerprint": "fp1_f77e71d15c22e3d3ac7a55f2",
+            "status": "contradicted",
+            "currentAffectedContextDigest": "d433c1f1b3e0412f2ee59dc07d5b6cc6b9b5805e3753cfdac7fd2162165da5fe",
+            "sourceAffectedContextDigest": "d433c1f1b3e0412f2ee59dc07d5b6cc6b9b5805e3753cfdac7fd2162165da5fe"
+          }
+        }
+      ],
+      "findings": [
+        {
+          "findingEventId": "304c9c10-86b2-4615-a01b-834568e0c190",
+          "fingerprint": "fp1_f77e71d15c22e3d3ac7a55f2",
+          "path": "cache-window.ts",
+          "regionStart": 1,
+          "regionEnd": 1,
+          "firstSeenHead": "2e6836c32f24a7992ebe257cb45c016baa85a25e",
+          "lastSeenHead": "2e6836c32f24a7992ebe257cb45c016baa85a25e",
+          "affectedContextDigest": "d433c1f1b3e0412f2ee59dc07d5b6cc6b9b5805e3753cfdac7fd2162165da5fe",
+          "sourceSeverity": "P2",
+          "effectiveSeverity": "P2",
+          "disposition": "resolved",
+          "blocking": false,
+          "verificationStatus": "contradicted",
+          "evidenceDigest": "34512132545d1dbb2bf4610e83b3e980a407643da831dcf0ca92ebe5855cbefd"
+        }
+      ],
+      "eventCount": 2,
+      "findingCount": 1,
+      "loadedEventCount": 2,
+      "loadedFindingCount": 1,
+      "eventOmittedCount": 0,
+      "findingOmittedCount": 0,
+      "legacyOmittedCount": 0,
+      "eventsDigest": "7a126970e49a001030fa9c66a830a424d665001231ffb0e705be7b7b6d3afaad",
+      "findingsDigest": "2796d55dfb8d04a753c7326001fbf1d5402571bfb46c74e0921b8ea1236b495b",
+      "omissions": []
+    }
+  }
+}
