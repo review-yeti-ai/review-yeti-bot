@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { findingFingerprint } from '../../src/review/findingConvergence';
+import { findingClaimType, findingFingerprint, findingFingerprintForClaimType } from '../../src/review/findingConvergence';
 import { createReviewDecisionV2, REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
-import { computeArbitration } from '../../src/review/reviewCore';
+import { buildDeterministicCoverageManifest, groundedAffectedContextDigest, GROUNDED_VERIFICATION_VERSION,
+  GROUNDED_DEFAULT_BUDGET } from '../../src/review/groundedReviewEngine';
+import { canonicalJson, computeArbitration, sha256 } from '../../src/review/reviewCore';
 import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import { MAX_CHANGED_FILE_PATCH_BYTES } from '../../src/review/reviewEvidenceLimits';
 import {
@@ -96,6 +98,17 @@ const v2Contract: TrustedReviewCoverageContract = { ...contract, reviewDecisionP
 
 function withDecision(input: WorkerReviewCompletion, overrides: Record<string, unknown> = {}): WorkerReviewCompletion {
   const findings = input.result.personas.flatMap((persona) => persona.findings);
+  const candidatesByFingerprint = new Map<string, typeof findings[number]>();
+  const severityRank: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3, NIT: 4 };
+  for (const finding of findings) {
+    const fingerprint = findingFingerprint(finding);
+    const previous = candidatesByFingerprint.get(fingerprint);
+    if (!previous || (severityRank[finding.severity] ?? 5) < (severityRank[previous.severity] ?? 5)
+      || ((severityRank[finding.severity] ?? 5) === (severityRank[previous.severity] ?? 5)
+        && (finding.line ?? Number.MAX_SAFE_INTEGER) < (previous.line ?? Number.MAX_SAFE_INTEGER))) {
+      candidatesByFingerprint.set(fingerprint, finding);
+    }
+  }
   const counts = { p0Count: 0, p1Count: 0, p2Count: 0, p3Count: 0, nitCount: 0 };
   for (const finding of findings) {
     if (finding.severity === 'P0') counts.p0Count++;
@@ -104,7 +117,7 @@ function withDecision(input: WorkerReviewCompletion, overrides: Record<string, u
     else if (finding.severity === 'P3') counts.p3Count++;
     else if (finding.severity === 'NIT') counts.nitCount++;
   }
-  return { ...input, result: { ...input.result, reviewDecision: createReviewDecisionV2({
+  const reviewDecision = createReviewDecisionV2({
     schemaVersion: 'review-yeti-decision.v2', policyVersion: REVIEW_SEVERITY_POLICY_V2,
     policyDigest: expectedCoordinates.policyDigest,
     coverageComplete: input.result.coverageComplete,
@@ -113,7 +126,43 @@ function withDecision(input: WorkerReviewCompletion, overrides: Record<string, u
     expectedLanes: 2,
     completedLanes: input.result.personas.filter((persona) => persona.decision !== 'ERROR').length,
     counts, ...overrides,
-  }) } } as WorkerReviewCompletion;
+  });
+  const coverage = buildDeterministicCoverageManifest(changedFiles);
+  const outcomes = [...candidatesByFingerprint.values()].map((finding) => {
+    const claimType = findingClaimType({ path: finding.path, title: finding.title });
+    const fingerprint = findingFingerprintForClaimType({ path: finding.path, title: finding.title }, claimType);
+    const path = finding.path!;
+    const currentAffectedContextDigest = groundedAffectedContextDigest(finding, changedFiles, [path]);
+    const evidence = {
+      violatedInvariant: 'The changed source violates the stated contract.',
+      failurePath: 'The changed path reaches the contract without a guard.',
+      benignCheck: 'The source contains no relevant guard.',
+      changeConnection: 'The admitted patch exposes the behavior.',
+      citations: [
+        { id: `head:${path}`, path, side: 'head', sha: expectedCoordinates.headSha },
+        { id: `base:${path}`, path, side: 'base', sha: expectedCoordinates.baseSha },
+        { id: `diff:${path}`, path, side: 'diff', sha: null },
+      ],
+      causalDiffPaths: [path],
+    };
+    return { fingerprint, path, line: finding.line!, title: finding.title!, claimType,
+      severity: finding.severity as 'P0' | 'P1' | 'P2' | 'P3' | 'NIT', status: 'confirmed' as const,
+      affectedContextDigest: currentAffectedContextDigest, relatedDiffPaths: [path],
+      evidenceDigest: sha256(canonicalJson({ fingerprint, currentAffectedContextDigest, evidence })), evidence };
+  });
+  const groundedReview = {
+    version: 'GroundedReviewReceipt.v1' as const,
+    coverage: { digest: coverage.digest, regionCount: coverage.regions.length, assignmentCount: coverage.assignments.length,
+      coveredRegionCount: coverage.coveredRegionIds.length, complete: coverage.complete, omissions: coverage.omissions },
+    history: { status: 'unavailable' as const, eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
+      eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0, omissions: ['unit fixture has no history'],
+      memorySources: { honcho: 'unavailable' as const, mcp: 'unavailable' as const },
+      verificationWrites: { attempted: 0, recorded: 0, failed: 0 } },
+    verification: { version: GROUNDED_VERIFICATION_VERSION, candidates: outcomes.length, confirmed: outcomes.length,
+      contradicted: 0, insufficient: 0, unverifiedBlockerCount: 0, coverageComplete: coverage.complete, calls: 0,
+      budget: GROUNDED_DEFAULT_BUDGET, outcomes },
+  };
+  return { ...input, result: { ...input.result, reviewDecision, groundedReview } } as WorkerReviewCompletion;
 }
 
 describe('composed infrastructure failure without a returned task plan', () => {
@@ -818,7 +867,8 @@ describe('versioned v2 worker/Gate decision agreement', () => {
       }),
     } });
 
-    const result = derive(input, v2Contract);
+    const groundedReview = withDecision(input).result.groundedReview;
+    const result = derive({ ...input, result: { ...input.result, groundedReview } }, v2Contract);
     const fingerprint = findingFingerprint(verified);
     expect(result).toMatchObject({ valid: true, evidence: {
       verdict: 'FIX_FIRST', p1Count: 1, p2Count: 0, blockingFingerprints: [fingerprint],
@@ -830,7 +880,7 @@ describe('versioned v2 worker/Gate decision agreement', () => {
 
   it('blocks one evidence-backed P1 and fails closed on a forged eligible receipt or count', () => {
     const finding = { severity: 'P1', path: 'src/example.ts', line: 1, title: 'Missing authorization check',
-      body: 'An anonymous caller can read another user record.', blockerEvidence: {
+      body: 'An anonymous caller can read another user record. Add a regression test for this authorization path.', blockerEvidence: {
         trigger: 'A request with no authenticated session reaches this handler.',
         impact: 'It returns another account holder private data to the caller.',
         violatedContract: 'Account data is readable only to its authenticated owner.',
@@ -854,12 +904,76 @@ describe('versioned v2 worker/Gate decision agreement', () => {
     expectInvalid(derive(changedCounts, v2Contract), /decision receipt disagrees/u);
   });
 
+  it('rejects a forged standalone test-coverage P1 even with a confirmed grounded receipt', () => {
+    const finding = { severity: 'P1', path: 'src/example.ts', line: 1,
+      title: 'Missing unit tests for the retry timeout branch',
+      body: 'No unit tests cover the timeout retry path.', blockerEvidence: {
+        trigger: 'The changed retry branch is called with a timeout.',
+        impact: 'The timeout can be missed by a future regression.',
+        violatedContract: 'The retry timeout branch must behave correctly.',
+      } };
+    const input = withDecision(completion({ result: { ...completion().result, verdict: 'FIX_FIRST', findingCount: 1,
+      blockingFindingCount: 1, personas: [lane('security', { decision: 'FINDINGS', findings: [finding] }), lane('architecture')] } }));
+    input.result.groundedReview!.verification.outcomes[0].claimType = 'generic';
+
+    expectInvalid(derive(input, v2Contract), /test-coverage-only claim cannot be blocking/u);
+  });
+
   it('requires the explicit trusted policy and a receipt; malformed activation fails closed', () => {
     expectInvalid(derive(withDecision(completion())), /not enabled by trusted policy/u);
-    expectInvalid(derive(completion(), v2Contract), /receipt is required/u);
+    expectInvalid(derive(completion(), v2Contract), /grounded-review receipt/u);
     expect(() => derive(completion(), { ...contract,
       reviewDecisionPolicy: 'review-yeti-severity.v3' as typeof REVIEW_SEVERITY_POLICY_V2,
     })).toThrow(/policy is unsupported/u);
+  });
+
+  it('allows only optional legacy mismatches that explicitly remain incomplete', () => {
+    const workerCoverage = buildDeterministicCoverageManifest([{ path: 'src/example.ts' }]);
+    const incomplete = withDecision(completion({ result: { ...completion().result,
+      coverageComplete: false, quorumSatisfied: false, verdict: 'BLOCK' } }));
+    const receipt = incomplete.result.groundedReview!;
+    receipt.coverage = { digest: workerCoverage.digest, regionCount: workerCoverage.regions.length,
+      assignmentCount: workerCoverage.assignments.length, coveredRegionCount: workerCoverage.coveredRegionIds.length,
+      complete: workerCoverage.complete, omissions: workerCoverage.omissions };
+    receipt.verification.coverageComplete = false;
+
+    const legacy = structuredClone(incomplete);
+    delete legacy.result.reviewDecision;
+    expect(derive(legacy, { ...contract, changedFiles })).toMatchObject({
+      valid: true, evidence: { verdict: 'BLOCK', coverageComplete: false },
+    });
+
+    const completeLegacy = structuredClone(legacy);
+    completeLegacy.result.coverageComplete = true;
+    expectInvalid(derive(completeLegacy, { ...contract, changedFiles }), /coverage receipt does not match/u);
+
+    const forgedCompleteReceipt = structuredClone(legacy);
+    forgedCompleteReceipt.result.groundedReview!.coverage.complete = true;
+    forgedCompleteReceipt.result.groundedReview!.verification.coverageComplete = true;
+    expectInvalid(derive(forgedCompleteReceipt, { ...contract, changedFiles }), /coverage receipt does not match/u);
+
+    const finding = { severity: 'P1', path: 'src/example.ts', line: 1,
+      title: 'Changed handler skips the access check', body: 'The changed handler returns a private record without authorization.' };
+    const partialBlock = withDecision(completion({ result: { ...completion().result,
+      coverageComplete: false, quorumSatisfied: false, verdict: 'BLOCK', findingCount: 1, blockingFindingCount: 1,
+      personas: [lane('security', { decision: 'FINDINGS', findings: [finding] }), lane('architecture')],
+    } }));
+    partialBlock.result.groundedReview!.coverage = { digest: workerCoverage.digest,
+      regionCount: workerCoverage.regions.length, assignmentCount: workerCoverage.assignments.length,
+      coveredRegionCount: workerCoverage.coveredRegionIds.length, complete: workerCoverage.complete,
+      omissions: workerCoverage.omissions };
+    partialBlock.result.groundedReview!.verification.coverageComplete = false;
+    const partialBlockLegacy = structuredClone(partialBlock);
+    delete partialBlockLegacy.result.reviewDecision;
+    expect(derive(partialBlockLegacy, { ...contract, changedFiles })).toMatchObject({
+      valid: true, evidence: { verdict: 'BLOCK', p1Count: 1, coverageComplete: false },
+    });
+
+    const staleOutcomeContext = structuredClone(partialBlockLegacy);
+    staleOutcomeContext.result.groundedReview!.verification.outcomes[0]!.affectedContextDigest = 'f'.repeat(64);
+    expectInvalid(derive(staleOutcomeContext, { ...contract, changedFiles }), /outcome context does not match/u);
+
+    expectInvalid(derive(incomplete, { ...v2Contract, changedFiles }), /coverage receipt does not match/u);
   });
 
   it('keeps a zero-finding review with incomplete coverage ineligible', () => {

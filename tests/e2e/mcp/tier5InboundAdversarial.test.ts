@@ -1241,13 +1241,21 @@ index 1111111..2222222 100644
 
     it('TC-T5-ENG-07: runPublishingReviewWorker invokes composedReviewRunner when config resolves to composed', async () => {
       const composedRunner = vi.fn().mockResolvedValue({
-        lanes: [{ persona: 'architect', status: 'pass', findings: [] }],
-        turnsCount: 3,
-        promptTokens: 100,
-        completionTokens: 50,
+        headSha: 'a'.repeat(40),
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', required: true, providerId: 'bifrost', model: 'test-model',
+          decision: 'APPROVE', findings: [], usage: null, costUSD: null, durationMs: 1 }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        moderator: { providerId: 'bifrost', model: 'test-model', decision: 'RECONCILED', findings: [],
+          usage: null, costUSD: null, durationMs: 1 },
+        arbiter: { providerId: 'bifrost', model: 'test-model', verdict: 'SHIP', rationale: 'Fixture',
+          usage: null, costUSD: null, durationMs: 1 },
       });
       const panelRunner = vi.fn().mockResolvedValue({
-        lanes: [{ persona: 'security', status: 'pass', findings: [] }],
+        headSha: 'a'.repeat(40), applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', decision: 'APPROVE', findings: [] }], optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true }, arbiter: { verdict: 'SHIP' },
       });
       const sourceLoader = vi.fn().mockResolvedValue({
         diff: 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,2 @@\n+const x = 1;\n',

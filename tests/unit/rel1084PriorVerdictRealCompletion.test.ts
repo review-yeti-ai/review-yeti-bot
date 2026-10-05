@@ -132,6 +132,32 @@ async function realPriorCompletion(options: { findings?: Record<string, LaneFind
       diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 as const })) as never,
     panelRunner: panelRunner as never,
     client: { complete: vi.fn().mockRejectedValue(new Error('A test must never invoke a provider')) } as never,
+    groundedVerifierClient: { complete: vi.fn(async (request: any) => {
+      const prompt = String(request.messages?.[1]?.content ?? '');
+      const claim = JSON.parse(/<claim>(\{[\s\S]*?\})<\/claim>/u.exec(prompt)?.[1] ?? '{}');
+      return { model: transport.model, content: JSON.stringify({ status: 'confirmed',
+        violatedInvariant: 'The reviewed contract must be preserved.',
+        failurePath: 'The changed operation reaches the incompatible contract.',
+        benignCheck: 'No guard handles this current input.',
+        changeConnection: 'The current changed source introduces the path.',
+        citations: [`head:${claim.path}`, `base:${claim.path}`, `diff:${claim.path}`] }), usage: null, costUSD: null };
+    }) } as never,
+    repoFileProviderFactory: (input: any) => ({
+      findFiles: vi.fn(async () => []), readFile: vi.fn(async () => 'export function read(value: string) { return value; }'),
+      readFileAt: vi.fn(async (path: string, side: 'head' | 'base' | 'merge-base') => ({
+        content: `export function read(value: string) { return value; }`, sha: side === 'head' ? input.headSha : input.baseSha,
+      })),
+      readDiff: (path: string) => {
+        const file = input.changedFiles.find((candidate: { path: string; patch?: string }) => candidate.path === path);
+        return file?.patch ? { patch: file.patch, identity: { repository: `${input.owner}/${input.repo}`,
+          headSha: input.headSha, baseSha: input.baseSha } } : null;
+      },
+    }) as never,
+    prLifecycleHistory: { read: vi.fn(async () => ({ status: 'complete',
+      snapshotId: '00000000-0000-4000-8000-000000000003', contextDigest: 'a'.repeat(64),
+      events: [], findings: [], eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
+      eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+      eventsDigest: 'b'.repeat(64), findingsDigest: 'c'.repeat(64), omissions: [] })) } as never,
     now: vi.fn().mockReturnValueOnce(START).mockReturnValue(START + 1_000),
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     reviewCompletion: { reportReviewResult },
@@ -216,7 +242,7 @@ describe('a prior built by the real completion builder and the real gate', () =>
     expect(decision.mode === 'cache' && decision.permitted.map((entry) => entry.path)).toEqual(['src/same.ts', 'src/stable.ts']);
   });
 
-  it('is not SHIP-complete with a P1 finding, and the next head is a full review', async () => {
+  it('keeps a complete failed P1 review as repair context and re-reviews its finding path', async () => {
     const completion = await realPriorCompletion({ findings: { 'sec-lane': [
       { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Unchecked input reaches the query', body: 'Validate it first.' },
     ] } });
@@ -224,14 +250,13 @@ describe('a prior built by the real completion builder and the real gate', () =>
     expect(recorded.decision).toMatchObject({ status: 'failure', reason: 'blocking-findings' });
     const rows = storedRows(completion, recorded);
     expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'run-not-succeeded' });
-    expect(decideNext(completion, rows)).toEqual({ mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'run-not-succeeded' });
+    expect(decideNext(completion, rows)).toMatchObject({ mode: 'incremental', openFindingPaths: ['src/stable.ts'] });
     // Even a run row forged to 'succeeded' does not make the gate's FIX_FIRST record a SHIP.
     const forged = { ...rows, run: { ...rows.run, status: 'succeeded' } };
     expect(priorReviewRecordFromRows(forged)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-not-clean' });
     // The reason reaches the check-summary disclosure.
     expect(renderIncrementalSummary(null, { scope: null, decision: decideNext(completion, forged) })).toEqual([
-      '**Incremental re-review** (`REVIEW_YETI_INCREMENTAL`): full review, because the previous review was not a complete SHIP'
-      + ' (`gate-not-clean`: the gate did not pass it as a clean review).',
+      '**Incremental re-review** (`REVIEW_YETI_INCREMENTAL`): full review, because no file could be carried forward.',
     ]);
     // And a surviving P1 over a gate record forged to clean SHIP is refused at published severity.
     const clean = gateRecordFor(await realPriorCompletion(), { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles() });
@@ -245,7 +270,7 @@ describe('a prior built by the real completion builder and the real gate', () =>
       const recorded = gateRecordFor(completion, { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles(), ...trusted });
       expect(recorded.decision).toMatchObject({ status: 'failure', reason: 'incomplete-review' });
       const rows = storedRows(completion, recorded);
-      expect(decideNext(completion, rows)).toEqual({ mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'run-not-succeeded' });
+      expect(decideNext(completion, rows)).toEqual({ mode: 'full', reason: 'prior-coverage-incomplete', priorRefusal: 'run-not-succeeded' });
       expect(priorReviewRecordFromRows({ ...rows, run: { ...rows.run, status: 'succeeded' } }))
         .toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-not-clean' });
     }
@@ -258,7 +283,7 @@ describe('a prior built by the real completion builder and the real gate', () =>
     });
     expect(recorded.decision).toMatchObject({ status: 'failure', reason: 'incomplete-review' });
     const rows = storedRows(completion, recorded);
-    expect(decideNext(completion, rows)).toEqual({ mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'run-not-succeeded' });
+    expect(decideNext(completion, rows)).toEqual({ mode: 'full', reason: 'prior-coverage-incomplete', priorRefusal: 'run-not-succeeded' });
     expect(priorReviewRecordFromRows({ ...rows, run: { ...rows.run, status: 'succeeded' } }))
       .toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-not-clean' });
   });

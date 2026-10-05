@@ -94,3 +94,34 @@ export const REVIEW_PR_LIFECYCLE_SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS review_semantic_finding_run_idx
     ON review_semantic_finding_events (run_id, execution_attempt);
 `;
+
+/** Fixed, service-owned view of a PR history captured for one admitted worker execution. */
+export const REVIEW_PR_LIFECYCLE_SNAPSHOT_SCHEMA_SQL = `
+  CREATE TABLE IF NOT EXISTS review_pr_lifecycle_history_snapshots (
+    snapshot_id UUID PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    execution_attempt INTEGER NOT NULL CHECK (execution_attempt > 0),
+    lifecycle_id UUID NOT NULL REFERENCES review_pr_lifecycles(lifecycle_id),
+    repository_id BIGINT NOT NULL CHECK (repository_id > 0),
+    owner TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    pr_number INTEGER NOT NULL CHECK (pr_number > 0),
+    head_sha VARCHAR(40) NOT NULL CHECK (head_sha ~ '^[a-f0-9]{40}$'),
+    base_sha VARCHAR(40) NOT NULL CHECK (base_sha ~ '^[a-f0-9]{40}$'),
+    policy_digest VARCHAR(64) NOT NULL CHECK (policy_digest ~ '^[a-f0-9]{64}$'),
+    config_digest VARCHAR(64) NOT NULL CHECK (config_digest ~ '^[a-f0-9]{64}$'),
+    context_digest VARCHAR(64) NOT NULL CHECK (context_digest ~ '^[a-f0-9]{64}$'),
+    event_ids UUID[] NOT NULL DEFAULT '{}',
+    finding_ids UUID[] NOT NULL DEFAULT '{}',
+    event_total_count INTEGER NOT NULL DEFAULT 0 CHECK (event_total_count >= 0),
+    finding_total_count INTEGER NOT NULL DEFAULT 0 CHECK (finding_total_count >= 0),
+    event_omitted_count INTEGER NOT NULL DEFAULT 0 CHECK (event_omitted_count >= 0),
+    finding_omitted_count INTEGER NOT NULL DEFAULT 0 CHECK (finding_omitted_count >= 0),
+    legacy_omitted_count INTEGER NOT NULL DEFAULT 0 CHECK (legacy_omitted_count >= 0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (snapshot_id, run_id, execution_attempt)
+  );
+  CREATE INDEX IF NOT EXISTS review_pr_lifecycle_history_snapshots_expiry_idx
+    ON review_pr_lifecycle_history_snapshots (expires_at);
+`;

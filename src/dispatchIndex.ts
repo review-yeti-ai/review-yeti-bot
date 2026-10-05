@@ -265,6 +265,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
         return { token: minted.token, baseUrl, botLogin };
       },
     },
+    prLifecycleHistory: pool,
     verdictCacheBase: new PostgresVerdictCacheBaseLookup(pool, { maxAgeMs: verdictCacheMaxAgeMs }),
     ...(providerLease ? { providerLease } : {}),
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,

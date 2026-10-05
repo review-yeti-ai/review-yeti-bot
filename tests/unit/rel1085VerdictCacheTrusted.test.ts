@@ -148,7 +148,8 @@ function contextFixture(fetcher: typeof fetch | null) {
   const source: VerdictCacheSource = {
     prior: {
       runId: SOURCE_RUN, executionAttempt: 1, repositoryId: REPO_ID, prNumber: 42, headSha: SOURCE_HEAD, baseSha: SOURCE_BASE,
-      policyDigest, configDigest, completionDigest: 'e'.repeat(64), ageMs: 60_000, shipComplete: true, findingPaths: [],
+      policyDigest, configDigest, completionDigest: 'e'.repeat(64), ageMs: 60_000,
+      coverageComplete: true, shipComplete: true, findingPaths: [],
     },
     laneKeys,
     entries: Object.keys(BLOBS).map((path) => ({
@@ -219,7 +220,7 @@ const planningSource: VerdictCacheSource = {
   prior: {
     runId: SOURCE_RUN, executionAttempt: 1, repositoryId: REPO_ID, prNumber: 42, headSha: SOURCE_HEAD, baseSha: SOURCE_BASE,
     policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64), completionDigest: 'e'.repeat(64), ageMs: 60_000,
-    shipComplete: true, findingPaths: [],
+    coverageComplete: true, shipComplete: true, findingPaths: [],
   },
   laneKeys: { 'sec-lane': 'a'.repeat(64) },
   entries: [{ path: 'src/a.ts', contentKey: 'b'.repeat(64), viewDigest: 'c'.repeat(64), lanes: ['sec-lane'] }],
