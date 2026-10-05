@@ -82,8 +82,12 @@ describe('shared CI check publication client', () => {
     await expect(createReviewCiCheckClient({ ...options, fetchImplementation: fetcher }).reconcile(coordinates)).resolves.toMatchObject({ id: 77 });
     expect(String(fetcher.mock.calls[0][0])).toContain('check_name=Review%20Yeti%20CI');
   });
-  it.each(['Review Yeti', 'user-check', '', 'Review Yeti CI\n'])('rejects arbitrary check name %j', (checkName) => {
+  it.each(['user-check', '', 'Review Yeti CI\n'])('rejects arbitrary check name %j', (checkName) => {
     expect(() => new GitHubReviewGateClient({ ...options, checkName: checkName as 'Review Yeti Gate' })).toThrow('Untrusted service check identity');
+  });
+  it('allows only the service-owned raw Review Yeti check as an additional exact identity', () => {
+    expect(() => new GitHubReviewGateClient({ ...options, expectedAppId: 15368, checkName: 'Review Yeti' })).not.toThrow();
+    expect(() => new GitHubReviewGateClient({ ...options, expectedAppId: 15368, checkName: 'Review Yeti Gate' })).not.toThrow();
   });
   it('requires the exact governed App and never retries an uncertain create', async () => {
     expect(() => createReviewCiCheckClient({ ...options, expectedAppId: 1 })).toThrow('Untrusted CI check identity');

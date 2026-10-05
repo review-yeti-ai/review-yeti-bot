@@ -130,6 +130,14 @@ describe('dispatcher preparedReviewFor entrypoint wiring', () => {
     return options.preparedReviewFor!;
   }
 
+  it('wires the operator pause into the dispatcher claim boundary', async () => {
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+    await callback();
+    const options = mocks.engine.mock.calls[0][0] as ReviewJobDispatchEngineOptions;
+    expect(options.isDispatchPaused).toEqual(expect.any(Function));
+    expect(options.isDispatchPaused?.()).toBe(true);
+  });
+
   it('reads by policy digest and returns the exact config/transport envelope verified against config digest', async () => {
     const f = fixture();
     const lookup = await callback();

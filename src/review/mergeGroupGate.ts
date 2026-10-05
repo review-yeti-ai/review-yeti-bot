@@ -3,12 +3,15 @@ import { z } from 'zod';
 import {
   AUTHORITATIVE_REVIEW_APP_ID, AUTHORITATIVE_REVIEW_APP_SLUG, AUTHORITATIVE_REVIEW_CHECK_NAME,
 } from '../auth/authoritativeServiceIdentity';
+import { REVIEW_GATE_CHECK_NAME } from './reviewCheckIdentity';
 import type { GitHubWebhookConfig } from '../auth/githubWebhookConfig';
 import type { MergeGroupGateRepository, MergeGroupGateState } from '../persistence/mergeGroupGateRepository';
 import { createBoundedGitHubJsonClient, type GitHubJsonClient } from '../github/boundedGitHubJson';
 import {
   githubWebhookRepositorySchema, requireEnrolledGitHubWebhookRepository, UnenrolledGitHubWebhookIdentityError,
 } from '../auth/githubWebhookIdentity';
+import { canonicalJson, sha256 } from './reviewCore';
+import type { OperatorPassthroughAdmissionReceipt } from './operatorPassthrough';
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const positiveInteger = z.number().int().positive().safe();
@@ -29,6 +32,8 @@ const CHECK_LOOKUP_CONCURRENCY = 5;
 interface QueueEntry {
   position: number;
   state: string;
+  baseCommit: { oid: string };
+  headCommit: { oid: string };
   pullRequest: {
     number: number;
     state: string;
@@ -38,7 +43,18 @@ interface QueueEntry {
   };
 }
 
-interface QueueEvidence { id: string; entries: QueueEntry[]; }
+interface QueueEvidence { id: string; entries: QueueEntry[]; snapshot: Record<string, unknown>; }
+
+export interface MergeGroupOperatorAdmission {
+  repositoryId: number;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  deliveryId: string;
+  deliveryDigest: string;
+  queueSnapshotDigest: string;
+}
 
 export interface MergeGroupGateOptions {
   config: GitHubWebhookConfig;
@@ -47,14 +63,8 @@ export interface MergeGroupGateOptions {
   fetchImplementation?: typeof fetch;
   baseUrl?: string;
   githubClientFor?(token: string): GitHubJsonClient;
-}
-
-export interface MergeGroupPassthroughReceipt {
-  status: 'passthrough';
-  repositoryId: number;
-  repository: string;
-  headSha: string;
-  baseSha: string;
+  ensureOperatorPassthrough?(input: MergeGroupOperatorAdmission): Promise<Pick<OperatorPassthroughAdmissionReceipt,
+    'publicationId' | 'auditDigest' | 'mergeEligible'> | null>;
 }
 
 async function mapConcurrent<T, U>(items: readonly T[], concurrency: number, operation: (item: T) => Promise<U>): Promise<U[]> {
@@ -88,7 +98,7 @@ function validatePayload(value: unknown, config: GitHubWebhookConfig) {
 function selectEntries(response: any, identity: ReturnType<typeof validatePayload>): QueueEvidence {
   if (Array.isArray(response?.errors) && response.errors.length > 0) throw new Error('Merge queue lookup returned errors');
   const queue = response?.data?.repository?.mergeQueue;
-  if (!queue || typeof queue.id !== 'string' || !Array.isArray(queue.entries?.nodes)
+  if (!queue || typeof queue.id !== 'string' || queue.id.length < 1 || queue.id.length > 512 || !Array.isArray(queue.entries?.nodes)
     || queue.entries.pageInfo?.hasNextPage !== false
     || !Number.isSafeInteger(queue.entries.totalCount)
     || queue.entries.totalCount !== queue.entries.nodes.length
@@ -100,7 +110,8 @@ function selectEntries(response: any, identity: ReturnType<typeof validatePayloa
   for (const entry of queue.entries.nodes) {
     const number = entry?.pullRequest?.number;
     if (!Number.isSafeInteger(number) || number < 1 || numbers.has(number)
-      || !Number.isSafeInteger(entry?.position) || entry.position < 1 || positions.has(entry.position)) {
+      || !Number.isSafeInteger(entry?.position) || entry.position < 1 || positions.has(entry.position)
+      || !sha.safeParse(entry?.baseCommit?.oid).success || !sha.safeParse(entry?.headCommit?.oid).success) {
       throw new Error('Merge queue entries are malformed');
     }
     numbers.add(number); positions.add(entry.position);
@@ -118,7 +129,39 @@ function selectEntries(response: any, identity: ReturnType<typeof validatePayloa
       throw new Error('Merge queue contains an ineligible constituent');
     }
   }
-  return { id: queue.id, entries: entries as QueueEntry[] };
+  const allEntries = [...queue.entries.nodes].sort((left: any, right: any) => left.position - right.position) as QueueEntry[];
+  const selected = entries as QueueEntry[];
+  return {
+    id: queue.id,
+    entries: selected,
+    snapshot: {
+      version: 'ReviewYetiMergeQueueSnapshot.v1',
+      repositoryId: identity.repository.id,
+      repository: identity.repository.full_name,
+      owner: identity.owner,
+      repo: identity.repo,
+      queueId: queue.id,
+      branch: identity.branch,
+      headRef: identity.merge_group.head_ref,
+      baseRef: identity.merge_group.base_ref,
+      groupHeadSha: identity.merge_group.head_sha,
+      groupBaseSha: identity.merge_group.base_sha,
+      currentPullRequest: identity.currentNumber,
+      entries: allEntries.map((entry) => ({
+        position: entry.position,
+        state: entry.state,
+        baseCommitSha: entry.baseCommit.oid,
+        headCommitSha: entry.headCommit.oid,
+        pullRequest: {
+          number: entry.pullRequest.number,
+          state: entry.pullRequest.state,
+          baseRefName: entry.pullRequest.baseRefName,
+          headRefOid: entry.pullRequest.headRefOid,
+          repository: entry.pullRequest.repository.nameWithOwner,
+        },
+      })),
+    },
+  };
 }
 
 function isOfficialReviewCheck(run: any): boolean {
@@ -127,7 +170,8 @@ function isOfficialReviewCheck(run: any): boolean {
     && run?.app?.slug === AUTHORITATIVE_REVIEW_APP_SLUG;
 }
 
-function exactReviewFailure(checks: any, expectedHead: string): string | undefined {
+function exactReviewFailure(checks: any, expectedHead: string,
+  operatorReceipt?: Pick<OperatorPassthroughAdmissionReceipt, 'publicationId' | 'auditDigest' | 'mergeEligible'>): string | undefined {
   if (!Number.isSafeInteger(checks?.total_count) || !Array.isArray(checks?.check_runs)
     || checks.total_count !== checks.check_runs.length || checks.total_count > 100) return 'check-run evidence is incomplete';
   const runs = checks.check_runs.filter(isOfficialReviewCheck);
@@ -136,56 +180,160 @@ function exactReviewFailure(checks: any, expectedHead: string): string | undefin
     return 'contains malformed or stale Review Yeti evidence';
   }
   const latest = [...runs].sort((left, right) => Number(left.id) - Number(right.id)).at(-1);
-  return latest?.status === 'completed' && latest?.conclusion === 'success'
-    ? undefined : 'latest exact-head Review Yeti check is not successful';
+  if (latest?.status !== 'completed' || latest?.conclusion !== 'success') {
+    return 'latest exact-head Review Yeti check is not successful';
+  }
+  const latestIsOperatorPassthrough = typeof latest.external_id === 'string'
+    && latest.external_id.startsWith('review-yeti-operator-passthrough:v1:');
+  const allowOperatorPassthrough = operatorReceipt !== undefined;
+  if (allowOperatorPassthrough && (!operatorReceipt.mergeEligible
+    || !/^[a-f0-9]{64}$/u.test(operatorReceipt.publicationId)
+    || !/^[a-f0-9]{64}$/u.test(operatorReceipt.auditDigest))) {
+    return 'current operator SHIP publication is not durably ready';
+  }
+  const expectedReviewExternalId = operatorReceipt
+    ? `review-yeti-operator-passthrough:v1:${operatorReceipt.publicationId}:${operatorReceipt.auditDigest}`
+    : undefined;
+  if (allowOperatorPassthrough && (!latestIsOperatorPassthrough || latest.external_id !== expectedReviewExternalId)) {
+    return 'latest exact-head Review Yeti check does not match the current durable operator SHIP publication';
+  }
+  if (!allowOperatorPassthrough && latestIsOperatorPassthrough) {
+    return 'latest exact-head Review Yeti check is not the current operator-passthrough SHIP';
+  }
+  if (latestIsOperatorPassthrough) {
+    const output = latest.output && typeof latest.output === 'object' ? latest.output : {};
+    const title = typeof output.title === 'string' ? output.title : '';
+    const summary = typeof output.summary === 'string' ? output.summary : '';
+    if (!allowOperatorPassthrough || latest.external_id !== expectedReviewExternalId
+      || !title.startsWith('Review Yeti: SHIP (passthrough: no review performed)')
+      || !summary.includes('review-mode=passthrough') || !summary.includes('Zero review lanes ran.')
+      || !/review-yeti-operator-passthrough:v1:[a-f0-9]{64}:[a-f0-9]{64}$/u.test(latest.external_id)) {
+      return 'latest Review Yeti check is not an active, exact operator-passthrough SHIP';
+    }
+    const gates = checks.check_runs.filter((run: any) => run?.name === REVIEW_GATE_CHECK_NAME
+      && Number(run?.app?.id) === AUTHORITATIVE_REVIEW_APP_ID && run?.app?.slug === AUTHORITATIVE_REVIEW_APP_SLUG
+      && run?.head_sha === expectedHead);
+    const gate = [...gates].sort((left: any, right: any) => Number(left.id) - Number(right.id)).at(-1);
+    const gateOutput = gate?.output && typeof gate.output === 'object' ? gate.output : {};
+    return gate?.status === 'completed' && gate?.conclusion === 'success'
+      && gate?.external_id === `review-yeti-gate:operator-v1:${operatorReceipt.publicationId}:${operatorReceipt.auditDigest}`
+      && typeof gateOutput.title === 'string' && gateOutput.title.startsWith('Review Yeti Gate: SHIP (operator passthrough SHIP)')
+      && typeof gateOutput.summary === 'string' && gateOutput.summary.includes('review-mode=passthrough')
+      && gateOutput.summary.includes('Zero review lanes ran.')
+      ? undefined : 'paired exact-head Review Yeti Gate passthrough check is not successful';
+  }
+  return undefined;
 }
 
-function externalId(repositoryId: number, headSha: string): string {
-  return `review-yeti-merge-group:${repositoryId}:${headSha}`;
+function snapshotDigest(snapshot: Record<string, unknown>): string {
+  return sha256(canonicalJson(snapshot));
+}
+
+function externalId(repositoryId: number, headSha: string, queueSnapshotDigest: string): string {
+  return `review-yeti-merge-group:v2:${repositoryId}:${headSha}:${queueSnapshotDigest}`;
 }
 
 export class MergeGroupGateInProgressError extends Error {
   constructor() { super('Merge-group gate verification is already in progress'); }
 }
 
+interface MergeGroupGateDelivery {
+  deliveryId: string;
+  deliveryDigest: string;
+}
+
+function exactMergeGroupCheck(value: any, identity: ReturnType<typeof validatePayload>, external: string): boolean {
+  const app = value?.app;
+  return Number.isSafeInteger(Number(value?.id)) && Number(value.id) > 0
+    && value?.name === AUTHORITATIVE_REVIEW_CHECK_NAME
+    && Number(app?.id) === AUTHORITATIVE_REVIEW_APP_ID && app?.slug === AUTHORITATIVE_REVIEW_APP_SLUG
+    && value?.head_sha === identity.merge_group.head_sha && value?.external_id === external;
+}
+
 export function createMergeGroupGate(options: MergeGroupGateOptions) {
-  return async (payload: unknown): Promise<(MergeGroupGateState & { constituents: number }) | MergeGroupPassthroughReceipt> => {
+  return async (payload: unknown, delivery?: MergeGroupGateDelivery): Promise<MergeGroupGateState & { constituents: number }> => {
     const identity = validatePayload(payload, options.config);
     const repositoryName = identity.repository.full_name;
     const repositoryId = identity.repository.id;
     const headSha = identity.merge_group.head_sha;
-    if (options.config.passthroughEnabled === true) {
-      return {
-        status: 'passthrough', repositoryId, repository: repositoryName,
-        headSha, baseSha: identity.merge_group.base_sha,
-      };
+    const token = await options.tokenFor(identity.owner, identity.repo);
+    if (!token.startsWith('ghs_')) throw new Error('Merge-group App token is unavailable');
+    const client = options.githubClientFor?.(token) || createBoundedGitHubJsonClient({
+      token, baseUrl: options.baseUrl, fetchImplementation: options.fetchImplementation,
+    });
+    const api = `/repos/${repositoryName}`;
+    const queueRead = async () => selectEntries(await client.request('/graphql', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ query: QUEUE_QUERY, variables: { owner: identity.owner, name: identity.repo, branch: identity.branch } }),
+    }), identity);
+
+    const bindMode = (snapshot: Record<string, unknown>) => ({
+      ...snapshot,
+      operatorPassthroughEnabled: options.config.passthroughEnabled === true,
+    });
+    let queue = await queueRead();
+    let digest = snapshotDigest(bindMode(queue.snapshot));
+    let claimToken = randomUUID();
+    let claim: Awaited<ReturnType<MergeGroupGateRepository['claim']>> | undefined;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      claimToken = randomUUID();
+      claim = await options.repository.claim(repositoryId, headSha, digest, claimToken);
+      if (claim.status === 'busy') throw new MergeGroupGateInProgressError();
+      if (claim.status === 'acquired') break;
     }
-    const claimToken = randomUUID();
-    const claim = await options.repository.claim(repositoryId, headSha, claimToken);
-    if (claim.status === 'terminal') return { ...claim.result, constituents: 0 };
-    if (claim.status === 'busy') throw new MergeGroupGateInProgressError();
+    if (!claim || claim.status !== 'acquired') throw new MergeGroupGateInProgressError();
     try {
-      const token = await options.tokenFor(identity.owner, identity.repo);
-      if (!token.startsWith('ghs_')) throw new Error('Merge-group App token is unavailable');
-      const client = options.githubClientFor?.(token) || createBoundedGitHubJsonClient({
-        token, baseUrl: options.baseUrl, fetchImplementation: options.fetchImplementation,
-      });
-      const api = `/repos/${repositoryName}`;
       const existing = await client.request(`${api}/commits/${identity.merge_group.head_sha}/check-runs?filter=all&per_page=100`);
       if (!Number.isSafeInteger(existing?.total_count) || !Array.isArray(existing?.check_runs)
         || existing.total_count !== existing.check_runs.length || existing.total_count > 100) {
         throw new Error('Merge-group check reconciliation is incomplete');
       }
-      const stableId = externalId(identity.repository.id, identity.merge_group.head_sha);
+      const stableId = externalId(identity.repository.id, identity.merge_group.head_sha, digest);
+      // Earlier queue/mode snapshots share this merge-group SHA. Resolve and
+      // retire their exact App checks before a newer check may be created, so
+      // an uncertain older POST cannot appear later with a higher GitHub ID
+      // and leave the current snapshot permanently hidden behind it.
+      const priorPublications = await options.repository.listPriorPublications(
+        repositoryId, headSha, digest, claimToken);
+      for (const prior of priorPublications) {
+        const priorExternalId = externalId(repositoryId, headSha, prior.snapshotDigest);
+        const matches = existing.check_runs.filter((run: any) => isOfficialReviewCheck(run)
+          && run?.head_sha === headSha && run?.external_id === priorExternalId);
+        if (matches.length !== 1) {
+          throw new Error('An earlier merge-group check is unresolved; current snapshot publication is held');
+        }
+        const previous = matches[0];
+        if (!Number.isSafeInteger(Number(previous.id)) || Number(previous.id) < 1
+          || (prior.checkId !== null && Number(previous.id) !== prior.checkId)) {
+          throw new Error('An earlier merge-group check identity conflicts with its durable reservation');
+        }
+        let retired = previous;
+        if (previous.status !== 'completed' || previous.conclusion !== 'failure') {
+          retired = await client.request(`${api}/check-runs/${Number(previous.id)}`, {
+            method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+              status: 'completed', conclusion: 'failure', completed_at: new Date().toISOString(), output: {
+                title: 'Review Yeti merge-group snapshot superseded',
+                summary: 'This exact queue snapshot was superseded and no longer authorizes a merge.',
+              },
+            }),
+          });
+        }
+        if (!exactMergeGroupCheck(retired, identity, priorExternalId)
+          || retired.status !== 'completed' || retired.conclusion !== 'failure') {
+          throw new Error('An earlier merge-group check could not be safely retired');
+        }
+        await options.repository.settlePriorPublication(repositoryId, headSha, digest, claimToken,
+          prior.snapshotDigest, Number(retired.id));
+      }
       const candidates = existing.check_runs.filter((run: any) => isOfficialReviewCheck(run)
         && run?.head_sha === identity.merge_group.head_sha && run?.external_id === stableId);
+      if (candidates.length > 1) throw new Error('Review Yeti merge-group check identity is duplicated');
       let check = [...candidates].sort((left, right) => Number(left.id) - Number(right.id)).at(-1);
-      if (check?.status === 'completed' && (check.conclusion === 'success' || check.conclusion === 'failure')) {
-        const result = { checkId: Number(check.id), conclusion: check.conclusion } as MergeGroupGateState;
-        await options.repository.complete(repositoryId, headSha, claimToken, result);
-        return { ...result, constituents: 0 };
-      }
       if (!check) {
+        const mayCreate = await options.repository.reserveCheckCreation(repositoryId, headSha, digest, claimToken);
+        if (!mayCreate) {
+          throw new Error('Review Yeti merge-group check creation is uncertain and awaits exact reconciliation');
+        }
         check = await client.request(`${api}/check-runs`, {
           method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
             name: AUTHORITATIVE_REVIEW_CHECK_NAME, head_sha: identity.merge_group.head_sha, external_id: stableId,
@@ -195,50 +343,83 @@ export function createMergeGroupGate(options: MergeGroupGateOptions) {
             },
           }),
         });
+        if (!exactMergeGroupCheck(check, identity, stableId) || check.status !== 'in_progress' || check.conclusion !== null) {
+          throw new Error('Review Yeti merge-group check creation identity did not match the current queue snapshot');
+        }
+      } else {
+        await options.repository.bindCheck(repositoryId, headSha, digest, claimToken, Number(check.id));
+        // A prior terminal success for this snapshot is not fresh evidence:
+        // constituent checks or their paired Gate may have changed since the
+        // previous queue event. Reopen this exact durable identity before
+        // qualification so its old success cannot authorize a merge in flight.
+        check = await client.request(`${api}/check-runs/${Number(check.id)}`, {
+          method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+            status: 'in_progress', conclusion: null, output: { title: 'Review Yeti merge-group verification running',
+              summary: 'Binding required checks to the exact current ordered merge-queue snapshot.' },
+          }),
+        });
       }
-      if (!Number.isSafeInteger(Number(check?.id)) || Number(check.id) < 1) {
-        throw new Error('Review Yeti merge-group check creation returned no id');
+      if (!exactMergeGroupCheck(check, identity, stableId)) throw new Error('Review Yeti merge-group check identity did not match the current queue snapshot');
+      if (check.status !== 'in_progress' || check.conclusion !== null) {
+        throw new Error('Review Yeti merge-group check could not be invalidated before requalification');
       }
-      const queueRead = async () => selectEntries(await client.request('/graphql', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ query: QUEUE_QUERY, variables: { owner: identity.owner, name: identity.repo, branch: identity.branch } }),
-      }), identity);
+      if (candidates.length === 0) {
+        await options.repository.bindCheck(repositoryId, headSha, digest, claimToken, Number(check.id));
+      }
       const failures: string[] = [];
-      let constituentCount = 0;
+      const constituentCount = queue.entries.length;
       try {
-        const queue = await queueRead();
-        constituentCount = queue.entries.length;
         const constituentFailures = await mapConcurrent(queue.entries, CHECK_LOOKUP_CONCURRENCY, async (entry) => {
           const head = entry.pullRequest.headRefOid;
+          if (options.config.passthroughEnabled === true) {
+            if (!delivery || !options.ensureOperatorPassthrough) {
+              return `PR #${entry.pullRequest.number}: operator SHIP publication is unavailable`;
+            }
+            const itemDigest = sha256(canonicalJson({ version: 'MergeGroupOperatorAdmission.v1',
+              deliveryDigest: delivery.deliveryDigest, queueSnapshotDigest: digest,
+              repositoryId, prNumber: entry.pullRequest.number, headSha: head }));
+            const operatorReceipt = await options.ensureOperatorPassthrough({ repositoryId, owner: identity.owner, repo: identity.repo,
+              prNumber: entry.pullRequest.number, headSha: head, queueSnapshotDigest: digest,
+              deliveryId: `github-app:merge-group:${delivery.deliveryId}:${entry.pullRequest.number}:${head}`,
+              deliveryDigest: itemDigest });
+            if (!operatorReceipt?.mergeEligible) return `PR #${entry.pullRequest.number}: exact operator SHIP checks are not durably published`;
+            const result = await client.request(`${api}/commits/${head}/check-runs?filter=all&per_page=100`);
+            const failure = exactReviewFailure(result, head, operatorReceipt);
+            return failure ? `PR #${entry.pullRequest.number}: ${failure}` : undefined;
+          }
           const result = await client.request(`${api}/commits/${head}/check-runs?filter=all&per_page=100`);
           const failure = exactReviewFailure(result, head);
           return failure ? `PR #${entry.pullRequest.number}: ${failure}` : undefined;
         });
         failures.push(...constituentFailures.filter((failure): failure is string => Boolean(failure)));
         const fresh = await queueRead();
-        const signature = (value: typeof queue) => JSON.stringify(value.entries.map((entry: any) => ({
-          number: entry.pullRequest.number, head: entry.pullRequest.headRefOid, position: entry.position,
-        })));
-        if (signature(queue) !== signature(fresh)) failures.push('merge queue changed during exact-head qualification');
+        if (snapshotDigest(bindMode(fresh.snapshot)) !== digest) failures.push('merge queue changed during exact-head qualification');
       } catch {
         failures.push('merge-group evidence could not be verified');
       }
       const conclusion: 'success' | 'failure' = failures.length === 0 ? 'success' : 'failure';
-      await client.request(`${api}/check-runs/${Number(check.id)}`, {
+      const output = options.config.passthroughEnabled === true && conclusion === 'success'
+        ? { title: 'Review Yeti merge group: SHIP (passthrough: no review performed)',
+          summary: `review-mode=passthrough\nZero review lanes ran for the ${constituentCount} exact current queue constituent(s). `
+            + `Queue snapshot digest: ${digest}. Every constituent's paired official Review Yeti checks succeeded.` }
+        : { title: conclusion === 'success' ? 'Review Yeti merge group approved' : 'Review Yeti merge group rejected',
+          summary: conclusion === 'success'
+            ? `Every constituent has a successful exact-head Review Yeti check from the official App. Verified ${constituentCount} constituent(s).`
+            : failures.slice(0, 12).map((failure) => `- ${failure.slice(0, 500)}`).join('\n').slice(0, 6_000) };
+      const updatedCheck = await client.request(`${api}/check-runs/${Number(check.id)}`, {
         method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-          status: 'completed', conclusion, completed_at: new Date().toISOString(), output: {
-            title: conclusion === 'success' ? 'Review Yeti merge group approved' : 'Review Yeti merge group rejected',
-            summary: conclusion === 'success'
-              ? `Every constituent has a successful exact-head Review Yeti check from the official App. Verified ${constituentCount} constituent(s).`
-              : failures.slice(0, 12).map((failure) => `- ${failure.slice(0, 500)}`).join('\n').slice(0, 6_000),
-          },
+          status: 'completed', conclusion, completed_at: new Date().toISOString(), output,
         }),
       });
-      const result = { checkId: Number(check.id), conclusion };
-      await options.repository.complete(repositoryId, headSha, claimToken, result);
+      if (!exactMergeGroupCheck(updatedCheck, identity, stableId)
+        || updatedCheck.status !== 'completed' || updatedCheck.conclusion !== conclusion) {
+        throw new Error('Review Yeti merge-group check update did not match the requested snapshot result');
+      }
+      const result = { checkId: Number(check.id), conclusion, snapshotDigest: digest };
+      await options.repository.complete(repositoryId, headSha, digest, claimToken, result);
       return { ...result, constituents: constituentCount };
     } catch (error) {
-      try { await options.repository.release(repositoryId, headSha, claimToken); } catch { /* retry can reclaim the lease */ }
+      try { await options.repository.release(repositoryId, headSha, digest, claimToken); } catch { /* retry can reclaim the lease */ }
       throw error;
     }
   };

@@ -2,11 +2,13 @@ import {
   deriveReviewCheckExternalId,
   REVIEW_CI_CHECK_NAME,
   REVIEW_GATE_CHECK_NAME,
+  REVIEW_WORKER_CHECK_NAME,
   validateCheckRunTitle,
   validateReviewCheckCoordinates,
   type ReviewCheckCoordinates,
   type ReviewCheckName,
   type ReviewCiCheckCoordinates,
+  type OperatorPassthroughCheckCoordinates,
   type ReviewGateCheck,
   type ReviewGateObservedConclusion,
   type ReviewGatePendingStatus,
@@ -22,12 +24,14 @@ export {
   MAX_CHECK_RUN_TITLE_CHARACTERS,
   REVIEW_CI_CHECK_NAME,
   REVIEW_GATE_CHECK_NAME,
+  REVIEW_WORKER_CHECK_NAME,
   validateCheckRunTitle,
 } from '../review/reviewCheckIdentity';
 export type {
   ReviewCheckCoordinates,
   ReviewCheckName,
   ReviewCiCheckCoordinates,
+  OperatorPassthroughCheckCoordinates,
   ReviewGateCheck,
   ReviewGateObservedConclusion,
   ReviewGatePendingStatus,
@@ -81,6 +85,11 @@ export interface ReviewCiCheckCreateRequest extends ReviewGateCheckMetadata {
   status?: ReviewGatePendingStatus;
 }
 
+export interface OperatorPassthroughCheckCreateRequest extends ReviewGateCheckMetadata {
+  coordinates: OperatorPassthroughCheckCoordinates;
+  status?: ReviewGatePendingStatus;
+}
+
 export type ReviewGateProgressUpdate = ReviewGateCheckMetadata & {
   status: ReviewGatePendingStatus;
   conclusion?: never;
@@ -105,7 +114,13 @@ export interface ReviewCiCheckUpdateRequest {
   update: ReviewGateUpdate;
 }
 
-export type ReviewCheckUpdateRequest = ReviewGateUpdateRequest | ReviewCiCheckUpdateRequest;
+export interface OperatorPassthroughCheckUpdateRequest {
+  coordinates: OperatorPassthroughCheckCoordinates;
+  checkId: number;
+  update: ReviewGateUpdate;
+}
+
+export type ReviewCheckUpdateRequest = ReviewGateUpdateRequest | ReviewCiCheckUpdateRequest | OperatorPassthroughCheckUpdateRequest;
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : undefined;
@@ -264,7 +279,7 @@ export class GitHubReviewGateClient {
 
   constructor(options: ReviewGateClientOptions) {
     this.checkName = options.checkName ?? REVIEW_GATE_CHECK_NAME;
-    if ((this.checkName !== REVIEW_GATE_CHECK_NAME && this.checkName !== REVIEW_CI_CHECK_NAME)
+    if (![REVIEW_WORKER_CHECK_NAME, REVIEW_GATE_CHECK_NAME, REVIEW_CI_CHECK_NAME].includes(this.checkName)
       || (this.checkName === REVIEW_CI_CHECK_NAME && options.expectedAppId !== 4385771)) {
       throw new Error('Untrusted service check identity');
     }
@@ -462,17 +477,21 @@ export class GitHubReviewGateClient {
     return this.reconcileCheck(coordinates);
   }
 
+  async reconcileOperator(coordinates: OperatorPassthroughCheckCoordinates): Promise<ReviewGateCheck | null> {
+    return this.reconcileCheck(coordinates);
+  }
+
   async reconcileCi(coordinates: ReviewCiCheckCoordinates): Promise<ReviewGateCheck | null> {
     return this.reconcileCheck(coordinates);
   }
 
   private async createPendingCheck(
-    coordinatesOrRequest: ReviewCheckCoordinates | ReviewGateCreateRequest | ReviewCiCheckCreateRequest,
-    options: Omit<ReviewGateCreateRequest, 'coordinates'> = {},
+    coordinatesOrRequest: ReviewCheckCoordinates | ReviewGateCreateRequest | ReviewCiCheckCreateRequest | OperatorPassthroughCheckCreateRequest,
+    options: Omit<ReviewGateCreateRequest, 'coordinates'> | Omit<OperatorPassthroughCheckCreateRequest, 'coordinates'> = {},
   ): Promise<ReviewGateCheck> {
     const request = ('coordinates' in coordinatesOrRequest
       ? coordinatesOrRequest
-      : { coordinates: coordinatesOrRequest, ...options }) as ReviewGateCreateRequest | ReviewCiCheckCreateRequest;
+      : { coordinates: coordinatesOrRequest, ...options }) as ReviewGateCreateRequest | ReviewCiCheckCreateRequest | OperatorPassthroughCheckCreateRequest;
     const coordinates = validateReviewCheckCoordinates(request.coordinates, this.checkName);
     const metadata = validateMetadata(request);
     const status = request.status ?? 'queued';
@@ -507,13 +526,19 @@ export class GitHubReviewGateClient {
     return created;
   }
 
-  async createPending(coordinates: ReviewGateCoordinates, options?: Omit<ReviewGateCreateRequest, 'coordinates'>): Promise<ReviewGateCheck>;
+  async createPending(coordinates: ReviewGateCoordinates,
+    options?: Omit<ReviewGateCreateRequest, 'coordinates'>): Promise<ReviewGateCheck>;
   async createPending(request: ReviewGateCreateRequest): Promise<ReviewGateCheck>;
   async createPending(
     coordinatesOrRequest: ReviewGateCoordinates | ReviewGateCreateRequest,
     options: Omit<ReviewGateCreateRequest, 'coordinates'> = {},
   ): Promise<ReviewGateCheck> {
     return this.createPendingCheck(coordinatesOrRequest, options);
+  }
+
+  async createOperatorPending(coordinates: OperatorPassthroughCheckCoordinates,
+    options: Omit<OperatorPassthroughCheckCreateRequest, 'coordinates'> = {}): Promise<ReviewGateCheck> {
+    return this.createPendingCheck(coordinates, options);
   }
 
   async createCiPending(coordinates: ReviewCiCheckCoordinates, options?: Omit<ReviewCiCheckCreateRequest, 'coordinates'>): Promise<ReviewGateCheck>;
@@ -605,6 +630,10 @@ export class GitHubReviewGateClient {
     update?: ReviewGateUpdate,
   ): Promise<ReviewGateCheck> {
     return this.updateExistingCheck(coordinatesOrRequest, checkId, update);
+  }
+
+  async updateOperatorExisting(request: OperatorPassthroughCheckUpdateRequest): Promise<ReviewGateCheck> {
+    return this.updateExistingCheck(request);
   }
 
   async updateCiExisting(request: ReviewCiCheckUpdateRequest): Promise<ReviewGateCheck>;

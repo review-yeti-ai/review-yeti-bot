@@ -207,32 +207,55 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     if (!Number.isFinite(requestedAt) || Math.abs(receivedAt - requestedAt) > 10 * 60_000) {
       return response.status(400).json({ error: 'Action dispatch request timestamp is outside the accepted window' });
     }
-    if (options.passthroughEnabled === true) {
-      const receipt = {
-        version: 'ActionDispatchPassthrough.v1',
-        status: 'passthrough',
-        reason: 'operator_global_passthrough',
-        reviewStarted: false,
-        deliveryId: dispatch.deliveryId,
-        eventName: dispatch.caller.eventName,
-        repositoryId: dispatch.repositoryId,
-        owner: dispatch.owner,
-        repo: dispatch.repo,
-        prNumber: dispatch.prNumber,
-        headSha: dispatch.headSha,
-        baseSha: dispatch.baseSha,
-        callerKind,
-      } as const;
-      logger.info('GitHub Actions review skipped by operator-wide passthrough', receipt);
-      return response.status(200).json(receipt);
-    }
-
     if (authoritative?.acceptNewRequests === false && dispatch.publishMode === 'app-gate'
-      && authoritativeRepositories.has(dispatch.repositoryId)) {
+      && authoritativeRepositories.has(dispatch.repositoryId) && options.passthroughEnabled !== true) {
       return response.status(503).json({ error: 'Authoritative review admission is paused' });
     }
 
     try {
+      if (options.passthroughEnabled === true) {
+        if (dispatch.publishMode !== 'app-gate' || !authoritative
+          || !authoritativeRepositories.has(dispatch.repositoryId) || !authoritative.recordOperatorPassthrough) {
+          return response.status(503).json({ error: 'Authoritative operator SHIP publication is unavailable' });
+        }
+        const result = await authoritative.recordOperatorPassthrough({
+          requested: { repositoryId: dispatch.repositoryId, owner: dispatch.owner, repo: dispatch.repo,
+            prNumber: dispatch.prNumber, headSha: dispatch.headSha, baseSha: dispatch.baseSha },
+          event: { transport: 'github-actions-oidc', eventName: dispatch.caller.eventName,
+            deliveryId: `github-actions-oidc:${dispatch.deliveryId}`,
+            deliveryDigest: sha256(actionDispatchDigestInput(dispatch)) },
+        });
+        const receipt = {
+          version: 'ActionDispatchPassthrough.v1',
+          status: 'passthrough',
+          reason: 'operator_global_passthrough',
+          reviewStarted: false,
+          verdict: result.verdict,
+          expectedLanes: result.expectedLanes,
+          completedLanes: result.completedLanes,
+          publicationId: result.publicationId,
+          auditDigest: result.auditDigest,
+          publicationState: result.publicationState,
+          reviewCheckId: result.reviewCheckId,
+          gateCheckId: result.gateCheckId,
+          mergeEligible: result.mergeEligible,
+          deliveryId: dispatch.deliveryId,
+          eventName: dispatch.caller.eventName,
+          repositoryId: dispatch.repositoryId,
+          owner: dispatch.owner,
+          repo: dispatch.repo,
+          prNumber: dispatch.prNumber,
+          headSha: dispatch.headSha,
+          baseSha: dispatch.baseSha,
+          callerKind,
+        } as const;
+        logger.info('Operator pause produced a candidate-bound SHIP exemption', {
+          repositoryId: receipt.repositoryId, prNumber: receipt.prNumber, headSha: receipt.headSha,
+          publicationState: receipt.publicationState, mergeEligible: receipt.mergeEligible,
+        });
+        return response.status(200).json(receipt);
+      }
+
       const installationId = await options.resolveInstallationId(dispatch.owner, dispatch.repo);
       if (!Number.isSafeInteger(installationId) || installationId <= 0) throw new Error('GitHub App installation could not be resolved');
       const resolved = authoritative && dispatch.publishMode === 'app-gate' && authoritativeRepositories.has(dispatch.repositoryId)

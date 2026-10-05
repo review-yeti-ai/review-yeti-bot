@@ -120,6 +120,21 @@ export interface ReviewStatusOutput {
   timing?: ReviewTiming | null;
   /** Optional authenticated current-execution failure observations; old receipts are absent. */
   operational_telemetry?: OperationalTelemetry;
+  /** Service-owned pause exemption, separate from any real run/attempt identity. */
+  operator_exemption?: {
+    publication_id: string;
+    audit_digest: string;
+    base_sha: string;
+    policy_digest: string;
+    expected_app_id: number;
+    expected_lanes: 0;
+    completed_lanes: 0;
+    review_started: false;
+    publication_state: 'pending' | 'published';
+    review_check_id: number | null;
+    gate_check_id: number | null;
+    merge_eligible: boolean;
+  };
   message?: string;
 }
 
@@ -259,6 +274,15 @@ export type TriggerReviewOutput = {
   repo: string;
   pull_number: number;
   head_sha: string;
+  verdict: 'SHIP';
+  expected_lanes: 0;
+  completed_lanes: 0;
+  publication_id: string;
+  audit_digest: string;
+  publication_state: 'pending' | 'published' | 'retiring' | 'retired';
+  review_check_id: number | null;
+  gate_check_id: number | null;
+  merge_eligible: boolean;
   message: string;
 };
 
