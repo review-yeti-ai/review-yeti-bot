@@ -5,6 +5,7 @@ import request from 'supertest';
 import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createActionDispatchRouter, createWorkerCompletionVerifier, type ActionDispatchRouterOptions } from '../../src/api/actionDispatchApi';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { GitHubActionsOidcVerifier } from '../../src/auth/githubActionsOidc';
 import { createHash } from 'node:crypto';
@@ -120,7 +121,7 @@ function publishingFixture() {
     current, prepared, identity: buildAuthoritativeReviewIdentity({ requested: candidate, current, policy: prepared.policy }),
   };
   const resolve = vi.fn(async (_candidate: RequestedReviewCandidate) => resolution);
-  const authoritativePublishing = { expectedAppId: 789, repositoryIds: [123], resolver: { resolve } };
+  const authoritativePublishing = { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [123], resolver: { resolve } };
   const now = Date.parse(body.requestedAt);
   return { candidate, resolution, resolve, authoritativePublishing, now };
 }
@@ -302,6 +303,12 @@ describe('POST /api/dispatch/action', () => {
       allowAppGate: true,
       requireExpectedGeneration: true,
       centralExternalRepositories,
+      authoritativePublishing: {
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
+        expectedAppIdFor: () => 4552718,
+        repositoryIds: [1326169548],
+        resolver: { resolve: vi.fn() },
+      },
       verifier: { verify: vi.fn(async () => claims) },
     });
     const missingGeneration = await request(central.instance)
@@ -348,7 +355,7 @@ describe('POST /api/dispatch/action', () => {
     const fixture = app();
     const response = await request(fixture.instance)
       .post('/api/dispatch/action')
-      .set('Authorization', 'Bearer signed-oidc-token')
+      .set('Authorization', 'Bearer fixture')
       .send(body);
 
     expect(response.status).toBe(202);
@@ -371,7 +378,7 @@ describe('POST /api/dispatch/action', () => {
     const mismatch = app();
     const response = await request(mismatch.instance)
       .post('/api/dispatch/action')
-      .set('Authorization', 'Bearer signed-oidc-token')
+      .set('Authorization', 'Bearer fixture')
       .send({ ...body, repositoryId: 999 });
     expect(response.status).toBe(403);
     expect(mismatch.admission.admit).not.toHaveBeenCalled();
@@ -399,7 +406,7 @@ describe('POST /api/dispatch/action', () => {
     const fixture = app({ verifier: { verify: vi.fn(async () => centralVerified) } });
     const response = await request(fixture.instance)
       .post('/api/dispatch/action')
-      .set('Authorization', 'Bearer signed-oidc-token')
+      .set('Authorization', 'Bearer fixture')
       .send(centralBody);
 
     expect(response.status).toBe(202);
@@ -410,7 +417,7 @@ describe('POST /api/dispatch/action', () => {
     });
   });
 
-  it('accepts central dispatch for the exact configured self-hosted repository', async () => {
+  it('fails closed for an external target when its authoritative publisher is not configured', async () => {
     const centralVerified = {
       repository: 'exampleorg/example-review-actions',
       repository_id: '99999',
@@ -444,14 +451,82 @@ describe('POST /api/dispatch/action', () => {
       .set('Authorization', 'Bearer signed-oidc-token')
       .send({ ...externalBody, publishMode: 'app-gate', expectedGeneration: 1 });
 
-    expect(response.status).toBe(202);
-    expect(fixture.resolveInstallationId).toHaveBeenCalledExactlyOnceWith('review-yeti-ai', 'review-yeti-bot');
-    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
-      centralActionDispatch: true,
-      repositoryId: 1326169548,
-      publicationMode: 'app-gate',
-      expectedGeneration: 1,
-    }));
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'External target authoritative review admission is unavailable' });
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('does not treat the target repository workflow as the authorized central publisher', async () => {
+    const publicRepositoryClaims = {
+      ...verified,
+      repository: 'review-yeti-ai/review-yeti-bot',
+      repository_id: '1326169548',
+    };
+    const fixture = app({
+      allowAppGate: true,
+      verifier: { verify: vi.fn(async () => publicRepositoryClaims) },
+      centralExternalRepositories,
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        deliveryId: `actions:98765:2:1326169548:42:${body.headSha}`,
+        repositoryId: 1326169548,
+        owner: 'review-yeti-ai',
+        repo: 'review-yeti-bot',
+        publishMode: 'app-gate',
+      });
+
+    expect(response.status).toBe(403);
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('rejects a central request to the public target when App-gate publication is disabled', async () => {
+    const fixture = app({
+      allowAppGate: true,
+      verifier: { verify: vi.fn(async () => centralManualClaims) },
+      centralExternalRepositories,
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({ ...body, ...centralManualTarget, publishMode: 'disabled', caller: {
+        ...body.caller,
+        workflowRef: centralManualClaims.workflow_ref,
+        workflowSha: centralManualClaims.workflow_sha,
+      } });
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ error: 'External target requires authoritative App-gate publication' });
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('rejects a direct OIDC caller whose configured external slug has a different stable ID', async () => {
+    const wrongId = 1326169549;
+    const wrongRepositoryClaims = {
+      ...verified,
+      repository: 'review-yeti-ai/review-yeti-bot',
+      repository_id: String(wrongId),
+    };
+    const fixture = app({
+      allowAppGate: true,
+      verifier: { verify: vi.fn(async () => wrongRepositoryClaims) },
+      centralExternalRepositories,
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({ ...body, deliveryId: `actions:98765:2:${wrongId}:42:${body.headSha}`,
+        repositoryId: wrongId, owner: 'review-yeti-ai', repo: 'review-yeti-bot', publishMode: 'app-gate' });
+
+    expect(response.status).toBe(403);
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
   });
 
   it('rejects the configured self-hosted target when its stable repository ID does not match', async () => {
@@ -524,7 +599,7 @@ describe('POST /api/dispatch/action', () => {
     expect(fixture.admission.admit).not.toHaveBeenCalled();
   });
 
-  it('accepts manual central dispatch only from the exact parent and reusable workflow identities', async () => {
+  it('recognizes the exact manual central identity but requires an authoritative external publisher', async () => {
     const centralVerified = {
       repository: 'exampleorg/example-review-actions',
       repository_id: '99999',
@@ -556,11 +631,10 @@ describe('POST /api/dispatch/action', () => {
         },
       });
 
-    expect(response.status).toBe(202);
-    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
-      centralActionDispatch: true,
-      expectedGeneration: 2,
-    }));
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'External target authoritative review admission is unavailable' });
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
   });
 
   it('rejects central admission for a valid non-central caller event', async () => {
@@ -783,7 +857,7 @@ describe('POST /api/dispatch/action', () => {
     expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
       incompleteP2Recovery: true, retryRequested: true, retryAfterExecutionAttempt: 1,
       expectedGeneration: 2, centralActionDispatch: true,
-      authoritativeGate: expect.objectContaining({ expectedAppId: 789 }),
+      authoritativeGate: expect.objectContaining({ expectedAppId: AUTHORITATIVE_REVIEW_APP_ID }),
     }));
   });
 
@@ -1314,7 +1388,7 @@ describe('POST /api/dispatch/action authoritative publishing', () => {
       centralActionDispatch: false,
       identity: publishing.resolution.identity,
       effectivePolicyDigest: publishing.resolution.prepared.policy.effectivePolicyDigest,
-      authoritativeGate: { expectedAppId: 789, prepared: publishing.resolution.prepared },
+      authoritativeGate: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, prepared: publishing.resolution.prepared },
     });
     const admitted = fixture.admission.admit.mock.calls[0][0];
     expect(admitted.identity).toBe(publishing.resolution.identity);
@@ -1380,7 +1454,7 @@ describe('POST /api/dispatch/action authoritative publishing', () => {
     expect(publishing.resolve).toHaveBeenCalledExactlyOnceWith(publishing.candidate);
     const admitted = fixture.admission.admit.mock.calls[0][0];
     expect(admitted.identity).toEqual(publishing.resolution.identity);
-    expect(admitted.authoritativeGate).toEqual({ expectedAppId: 789, prepared: publishing.resolution.prepared });
+    expect(admitted.authoritativeGate).toEqual({ expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, prepared: publishing.resolution.prepared });
     expect(admitted).not.toHaveProperty('policy');
     expect(admitted).not.toHaveProperty('checkId');
     expect(JSON.stringify(admitted)).not.toContain('caller-persona');
@@ -1476,16 +1550,16 @@ describe('POST /api/dispatch/action authoritative publishing', () => {
     expect(publishing.resolve).not.toHaveBeenCalled();
   });
 
-  it('accepts the 100-repository bound and uses the configured App ID unchanged', async () => {
+  it('accepts the 100-repository bound with primary App authority', async () => {
     const publishing = publishingFixture();
     const fixture = app({ now: () => publishing.now, allowAppGate: true,
-      authoritativePublishing: { ...publishing.authoritativePublishing, expectedAppId: Number.MAX_SAFE_INTEGER,
+      authoritativePublishing: { ...publishing.authoritativePublishing, expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [123, ...Array.from({ length: 99 }, (_, index) => index + 1)] } });
     const response = await request(fixture.instance).post('/api/dispatch/action')
       .set('Authorization', 'Bearer token').send({ ...body, publishMode: 'app-gate' });
     expect(response.status).toBe(202);
     expect(publishing.resolve).toHaveBeenCalledExactlyOnceWith(publishing.candidate);
-    expect(fixture.admission.admit.mock.calls[0][0].authoritativeGate.expectedAppId).toBe(Number.MAX_SAFE_INTEGER);
+    expect(fixture.admission.admit.mock.calls[0][0].authoritativeGate.expectedAppId).toBe(AUTHORITATIVE_REVIEW_APP_ID);
   });
 
   it.each([
@@ -1906,5 +1980,37 @@ describe('POST /api/dispatch/completion', () => {
     expect(response.body).toEqual({ error: 'Worker terminal failure could not be persisted' });
     expect(response.text).not.toContain('database diagnostic');
     expect(fixture.repository.markWorkerFailure).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe('repository-bound public App authority in the real dispatch route', () => {
+  function publicPublishing(appId = 4552718) {
+    const original = publishingFixture();
+    const candidate = { ...original.candidate, repositoryId: 1326169548, owner: 'review-yeti-ai', repo: 'review-yeti-bot' };
+    const current = { ...candidate, open: true, draft: false };
+    const identity = buildAuthoritativeReviewIdentity({ requested: candidate, current, policy: original.resolution.prepared.policy });
+    return { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [1326169548], expectedAppIdFor: () => appId,
+      resolver: { resolve: vi.fn(async () => ({ ...original.resolution, current, identity })) } };
+  }
+  it('binds the public request to dedicated App4552718 without changing caller policy', async () => {
+    const fixture = app({ allowAppGate: true, centralExternalRepositories,
+      verifier: { verify: vi.fn(async () => centralManualClaims) },
+      authoritativePublishing: publicPublishing(), now: () => Date.parse(body.requestedAt) });
+    const response = await request(fixture.instance).post('/api/dispatch/action').set('Authorization', 'Bearer synthetic-oidc')
+      .send({ ...body, ...centralManualTarget, caller: { ...body.caller, workflowRef: centralManualClaims.workflow_ref, workflowSha: centralManualClaims.workflow_sha } });
+    expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({ repositoryId: 1326169548,
+      authoritativeGate: expect.objectContaining({ expectedAppId: 4552718 }) }));
+  });
+  it('rejects primary-App authority on the public identity', async () => {
+    const fixture = app({ allowAppGate: true, centralExternalRepositories,
+      verifier: { verify: vi.fn(async () => centralManualClaims) },
+      authoritativePublishing: publicPublishing(AUTHORITATIVE_REVIEW_APP_ID), now: () => Date.parse(body.requestedAt) });
+    const response = await request(fixture.instance).post('/api/dispatch/action').set('Authorization', 'Bearer synthetic-oidc')
+      .send({ ...body, ...centralManualTarget, caller: { ...body.caller, workflowRef: centralManualClaims.workflow_ref, workflowSha: centralManualClaims.workflow_sha } });
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ error: 'External target requires authoritative App-gate publication' });
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
   });
 });

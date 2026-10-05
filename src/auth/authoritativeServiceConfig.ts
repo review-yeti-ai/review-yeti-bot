@@ -1,4 +1,10 @@
 import { z } from 'zod';
+import type { ActionDispatchConfig } from '../config/actionDispatchConfig';
+import {
+  PUBLIC_REVIEW_REPOSITORY,
+  PUBLIC_REVIEW_REPOSITORY_ID,
+  PUBLIC_REVIEW_APP_ID,
+} from '../config/repositoryReviewAuthorityConstants';
 import type { GitHubActionsOidcPolicy } from './githubActionsOidc';
 import { reviewPolicySourceSchema } from '../review/authoritativeReviewIdentity';
 import { AUTHORITATIVE_REVIEW_APP_ID } from './authoritativeServiceIdentity';
@@ -17,6 +23,7 @@ export interface AuthoritativeServiceConfig {
   expectedAppId: number;
   admissionEnabled: boolean;
   repositoryIds: number[];
+  publicRepository?: { repositoryId: number; owner: string; repo: string; expectedAppId: number };
   policyRepository: { repositoryId: number; owner: string; repo: string };
   policyRef: string;
   policyPath: string;
@@ -36,6 +43,7 @@ function integer(value: string | undefined): number {
 export function authoritativeServiceConfigFromEnv(
   env: Readonly<Record<string, string | undefined>>,
   oidcPolicy: Pick<GitHubActionsOidcPolicy, 'allowAppGate' | 'repositoryIds'>,
+  dispatchConfig: Pick<ActionDispatchConfig, 'centralExternalRepositories' | 'centralExternalAppCredentials'>,
 ): AuthoritativeServiceConfig | undefined {
   try {
     const enabled = env.AUTHORITATIVE_REVIEW_ENABLED;
@@ -51,6 +59,23 @@ export function authoritativeServiceConfigFromEnv(
     if (repositoryIds.length < 1 || repositoryIds.length > 100
       || new Set(repositoryIds).size !== repositoryIds.length
       || repositoryIds.some((id) => !oidcPolicy.repositoryIds.has(String(id)))) throw new Error();
+    // The primary allowlist cannot accidentally grant the public repository
+    // primary-App authority. Its existing dedicated App is an exact opt-in.
+    if (repositoryIds.includes(PUBLIC_REVIEW_REPOSITORY_ID)) throw new Error();
+    let publicRepository: AuthoritativeServiceConfig['publicRepository'];
+    const externalRepositories = dispatchConfig.centralExternalRepositories;
+    const externalCredentials = dispatchConfig.centralExternalAppCredentials;
+    if (externalRepositories.size > 0) {
+      if (externalRepositories.size !== 1
+        || externalRepositories.get(PUBLIC_REVIEW_REPOSITORY) !== PUBLIC_REVIEW_REPOSITORY_ID
+        || externalCredentials?.appId !== String(PUBLIC_REVIEW_APP_ID)
+        || !externalCredentials.privateKey.trim()) throw new Error();
+      const [owner, repo] = PUBLIC_REVIEW_REPOSITORY.split('/');
+      publicRepository = { repositoryId: PUBLIC_REVIEW_REPOSITORY_ID, owner, repo, expectedAppId: PUBLIC_REVIEW_APP_ID };
+      if (repositoryIds.length >= 100) throw new Error();
+    } else if (externalCredentials !== undefined) {
+      throw new Error();
+    }
     const sourceJson = env.AUTHORITATIVE_REVIEW_POLICY_SOURCE;
     if (typeof sourceJson !== 'string' || Buffer.byteLength(sourceJson, 'utf8') > 8_192) throw new Error();
     const source = sourceSchema.parse(JSON.parse(sourceJson));
@@ -66,6 +91,7 @@ export function authoritativeServiceConfigFromEnv(
     if (tickMs < 1_000 || tickMs > 60_000) throw new Error();
     return {
       expectedAppId, admissionEnabled: admit === 'true', repositoryIds,
+      ...(publicRepository ? { publicRepository } : {}),
       policyRepository: { repositoryId: source.repositoryId, owner: source.owner, repo: source.repo },
       policyRef: source.ref, policyPath: source.path, transport: { baseUrl, model }, tickMs,
     };

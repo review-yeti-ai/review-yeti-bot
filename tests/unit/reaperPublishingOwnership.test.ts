@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { runReviewJobDispatcherLoop } from '../../src/k8s/reviewJobDispatcherRuntime';
+import { PUBLIC_REVIEW_APP_ID } from '../../src/auth/repositoryReviewAuthority';
 
 const state = vi.hoisted(() => ({
   credentials: undefined as Record<string, unknown> | undefined,
@@ -104,7 +105,7 @@ describe('dispatcher publishing ownership composition', () => {
   it('routes only the exact public target through its dedicated worker and reaper App', async () => {
     vi.spyOn(process, 'once').mockReturnValue(process);
     vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-bot');
-    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', '7654321');
+    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', String(PUBLIC_REVIEW_APP_ID));
     vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY', 'public-key');
 
     await import('../../src/reviewJobDispatcherIndex');
@@ -113,17 +114,17 @@ describe('dispatcher publishing ownership composition', () => {
     const credentialsForRepository = state.credentials!.credentialsForRepository as
       (owner: string, repo: string) => { appId: string; privateKey: string };
     expect(credentialsForRepository('review-yeti-ai', 'review-yeti-bot')).toEqual({
-      appId: '7654321', privateKey: 'public-key',
+      appId: String(PUBLIC_REVIEW_APP_ID), privateKey: 'public-key',
     });
     expect(credentialsForRepository('exampleorg', 'example-meta')).toEqual({
       appId: '4385771', privateKey: 'offline-key',
     });
 
     const publicRun = { owner: 'review-yeti-ai', repo: 'review-yeti-bot' };
-    expect(state.reaperOptions!.publisherAppIdFor(publicRun)).toBe(7_654_321);
+    expect(state.reaperOptions!.publisherAppIdFor(publicRun)).toBe(PUBLIC_REVIEW_APP_ID);
     await state.reaperOptions!.checkClientFor(publicRun, AbortSignal.timeout(1_000));
     expect(state.mint).toHaveBeenLastCalledWith({
-      appId: '7654321', privateKey: 'public-key', owner: 'review-yeti-ai', repo: 'review-yeti-bot',
+      appId: String(PUBLIC_REVIEW_APP_ID), privateKey: 'public-key', owner: 'review-yeti-ai', repo: 'review-yeti-bot',
       signal: expect.any(AbortSignal),
     });
   });

@@ -1,8 +1,11 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { createTriggerReviewTool } from '../../src/mcp/server/tools/triggerReview';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
 import { deriveReviewRunId } from '../../src/review/reviewAdmission';
 import { AuthoritativePublishingResolver } from '../../src/review/authoritativePublishingResolver';
+import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
+import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 
 const HEAD_SHA = 'a'.repeat(40);
 const BASE_SHA = 'b'.repeat(40);
@@ -55,7 +58,7 @@ describe('trigger_review governed admission', () => {
         repositoryId: 101, installationId: 22,
       }),
       authoritativePublishing: {
-        expectedAppId: 42,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds,
         acceptNewRequests,
         resolver: { resolve },
@@ -89,7 +92,7 @@ describe('trigger_review governed admission', () => {
         dispatchPriority: 'expedited',
         effectivePolicyDigest: POLICY_DIGEST,
         identity,
-        authoritativeGate: { expectedAppId: 42, prepared },
+        authoritativeGate: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, prepared },
       });
       return { run: { runId: `run_${'e'.repeat(32)}` } };
     });
@@ -105,7 +108,7 @@ describe('trigger_review governed admission', () => {
         installationId: 22,
       })),
       authoritativePublishing: {
-        expectedAppId: 42,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [101],
         resolver: { resolve },
       },
@@ -223,7 +226,7 @@ describe('trigger_review governed admission', () => {
         repositoryId: 101, installationId: 22,
       }),
       authoritativePublishing: {
-        expectedAppId: 42,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [101],
         resolver: { resolve: async () => ({ identity, prepared }) },
       },
@@ -263,7 +266,7 @@ describe('trigger_review governed admission', () => {
         repositoryId: 101, installationId: 22,
       }),
       authoritativePublishing: {
-        expectedAppId: 42,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [101],
         resolver: { resolve: async () => ({ identity, prepared }) },
       },
@@ -310,7 +313,7 @@ describe('trigger_review governed admission', () => {
         installationId: 22,
       })),
       authoritativePublishing: {
-        expectedAppId: 42,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [101],
         resolver: { resolve },
       },
@@ -376,7 +379,7 @@ describe('trigger_review governed admission', () => {
         installationId: 22,
       })),
       authoritativePublishing: {
-        expectedAppId: 42,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [101],
         resolver: { resolve },
       },
@@ -449,7 +452,7 @@ describe('trigger_review governed admission', () => {
         repositoryId: 101, installationId: 22,
       })),
       authoritativePublishing: {
-        expectedAppId: 42,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [101],
         resolver: { resolve },
       },
@@ -490,7 +493,7 @@ describe('trigger_review governed admission', () => {
         repositoryId: 101, installationId: 22,
       })),
       authoritativePublishing: {
-        expectedAppId: 42,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [101],
         resolver: { resolve: vi.fn(async () => ({ identity, prepared })) },
       },
@@ -535,7 +538,7 @@ describe('trigger_review governed admission', () => {
         installationId: 22,
       })),
       authoritativePublishing: {
-        expectedAppId: 42,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [101],
         resolver: { resolve },
       },
@@ -634,7 +637,7 @@ describe('trigger_review governed admission', () => {
         installationId: 22,
       })),
       authoritativePublishing: {
-        expectedAppId: 42,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [101],
         resolver,
       } as any,
@@ -668,5 +671,45 @@ describe('trigger_review governed admission', () => {
       head_sha: HEAD_SHA,
       review_engine: 'invalid_engine' as any,
     })).rejects.toThrow(/Invalid arguments/);
+  });
+});
+
+
+describe('repository-bound public MCP admission', () => {
+  const requested = { owner: 'review-yeti-ai', repo: 'review-yeti-bot', pull_number: 1, head_sha: HEAD_SHA };
+  function toolFixture(repositoryId = 1326169548, appId = 4552718) {
+    const admit = vi.fn(async () => ({ run: { runId: `run_${'e'.repeat(32)}` } }));
+    const candidate = { repositoryId, owner: requested.owner, repo: requested.repo,
+      prNumber: 1, headSha: HEAD_SHA, baseSha: BASE_SHA };
+    const current = { ...candidate, open: true, draft: false, private: false };
+    const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', budget: { max_investigation_turns: 3 },
+    } });
+    const prepared = preparePublishingPolicy({ content, source: {
+      repositoryId: 987654, repository: 'exampleorg/review-policy', sha: 'f'.repeat(40),
+      path: 'review-policy.json', contentDigest: createHash('sha256').update(content).digest('hex'),
+    } }, { baseUrl: 'https://gateway.example.invalid/v1', model: 'test-review-model' });
+    const resolve = vi.fn(async () => ({ current, prepared,
+      identity: buildAuthoritativeReviewIdentity({ requested: candidate, current, policy: prepared.policy }) }));
+    const tool = createTriggerReviewTool({ admissionRepository: { admit } as any,
+      resolveGitHubPullRequest: async () => ({ repositoryId, installationId: 2, headSha: HEAD_SHA, baseSha: BASE_SHA }),
+      authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, expectedAppIdFor: () => appId, repositoryIds: [1326169548], resolver: { resolve } },
+    });
+    return { tool, admit, resolve };
+  }
+  it('records the dedicated App on governed public admission', async () => {
+    const f = toolFixture();
+    await f.tool.execute(requested);
+    expect(f.admit).toHaveBeenCalledWith(expect.objectContaining({ authoritativeGate: expect.objectContaining({ expectedAppId: 4552718 }) }));
+  });
+  it.each([123, 1326169549])('rejects wrong live repository ID %s before policy/admission', async id => {
+    const f = toolFixture(id);
+    await expect(f.tool.execute(requested)).rejects.toThrow('outside authoritative admission');
+    expect(f.resolve).not.toHaveBeenCalled(); expect(f.admit).not.toHaveBeenCalled();
+  });
+  it.each([AUTHORITATIVE_REVIEW_APP_ID, 4552719])('rejects a foreign public App %s before durable writes', async appId => {
+    const f = toolFixture(1326169548, appId);
+    await expect(f.tool.execute(requested)).rejects.toThrow();
+    expect(f.admit).not.toHaveBeenCalled();
   });
 });

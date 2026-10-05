@@ -1,3 +1,5 @@
+import { expectedReviewAppIdFor } from '../auth/repositoryReviewAuthority';
+import type { PreparedPublishingPolicy } from '../review/preparedPublishingPolicy';
 import { constantTimeDigestEqual } from '../utils/constantTimeDigest';
 import { Router, type Request, type Response } from 'express';
 import {
@@ -171,6 +173,18 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
       });
       return response.status(403).json({ error: 'Action dispatch is not authorized' });
     }
+    const configuredExternalTarget = options.centralExternalRepositories?.get(
+      `${dispatch.owner}/${dispatch.repo}`,
+    ) === dispatch.repositoryId;
+    if (configuredExternalTarget && callerKind !== 'central') {
+      return response.status(403).json({ error: 'External target requires the authorized central workflow' });
+    }
+    if (configuredExternalTarget && dispatch.publishMode !== 'app-gate') {
+      return response.status(403).json({ error: 'External target requires authoritative App-gate publication' });
+    }
+    if (configuredExternalTarget && (!authoritative || !authoritativeRepositories.has(dispatch.repositoryId))) {
+      return response.status(503).json({ error: 'External target authoritative review admission is unavailable' });
+    }
     if (options.requireExpectedGeneration === true
       && callerKind === 'central'
       && dispatch.publishMode === 'app-gate'
@@ -225,6 +239,21 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         ? await authoritative.resolver.resolve({ repositoryId: dispatch.repositoryId,
           owner: dispatch.owner, repo: dispatch.repo, prNumber: dispatch.prNumber,
           headSha: dispatch.headSha, baseSha: dispatch.baseSha }) : undefined;
+      let authoritativeGate: { expectedAppId: number; prepared: PreparedPublishingPolicy } | undefined;
+      if (resolved && authoritative) {
+        try {
+          authoritativeGate = {
+            expectedAppId: expectedReviewAppIdFor(authoritative, {
+              repositoryId: dispatch.repositoryId,
+              owner: dispatch.owner,
+              repo: dispatch.repo,
+            }),
+            prepared: resolved.prepared,
+          };
+        } catch {
+          return response.status(403).json({ error: 'External target requires authoritative App-gate publication' });
+        }
+      }
       const admission = await options.admission.admit({
         deliveryId: dispatch.deliveryId,
         eventName: dispatch.caller.eventName,
@@ -251,9 +280,9 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
           headSha: dispatch.headSha,
           baseSha: dispatch.baseSha,
         }),
-        ...(resolved && authoritative ? {
+        ...(resolved && authoritative && authoritativeGate ? {
           effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
-          authoritativeGate: { expectedAppId: authoritative.expectedAppId, prepared: resolved.prepared },
+          authoritativeGate,
         } : {}),
       });
       return response.status(202).json({

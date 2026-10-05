@@ -36,6 +36,7 @@ import { parseChangedFiles } from '../../src/review/changedFiles';
 import { PATCH_UNAVAILABLE_MARKER } from '../../src/review/patchAvailability';
 import { logger } from '../../src/utils/logger';
 import { getMetrics } from '../../src/telemetry';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
 
 /*
  * REL-1124 (REL-1113 follow-up): a panel that THROWS on the path to the model -- a required
@@ -168,9 +169,9 @@ async function serviceRequeue(completion: WorkerReviewCompletion, errorText = AU
   const outcome = await requeueAuthoritativeInfrastructureIncomplete({
     event: { ...completion, runId: deriveReviewRunId(identity) }, now: START,
     repository: { admit, readRunRetryContext: vi.fn(async () => ({ publicationMode: 'app-gate' as const,
-      authoritativeGateAppId: 777, repositoryId: 123, installationId: 55, identity,
+      authoritativeGateAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryId: 123, installationId: 55, identity,
       runStatus: 'failed', errorText })) },
-    authoritative: { expectedAppId: 777, repositoryIds: [123],
+    authoritative: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [123],
       resolver: { resolve: vi.fn(async () => ({ identity, prepared: { policy: { effectivePolicyDigest: 'd'.repeat(64) } } })) } as never },
     logger: { error: vi.fn(), info: vi.fn() },
   });

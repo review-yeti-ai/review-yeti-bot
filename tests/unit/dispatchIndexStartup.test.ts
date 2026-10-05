@@ -5,6 +5,11 @@ import type { PostgresReviewGateRepository } from '../../src/persistence/reviewG
 import type { StoredReviewGate } from '../../src/review/reviewGateContracts';
 import { createReviewCiLanePlan } from '../../src/review/reviewCi';
 import { deriveReviewRunId } from '../../src/review/reviewAdmission';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
+import {
+  PUBLIC_REVIEW_APP_ID,
+  PUBLIC_REVIEW_REPOSITORY_ID,
+} from '../../src/auth/repositoryReviewAuthority';
 
 const mocks = vi.hoisted(() => {
   const pool = { query: vi.fn() };
@@ -29,12 +34,18 @@ const mocks = vi.hoisted(() => {
   const lookup = vi.fn(async () => 987);
   const token = vi.fn(async () => ({ token: 'ghs_generation_recovery' }));
   const installationClient = vi.fn();
+  const getPullRequest = vi.fn(async (owner: string, repo: string) => ({
+    repositoryId: owner === 'review-yeti-ai' && repo === 'review-yeti-bot' ? 1326169548 : 123,
+    headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+  }));
   const readGenerationRecovery = vi.fn(async () => []);
+  const botLogin = vi.fn(async () => 'synthetic-review-bot[bot]');
+  const remoteMcpRouter = vi.fn((_options: unknown) => ({ tag: 'mcp-router' }));
   const error = vi.fn();
   const legacyReaper = vi.fn();
   return { pool, initialize, listen, serverClose, createApp, repository, gateStorage, gateRepository, getPrepared,
     validateAdmission, authoritative, serviceConfig, lookup, token, installationClient, readGenerationRecovery,
-    error, legacyReaper, resolver, enqueueCi, ciRunOnce, ciRoutes, ciRuntime };
+    error, legacyReaper, resolver, enqueueCi, ciRunOnce, ciRoutes, ciRuntime, getPullRequest, botLogin, remoteMcpRouter };
 });
 
 vi.mock('../../src/auth/githubActionsOidc', () => ({
@@ -59,11 +70,14 @@ vi.mock('../../src/review/abandonedRunReaper', () => ({ AbandonedRunReaper: clas
 vi.mock('../../src/github/installationClient', () => ({
   GitHubInstallationClient: class {
     readReviewGenerationRecovery = mocks.readGenerationRecovery;
+    getPullRequest = mocks.getPullRequest;
     constructor(options: unknown) { mocks.installationClient(options); }
   },
   REVIEW_REFRESH_ACTION: Object.freeze({ identifier: 'review-yeti/refresh' }),
 }));
-vi.mock('../../src/github/appAuth', () => ({ getGitHubAppRepositoryPublishToken: vi.fn() }));
+vi.mock('../../src/github/appAuth', () => ({ getGitHubAppRepositoryPublishToken: vi.fn(), getGitHubAppBotLogin: mocks.botLogin }));
+vi.mock('../../src/mcp/server/remoteMcpRouter', () => ({ createRemoteMcpRouter: mocks.remoteMcpRouter }));
+vi.mock('../../src/dispatchModelClient', () => ({ resolveModelClientFromEnv: vi.fn(() => ({ generate: vi.fn() })) }));
 vi.mock('../../src/auth/authoritativeServiceConfig', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/auth/authoritativeServiceConfig')>(),
   authoritativeServiceConfigFromEnv: mocks.serviceConfig,
@@ -77,7 +91,7 @@ vi.mock('../../src/github/boundedAppToken', async (importOriginal) => ({
 }));
 
 function authoritativeConfig(): AuthoritativeServiceConfig {
-  return { expectedAppId: 4385771, admissionEnabled: false, repositoryIds: [123], tickMs: 1000,
+  return { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, admissionEnabled: false, repositoryIds: [123], tickMs: 1000,
     policyRepository: { repositoryId: 987, owner: 'central', repo: 'policy' },
     policyRef: 'refs/heads/main', policyPath: 'policy.json',
     transport: { baseUrl: 'https://gateway.example.invalid/v1', model: 'configured-model' } };
@@ -98,7 +112,7 @@ function eligibleGate(): StoredReviewGate {
   return { coordinates: { repositoryId: 123, owner: 'exampleorg', repo: 'example-meta', prNumber: 42,
     runId, attemptId: `${runId}-g2-e1`, executionAttempt: 1,
     headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64) },
-    reviewGeneration: 2, expectedAppId: 4385771, externalId: 'synthetic-gate-id', checkId: 1234,
+    reviewGeneration: 2, expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, externalId: 'synthetic-gate-id', checkId: 1234,
     creationState: 'bound', desiredState: 'success', desiredVersion: 2, publishedVersion: 1, current: true };
 }
 function completionHook() {
@@ -125,7 +139,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', undefined);
     vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', undefined);
     vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY', undefined);
-    vi.stubEnv('GITHUB_APP_ID', '4385771');
+    vi.stubEnv('GITHUB_APP_ID', String(AUTHORITATIVE_REVIEW_APP_ID));
     vi.stubEnv('GITHUB_APP_PRIVATE_KEY', 'synthetic-startup-private-key');
     vi.stubEnv('HOSTNAME', 'startup-test');
     vi.stubEnv('GITHUB_API_BASE_URL', undefined);
@@ -184,7 +198,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     };
     await expect(options.resolveInstallationId('exampleorg', 'example-meta')).resolves.toBe(987);
     expect(mocks.lookup).toHaveBeenCalledExactlyOnceWith({
-      appId: '4385771', privateKey: 'synthetic-startup-private-key', owner: 'exampleorg', repo: 'example-meta',
+      appId: String(AUTHORITATIVE_REVIEW_APP_ID), privateKey: 'synthetic-startup-private-key', owner: 'exampleorg', repo: 'example-meta',
       baseUrl: baseUrl ? 'https://api.example.invalid/api/v3' : 'https://api.github.com',
     });
     expect(mocks.repository).toHaveBeenCalledWith(mocks.pool, undefined, {
@@ -220,13 +234,15 @@ describe('Action dispatch startup transport and admission wiring', () => {
 
   it('wires only the exact configured self-hosted central-dispatch target', async () => {
     vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-bot');
-    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', '7654321');
+    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', String(PUBLIC_REVIEW_APP_ID));
     vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY', 'synthetic-public-target-private-key');
+    vi.stubEnv('REVIEW_YETI_MCP_ENABLED', 'true');
+    vi.stubEnv('REVIEW_YETI_MCP_AUTH_TOKEN', 'synthetic-mcp-token');
     await start();
 
     expect(mocks.error).not.toHaveBeenCalled();
     expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
-      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
+      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', PUBLIC_REVIEW_REPOSITORY_ID]]),
     }));
     const options = mocks.createApp.mock.calls[0][0] as unknown as {
       resolveInstallationId(owner: string, repo: string): Promise<number>;
@@ -234,12 +250,59 @@ describe('Action dispatch startup transport and admission wiring', () => {
     await expect(options.resolveInstallationId('review-yeti-ai', 'review-yeti-bot')).resolves.toBe(987);
     await expect(options.resolveInstallationId('exampleorg', 'example-meta')).resolves.toBe(987);
     expect(mocks.lookup).toHaveBeenNthCalledWith(1, {
-      appId: '7654321', privateKey: 'synthetic-public-target-private-key',
+      appId: String(PUBLIC_REVIEW_APP_ID), privateKey: 'synthetic-public-target-private-key',
       owner: 'review-yeti-ai', repo: 'review-yeti-bot', baseUrl: 'https://api.github.com',
     });
     expect(mocks.lookup).toHaveBeenNthCalledWith(2, {
-      appId: '4385771', privateKey: 'synthetic-startup-private-key',
+      appId: String(AUTHORITATIVE_REVIEW_APP_ID), privateKey: 'synthetic-startup-private-key',
       owner: 'exampleorg', repo: 'example-meta', baseUrl: 'https://api.github.com',
+    });
+
+    mocks.token.mockClear();
+    mocks.lookup.mockClear();
+    mocks.installationClient.mockClear();
+    mocks.getPullRequest.mockClear();
+    mocks.botLogin.mockClear();
+    const mcpOptions = mocks.remoteMcpRouter.mock.calls[0][0] as {
+      triggerDeps: { resolveGitHubPullRequest(owner: string, repo: string, pullNumber: number): Promise<unknown> };
+    };
+    const appOptions = mocks.createApp.mock.calls[0][0] as unknown as {
+      findingThreads: { transportFor(owner: string, repo: string): Promise<unknown> };
+    };
+
+    await expect(mcpOptions.triggerDeps.resolveGitHubPullRequest('review-yeti-ai', 'review-yeti-bot', 42)).resolves.toEqual({
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), repositoryId: PUBLIC_REVIEW_REPOSITORY_ID, installationId: 987,
+    });
+    await expect(appOptions.findingThreads.transportFor('review-yeti-ai', 'review-yeti-bot')).resolves.toEqual({
+      token: 'ghs_generation_recovery', baseUrl: 'https://api.github.com', botLogin: 'synthetic-review-bot[bot]',
+    });
+    await expect(mcpOptions.triggerDeps.resolveGitHubPullRequest('exampleorg', 'example-meta', 42)).resolves.toEqual({
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), repositoryId: 123, installationId: 987,
+    });
+    await expect(appOptions.findingThreads.transportFor('exampleorg', 'example-meta')).resolves.toEqual({
+      token: 'ghs_generation_recovery', baseUrl: 'https://api.github.com', botLogin: 'synthetic-review-bot[bot]',
+    });
+    expect(mocks.token).toHaveBeenNthCalledWith(1, {
+      appId: String(PUBLIC_REVIEW_APP_ID), privateKey: 'synthetic-public-target-private-key',
+      owner: 'review-yeti-ai', repo: 'review-yeti-bot', baseUrl: 'https://api.github.com',
+    }, 'read');
+    expect(mocks.token).toHaveBeenNthCalledWith(2, {
+      appId: String(PUBLIC_REVIEW_APP_ID), privateKey: 'synthetic-public-target-private-key',
+      owner: 'review-yeti-ai', repo: 'review-yeti-bot', baseUrl: 'https://api.github.com',
+    }, 'review-threads');
+    expect(mocks.token).toHaveBeenNthCalledWith(3, {
+      appId: String(AUTHORITATIVE_REVIEW_APP_ID), privateKey: 'synthetic-startup-private-key',
+      owner: 'exampleorg', repo: 'example-meta', baseUrl: 'https://api.github.com',
+    }, 'read');
+    expect(mocks.token).toHaveBeenNthCalledWith(4, {
+      appId: String(AUTHORITATIVE_REVIEW_APP_ID), privateKey: 'synthetic-startup-private-key',
+      owner: 'exampleorg', repo: 'example-meta', baseUrl: 'https://api.github.com',
+    }, 'review-threads');
+    expect(mocks.botLogin).toHaveBeenNthCalledWith(1, {
+      appId: String(PUBLIC_REVIEW_APP_ID), privateKey: 'synthetic-public-target-private-key', baseUrl: 'https://api.github.com',
+    });
+    expect(mocks.botLogin).toHaveBeenNthCalledWith(2, {
+      appId: String(AUTHORITATIVE_REVIEW_APP_ID), privateKey: 'synthetic-startup-private-key', baseUrl: 'https://api.github.com',
     });
     expect(mocks.listen).toHaveBeenCalledOnce();
   });
@@ -336,7 +399,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect((mocks.createApp.mock.calls[0] as unknown[])[0]).toHaveProperty('incrementalBase.maxAgeMs', 72 * 60 * 60 * 1000);
     expect((mocks.createApp.mock.calls[0] as unknown[])[0]).toHaveProperty('verdictCacheBase.maxAgeMs', 72 * 60 * 60 * 1000);
     expect(mocks.authoritative).toHaveBeenCalledExactlyOnceWith({
-      config, repository: mocks.gateStorage, getStoredPrepared: expect.any(Function), appId: '4385771',
+      config, repository: mocks.gateStorage, getStoredPrepared: expect.any(Function), appId: String(AUTHORITATIVE_REVIEW_APP_ID),
       privateKey: 'synthetic-startup-private-key', baseUrl: 'https://api.github.com',
       workerId: 'authoritative-review-startup-test',
       // ADR 0002: resolves the review App's bot login for finding-thread author verification.
@@ -393,7 +456,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
 
     await expect(options.resolveGenerationRecovery(input)).resolves.toEqual([]);
     expect(mocks.token).toHaveBeenCalledExactlyOnceWith({
-      appId: '4385771', privateKey: 'synthetic-startup-private-key',
+      appId: String(AUTHORITATIVE_REVIEW_APP_ID), privateKey: 'synthetic-startup-private-key',
       owner: 'exampleorg', repo: 'example-api', baseUrl: 'https://api.github.com',
     }, 'publish');
     expect(mocks.installationClient).toHaveBeenCalledExactlyOnceWith({
@@ -456,9 +519,9 @@ describe('Action dispatch startup transport and admission wiring', () => {
     await completionHook()(client, gate, now);
     expect(mocks.enqueueCi).toHaveBeenCalledExactlyOnceWith(client, gate.coordinates.attemptId, now);
     expect(mocks.ciRuntime).toHaveBeenCalledExactlyOnceWith({
-      config: { expectedAppId: 4385771, repositories: [repository], admissionEnabled: false,
+      config: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositories: [repository], admissionEnabled: false,
         repositoryDispatchEnabled: false, tickMs: 2000 },
-      pool: mocks.pool, appId: '4385771', privateKey: 'synthetic-startup-private-key',
+      pool: mocks.pool, appId: String(AUTHORITATIVE_REVIEW_APP_ID), privateKey: 'synthetic-startup-private-key',
       baseUrl: 'https://api.github.com', resolver: mocks.resolver, workerId: 'review-ci-startup-test',
     });
     expect(mocks.authoritative.mock.invocationCallOrder[0]).toBeLessThan(mocks.ciRuntime.mock.invocationCallOrder[0]);
