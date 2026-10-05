@@ -40,6 +40,8 @@ const SPLIT_SALT = 'review-yeti-ws5-v1|';
 const CASE_SALT = 'review-yeti-ws5-selection-v1|';
 const CONTEXT_ORDER = Object.freeze(['Diff Level', 'File Level', 'Repo Level']);
 const HASH_RE = /^[a-f0-9]{40}$/iu;
+const SHA256_RE = /^[a-f0-9]{64}$/iu;
+const SOURCE_SNAPSHOT_VERIFICATION = 'preparation_stage_only_not_reverified_at_run';
 const MAX_FALSIFICATION_DIFF_CHARS = 24_000;
 const MAX_GITHUB_JSON_BYTES = 12 * 1024 * 1024;
 const MAX_CHANGED_FILES_API = 600;
@@ -393,11 +395,28 @@ export function scoreDiscoveryCases(rows, manifest, adjudicationBundle = null) {
   const judgeIdentity = adjudicationBundle?.judge || null;
   const findingIds = generatedFindings.map((finding) => finding.id).filter((id) => typeof id === 'string' && id.length > 0);
   const judgmentIds = adjudicationRows.map((entry) => entry.findingId);
+  const generatedIdCounts = new Map();
+  for (const id of findingIds) generatedIdCounts.set(id, (generatedIdCounts.get(id) || 0) + 1);
+  const uniquelyIdentifiedFindings = new Set([...generatedIdCounts]
+    .filter(([, count]) => count === 1).map(([id]) => id));
+  const judgmentsByFindingId = new Map();
+  for (const entry of adjudicationRows) {
+    if (!uniquelyIdentifiedFindings.has(entry.findingId)) continue;
+    if (!judgmentsByFindingId.has(entry.findingId)) judgmentsByFindingId.set(entry.findingId, []);
+    judgmentsByFindingId.get(entry.findingId).push(entry);
+  }
+  const adjudicatedSubset = [...judgmentsByFindingId.values()]
+    .filter((entries) => entries.length === 1 && ['valid', 'invalid'].includes(entries[0].verdict))
+    .map((entries) => entries[0]);
+  const adjudicatedSubsetValid = adjudicatedSubset.filter((entry) => entry.verdict === 'valid').length;
+  const adjudicatedSubsetDenominator = adjudicatedSubset.length;
   const completeAdjudication = generatedFindings.length > 0
     && findingIds.length === generatedFindings.length
+    && new Set(findingIds).size === findingIds.length
     && adjudicationRows.length === generatedFindings.length
     && adjudicated === adjudicationRows.length
     && new Set(judgmentIds).size === adjudicationRows.length
+    && judgmentIds.every((id) => findingIds.includes(id))
     && findingIds.every((id) => judgmentIds.includes(id))
     && adjudicationRows.every((entry) => ['valid', 'invalid'].includes(entry.verdict));
   const judgeIdentityPresent = judgeIdentity?.kind === 'independent_human'
@@ -406,6 +425,14 @@ export function scoreDiscoveryCases(rows, manifest, adjudicationBundle = null) {
       && typeof judgeIdentity.requestedModel === 'string'
       && typeof judgeIdentity.responseReportedModel === 'string'
       && judgeIdentity.requestedModel !== judgeIdentity.responseReportedModel;
+  const adjudicatedSubsetPrecision = adjudicatedSubsetDenominator
+    ? adjudicatedSubsetValid / adjudicatedSubsetDenominator : null;
+  const adjudicatedSubsetPrecision95 = adjudicatedSubsetDenominator
+    ? wilsonInterval(adjudicatedSubsetValid, adjudicatedSubsetDenominator) : null;
+  const qualifiedPrecision = completeAdjudication && judgeIdentityPresent
+    ? adjudicationCounts.valid / generatedFindings.length : null;
+  const qualifiedPrecision95 = completeAdjudication && judgeIdentityPresent
+    ? wilsonInterval(adjudicationCounts.valid, generatedFindings.length) : null;
   return {
     schemaVersion: 'review-yeti-discovery-score-v1',
     task: 'discovery',
@@ -419,9 +446,12 @@ export function scoreDiscoveryCases(rows, manifest, adjudicationBundle = null) {
     generatedFindingCount: generatedFindings.length,
     independentlyAdjudicated: adjudicationRows.length,
     adjudicationCounts,
-    precision: adjudicated ? adjudicationCounts.valid / adjudicated : null,
-    precision95: adjudicated ? wilsonInterval(adjudicationCounts.valid, adjudicated) : null,
-    unjudgedGeneratedFindingCount: Math.max(0, generatedFindings.length - adjudicationRows.length),
+    precision: qualifiedPrecision,
+    precision95: qualifiedPrecision95,
+    adjudicatedSubsetPrecision,
+    adjudicatedSubsetPrecision95,
+    adjudicatedSubsetPrecisionDenominator: adjudicatedSubsetDenominator,
+    unjudgedGeneratedFindingCount: Math.max(0, generatedFindings.length - adjudicatedSubsetDenominator),
     judgeIdentity: judgeIdentity ? {
       kind: judgeIdentity.kind,
       protocolId: judgeIdentity.kind === 'independent_human' ? judgeIdentity.protocolId : undefined,
@@ -448,6 +478,7 @@ export function assertDiscoveryRunEligible(run) {
     || run?.completion?.completed !== run.panelSize) {
     throw new Error('discovery_runtime_evaluation_incomplete');
   }
+  requirePreparedInputReceipt(run);
 }
 
 function manifestCaseIds(manifest) {
@@ -804,6 +835,26 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
+export function readPreparedInput(filePath) {
+  const bytes = fs.readFileSync(filePath);
+  return { value: JSON.parse(bytes.toString('utf8')), sha256: sha256(bytes) };
+}
+
+function requirePreparedInputDigest(value) {
+  if (typeof value !== 'string' || !SHA256_RE.test(value)) {
+    throw new Error('run_missing_prepared_input_digest');
+  }
+  return value;
+}
+
+function requirePreparedInputReceipt(run) {
+  const digest = requirePreparedInputDigest(run?.preparedInputSha256);
+  if (run?.sourceSnapshotVerification !== SOURCE_SNAPSHOT_VERIFICATION) {
+    throw new Error('run_source_verification_boundary_missing');
+  }
+  return digest;
+}
+
 function writeJson(filePath, payload) {
   const resolved = path.resolve(filePath);
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
@@ -917,10 +968,14 @@ export async function runActualVerificationCase(testCase, snapshot, pipeline, {
     ? 'aligned_diff_only' : 'not_comparable_context_not_provided';
   const finding = testCase.finding || toVerifierInput(testCase).finding;
   const changedFiles = Array.isArray(snapshot.changedFiles) ? snapshot.changedFiles : [];
-  const sourceOmissions = snapshot.omissions || [];
+  const sourceOmissions = Array.isArray(snapshot.omissions) ? snapshot.omissions : [];
   if (changedFiles.length === 0) {
     return { caseId, context: testCase.context || 'unknown', contextQualification,
       status: 'incomplete', reason: sourceOmissions[0] || 'empty_diff', verdict: 'ABSTAIN', sourceOmissions };
+  }
+  if (sourceOmissions.length > 0) {
+    return { caseId, context: testCase.context || 'unknown', contextQualification,
+      status: 'incomplete', reason: 'source_coverage_incomplete', verdict: 'ABSTAIN', sourceOmissions };
   }
   const anchorFile = changedFiles.find((file) => file.path === finding.path);
   if (testCase.referencePathChanged === false || !anchorFile) {
@@ -1415,7 +1470,8 @@ export async function main(argv = process.argv) {
     return 0;
   }
   if (command === 'run-discovery') {
-    const input = readJson(arg('--cases', path.join(os.tmpdir(), 'review-yeti-aacr-discovery-input.json')));
+    const preparedInput = readPreparedInput(arg('--cases', path.join(os.tmpdir(), 'review-yeti-aacr-discovery-input.json')));
+    const input = preparedInput.value;
     if (input.datasetSha256 !== AACR_BENCHMARK.sha256 || !Array.isArray(input.cases)) throw new Error('discovery case bundle is not pinned');
     const manifest = readJson(arg('--manifest', path.join(repoRoot, 'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json')));
     const expectedCases = new Map(manifest.cases.map((entry) => [entry.id, entry]));
@@ -1481,6 +1537,8 @@ export async function main(argv = process.argv) {
       task: 'discovery',
       benchmark: AACR_BENCHMARK.name,
       datasetSha256: input.datasetSha256,
+      preparedInputSha256: preparedInput.sha256,
+      sourceSnapshotVerification: SOURCE_SNAPSHOT_VERIFICATION,
       runtime: runtimeIdentity,
       panelCaseIds: input.cases.map((entry) => entry.caseId),
       selectedCaseIds: selectedCases.map((entry) => entry.caseId),
@@ -1499,6 +1557,7 @@ export async function main(argv = process.argv) {
     const manifest = readJson(arg('--manifest', path.join(repoRoot, 'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json')));
     const run = readJson(arg('--run', path.join(os.tmpdir(), 'review-yeti-aacr-discovery-run.json')));
     if (run.datasetSha256 !== AACR_BENCHMARK.sha256 || !Array.isArray(run.cases)) throw new Error('discovery run is not pinned to AACR data');
+    const preparedInputSha256 = requirePreparedInputReceipt(run);
     assertDiscoveryRunEligible(run);
     const ids = manifestCaseIds(manifest);
     const generatedByPr = new Map(run.cases.map((entry) => [`${entry.repository}#${entry.prNumber}`, entry.findings || []]));
@@ -1517,6 +1576,8 @@ export async function main(argv = process.argv) {
     const scored = scoreDiscoveryCases(scoreRows, manifest, adjudicationBundle);
     const output = {
       ...scored,
+      preparedInputSha256,
+      sourceSnapshotVerification: run.sourceSnapshotVerification || 'unknown',
       runtime: run.runtime,
       runtimeCompletion: run.completion,
       discoveryQualification: 'not_established_by_AACR_reference_match_alone',
@@ -1525,7 +1586,8 @@ export async function main(argv = process.argv) {
     return 0;
   }
   if (command === 'run-verification') {
-    const input = readJson(arg('--cases', path.join(os.tmpdir(), 'review-yeti-aacr-verification-input.json')));
+    const preparedInput = readPreparedInput(arg('--cases', path.join(os.tmpdir(), 'review-yeti-aacr-verification-input.json')));
+    const input = preparedInput.value;
     if (input.datasetSha256 !== AACR_BENCHMARK.sha256 || !Array.isArray(input.cases)) throw new Error('verification case bundle is not pinned');
     const runtimeRoot = path.resolve(arg('--runtime-root', repoRoot));
     const runtime = loadRuntime(runtimeRoot);
@@ -1566,6 +1628,8 @@ export async function main(argv = process.argv) {
       lane: 'production_finding_falsification_only',
       benchmark: AACR_BENCHMARK.name,
       datasetSha256: input.datasetSha256,
+      preparedInputSha256: preparedInput.sha256,
+      sourceSnapshotVerification: SOURCE_SNAPSHOT_VERIFICATION,
       panelCaseIds: input.cases.map((entry) => entry.caseId),
       selectedCaseIds: selectedCases.map((entry) => entry.caseId),
       panelSize: input.cases.length,
@@ -1587,8 +1651,13 @@ export async function main(argv = process.argv) {
     const testCases = buildVerificationCases(rows, manifest, { perLabelPerPr: Number(arg('--per-label-per-pr-context', '1')) });
     const run = readJson(arg('--run', path.join(os.tmpdir(), 'review-yeti-aacr-verification-run.json')));
     if (run.datasetSha256 !== AACR_BENCHMARK.sha256 || !Array.isArray(run.cases)) throw new Error('verification run is not pinned to AACR data');
+    const preparedInputSha256 = requirePreparedInputReceipt(run);
     const scored = scoreVerificationCases(testCases, run.cases || []);
-    process.stdout.write(`${JSON.stringify(scored, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({
+      ...scored,
+      preparedInputSha256,
+      sourceSnapshotVerification: run.sourceSnapshotVerification || 'unknown',
+    }, null, 2)}\n`);
     return scored.completed === scored.cases ? 0 : 2;
   }
   process.stderr.write('usage: competitive-review-benchmark.mjs <manifest|prepare-verification|run-verification|score-verification> [options]\n');
