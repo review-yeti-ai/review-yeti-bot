@@ -109,9 +109,16 @@ describe('source delivery receipts', () => {
   it('rejects retained receipts bound to a different head, task, path, or patch', () => {
     const receipt=tracker(true).acknowledgeRequest(messages(INLINE_PREFIX));
     for (const changed of [{...binding,headSha:BASE},{...binding,taskId:'other-task'},
+      {...binding,baseSha:HEAD},{...binding,baseSha:undefined},
       {...binding,paths:['src/other.ts']},{...binding,files:[{...files[0],patch:'ABCDEFGHIJ'}]}]) {
       expect(validateTaskSourceReceipt(receipt,changed)).toBeNull();
     }
+    const nullBaseBinding={...binding,baseSha:undefined};
+    const nullBaseReceipt=new TaskSourceDelivery({...nullBaseBinding,prefix:INLINE_PREFIX,inlinedPaths:binding.paths})
+      .acknowledgeRequest(messages(INLINE_PREFIX));
+    expect(nullBaseReceipt.baseSha).toBeNull();
+    expect(validateTaskSourceReceipt(nullBaseReceipt,nullBaseBinding)).toEqual(nullBaseReceipt);
+    expect(validateTaskSourceReceipt(nullBaseReceipt,binding)).toBeNull();
     expect(validateTaskSourceReceipt(undefined,binding)).toBeNull();
     expect(taskSourceReceiptSchema.safeParse({...receipt,complete:false}).success).toBe(false);
   });
@@ -138,9 +145,11 @@ describe('source delivery receipts', () => {
   it('restores a planning reduction only when all assigned tasks have full delivered source', () => {
     const receipt=tracker(true).acknowledgeRequest(messages(INLINE_PREFIX));
     const result={taskPlan:[{id:'source-task',paths:binding.paths}],truncatedFiles:[{path:files[0].path}],
-      diffShrink:{notSentInFull:[{path:files[0].path,why:'budget-signatures'}]},reviewBudget:{}};
+      diffShrink:{notSentInFull:['truncated','budget-signatures','budget-listed']
+        .map(why=>({path:files[0].path,why}))},reviewBudget:{lanes:[{laneId:'planning',files:[],packedChars:0}]}};
     expect(attachTaskSourceDelivery(result,[receipt]).truncatedFiles).toBeUndefined();
     expect(attachTaskSourceDelivery(result,[receipt]).diffShrink?.notSentInFull).toEqual([]);
+    expect(attachTaskSourceDelivery(result,[receipt]).reviewBudget).toMatchObject({phase:'plan'});
     const missing={...result,taskPlan:[...result.taskPlan,{id:'missing-task',paths:binding.paths}]};
     expect(attachTaskSourceDelivery(missing,[receipt]).truncatedFiles).toEqual(result.truncatedFiles);
     expect(attachTaskSourceDelivery(result,[]).truncatedFiles).toEqual(result.truncatedFiles);
