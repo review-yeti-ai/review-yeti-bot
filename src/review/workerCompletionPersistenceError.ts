@@ -11,6 +11,7 @@ export const workerCompletionPersistenceStages = [
   'trusted-completion-resolution',
   'gate-update',
   'completion-insert',
+  'semantic-history',
   'outbox-update',
   'run-update',
   'lifecycle-append',

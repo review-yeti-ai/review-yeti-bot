@@ -4,8 +4,8 @@ import { getReviewFindingId } from './findingIdentity';
 import type { ReviewExecutionCheckpoint } from './reviewExecutionCheckpoint';
 import { parseWorkerReviewCompletion, workerReviewCompletionDigest } from './workerReviewCompletion';
 
-import { MAX_DISPUTE_RECHECKS_PER_REVIEW, MAX_DISPUTE_RECHECK_ARGUMENT_CHARACTERS } from './disputedFindingRecheckLimits';
-export { MAX_DISPUTE_RECHECKS_PER_REVIEW, MAX_DISPUTE_RECHECK_ARGUMENT_CHARACTERS, MAX_DISPUTE_RECHECK_RESPONSE_BYTES } from './disputedFindingRecheckLimits';
+import { MAX_DISPUTE_RECHECKS_PER_BATCH, MAX_DISPUTE_RECHECK_ARGUMENT_CHARACTERS } from './disputedFindingRecheckLimits';
+export { MAX_DISPUTE_RECHECKS_PER_BATCH, MAX_DISPUTE_RECHECKS_PER_REVIEW, MAX_DISPUTE_RECHECK_ARGUMENT_CHARACTERS, MAX_DISPUTE_RECHECK_RESPONSE_BYTES } from './disputedFindingRecheckLimits';
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -168,7 +168,7 @@ export function validateDisputedFindingRecheckRow(
   return request;
 }
 
-/** Load every persisted request, failing closed if a row's source archive or Gate was lost. */
+/** Load this exact execution attempt's admitted batch, failing closed if any row's source archive or Gate was lost. */
 export async function loadValidatedDisputedFindingRechecks(
   queryable: DisputedFindingRecheckQueryable,
   run: DisputedFindingRecheckRunIdentity,
@@ -195,11 +195,14 @@ export async function loadValidatedDisputedFindingRechecks(
         ON gate.attempt_id = request.source_gate_attempt_id
        AND gate.run_id = request.run_id
        AND gate.execution_attempt = request.source_execution_attempt
-     WHERE request.run_id = $1
+      JOIN review_finding_recheck_admissions admission
+        ON admission.run_id = request.run_id
+       AND admission.source_execution_attempt = request.source_execution_attempt
+     WHERE request.run_id = $1 AND admission.execution_attempt = $2
      ORDER BY request.source_execution_attempt, request.created_at, request.request_id
-     LIMIT ${MAX_DISPUTE_RECHECKS_PER_REVIEW + 1}`, [run.run_id])).rows;
-  if (rows.length > MAX_DISPUTE_RECHECKS_PER_REVIEW) {
-    throw new Error('Too many disputed finding re-review requests');
+     LIMIT ${MAX_DISPUTE_RECHECKS_PER_BATCH + 1}`, [run.run_id, currentAttempt])).rows;
+  if (rows.length > MAX_DISPUTE_RECHECKS_PER_BATCH) {
+    throw new Error('Disputed finding re-review batch exceeds its response bound');
   }
   return rows.map((row) => validateDisputedFindingRecheckRow(row, run, currentAttempt));
 }
