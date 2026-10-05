@@ -466,6 +466,12 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
     const checkpointWrite = await request(app).post('/checkpoint')
       .set('Authorization', `Bearer ${workerToken}`).send(targetCheckpoint);
     expect(checkpointWrite.status).toBe(200);
+    const validCheckpointRead = await request(app).post('/checkpoint')
+      .set('Authorization', `Bearer ${workerToken}`).send({
+        version: 'ReviewExecutionCheckpointRead.v1', runId: source.sourceRunId, executionAttempt: 3,
+      });
+    expect(validCheckpointRead.status).toBe(200);
+    expect(validCheckpointRead.body.disputedFindingRechecks).toEqual([]);
 
     if (fault === 'missing-admission-projection') {
       const deleted = await pool!.query(`DELETE FROM review_finding_recheck_admissions
@@ -495,6 +501,12 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
     } else {
       await expect(loadValidatedDisputedFindingRechecks(pool as never, identity, 3)).rejects.toThrow();
     }
+    const invalidCheckpointRead = await request(app).post('/checkpoint')
+      .set('Authorization', `Bearer ${workerToken}`).send({
+        version: 'ReviewExecutionCheckpointRead.v1', runId: source.sourceRunId, executionAttempt: 3,
+      });
+    expect(invalidCheckpointRead.status).toBe(503);
+    expect(invalidCheckpointRead.body).toEqual({ error: 'Review checkpoint is temporarily unavailable' });
 
     const gateNow = Date.now() + 1_000;
     const targetCompletion: WorkerReviewCompletion = { ...source.sourceCompletion, executionAttempt: 3,
