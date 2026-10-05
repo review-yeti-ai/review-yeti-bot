@@ -9,6 +9,8 @@ describe('normalizeDriftedStructuredOutput', () => {
       findings: [
         { severity: 'p1', path: 'src/a.ts', line: '12', startLine: '3', title: 't', body: 'b' },
         { severity: 'P2', path: 'src/b.ts', line: 8, startLine: null, title: 't2', body: 'b2' },
+        { severity: 'p3', path: 'src/c.ts', line: 9, startLine: null, title: 't3', body: 'b3' },
+        { severity: 'nit', path: 'src/d.ts', line: 10, startLine: null, title: 't4', body: 'b4' },
       ],
     };
     expect(normalizeDriftedStructuredOutput('persona', value)).toBe(true);
@@ -18,6 +20,8 @@ describe('normalizeDriftedStructuredOutput', () => {
     expect(value.findings[0].startLine).toBe(3);
     expect(value.findings[1].line).toBe(8);
     expect(value.findings[1].startLine).toBeNull();
+    expect(value.findings[2].severity).toBe('P3');
+    expect(value.findings[3].severity).toBe('NIT');
   });
 
   it('repairs case-only moderator and arbiter enums', () => {

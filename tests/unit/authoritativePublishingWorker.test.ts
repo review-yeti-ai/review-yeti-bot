@@ -51,10 +51,11 @@ const TOKEN = 'ghs_fake_authoritative_worker';
 const DIFF = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
 const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
 
-function fixture(options: { reviewEngine?: 'panel' | 'composed' | 'shadow' } = {}) {
+function fixture(options: { reviewEngine?: 'panel' | 'composed' | 'shadow'; severityV2?: boolean } = {}) {
   const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
     personas: 'security,testing', budget: { max_investigation_turns: 1 },
     ...(options.reviewEngine ? { review_engine: options.reviewEngine } : {}),
+    ...(options.severityV2 ? { severity_policy: 'review-yeti-severity.v2' } : {}),
   } });
   const prepared = preparePublishingPolicy({ content, source: {
     repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
@@ -208,6 +209,49 @@ function threadPublicationFixture(options: { blocking?: boolean; publishFails?: 
 }
 
 describe('finding-thread publication before authoritative retirement', () => {
+  it('publishes v2 thread migration only after accepted completion with the decision receipt', async () => {
+    const f = fixture({ severityV2: true });
+    const order: string[] = [];
+    let threadRequest: unknown;
+    f.deps.findingThreadReader = async () => [];
+    f.deps.findingThreads = { publish: vi.fn(async (input) => {
+      order.push('threads'); threadRequest = input;
+      return { created: 0, skipped: 0, resolved: 0 };
+    }) };
+    f.reportReviewResult.mockImplementation(async () => { order.push('completion'); });
+    f.checkClient.completeCheck.mockImplementation(async () => { order.push('raw-check'); });
+
+    const result = await runPublishingReviewWorker(f.env, f.deps);
+
+    expect(order).toEqual(['completion', 'threads', 'raw-check']);
+    expect(threadRequest).toMatchObject({ headSha: HEAD, baseSha: BASE, repositoryId: 123,
+      owner: 'example', repo: 'project', prNumber: 42,
+      policyDigest: f.prepared.policy.effectivePolicyDigest,
+      configDigest: f.prepared.policy.effectiveConfigDigest,
+      reviewDecision: { schemaVersion: 'review-yeti-decision.v2', eligible: true } });
+    expect(result.conclusion).toBe('success');
+  });
+
+  it('fails the raw check explicitly when post-completion v2 thread migration fails', async () => {
+    const f = fixture({ severityV2: true });
+    const order: string[] = [];
+    f.deps.findingThreadReader = async () => [];
+    f.deps.findingThreads = { publish: vi.fn(async () => {
+      order.push('threads'); throw new Error('service unavailable');
+    }) };
+    f.reportReviewResult.mockImplementation(async () => { order.push('completion'); });
+    f.checkClient.completeCheck.mockImplementation(async (input) => {
+      order.push('raw-check');
+      expect(input.conclusion).toBe('failure');
+      expect(input.summary).toContain('Required conversation update failed');
+    });
+
+    const result = await runPublishingReviewWorker(f.env, f.deps);
+
+    expect(order).toEqual(['completion', 'threads', 'raw-check']);
+    expect(result.conclusion).toBe('failure');
+  });
+
   it('publishes through the active route before terminal completion, then rejects the retired execution', async () => {
     const t = threadPublicationFixture();
     const receipt = await runPublishingReviewWorker(t.f.env, t.f.deps);
@@ -1002,7 +1046,7 @@ describe('authoritative prepared publishing worker', () => {
         expectedLanes: 0, completedLanes: 0,
         exemption: {
           kind: 'no-reviewable-content',
-          auditDigest: '1b03782f1c8a86af64f021c8b66d4cc81e92d2eab66b4f291838e1fc94f549a1',
+          auditDigest: '8c3dd0de522c745c94c8e1c4fc9dc2e67b858aaa32c21ec0203564ffff98373b',
         },
       },
     });

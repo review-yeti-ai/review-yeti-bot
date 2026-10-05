@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { evaluateReviewGate, type ReviewGateEvidence, type ReviewRiskAcceptance } from '../../src/review/reviewGatePolicy';
+import { createReviewDecisionV2 } from '../../src/review/reviewDecision';
 
 const candidate = { repositoryId: 123, prNumber: 42, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64) };
 const current = { ...candidate, open: true, draft: false };
@@ -8,6 +9,18 @@ const clean: ReviewGateEvidence = {
   quorumSatisfied: true, infrastructureFailure: false, p0Count: 0, p1Count: 0, p2Count: 0,
   expectedLanes: 6, completedLanes: 6,
 };
+const decisionV2 = (overrides: Record<string, unknown> = {}) => createReviewDecisionV2({
+  schemaVersion: 'review-yeti-decision.v2',
+  policyVersion: 'review-yeti-severity.v2',
+  policyDigest: candidate.policyDigest,
+  coverageComplete: true,
+  quorumSatisfied: true,
+  infrastructureFailure: false,
+  expectedLanes: 6,
+  completedLanes: 6,
+  counts: { p0Count: 0, p1Count: 0, p2Count: 1, p3Count: 1, nitCount: 1 },
+  ...overrides,
+} as Parameters<typeof createReviewDecisionV2>[0]);
 const acceptance: ReviewRiskAcceptance = {
   label: 'review-yeti/accepted-risk', labelPresent: true, eventId: 99,
   actorLogin: 'reviewer', actorType: 'User', actorPermission: 'write', appliedAt: '2026-09-09T12:01:00Z',
@@ -83,5 +96,72 @@ describe('ADR 0002: a required P2 blocks the Gate exactly like a P0/P1', () => {
     expect(evaluate({ ...clean, p2Count: 1.5 })).toMatchObject({ reason: 'invalid-evidence' });
     const exempt = { ...clean, expectedLanes: 0, completedLanes: 0, exemption: { kind: 'recap-only' as const, auditDigest: 'd'.repeat(64) } };
     expect(evaluate({ ...exempt, p2Count: 1 })).toMatchObject({ reason: 'invalid-evidence' });
+  });
+});
+
+describe('ReviewYetiDecision.v2 eligibility', () => {
+  it('approves a complete advisory-only review while retaining all advisory counts', () => {
+    const evidence = {
+      ...clean,
+      // Under v2 this legacy column counts required P2 only; advisory totals remain in the receipt.
+      p2Count: 0,
+      reviewDecision: decisionV2(),
+    };
+    expect(evaluate(evidence as ReviewGateEvidence)).toEqual({
+      status: 'success', eligible: true, reason: 'clean-review',
+    });
+  });
+
+  it('approves a complete P3-only review under the new policy', () => {
+    expect(evaluate({ ...clean, p2Count: 0, reviewDecision: decisionV2({
+      counts: { p0Count: 0, p1Count: 0, p2Count: 0, p3Count: 1, nitCount: 0 },
+    }) } as ReviewGateEvidence)).toEqual({ status: 'success', eligible: true, reason: 'clean-review' });
+  });
+
+  it('blocks one verified P1 even when the worker verdict says SHIP', () => {
+    const evidence = {
+      ...clean,
+      verdict: 'SHIP' as const,
+      p1Count: 1,
+      reviewDecision: decisionV2({ counts: { p0Count: 0, p1Count: 1, p2Count: 0, p3Count: 0, nitCount: 0 } }),
+    };
+    expect(evaluate(evidence as ReviewGateEvidence).eligible).toBe(false);
+  });
+
+  it('fails closed when v2 coverage is incomplete even if there are no findings', () => {
+    const evidence = {
+      ...clean,
+      coverageComplete: false,
+      quorumSatisfied: false,
+      reviewDecision: decisionV2({ coverageComplete: false, quorumSatisfied: false }),
+    };
+    expect(evaluate(evidence as ReviewGateEvidence)).toMatchObject({
+      status: 'failure', eligible: false, reason: 'incomplete-review',
+    });
+  });
+
+  it('rejects a v2 decision bound to another policy digest', () => {
+    const evidence = {
+      ...clean,
+      p2Count: 1,
+      reviewDecision: decisionV2({ policyDigest: 'd'.repeat(64) }),
+    };
+    expect(evaluate(evidence as ReviewGateEvidence)).toMatchObject({
+      status: 'failure', eligible: false, reason: 'invalid-evidence',
+    });
+  });
+
+  it('rejects a forged eligible bit and counts that disagree with service evidence', () => {
+    const blocked = decisionV2({ counts: { p0Count: 0, p1Count: 1, p2Count: 0, p3Count: 0, nitCount: 0 } });
+    expect(evaluate({ ...clean, verdict: 'FIX_FIRST', p1Count: 1,
+      reviewDecision: { ...blocked, eligible: true } } as ReviewGateEvidence))
+      .toMatchObject({ status: 'failure', eligible: false, reason: 'invalid-evidence' });
+    expect(evaluate({ ...clean, reviewDecision: decisionV2(), p2Count: 1 } as ReviewGateEvidence))
+      .toMatchObject({ status: 'failure', eligible: false, reason: 'invalid-evidence' });
+  });
+
+  it('rejects a clean receipt paired with a non-SHIP publication verdict', () => {
+    expect(evaluate({ ...clean, verdict: 'FIX_FIRST', reviewDecision: decisionV2() } as ReviewGateEvidence))
+      .toMatchObject({ status: 'failure', eligible: false, reason: 'invalid-evidence' });
   });
 });

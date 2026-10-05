@@ -366,7 +366,7 @@ describe('publishing progress diagnostics', () => {
 
     const invalidSeverity = [{ severity: 'HIGH', path: 'src/auth.ts', line: 1, title: 'x', body: 'y' }];
     expect(() => validateFindings(invalidSeverity, changedFiles)).toThrow(PanelFindingsValidationError);
-    expect(findingCorrectionForCode('severity_invalid')?.hint).toContain('P0, P1, or P2');
+    expect(findingCorrectionForCode('severity_invalid')?.hint).toContain('P0, P1, P2, P3, or NIT');
     expect(findingCorrectionForCode('provider supplied text')).toBeUndefined();
     for (const code of ['path_invalid', 'path_not_changed', 'line_invalid', 'line_not_added', 'line_unanchorable', 'severity_invalid', 'contract_invalid']) {
       expect(findingCorrectionForCode(code)?.hint).toEqual(expect.any(String));

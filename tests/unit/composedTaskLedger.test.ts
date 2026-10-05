@@ -86,7 +86,7 @@ describe('composed task retention contract (not execution or approval)', () => {
       sourceDelivery: completeSourceDeliveryFixture(trusted, tasks[0]) };
     for (const delta of [{ taskId: 'missing' }, { planDigest: '8'.repeat(64) },
       { findings: [{ ...finding, path: 'src/auth.ts' }] }, { findings: [{ ...finding, line: 2 }] },
-      { findings: [{ ...finding, severity: 'P3' }] }, { findings: [{ ...finding, title: '' }] },
+      { findings: [{ ...finding, severity: 'HIGH' }] }, { findings: [{ ...finding, title: '' }] },
       { findings: [{ ...finding, nonce: 'raw' }] }, { findings: new Array(401).fill(finding) }]) {
       expect(() => createComposedTaskOutcome(plan, { ...input, ...delta }, trusted.changedFiles)).toThrow();
     }
