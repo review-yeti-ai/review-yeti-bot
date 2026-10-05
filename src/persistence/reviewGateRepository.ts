@@ -342,7 +342,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           if (!coverageFailure) throw error;
         }
       }
-      const currentDecision = trusted ? evaluateReviewGate({ candidate: coordinates, current: trusted.current, passthrough: process.env['REVIEW_YETI_PASSTHROUGH'] === 'true' }) : undefined;
+      const currentDecision = trusted ? evaluateReviewGate({ candidate: coordinates, current: trusted.current }) : undefined;
       const derived = trusted && currentDecision?.status === 'pending' ? deriveCanonicalWorkerReviewEvidence(event, {
         ...trusted.coverage,
         expectedCoordinates: {
@@ -369,7 +369,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         : retainedDigest !== null && evidence?.exemption
           ? { status: 'failure', eligible: false, reason: 'invalid-evidence' }
         : evidence && trusted
-        ? evaluateReviewGate({ candidate: coordinates, current: trusted.current, evidence, passthrough: process.env['REVIEW_YETI_PASSTHROUGH'] === 'true' })
+        ? evaluateReviewGate({ candidate: coordinates, current: trusted.current, evidence })
         : { status: 'failure', eligible: false, reason: 'invalid-evidence' };
       if (decision.status === 'pending') throw new Error('Terminal gate result cannot remain pending');
 

@@ -56,6 +56,15 @@ const WORKER_PROOF = { workerTokenDigest: 'd'.repeat(64) };
 const RECEIVED_AT = Date.parse('2026-09-09T12:00:00.000Z');
 const COMPLETED_AT = RECEIVED_AT + 60_000;
 const ENABLED_LIFECYCLE_EVENTS = { lifecycleEvents: 'enabled' as const };
+async function withGlobalMaintenanceAvailability<T>(action: () => Promise<T>): Promise<T> {
+  const previous = process.env['REVIEW_YETI_PASSTHROUGH'];
+  process.env['REVIEW_YETI_PASSTHROUGH'] = 'true';
+  try { return await action(); }
+  finally {
+    if (previous === undefined) delete process.env['REVIEW_YETI_PASSTHROUGH'];
+    else process.env['REVIEW_YETI_PASSTHROUGH'] = previous;
+  }
+}
 // PostgreSQL advisory locks are database-global, not scoped by this suite's
 // random search_path schema. Use a high randomized repository id so concurrent
 // Postgres files cannot make reaper try-lock assertions intermittently skip a
@@ -1711,11 +1720,12 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     });
 
     it.each(['headSha', 'baseSha', 'policyDigest', 'closed'] as const)(
-      'cancels against current trusted %s changes without reviving the candidate', async (field) => {
+      'keeps current trusted %s checks active when maintenance availability is enabled', async (field) => {
         const { id, repository, event, resolve, trusted } = await completionFixture();
         if (field === 'closed') trusted.current.open = false;
         else trusted.current[field] = 'f'.repeat(field === 'policyDigest' ? 64 : 40);
-        await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+        await expect(withGlobalMaintenanceAvailability(() =>
+          repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT))).resolves.toBe('recorded');
         expectTerminalState(await snapshot(id), event, 'cancelled', field === 'closed' ? 'pull-request-closed' : 'candidate-superseded');
         const cancelled = await snapshot(id);
         await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT + 1_000)).resolves.toBe('ignored');
@@ -1929,6 +1939,13 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       }, COMPLETED_AT)).rejects.toMatchObject({ stage: 'trusted-completion-resolution' });
       expect(await snapshot(id)).toEqual(before);
       await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
+      expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
+    });
+
+    it('does not treat global maintenance availability as a worker-completion waiver', async () => {
+      const { id, repository, event, resolve } = await completionFixture();
+      await expect(withGlobalMaintenanceAvailability(() =>
+        repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT))).resolves.toBe('recorded');
       expectTerminalState(await snapshot(id), event, 'success', 'clean-review');
     });
 
