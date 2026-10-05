@@ -14,6 +14,8 @@ import { reviewPrLockKey } from '../../src/persistence/reviewPrTransaction';
 import { findingRecheckAdmission } from '../support/findingRecheckAdmission';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
 import { reservePrReview } from '../../src/persistence/reviewPrLifecycleRepository';
+import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
+import { transitionPrReviewReservation } from '../../src/persistence/reviewPrLifecycleRepository';
 import { disputedFindingRecheckDigest, loadValidatedDisputedFindingRechecks } from '../../src/review/disputedFindingRecheck';
 import { describeWithPostgres, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
@@ -85,6 +87,73 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
       await admin.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
     }
     await admin?.end();
+  });
+
+  async function seedReviewSource(sourcePrNumber: number) {
+    const sourceRunId = `run_${randomBytes(16).toString('hex')}`;
+    const sourceCompletion: WorkerReviewCompletion = { ...completion, runId: sourceRunId, prNumber: sourcePrNumber };
+    const sourceDigest = workerReviewCompletionDigest(sourceCompletion);
+    const sourceBytes = canonicalJson(sourceCompletion);
+    const sourceGateAttemptId = `${sourceRunId}-g1-e2`;
+    const coordinates = { ...gateCoordinates, runId: sourceRunId, prNumber: sourcePrNumber,
+      attemptId: sourceGateAttemptId };
+    const identity = buildReviewRunIdentity({ owner, repo, prNumber: sourcePrNumber, headSha, baseSha, configDigest });
+    const deliveryId = `dispute-source-${sourcePrNumber}`;
+    await pool!.query(`INSERT INTO review_runs
+      (run_id, owner, repo, pr_number, head_sha, base_sha, effective_policy_digest, effective_config_digest,
+       status, attempt, repository_id, authoritative_gate_app_id, identity_digest, snapshot_digest, config_digest,
+       identity, publication_mode, stage, delivery_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'failed', 1, $9, 4385771, $10, $11, $8, $12::jsonb,
+        'app-gate', 'complete', $13)`,
+    [sourceRunId, owner, repo, sourcePrNumber, headSha, baseSha, policyDigest, configDigest, repositoryId,
+      sha256(identity), identity.snapshotDigest, JSON.stringify(identity), deliveryId]);
+    await pool!.query(`INSERT INTO github_deliveries (delivery_id, event_name, repository_id, installation_id,
+        payload_digest, received_at)
+      VALUES ($1, 'pull_request', $2, 2001, $3, CURRENT_TIMESTAMP)`, [deliveryId, repositoryId, sourceDigest]);
+    await pool!.query(`UPDATE review_runs SET result_digest = $2 WHERE run_id = $1`, [sourceRunId, sourceDigest]);
+    await pool!.query(`INSERT INTO review_dispatch_outbox (run_id, delivery_id, status, execution_attempt)
+      VALUES ($1, $2, 'projected', 1)`, [sourceRunId, deliveryId]);
+    await pool!.query(`INSERT INTO review_gate_attempts
+      (attempt_id, run_id, review_generation, execution_attempt, repository_id, pr_number, expected_app_id,
+       coordinates, external_id, check_id, creation_state, desired_state, desired_version, published_version,
+       current_attempt, worker_result_digest)
+      VALUES ($1, $2, 1, 2, $3, $4, 4385771, $5::jsonb, $6, $7, 'bound', 'failure', 2, 2, true, $8)`,
+    [sourceGateAttemptId, sourceRunId, repositoryId, sourcePrNumber, JSON.stringify(coordinates),
+      `ws2-recheck-source-${sourcePrNumber}`, 70000 + sourcePrNumber, sourceDigest]);
+    await pool!.query(`INSERT INTO review_worker_completions
+      (run_id, execution_attempt, content_digest, payload, byte_length)
+      VALUES ($1, 2, $2, $3::jsonb, $4)`,
+    [sourceRunId, sourceDigest, JSON.stringify(sourceCompletion), Buffer.byteLength(sourceBytes, 'utf8')]);
+    const checkpoint: ReviewExecutionCheckpoint = { ...sourceCheckpoint, runId: sourceRunId, prNumber: sourcePrNumber };
+    await pool!.query(`INSERT INTO review_execution_checkpoints
+      (run_id, execution_attempt, revision, head_sha, config_digest, payload, byte_length)
+      VALUES ($1, 2, 4, $2, $3, $4::jsonb, $5)`,
+    [sourceRunId, headSha, configDigest, JSON.stringify(checkpoint), Buffer.byteLength(JSON.stringify(checkpoint), 'utf8')]);
+    const lifecycleClient = await pool!.connect();
+    try {
+      await lifecycleClient.query('BEGIN');
+      await reservePrReview(lifecycleClient, {
+        repositoryId, owner, repo, prNumber: sourcePrNumber, runId: sourceRunId, executionAttempt: 2,
+        deliveryId, headSha, baseSha, policyDigest, configDigest, contextDigest: identity.snapshotDigest,
+      });
+      await transitionPrReviewReservation(lifecycleClient, {
+        runId: sourceRunId, executionAttempt: 2, status: 'failed', completionDigest: sourceDigest,
+        decisionReceipt: { gateDecision: { status: 'failure', eligible: false } },
+      });
+      await lifecycleClient.query('COMMIT');
+    } catch (error) {
+      await lifecycleClient.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally { lifecycleClient.release(); }
+    return { sourceRunId, sourcePrNumber, sourceCompletion, sourceDigest, sourceGateAttemptId,
+      sourceContextDigest: identity.snapshotDigest, deliveryId };
+  }
+
+  const authenticatedContext = (targetPrNumber: number) => ({
+    authenticatedByConfiguredAuthenticator: true,
+    caller: { authType: 'static_token' as const, tokenDigest: 'test-digest', isAdmin: true,
+      allowedRepositories: null, callerId: `ws2-lifecycle-test-${targetPrNumber}` },
+    authorizedRepository: { owner, repo },
   });
 
   it('enqueues once, reads the bound historical Gate, and records only an authenticated fresh-task receipt', async () => {
@@ -179,6 +248,25 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
           title: sourceFinding.title, body: sourceFinding.body },
         counterArgument: input.counter_argument, counterArgumentDigest: sha256(input.counter_argument),
       }) });
+    const targetReservation = (await pool!.query(`SELECT reservation_id, status, run_id, execution_attempt,
+        head_sha, base_sha, policy_digest, config_digest, context_digest, decision_receipt
+      FROM review_pr_review_reservations WHERE run_id = $1 AND execution_attempt = 3`, [runId])).rows[0];
+    expect(targetReservation).toMatchObject({ status: 'reserved', run_id: runId, execution_attempt: 3,
+      head_sha: headSha, base_sha: baseSha, policy_digest: policyDigest, config_digest: configDigest,
+      context_digest: persistedIdentity.snapshotDigest, decision_receipt: null });
+    const targetAdmissionEvent = (await pool!.query(`SELECT event_type, reservation_id, run_id,
+        execution_attempt, head_sha, base_sha, policy_digest, config_digest, context_digest,
+        evidence_digest, actor_digest, payload
+      FROM review_pr_lifecycle_events WHERE event_type = 'finding.recheck_target_admitted'`)).rows[0];
+    expect(targetAdmissionEvent).toMatchObject({ event_type: 'finding.recheck_target_admitted',
+      reservation_id: targetReservation.reservation_id, run_id: runId, execution_attempt: 3,
+      head_sha: headSha, base_sha: baseSha, policy_digest: policyDigest, config_digest: configDigest,
+      context_digest: persistedIdentity.snapshotDigest, evidence_digest: expect.any(String),
+      actor_digest: sha256(context.caller.callerId),
+      payload: { requestId: first.request_id, sourceExecutionAttempt: 2,
+        sourceCompletionDigest: completionDigest, sourceContextDigest: persistedIdentity.snapshotDigest,
+        targetExecutionAttempt: 3, candidate: { headSha, baseSha, policyDigest, configDigest,
+          contextDigest: persistedIdentity.snapshotDigest } } });
 
     const storedSourceBefore = (await pool!.query(`SELECT content_digest, payload FROM review_worker_completions
       WHERE run_id = $1 AND execution_attempt = 2`, [runId])).rows[0];
@@ -311,4 +399,88 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
     expect((await pool!.query('SELECT COUNT(*)::int AS count FROM review_finding_rechecks WHERE run_id=$1', [runId]))
       .rows[0].count).toBe(9);
   }, 30_000);
+
+  it.each([
+    { outcome: 'dispatch-failure', pr: 1271 },
+    { outcome: 'pull-request-close', pr: 1272 },
+    { outcome: 'supersession', pr: 1273 },
+  ] as const)('records the admitted target reservation and $outcome before any trusted completion', async ({ outcome, pr }) => {
+    const source = await seedReviewSource(pr);
+    const tool = createDisputeFindingTool({ transactionPool: pool as never,
+      authoritativePublishing: findingRecheckAdmission(source.sourceCompletion) });
+    const findingId = getReviewFindingId(source.sourceRunId, task.id, sourceFinding);
+    const input = { owner, repo, pr_number: pr, finding_id: findingId,
+      counter_argument: `Run a fresh verification of the exact source finding for PR ${pr}.` };
+    const result = await tool.execute(input, authenticatedContext(pr));
+    const receipt = JSON.parse((result.content[0] as { text: string }).text);
+    const request = (await pool!.query(`SELECT request_digest, request_id FROM review_finding_rechecks
+      WHERE run_id = $1 AND source_execution_attempt = 2`, [source.sourceRunId])).rows[0];
+    const target = (await pool!.query(`SELECT reservation_id, status, head_sha, base_sha, policy_digest,
+        config_digest, context_digest, decision_receipt
+      FROM review_pr_review_reservations WHERE run_id = $1 AND execution_attempt = 3`, [source.sourceRunId])).rows[0];
+    expect(target).toMatchObject({ status: 'reserved', head_sha: headSha, base_sha: baseSha,
+      policy_digest: policyDigest, config_digest: configDigest,
+      context_digest: source.sourceContextDigest, decision_receipt: null });
+    const targetEvent = (await pool!.query(`SELECT event_type, reservation_id, run_id, execution_attempt,
+        evidence_digest, actor_digest, context_digest, payload
+      FROM review_pr_lifecycle_events WHERE idempotency_key = $1`, [`${receipt.request_id}:recheck-target-admitted`])).rows[0];
+    expect(targetEvent).toMatchObject({ event_type: 'finding.recheck_target_admitted',
+      reservation_id: target.reservation_id, run_id: source.sourceRunId, execution_attempt: 3,
+      evidence_digest: request.request_digest, actor_digest: sha256(`ws2-lifecycle-test-${pr}`),
+      context_digest: source.sourceContextDigest,
+      payload: { requestId: receipt.request_id, requestDigest: request.request_digest,
+        sourceRunId: source.sourceRunId, sourceExecutionAttempt: 2,
+        sourceCompletionDigest: source.sourceDigest, sourceContextDigest: source.sourceContextDigest,
+        targetExecutionAttempt: 3, candidate: { headSha, baseSha, policyDigest, configDigest,
+          contextDigest: source.sourceContextDigest } } });
+    await pool!.query(`UPDATE review_gate_attempts SET creation_state = 'bound', check_id = $2,
+        desired_state = 'queued', desired_version = 1, published_version = 1
+      WHERE run_id = $1 AND execution_attempt = 3`, [source.sourceRunId, 71000 + pr]);
+    const sourceGateBefore = (await pool!.query(`SELECT worker_result_digest, desired_state, desired_version,
+        published_version, current_attempt
+      FROM review_gate_attempts WHERE attempt_id = $1`, [source.sourceGateAttemptId])).rows[0];
+    expect(sourceGateBefore).toMatchObject({ worker_result_digest: source.sourceDigest,
+      desired_state: 'failure', current_attempt: false });
+
+    const dispatch = new PostgresReviewDispatchRepository(pool!, undefined, { lifecycleEvents: 'enabled' });
+    const now = Date.now();
+    if (outcome === 'pull-request-close') {
+      const closed = await dispatch.terminalizeRunsForClosedPullRequest({
+        repositoryId, owner, repo, prNumber: pr, merged: false, now, deliveryId: `close-${pr}`,
+      });
+      expect(closed.terminalizedRunIds).toContain(source.sourceRunId);
+    } else {
+      const claim = await dispatch.claimNext(`ws2-lifecycle-${pr}`, now + 1, 30_000);
+      expect(claim).toMatchObject({ runId: source.sourceRunId, executionAttempt: 3 });
+      if (outcome === 'dispatch-failure') {
+        await expect(dispatch.markTerminal(source.sourceRunId, claim!.leaseOwner, claim!.claimAttempt,
+          now + 2, 'synthetic dispatcher failure')).resolves.toBe(true);
+      } else {
+        await expect(dispatch.supersedeClaim(source.sourceRunId, claim!.leaseOwner, claim!.claimAttempt,
+          now + 2)).resolves.toBe(true);
+      }
+    }
+
+    const terminalReservation = (await pool!.query(`SELECT status, decision_receipt FROM review_pr_review_reservations
+      WHERE run_id = $1 AND execution_attempt = 3`, [source.sourceRunId])).rows[0];
+    expect(terminalReservation).toMatchObject({ status: outcome === 'dispatch-failure' ? 'failed' : 'superseded',
+      decision_receipt: null });
+    const sourceGateAfter = (await pool!.query(`SELECT worker_result_digest, desired_state, desired_version,
+        published_version, current_attempt
+      FROM review_gate_attempts WHERE attempt_id = $1`, [source.sourceGateAttemptId])).rows[0];
+    expect(sourceGateAfter).toEqual(sourceGateBefore);
+    const targetGate = (await pool!.query(`SELECT desired_state, worker_result_digest, decision
+      FROM review_gate_attempts WHERE run_id = $1 AND execution_attempt = 3`, [source.sourceRunId])).rows[0];
+    expect(targetGate.desired_state).not.toBe('success');
+    expect(targetGate.worker_result_digest).toBeNull();
+    expect((await pool!.query(`SELECT count(*)::int AS count FROM review_semantic_finding_events
+      WHERE run_id = $1 AND execution_attempt = 3`, [source.sourceRunId])).rows[0].count).toBe(0);
+    const targetTerminalEvent = (await pool!.query(`SELECT event_type, payload
+      FROM review_pr_lifecycle_events WHERE reservation_id = $1
+      AND event_type IN ('review.failed', 'review.cancelled', 'review.superseded')`, [target.reservation_id])).rows;
+    expect(targetTerminalEvent.map((event) => event.event_type)).toContain(
+      outcome === 'dispatch-failure' ? 'review.failed' : 'review.superseded');
+    expect((await pool!.query(`SELECT status FROM review_runs WHERE run_id = $1`, [source.sourceRunId])).rows[0].status)
+      .toBe(outcome === 'dispatch-failure' ? 'failed' : 'superseded');
+  });
 });

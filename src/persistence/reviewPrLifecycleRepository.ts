@@ -365,6 +365,72 @@ export async function recordPrFindingRecheckRequest(client: ReviewLifecycleQuery
   });
 }
 
+/**
+ * Reserve the exact execution admitted by an authenticated finding recheck.
+ * The caller holds the PR transaction lock and writes this together with the
+ * recheck admission. Its immutable target identity uses the same candidate
+ * snapshot digest later supplied by dispatch and trusted completion.
+ */
+export async function reservePrFindingRecheckTarget(client: ReviewLifecycleQueryable, input: {
+  repositoryId: number;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  runId: string;
+  deliveryId: string;
+  sourceExecutionAttempt: number;
+  executionAttempt: number;
+  requestId: string;
+  requestDigest: string;
+  sourceContentDigest: string;
+  sourceContextDigest: string;
+  headSha: string;
+  baseSha: string;
+  policyDigest: string;
+  configDigest: string;
+  candidateContextDigest: string;
+  actorDigest: string;
+  at?: number;
+}): Promise<ReviewLifecycleReservation> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(input.requestId)
+    || !Number.isSafeInteger(input.sourceExecutionAttempt) || input.sourceExecutionAttempt < 1
+    || input.executionAttempt !== input.sourceExecutionAttempt + 1
+    || !validDigest(input.requestDigest) || !validDigest(input.sourceContentDigest)
+    || !validDigest(input.sourceContextDigest) || input.sourceContextDigest !== input.candidateContextDigest
+    || !/^[a-f0-9]{64}$/u.test(input.actorDigest)) {
+    throw new Error('Invalid finding recheck target reservation evidence');
+  }
+  const at = input.at ?? Date.now();
+  const reservation = await reservePrReview(client, {
+    repositoryId: input.repositoryId, owner: input.owner, repo: input.repo, prNumber: input.prNumber,
+    runId: input.runId, executionAttempt: input.executionAttempt, deliveryId: input.deliveryId,
+    headSha: input.headSha, baseSha: input.baseSha, policyDigest: input.policyDigest,
+    configDigest: input.configDigest, contextDigest: input.candidateContextDigest, at,
+  });
+  await appendLifecycleEvent(client, {
+    lifecycleId: reservation.lifecycleId, reservationId: reservation.reservationId,
+    idempotencyKey: `${input.requestId}:recheck-target-admitted`,
+    eventType: 'finding.recheck_target_admitted',
+    identity: { repositoryId: input.repositoryId, owner: input.owner, repo: input.repo, prNumber: input.prNumber },
+    runId: input.runId, executionAttempt: input.executionAttempt,
+    headSha: input.headSha, baseSha: input.baseSha, policyDigest: input.policyDigest,
+    configDigest: input.configDigest, contextDigest: input.candidateContextDigest,
+    evidenceDigest: input.requestDigest, actorDigest: input.actorDigest,
+    payload: {
+      requestId: input.requestId, requestDigest: input.requestDigest,
+      sourceRunId: input.runId, sourceExecutionAttempt: input.sourceExecutionAttempt,
+      sourceCompletionDigest: input.sourceContentDigest,
+      sourceContextDigest: input.sourceContextDigest,
+      targetExecutionAttempt: input.executionAttempt,
+      candidate: { headSha: input.headSha, baseSha: input.baseSha,
+        policyDigest: input.policyDigest, configDigest: input.configDigest,
+        contextDigest: input.candidateContextDigest },
+    },
+    at,
+  });
+  return reservation;
+}
+
 /** Add a separately evidenced finding verification decision without mutating the source finding row. */
 export async function recordIndependentFindingVerification(client: ReviewLifecycleQueryable, input: {
   findingEventId: string;
