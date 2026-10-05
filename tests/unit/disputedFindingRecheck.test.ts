@@ -179,17 +179,19 @@ describe('immutable disputed-finding request validator', () => {
       sign(row); return row;
     }), query = vi.fn().mockResolvedValue({ rows });
     expect(await loadValidatedDisputedFindingRechecks({ query }, run, 2)).toEqual(rows.map(request));
-    const [sql, values] = query.mock.calls[0]; expect(values).toEqual([run.run_id]);
+    const [sql, values] = query.mock.calls[0]; expect(values).toEqual([run.run_id, 2]);
     for (const binding of ['LEFT JOIN review_worker_completions completion', 'completion.run_id = request.run_id',
       'completion.execution_attempt = request.source_execution_attempt', 'LEFT JOIN review_gate_attempts gate',
       'gate.attempt_id = request.source_gate_attempt_id', 'gate.run_id = request.run_id',
       'gate.execution_attempt = request.source_execution_attempt', 'WHERE request.run_id = $1',
+      'admission.execution_attempt = $2',
       'ORDER BY request.source_execution_attempt, request.created_at, request.request_id', 'LIMIT 9']) expect(sql).toContain(binding);
     expect(sql).not.toMatch(/\b(?:INSERT|UPDATE|DELETE)\b/); expect(query).toHaveBeenCalledTimes(1);
   });
   it('rejects nine rows rather than silently dropping one', async () => {
     const { run } = fixture(); const query = vi.fn().mockResolvedValue({ rows: Array.from({ length: 9 }, () => fixture().row) });
-    await expect(loadValidatedDisputedFindingRechecks({ query }, run, 2)).rejects.toThrow('Too many disputed finding re-review requests');
+    await expect(loadValidatedDisputedFindingRechecks({ query }, run, 2))
+      .rejects.toThrow('Disputed finding re-review batch exceeds its response bound');
   });
   it.each(['completion_payload', 'gate_check_id'])('fails the whole loader for lost LEFT JOIN %s', async (key) => {
     const { row, run } = fixture(); row[key] = null;
