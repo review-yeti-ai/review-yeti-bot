@@ -14,8 +14,10 @@ import { canonicalJson } from './reviewCore';
 import { GitHubReviewGateClient, REVIEW_GATE_CHECK_NAME, REVIEW_WORKER_CHECK_NAME } from '../github/reviewGateClient';
 import { OperatorPassthroughPublisher } from './operatorPassthroughPublisher';
 import type { OperatorPassthroughAdmissionRequest, OperatorPassthroughPublicationRepository,
-  OperatorPassthroughReconcileAdmission } from './operatorPassthrough';
+  OperatorPassthroughReconcileAdmission, OperatorPassthroughReconcileCursor } from './operatorPassthrough';
 import { logger } from '../utils/logger';
+
+const OPERATOR_PASSTHROUGH_CATCH_UP_BATCH_SIZE = 10;
 
 export interface AuthoritativeReviewServiceOptions {
   config: AuthoritativeServiceConfig;
@@ -37,7 +39,7 @@ export interface AuthoritativeReviewServiceOptions {
   operatorPassthroughRepository?: OperatorPassthroughPublicationRepository;
   passthroughEnabled?: boolean;
   /** Authenticated durable app-gate admissions used for bounded post-rollout catch-up. */
-  listPausedAdmissions?: (limit: number) => Promise<OperatorPassthroughReconcileAdmission[]>;
+  listPausedAdmissions?: (limit: number, after?: OperatorPassthroughReconcileCursor) => Promise<OperatorPassthroughReconcileAdmission[]>;
 }
 
 /** Additive control-plane wiring. Merely constructing this object does not
@@ -187,13 +189,22 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
     },
   });
   let active: Promise<void> | undefined;
+  let pausedAdmissionCursor: OperatorPassthroughReconcileCursor | undefined;
   const tick = async (): Promise<void> => {
     await repository.reapTerminalAttempts();
     await repository.advanceProjectedAttempts();
     if (operatorRepository && !passthroughEnabled) await operatorRepository.requestAllRetirements('pause-disabled');
     if (passthroughEnabled && operatorRepository && options.listPausedAdmissions && recordOperatorPassthrough) {
       try {
-        const pending = await options.listPausedAdmissions(100);
+        const pending = await options.listPausedAdmissions(OPERATOR_PASSTHROUGH_CATCH_UP_BATCH_SIZE, pausedAdmissionCursor);
+        if (pending.length > 0) {
+          const last = pending[pending.length - 1];
+          pausedAdmissionCursor = { repositoryId: last.repositoryId, prNumber: last.prNumber };
+        } else {
+          // Wrap on the following tick. A malformed, closed, draft, or transiently
+          // unavailable early row cannot permanently starve later PRs in the keyset.
+          pausedAdmissionCursor = undefined;
+        }
         for (const admission of pending) {
           if (!repositoryIds.includes(admission.repositoryId)
             || !/^run_[a-f0-9]{32}$/u.test(admission.runId)

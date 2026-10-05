@@ -1,5 +1,5 @@
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Pool } from 'pg';
 import {
   PostgresOperatorPassthroughRepository,
@@ -280,6 +280,38 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
     });
   });
 
+  it.each([
+    ['App', { appId: EXPECTED_APP_ID + 1 }],
+    ['head', { headSha: 'e'.repeat(40) }],
+    ['external ID', { externalId: 'review-yeti-operator-passthrough:v1:wrong' }],
+  ] as Array<[string, Partial<ReviewGateCheck>]>)('does not bind a %s-mismatched official check', async (_label, mismatch) => {
+    const recorded = await repository.record(inputFor(), NOW);
+    const claim = await repository.claimPublication('publisher-wrong-check', NOW, 10_000, recorded.publicationId);
+    expect(claim).not.toBeNull();
+    const wrongCheck = { ...checkForClaim(claim!, 7111), ...mismatch };
+
+    await expect(repository.publishLocked(claim!, async () => wrongCheck, () => NOW + 1))
+      .rejects.toThrow('Operator passthrough check publication failed');
+    await expect(repository.getPublication(recorded.publicationId)).resolves.toMatchObject({
+      reviewCheckId: null,
+      gateCheckId: null,
+      readyForShip: false,
+    });
+  });
+
+  it('rejects a stale publication claim before invoking the GitHub publisher', async () => {
+    const recorded = await repository.record(inputFor(), NOW);
+    const claim = await repository.claimPublication('publisher-stale-claim', NOW, 10_000, recorded.publicationId);
+    expect(claim).not.toBeNull();
+    const before = await repository.getPublication(recorded.publicationId);
+    const publish = vi.fn(async (current: OperatorPassthroughPublicationClaim) => checkForClaim(current, 7112));
+
+    await expect(repository.publishLocked({ ...claim!, leaseToken: randomUUID() }, publish, () => NOW + 1))
+      .resolves.toBe('stale-claim');
+    expect(publish).not.toHaveBeenCalled();
+    await expect(repository.getPublication(recorded.publicationId)).resolves.toEqual(before);
+  });
+
   it('retires both published checks before a fresh re-admission publication cycle', async () => {
     const input = inputFor();
     const first = await repository.record(input, NOW);
@@ -370,6 +402,38 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
       gateCheckId: 7312,
       readyForShip: true,
     });
+  });
+
+  it('retires all 501 pending candidates through bounded pages without repeating or starving the tail', async () => {
+    const repositoryId = 1_234_567_890;
+    const total = 501;
+    for (let index = 1; index <= total; index += 1) {
+      await repository.record(inputFor({ repositoryId, prNumber: index,
+        headSha: index.toString(16).padStart(40, '0') }, randomUUID(), 'd'.repeat(64)), NOW);
+    }
+    // Keep the operator checks in-flight so the first sweep cannot hide its
+    // progress by immediately completing each retirement.
+    await pool!.query(`UPDATE review_operator_passthrough_publications SET
+      review_creation_state='creating',gate_creation_state='creating'
+      WHERE repository_id=$1`, [repositoryId]);
+
+    let requestedTotal = 0;
+    while (requestedTotal < total) {
+      const expectedPageSize = Math.min(25, total - requestedTotal);
+      const requested = await repository.requestAllRetirements('pause-disabled', NOW + requestedTotal);
+      expect(requested).toBe(expectedPageSize);
+      requestedTotal += requested;
+      const pageProgress = await pool!.query(`SELECT COUNT(*)::integer AS requested
+        FROM review_operator_passthrough_publications
+        WHERE repository_id=$1 AND retirement_requested_at IS NOT NULL`, [repositoryId]);
+      expect(pageProgress.rows[0].requested).toBe(requestedTotal);
+    }
+    await expect(repository.requestAllRetirements('pause-disabled', NOW + total + 1)).resolves.toBe(0);
+    const completed = await pool!.query(`SELECT COUNT(*)::integer AS requested, COUNT(DISTINCT pr_number)::integer AS distinct_prs,
+      MIN(pr_number)::integer AS first, MAX(pr_number)::integer AS last,
+      COUNT(*) FILTER (WHERE retired_at IS NOT NULL)::integer AS prematurely_retired
+      FROM review_operator_passthrough_publications WHERE repository_id=$1`, [repositoryId]);
+    expect(completed.rows[0]).toEqual({ requested: 501, distinct_prs: 501, first: 1, last: 501, prematurely_retired: 0 });
   });
 
   it('starts one new cycle for the same retired service-reconciler delivery', async () => {

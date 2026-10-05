@@ -298,6 +298,32 @@ describe('native merge-group Review Yeti gate', () => {
   });
 
   it.each([
+    ['missing durable receipt', null],
+    ['pending durable receipt', { ...currentOperatorReceipt, mergeEligible: false }],
+  ])('fails paused merge-group admission when the %s is unavailable', async (_label, operatorReceipt) => {
+    const pausedConfig = { ...config, passthroughEnabled: true };
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes(`/commits/${GROUP_HEAD}/check-runs`)) return response({ total_count: 0, check_runs: [] });
+      if (url.endsWith('/check-runs') && init?.method === 'POST') return groupCheckResponse(9040, init, true);
+      if (url === 'https://api.github.com/graphql') return response(queue());
+      if (url.endsWith('/check-runs/9040') && init?.method === 'PATCH') return groupCheckResponse(9040, init, true);
+      return response({}, 500);
+    }) as typeof fetch;
+    const ensureOperatorPassthrough = vi.fn(async () => operatorReceipt);
+    const gate = createMergeGroupGate({ config: pausedConfig, repository: repository() as any,
+      tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation, ensureOperatorPassthrough });
+
+    await expect(gate(payload(), { deliveryId: 'delivery-unready', deliveryDigest: 'c'.repeat(64) }))
+      .resolves.toEqual({ checkId: 9040, conclusion: 'failure', snapshotDigest: queueSnapshotDigest(true), constituents: 1 });
+    expect(ensureOperatorPassthrough).toHaveBeenCalledOnce();
+    const completion = (fetchImplementation as any).mock.calls.find(([url, init]: [unknown, RequestInit]) =>
+      String(url).endsWith('/check-runs/9040') && init?.method === 'PATCH');
+    expect(JSON.parse(String(completion[1].body)).output.summary)
+      .toContain('exact operator SHIP checks are not durably published');
+  });
+
+  it.each([
     ['later success', [
       { id: 10, status: 'completed', conclusion: 'failure' },
       { id: 11, status: 'completed', conclusion: 'success' },

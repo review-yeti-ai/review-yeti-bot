@@ -325,6 +325,7 @@ describe('DOKS Action dispatch client', () => {
     ['review state', { reviewStarted: true }],
     ['published state without merge eligibility', { publicationState: 'published', mergeEligible: false }],
     ['published state without both official check IDs', { mergeEligible: true, gateCheckId: null }],
+    ['merge eligibility without the Review Yeti check ID', { mergeEligible: true, reviewCheckId: null }],
     ['merge eligibility without published state', { publicationState: 'pending', mergeEligible: true }],
   ] as Array<[string, Record<string, unknown>]>)('rejects passthrough receipts with mismatched %s', async (_field, override) => {
     const { buildDispatchRequest, dispatchAction } = await import(modulePath);
