@@ -184,6 +184,28 @@ describe('trigger_review governed admission', () => {
     expect(admit).not.toHaveBeenCalled();
   });
 
+  it('posts the service-owned SHIP check through the publisher during MCP passthrough', async () => {
+    const identity = { owner: 'exampleorg', repo: 'example-api', prNumber: 73, headSha: HEAD_SHA, baseSha: BASE_SHA };
+    const publish = vi.fn(async () => ({ status: 'published', checkId: 5, reviewMode: 'passthrough' }));
+    const tool = createTriggerReviewTool({
+      passthroughEnabled: true,
+      passthroughShip: { publish },
+      resolveGitHubPullRequest: vi.fn(async () => ({
+        headSha: HEAD_SHA, baseSha: BASE_SHA, repositoryId: 101, installationId: 22,
+      })),
+      authoritativePublishing: {
+        expectedAppId: 42, repositoryIds: [101], acceptNewRequests: false,
+        resolver: { resolve: vi.fn(async () => ({ identity, prepared: { policy: { effectivePolicyDigest: POLICY_DIGEST } } })) },
+      },
+    } as any);
+    const output = JSON.parse(((await tool.execute(request)).content[0] as any).text);
+    expect(publish).toHaveBeenCalledWith({
+      owner: 'exampleorg', repo: 'example-api', repositoryId: 101, prNumber: 73, headSha: HEAD_SHA, baseSha: BASE_SHA,
+    });
+    expect(output).toMatchObject({ status: 'passthrough', review_started: false,
+      passthrough_check: { status: 'published', checkId: 5, reviewMode: 'passthrough' } });
+  });
+
   it('does not let MCP passthrough bypass incomplete-P2 recovery authorization', async () => {
     const admit = vi.fn();
     const tool = createTriggerReviewTool({

@@ -24,6 +24,7 @@ import { githubWebhookConfigFromEnv } from './auth/githubWebhookConfig';
 import { createGitHubWebhookAdmissionHandler } from './review/githubWebhookAdmission';
 import { PostgresMergeGroupGateRepository } from './persistence/mergeGroupGateRepository';
 import { createMergeGroupGate } from './review/mergeGroupGate';
+import { createPassthroughShipPublisher } from './review/passthroughShipPublisher';
 import { reviewCiConfigFromEnv } from './auth/reviewCiConfig';
 import { createReviewCiRuntime } from './reviewCiRuntime';
 import { findReviewCiEnrollment } from './review/reviewCi';
@@ -145,6 +146,14 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     } } : {}),
     requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
   });
+  // Operator passthrough: the service itself posts the official check as SHIP and labels it.
+  const passthroughShip = dispatchConfig.passthroughEnabled ? createPassthroughShipPublisher({
+    appId: Number(appId),
+    baseUrl,
+    ...(authoritative ? { authoritativePublishing: authoritative.admission } : {}),
+    tokenFor: async (owner, repo, mode) => (await getBoundedRepositoryToken(
+      installationCredentialsForRepository(owner, repo), mode)).token,
+  }) : undefined;
   const githubWebhook = webhookConfig ? {
     secret: webhookConfig.secret,
     onEvent: createGitHubWebhookAdmissionHandler({
@@ -157,6 +166,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
         return { open: current.open };
       },
       ...(authoritative ? { authoritativePublishing: authoritative.admission } : {}),
+      ...(passthroughShip ? { passthroughShip } : {}),
       mergeGroupGate: createMergeGroupGate({
         config: webhookConfig,
         repository: new PostgresMergeGroupGateRepository(pool),
@@ -191,6 +201,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       modelClient,
       triggerDeps: {
         passthroughEnabled: dispatchConfig.passthroughEnabled,
+        ...(passthroughShip ? { passthroughShip } : {}),
         authoritativePublishing: authoritative?.admission,
         resolveGitHubPullRequest: async (owner: string, repo: string, pullNumber: number) => {
           const credentials = installationCredentialsForRepository(owner, repo);
@@ -225,6 +236,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     admission: repository,
     allowAppGate: policy.allowAppGate,
     passthroughEnabled: dispatchConfig.passthroughEnabled,
+    ...(passthroughShip ? { passthroughShip } : {}),
     requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
     centralExternalRepositories: dispatchConfig.centralExternalRepositories,
     mcpConfig: dispatchConfig.mcp,
