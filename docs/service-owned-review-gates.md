@@ -242,27 +242,25 @@ finite Actions/OIDC repository and owner allowlists:
   repositories. Set it back to `false` and roll out the service to resume normal
   admission.
 
-  **Passthrough posts a service-owned SHIP check.** So that the pull-request flow
-  does not stall while reviews are paused, the service itself (never a consumer
-  workflow) publishes the official `Review Yeti` check-run through the same
-  App identity as a normal result: `completed`, `success`, titled
-  `Review Yeti: SHIP (passthrough: no review performed)`, with the summary
-  carrying `Verdict: SHIP at <head>` and the machine-readable marker
-  `review-mode=passthrough`. For a repository under authoritative admission the
-  paired `Review Yeti Gate` is posted with the same title/marker and a distinct
-  `-passthrough` attempt identity, so it can never be mistaken for, or collide
-  with, a genuine attempt on the same head. The check is a pass-through
-  acknowledgement, not review evidence.
-  Guardrails: the pull request is re-read from GitHub and must be open,
-  non-draft, on the exact requested head and in the requested repository (drafts
-  and stale heads are skipped); publication is idempotent per head (an existing
-  passthrough check is reused, an in-progress one is completed); and nothing is
-  posted when the head already carries a non-passthrough official
-  `Review Yeti` or Gate check, so genuine review evidence is never superseded.
-  A publication failure is surfaced (HTTP 502 for an Action dispatch, an error for
-  the webhook and MCP paths) rather than silently acknowledged. Merge-group
-  deliveries still receive only the receipt. Revisit this behaviour when
-  passthrough is turned off and reviews are restored.
+  **Passthrough publishes an auditable maintenance SHIP.** The service writes a
+  durable `OperatorMaintenanceReceipt.v1` with `reviewCompleted: false`, then
+  publishes a separate official `Review Yeti` check and paired `Review Yeti
+  Gate` using stable maintenance external IDs. Both completed success checks
+  carry `review-mode=passthrough`, `review-completed=false`, and
+  `decision=SHIP`; genuine review checks remain intact in history. The receipt
+  records the trusted operator-setting digest, exact current repository/PR or
+  merge-group coordinates, effective policy/config digests, and policy source
+  fingerprints. It does not claim that a persona review ran or passed.
+
+  The publisher revalidates the current open, non-draft PR or authenticated
+  merge-queue subject before each side effect. A bounded service timer reclaims
+  expired raw and Gate leases, reconciles the same stable check IDs after an
+  uncertain GitHub response, and marks an intent stale when its source
+  coordinates or policy change. Partial publication remains visible and
+  retryable; it does not fabricate worker completion, review history, or a
+  synthetic review run. Signed webhook admission, configured MCP authentication
+  and repository authorization, and Actions OIDC remain required. With
+  passthrough disabled, the ordinary reviewed admission path is unchanged.
 
 - `GITHUB_APP_WEBHOOK_ENABLED=true` mounts the signed route. It requires a
   32–1,024 byte `GITHUB_WEBHOOK_SECRET`, plus finite

@@ -151,6 +151,22 @@ export class PostgresOperatorMaintenanceRepository implements OperatorMaintenanc
     });
   }
 
+  async listPending(limit: number, afterIntentId?: string): Promise<OperatorMaintenanceReceiptV1[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new Error('Maintenance pending page limit must be between 1 and 100');
+    }
+    if (afterIntentId !== undefined && !/^operator-maintenance:v1:[a-f0-9]{64}$/u.test(afterIntentId)) {
+      throw new Error('Maintenance pending cursor is invalid');
+    }
+    const result = await this.pool.query<{ receipt: unknown }>(
+      `SELECT receipt FROM operator_maintenance_intents
+        WHERE status = 'pending' AND ($1::text IS NULL OR intent_id > $1)
+        ORDER BY intent_id ASC LIMIT $2`,
+      [afterIntentId ?? null, limit],
+    );
+    return result.rows.map(({ receipt }) => parseReceipt(receipt));
+  }
+
   claimRaw(intentId: string, now: Date, leaseMs: number): Promise<OperatorMaintenanceClaimResult> {
     return this.claim(intentId, 'raw', now, leaseMs);
   }

@@ -94,6 +94,9 @@ describeWithPostgres('operator maintenance persistence (real PostgreSQL)', () =>
   it('reuses a target across admission sources but rejects changed immutable policy or authority', async () => {
     const receipt = makeReceipt();
     const first = await repository.reserve(receipt);
+    const intentDigest = receipt.intentId.slice('operator-maintenance:v1:'.length);
+    expect(first.checks.raw.externalId).toBe(`review-yeti-maintenance:v1:${intentDigest}:raw`);
+    expect(first.checks.gate.externalId).toBe(`review-yeti-maintenance:v1:${intentDigest}:gate`);
     const replay = await repository.reserve({ ...receipt, source: 'mcp-trigger' });
     expect(replay).toEqual(first);
 
@@ -115,6 +118,22 @@ describeWithPostgres('operator maintenance persistence (real PostgreSQL)', () =>
     expect(row.rows[0].count).toBe(1);
   });
 
+  it('lists only a bounded page of pending intents and advances by the stable intent cursor', async () => {
+    const base = makeReceipt();
+    const receipts = [base, makeReceipt({ ...base.identity, headSha: 'd'.repeat(40) }),
+      makeReceipt({ ...base.identity, headSha: 'e'.repeat(40) })];
+    const ordered = [...receipts].sort((left, right) => left.intentId.localeCompare(right.intentId));
+    for (const receipt of receipts) await repository.reserve(receipt);
+    const first = await repository.listPending(2);
+    expect(first.map(({ intentId }) => intentId)).toEqual(ordered.slice(0, 2).map(({ intentId }) => intentId));
+    const next = await repository.listPending(2, first.at(-1)!.intentId);
+    expect(next.map(({ intentId }) => intentId)).toEqual([ordered[2].intentId]);
+    await repository.markStale(ordered[1].intentId, new Date('2026-10-05T12:00:00.000Z'));
+    expect((await repository.listPending(10)).map(({ intentId }) => intentId)).not.toContain(ordered[1].intentId);
+    await expect(repository.listPending(0)).rejects.toThrow();
+    await expect(repository.listPending(101)).rejects.toThrow();
+  });
+
   it('uses distinct identity-only intents for pull requests and merge groups without a fake PR number', async () => {
     const pullRequest = makeReceipt();
     const mergeGroupIdentity: OperatorMaintenanceIdentity = {
@@ -125,6 +144,9 @@ describeWithPostgres('operator maintenance persistence (real PostgreSQL)', () =>
     expect(mergeGroup.intentId).toBe(createOperatorMaintenanceIntentId(mergeGroupIdentity));
     expect(mergeGroup.intentId).not.toBe(pullRequest.intentId);
     expect(mergeGroup.identity.subject).not.toHaveProperty('prNumber');
+    expect(mergeGroup.policyResolution).toEqual({ repositoryId: mergeGroupIdentity.repositoryId,
+      owner: mergeGroupIdentity.owner, repo: mergeGroupIdentity.repo, prNumber: 71,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) });
     await repository.reserve(pullRequest);
     await repository.reserve(mergeGroup);
 
@@ -208,6 +230,10 @@ function makeReceipt(identity: OperatorMaintenanceIdentity = {
     reason: 'operator_global_passthrough',
     reviewCompleted: false,
     identity,
+    ...(identity.subject.kind === 'merge_group' ? { policyResolution: {
+      repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repo,
+      prNumber: 71, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+    } } : {}),
     authority: {
       kind: 'trusted-runtime-operator-config',
       setting: 'REVIEW_YETI_PASSTHROUGH',
@@ -225,8 +251,8 @@ function makeReceipt(identity: OperatorMaintenanceIdentity = {
       }],
     },
     checks: {
-      raw: { name: 'Review Yeti', appId: 4385771, externalId: `operator-maintenance:raw:${intentId}` },
-      gate: { name: 'Review Yeti Gate', appId: 4385771, externalId: `operator-maintenance:gate:${intentId}` },
+      raw: { name: 'Review Yeti', appId: 4385771, externalId: `review-yeti-maintenance:v1:${intentId.slice('operator-maintenance:v1:'.length)}:raw` },
+      gate: { name: 'Review Yeti Gate', appId: 4385771, externalId: `review-yeti-maintenance:v1:${intentId.slice('operator-maintenance:v1:'.length)}:gate` },
     },
   };
 }

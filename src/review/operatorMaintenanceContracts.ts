@@ -21,12 +21,32 @@ export const operatorMaintenanceIdentitySchema = z.object({
 }).strict();
 
 export type OperatorMaintenanceIdentity = z.infer<typeof operatorMaintenanceIdentitySchema>;
+export type OperatorMaintenancePolicyResolution = {
+  repositoryId: number;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  baseSha: string;
+};
+
+export class OperatorMaintenanceTargetChangedError extends Error {
+  constructor() { super('Operator maintenance target changed before publication'); }
+}
 
 const sourceSchema = z.enum(['github-app-webhook', 'central-action-dispatch', 'mcp-trigger']);
 const checkSchema = z.object({
   name: z.string().min(1).max(100),
   appId: positiveInteger,
   externalId: z.string().min(1).max(512).refine((value) => !/[\u0000-\u001f\u007f]/u.test(value)),
+}).strict();
+const policyResolutionSchema = z.object({
+  repositoryId: positiveInteger,
+  owner: repositoryNamePart,
+  repo: repositoryNamePart,
+  prNumber: positiveInteger,
+  headSha: shaSchema,
+  baseSha: shaSchema,
 }).strict();
 
 export const operatorMaintenanceReceiptSchema = z.object({
@@ -38,6 +58,9 @@ export const operatorMaintenanceReceiptSchema = z.object({
   reason: z.literal('operator_global_passthrough'),
   reviewCompleted: z.literal(false),
   identity: operatorMaintenanceIdentitySchema,
+  /** For merge groups only: a real queued PR used to resolve current policy.
+   * It is provenance, never part of the synthetic group subject/identity. */
+  policyResolution: policyResolutionSchema.optional(),
   authority: z.object({
     kind: z.literal('trusted-runtime-operator-config'),
     setting: z.literal('REVIEW_YETI_PASSTHROUGH'),
@@ -50,6 +73,16 @@ export const operatorMaintenanceReceiptSchema = z.object({
   }).strict(),
   checks: z.object({ raw: checkSchema, gate: checkSchema }).strict(),
 }).strict().superRefine((receipt, context) => {
+  if (receipt.identity.subject.kind === 'merge_group' && !receipt.policyResolution) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['policyResolution'], message: 'Merge-group maintenance requires a real policy-resolution pull request' });
+  }
+  if (receipt.identity.subject.kind === 'pull_request' && receipt.policyResolution) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['policyResolution'], message: 'Pull-request maintenance cannot include separate policy-resolution coordinates' });
+  }
+  if (receipt.policyResolution && (receipt.policyResolution.repositoryId !== receipt.identity.repositoryId
+    || receipt.policyResolution.owner !== receipt.identity.owner || receipt.policyResolution.repo !== receipt.identity.repo)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['policyResolution'], message: 'Policy-resolution repository must match the target repository' });
+  }
   if (receipt.checks.raw.name !== 'Review Yeti') {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['checks', 'raw', 'name'], message: 'Unexpected raw check name' });
   }
@@ -86,6 +119,7 @@ export type OperatorMaintenanceClaimResult =
 
 export interface OperatorMaintenanceRepository {
   reserve(receipt: OperatorMaintenanceReceiptV1): Promise<OperatorMaintenanceReceiptV1>;
+  listPending(limit: number, afterIntentId?: string): Promise<OperatorMaintenanceReceiptV1[]>;
   claimRaw(intentId: string, now: Date, leaseMs: number): Promise<OperatorMaintenanceClaimResult>;
   bindRaw(intentId: string, leaseToken: string, checkId: number, now: Date): Promise<void>;
   claimGate(intentId: string, now: Date, leaseMs: number): Promise<OperatorMaintenanceClaimResult>;

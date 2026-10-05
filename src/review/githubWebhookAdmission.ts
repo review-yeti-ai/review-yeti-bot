@@ -5,6 +5,7 @@ import type { ReviewDispatchRepository } from '../persistence/reviewDispatchRepo
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import type { GitHubWebhookConfig } from '../auth/githubWebhookConfig';
 import type { AuthoritativeReviewAdmission } from './authoritativeServiceContracts';
+import type { AuthoritativePublishingResolution } from './authoritativePublishingResolver';
 import { buildReviewRunIdentity, deriveReviewRunId } from './reviewAdmission';
 import { sha256 } from './reviewCore';
 import {
@@ -14,7 +15,6 @@ import {
   githubWebhookRepositorySchema, requireEnrolledGitHubWebhookRepository, UnenrolledGitHubWebhookIdentityError,
 } from '../auth/githubWebhookIdentity';
 import { logger } from '../utils/logger';
-import type { PassthroughShipPublisher } from './passthroughShipPublisher';
 import { MergeGroupGateInProgressError } from './mergeGroupGate';
 import {
   isRecoverableFailureTitle,
@@ -156,8 +156,6 @@ export interface GitHubWebhookAdmissionOptions {
   admission: Pick<ReviewDispatchRepository, 'admit' | 'terminalizeRunsForClosedPullRequest'> &
     Partial<Pick<ReviewDispatchRepository, 'cancelRunsForPullRequest' | 'advanceDebounceAvailableAt'>>;
   authoritativePublishing?: AuthoritativeReviewAdmission;
-  /** Service-owned SHIP check posted in operator passthrough for an exact non-draft head. */
-  passthroughShip?: PassthroughShipPublisher;
   /** Reject delayed close deliveries when the PR has already reopened. */
   currentPullRequestForClose?: (input: { repositoryId: number; owner: string; repo: string;
     prNumber: number }) => Promise<{ open: boolean }>;
@@ -166,6 +164,7 @@ export interface GitHubWebhookAdmissionOptions {
     checkId: number; conclusion: 'success' | 'failure'; constituents: number;
   } | {
     status: 'passthrough'; repositoryId: number; repository: string; headSha: string; baseSha: string;
+    maintenance: { status: 'published' | 'pending'; receipt: unknown };
   }>;
   resolveRepositoryConfig?: (params: {
     repositoryId: number;
@@ -213,14 +212,16 @@ function operatorPassthroughReceipt(
   eventName: string,
   deliveryId: string,
   identity: PassthroughReceiptIdentity,
+  maintenance?: { status: 'published' | 'pending'; receipt: unknown },
 ): Record<string, unknown> {
   const receipt = {
-    status: 'passthrough',
+    status: maintenance?.status === 'pending' ? 'maintenance_pending' : 'passthrough',
     reason: 'operator_global_passthrough',
     reviewStarted: false,
     eventName,
     deliveryId,
     ...identity,
+    ...(maintenance === undefined ? {} : { maintenance }),
   };
   logger.info('GitHub App review skipped by operator-wide passthrough', receipt);
   return receipt;
@@ -240,21 +241,44 @@ function validLabelReviewIdentity(body: Record<string, any>, repositoryName: str
 export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmissionOptions) {
   const now = options.now || Date.now;
   const authoritativeIds = new Set(options.authoritativePublishing?.repositoryIds || []);
-  /** Passthrough acknowledgement; with a publisher it also posts the service-owned SHIP check. */
-  const passthroughReceipt = async (
-    eventName: string,
-    deliveryId: string,
-    identity: PassthroughReceiptIdentity,
-  ): Promise<Record<string, unknown>> => {
-    const receipt = operatorPassthroughReceipt(eventName, deliveryId, identity);
-    const [owner, repo] = identity.repository.split('/');
-    if (!options.passthroughShip || identity.prNumber === undefined || identity.headSha === undefined
-      || !owner || !repo) return receipt;
-    const check = await options.passthroughShip.publish({
-      owner, repo, repositoryId: identity.repositoryId, prNumber: identity.prNumber,
-      headSha: identity.headSha, ...(identity.baseSha ? { baseSha: identity.baseSha } : {}),
-    });
-    return { ...receipt, passthroughCheck: check };
+  const publishMaintenance = async (input: {
+    eventName: string;
+    delivery: string;
+    repositoryId: number;
+    owner: string;
+    repo: string;
+    prNumber: number;
+    headSha?: string;
+    baseSha?: string;
+  }): Promise<Record<string, unknown>> => {
+    const authoritative = options.authoritativePublishing;
+    if (!authoritative || !authoritativeIds.has(input.repositoryId)) {
+      return { status: 'ignored', reason: 'operator_maintenance_requires_authoritative_enrollment', deliveryId: input.delivery };
+    }
+    const maintenance = authoritative.maintenance;
+    if (!maintenance) throw new Error('Operator maintenance publication is unavailable');
+    const partial = { repositoryId: input.repositoryId, owner: input.owner, repo: input.repo, prNumber: input.prNumber };
+    let resolved: AuthoritativePublishingResolution;
+    if (input.headSha !== undefined && input.baseSha !== undefined) {
+      resolved = await authoritative.resolver.resolve({ ...partial, headSha: input.headSha, baseSha: input.baseSha });
+    } else {
+      if (!authoritative.resolver.resolveCurrent) throw new Error('Current maintenance candidate lookup is unavailable');
+      resolved = await authoritative.resolver.resolveCurrent(partial);
+    }
+    const current = resolved.current;
+    if (!current.open || current.draft !== false || current.repositoryId !== input.repositoryId
+      || current.owner !== input.owner || current.repo !== input.repo || current.prNumber !== input.prNumber
+      || (input.headSha !== undefined && current.headSha !== input.headSha)
+      || (input.baseSha !== undefined && current.baseSha !== input.baseSha)) {
+      return { status: 'ignored', reason: 'maintenance_candidate_not_current', deliveryId: input.delivery };
+    }
+    const candidate = { repositoryId: current.repositoryId, owner: current.owner, repo: current.repo,
+      prNumber: current.prNumber, headSha: current.headSha, baseSha: current.baseSha };
+    const publication = await maintenance.request({ source: 'github-app-webhook', candidate });
+    return operatorPassthroughReceipt(input.eventName, input.delivery, {
+      repositoryId: input.repositoryId, repository: `${input.owner}/${input.repo}`, prNumber: input.prNumber,
+      headSha: current.headSha, baseSha: current.baseSha,
+    }, publication);
   };
   return async (event: GitHubWebhookAdmissionEvent): Promise<Record<string, unknown>> => {
     const { eventName, deliveryId: delivery } = event;
@@ -279,12 +303,12 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         throw error;
       }
       if ('status' in result) {
-        return passthroughReceipt(eventName, delivery, {
+        return operatorPassthroughReceipt(eventName, delivery, {
           repositoryId: result.repositoryId,
           repository: result.repository,
           headSha: result.headSha,
           baseSha: result.baseSha,
-        });
+        }, result.maintenance);
       }
       return { status: result.conclusion, checkId: result.checkId, constituents: result.constituents };
     }
@@ -336,13 +360,8 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         return { status: 'ignored', reason: 'refresh_identity_mismatch' };
       }
       if (options.config.passthroughEnabled === true) {
-        return passthroughReceipt(eventName, delivery, {
-          repositoryId: payload.repository.id,
-          repository: payload.repository.full_name,
-          prNumber: pr.number,
-          headSha: pr.head.sha,
-          baseSha: pr.base.sha,
-        });
+        return publishMaintenance({ eventName, delivery, repositoryId: payload.repository.id,
+          owner, repo, prNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha });
       }
       const receivedAt = now();
       const admission = await options.admission.admit({
@@ -408,31 +427,20 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       const headSha = prHead?.sha;
       const receivedAt = now();
 
-      // GitHub issue_comment deliveries commonly carry only the pull-request
-      // URL, not its head. Under passthrough there is no reason to resolve a
-      // candidate or advance a pending debounce for that command; still bind
-      // the receipt to the signed, enrolled repository and positive PR number.
-      if (options.config.passthroughEnabled === true && headSha === undefined) {
-        if (!positiveInteger.safeParse(prNumber).success) {
-          return { status: 'ignored', reason: 'invalid_review_trigger_identity', deliveryId: delivery };
-        }
-        return passthroughReceipt(eventName, delivery, {
-          repositoryId,
-          repository: parsedRepo.data.full_name,
-          prNumber,
-        });
-      }
-      if (options.config.passthroughEnabled === true && !sha.safeParse(headSha).success) {
+      if (options.config.passthroughEnabled === true && headSha !== undefined && !sha.safeParse(headSha).success) {
         return { status: 'ignored', reason: 'invalid_review_trigger_identity', deliveryId: delivery };
       }
 
-      const repoConfig = options.resolveRepositoryConfig
+      const prBase = ((body.pull_request as any)?.base || (issueObj?.pull_request as any)?.base
+        || (issueObj as any)?.base) as { sha?: string; repo?: { full_name?: string } } | undefined;
+      const repoConfig = options.config.passthroughEnabled !== true && options.resolveRepositoryConfig
         ? await options.resolveRepositoryConfig({ repositoryId, owner, repo, headSha })
         : undefined;
-      if (repoConfig?.auto_review?.enabled === false) {
+      if (options.config.passthroughEnabled !== true && repoConfig?.auto_review?.enabled === false) {
         return { status: 'ignored', reason: 'auto_review_disabled', deliveryId: delivery, prNumber };
       }
-      if (!isTriggerActionAllowed(repoConfig?.auto_review?.triggers, 'issue_comment', { isCommand: true })) {
+      if (options.config.passthroughEnabled !== true
+        && !isTriggerActionAllowed(repoConfig?.auto_review?.triggers, 'issue_comment', { isCommand: true })) {
         return { status: 'ignored', reason: 'trigger_not_configured', deliveryId: delivery, prNumber };
       }
 
@@ -441,8 +449,10 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
           || !positiveInteger.safeParse(Number((body.installation as any)?.id)).success) {
           return { status: 'ignored', reason: 'invalid_review_trigger_identity', deliveryId: delivery };
         }
-        return passthroughReceipt(eventName, delivery, {
-          repositoryId, repository: parsedRepo.data.full_name, prNumber, headSha,
+        return publishMaintenance({
+          eventName, delivery, repositoryId, owner, repo, prNumber,
+          ...(sha.safeParse(headSha).success ? { headSha } : {}),
+          ...(sha.safeParse(prBase?.sha).success ? { baseSha: prBase!.sha } : {}),
         });
       }
 
@@ -460,7 +470,6 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         }
       }
 
-      const prBase = ((body.pull_request as any)?.base || (issueObj?.pull_request as any)?.base || (issueObj as any)?.base) as { sha?: string; repo?: { full_name?: string } } | undefined;
       if (headSha && prBase?.sha && body.installation) {
         const installationId = Number((body.installation as any)?.id);
         const requested = { repositoryId, owner, repo, prNumber, headSha, baseSha: prBase.sha };
@@ -605,6 +614,14 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       const prLabels = extractLabelNames(pr.labels);
       const receivedAt = now();
 
+      if (options.config.passthroughEnabled === true) {
+        if (!validLabelReviewIdentity(body, parsedRepo.data.full_name, pr, prNumber)) {
+          return { status: 'ignored', reason: 'invalid_review_trigger_identity', deliveryId: delivery };
+        }
+        return publishMaintenance({ eventName, delivery, repositoryId, owner, repo, prNumber,
+          headSha: pr.head.sha, baseSha: pr.base.sha });
+      }
+
       if (isOptOutLabel(labelName) || hasOptOutLabel(prLabels)) {
         if (options.admission.cancelRunsForPullRequest) {
           await options.admission.cancelRunsForPullRequest({
@@ -626,15 +643,6 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         }
         if (!isTriggerActionAllowed(repoConfig?.auto_review?.triggers, 'labeled', { isTag: true, label: labelName })) {
           return { status: 'ignored', reason: 'trigger_not_configured', deliveryId: delivery, prNumber };
-        }
-        if (options.config.passthroughEnabled === true) {
-          if (!validLabelReviewIdentity(body, parsedRepo.data.full_name, pr, prNumber)) {
-            return { status: 'ignored', reason: 'invalid_review_trigger_identity', deliveryId: delivery };
-          }
-          return passthroughReceipt(eventName, delivery, {
-            repositoryId, repository: parsedRepo.data.full_name, prNumber,
-            headSha: pr.head.sha, baseSha: pr.base.sha,
-          });
         }
         if (options.admission.advanceDebounceAvailableAt && pr.head?.sha) {
           const advanced = await options.admission.advanceDebounceAvailableAt(repositoryId, prNumber, pr.head.sha, receivedAt);
@@ -696,6 +704,14 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       const prLabels = extractLabelNames(pr.labels);
       const receivedAt = now();
 
+      if (options.config.passthroughEnabled === true) {
+        if (!validLabelReviewIdentity(body, parsedRepo.data.full_name, pr, prNumber)) {
+          return { status: 'ignored', reason: 'invalid_review_trigger_identity', deliveryId: delivery };
+        }
+        return publishMaintenance({ eventName, delivery, repositoryId, owner, repo, prNumber,
+          headSha: pr.head.sha, baseSha: pr.base.sha });
+      }
+
       if (isOptOutLabel(labelName)) {
         if (hasOptOutLabel(prLabels)) {
           return { status: 'ignored', reason: 'opt_out_label_present', deliveryId: delivery, prNumber };
@@ -711,15 +727,6 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         }
         if (!isTriggerActionAllowed(repoConfig?.auto_review?.triggers, 'synchronize')) {
           return { status: 'ignored', reason: 'trigger_not_configured', deliveryId: delivery, prNumber };
-        }
-        if (options.config.passthroughEnabled === true) {
-          if (!validLabelReviewIdentity(body, parsedRepo.data.full_name, pr, prNumber)) {
-            return { status: 'ignored', reason: 'invalid_review_trigger_identity', deliveryId: delivery };
-          }
-          return passthroughReceipt(eventName, delivery, {
-            repositoryId, repository: parsedRepo.data.full_name, prNumber,
-            headSha: pr.head.sha, baseSha: pr.base.sha,
-          });
         }
         if (pr.head?.sha && pr.base?.sha && body.installation) {
           const requested = { repositoryId, owner, repo, prNumber, headSha: pr.head.sha, baseSha: pr.base.sha };
@@ -767,7 +774,7 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
 
     const prLabels = extractLabelNames(pr.labels);
     const receivedAt = now();
-    if (hasOptOutLabel(prLabels)) {
+    if (options.config.passthroughEnabled !== true && hasOptOutLabel(prLabels)) {
       if (options.admission.cancelRunsForPullRequest) {
         await options.admission.cancelRunsForPullRequest({
           repositoryId, prNumber: pr.number, cancelReason: 'opt_out_label',
@@ -777,13 +784,14 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       return { status: 'ignored', reason: 'opt_out_label_present', deliveryId: delivery, prNumber: pr.number };
     }
 
-    const repoConfig = options.resolveRepositoryConfig
+    const repoConfig = options.config.passthroughEnabled !== true && options.resolveRepositoryConfig
       ? await options.resolveRepositoryConfig({ repositoryId, owner, repo, headSha: pr.head.sha })
       : undefined;
-    if (repoConfig?.auto_review?.enabled === false) {
+    if (options.config.passthroughEnabled !== true && repoConfig?.auto_review?.enabled === false) {
       return { status: 'ignored', reason: 'auto_review_disabled', deliveryId: delivery, prNumber: pr.number };
     }
-    if (!isTriggerActionAllowed(repoConfig?.auto_review?.triggers, payload.action)) {
+    if (options.config.passthroughEnabled !== true
+      && !isTriggerActionAllowed(repoConfig?.auto_review?.triggers, payload.action)) {
       return { status: 'ignored', reason: 'trigger_not_configured', deliveryId: delivery, prNumber: pr.number };
     }
 
@@ -793,13 +801,8 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
     };
     const authoritative = options.authoritativePublishing;
     if (options.config.passthroughEnabled === true) {
-      return passthroughReceipt(eventName, delivery, {
-        repositoryId,
-        repository: payload.repository.full_name,
-        prNumber: pr.number,
-        headSha: pr.head.sha,
-        baseSha: pr.base.sha,
-      });
+      return publishMaintenance({ eventName, delivery, repositoryId, owner, repo,
+        prNumber: pr.number, headSha: pr.head.sha, baseSha: pr.base.sha });
     }
     if (authoritative?.acceptNewRequests === false && authoritativeIds.has(repositoryId)) {
       return { status: 'ignored', reason: 'authoritative_admission_paused' };
