@@ -156,11 +156,23 @@ function normalizedPath(value: unknown): string {
  * numbers and body wording are deliberately excluded -- both move between heads while the claim
  * stays the same. Severity is excluded so a re-filed P1 -> P2 keeps its thread.
  */
+export type FindingClaimType = 'generic' | 'absence' | 'missing-tests';
+
+export function findingClaimType(finding: ConvergenceFinding): FindingClaimType {
+  return claimType(finding) as FindingClaimType;
+}
+
+export function findingFingerprintForClaimType(finding: Pick<ConvergenceFinding, 'path' | 'title'>,
+  type: FindingClaimType): string {
+  if (!['generic', 'absence', 'missing-tests'].includes(type)) throw new Error('Invalid finding claim type');
+  const tokens = [...claimTokens(typeof finding?.title === 'string' ? finding.title : '')].sort().join(' ');
+  const material = `v1|${normalizedPath(finding?.path)}|${type}|${tokens}`;
+  return FINDING_FINGERPRINT_PREFIX + createHash('sha256').update(material, 'utf8').digest('hex').slice(0, 24);
+}
+
 export function findingFingerprint(finding: ConvergenceFinding): string {
   const title = typeof finding?.title === 'string' ? finding.title : '';
-  const tokens = [...claimTokens(title)].sort().join(' ');
-  const material = `v1|${normalizedPath(finding?.path)}|${claimType(finding)}|${tokens}`;
-  return FINDING_FINGERPRINT_PREFIX + createHash('sha256').update(material, 'utf8').digest('hex').slice(0, 24);
+  return findingFingerprintForClaimType({ path: finding?.path, title }, findingClaimType(finding));
 }
 
 export function isFindingFingerprint(value: unknown): value is string {

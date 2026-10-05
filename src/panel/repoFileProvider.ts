@@ -43,7 +43,9 @@ export function createRepoFileProvider(github: GitHubInstallationClient, owner: 
   let sourceBytes = 0;
   return {
     async readFileAt(path, side) {
-      const sha = side === 'head' ? headSha : await mergeBase();
+      const sha = side === 'head' ? headSha : side === 'base'
+        ? evidence?.baseSha ?? (() => { throw new Error('Old source identity unavailable'); })()
+        : await mergeBase();
       const key = `${sha}:${path}`;
       let entry = sourceCache.get(key);
       if (!entry) {

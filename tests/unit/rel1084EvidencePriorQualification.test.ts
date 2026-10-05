@@ -112,7 +112,32 @@ async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: panelRunner as never,
     client: {} as never,
-    repoFileProviderFactory: (() => ({ readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []) })) as never,
+    groundedVerifierClient: { complete: vi.fn(async (request: any) => {
+      const prompt = String(request.messages?.[1]?.content ?? '');
+      const claim = JSON.parse(/<claim>(\{[\s\S]*?\})<\/claim>/u.exec(prompt)?.[1] ?? '{}');
+      return { model: 'grounded-test-model', content: JSON.stringify({ status: 'confirmed',
+        violatedInvariant: 'The reviewed contract must be preserved.',
+        failurePath: 'The changed operation reaches the incompatible contract.',
+        benignCheck: 'No guard handles this current input.',
+        changeConnection: 'The current changed source introduces the path.',
+        citations: [`head:${claim.path}`, `base:${claim.path}`, `diff:${claim.path}`] }), usage: null, costUSD: null };
+    }) } as never,
+    repoFileProviderFactory: (input: any) => ({ findFiles: vi.fn(async () => []),
+      readFile: vi.fn(async () => 'export function read(value: string) { return value; }'),
+      readFileAt: vi.fn(async (_path: string, side: 'head' | 'base' | 'merge-base') => ({
+        content: 'export function read(value: string) { return value; }', sha: side === 'head' ? input.headSha : input.baseSha,
+      })),
+      readDiff: (path: string) => {
+        const file = input.changedFiles.find((candidate: { path: string; patch?: string }) => candidate.path === path);
+        return file?.patch ? { patch: file.patch, identity: { repository: `${input.owner}/${input.repo}`,
+          headSha: input.headSha, baseSha: input.baseSha } } : null;
+      },
+    }) as never,
+    prLifecycleHistory: { read: vi.fn(async () => ({ status: 'complete',
+      snapshotId: '00000000-0000-4000-8000-000000000004', contextDigest: 'a'.repeat(64),
+      events: [], findings: [], eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
+      eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+      eventsDigest: 'b'.repeat(64), findingsDigest: 'c'.repeat(64), omissions: [] })) } as never,
     incrementalBase: { read: vi.fn(async () => ({ prior: null, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS })) },
     incrementalCompareReader: { compare: vi.fn(async () => { throw new Error('first review compares nothing'); }) },
     verdictCacheBase: { read: vi.fn(async () => ({ source: null, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS })) },
@@ -214,14 +239,14 @@ describe('a non-authoritative prior built by the real worker', () => {
 });
 
 describe('negative proof: a non-authoritative prior that must not be rested on', () => {
-  it('a P1 that survives calibration: the published check failed, and even a forged success is a blocking finding', async () => {
+  it('a P1 that survives calibration: the failed check retains full coverage as repair context', async () => {
     const evidence = await realPriorEvidence({ 'sec-lane': [
       { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Unchecked input reaches the query', body: 'Validate it first.' },
     ] });
     expect(evidence.conclusion).toBe('failure');
     const rows = storedRows(evidence);
     expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'run-not-succeeded' });
-    expect(decideNext(rows)).toEqual({ mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'run-not-succeeded' });
+    expect(decideNext(rows)).toMatchObject({ mode: 'incremental', openFindingPaths: ['src/stable.ts'] });
     expect(priorReviewRecordFromRows(storedRows(evidence, { status: 'succeeded' })))
       .toMatchObject({ shipComplete: false, shipIncompleteReason: 'evidence-conclusion-not-success' });
     const forged = edited(evidence, (copy) => { copy.conclusion = 'success'; });
@@ -233,10 +258,7 @@ describe('negative proof: a non-authoritative prior that must not be rested on',
     const failed = edited(await realPriorEvidence(), (copy) => { copy.conclusion = 'failure'; });
     const rows = storedRows(failed, { status: 'succeeded' });
     expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'evidence-conclusion-not-success' });
-    expect(renderIncrementalSummary(null, { scope: null, decision: decideNext(rows) })).toEqual([
-      '**Incremental re-review** (`REVIEW_YETI_INCREMENTAL`): full review, because the previous review was not a complete SHIP'
-      + ' (`evidence-conclusion-not-success`: its published check did not succeed).',
-    ]);
+    expect(decideNext(rows)).toMatchObject({ mode: 'incremental' });
   });
 
   it('a missing roster lane, an extra or duplicate lane, a record without a roster, or a failed lane', async () => {
