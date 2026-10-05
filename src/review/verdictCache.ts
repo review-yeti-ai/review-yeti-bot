@@ -287,6 +287,7 @@ export function verdictCacheSourceFromRows(rows: PriorReviewRows): VerdictCacheS
 
 export type VerdictCacheFallbackReason =
   | IncrementalFallbackReason
+  | 'prior-not-ship-complete'
   | 'flag-off'
   | 'no-cache-entries'
   | 'nothing-cached';
@@ -310,6 +311,10 @@ export function verdictCachePrecheck(input: {
     if (early.mode !== 'full') return fullCache('error');
     return { mode: 'full', reason: early.reason, ...(early.priorRefusal ? { priorRefusal: early.priorRefusal } : {}) };
   }
+  // Per-file approval caching remains stricter than repair-context reuse: a prior blocker may
+  // lend complete source coverage to a repair run, but it cannot lend a clean verdict cache.
+  if (!input.source!.prior.shipComplete) return { mode: 'full', reason: 'prior-not-ship-complete',
+    ...(input.source!.prior.shipIncompleteReason ? { priorRefusal: input.source!.prior.shipIncompleteReason } : {}) };
   if (input.source!.entries.length === 0) return fullCache('no-cache-entries');
   return null;
 }
@@ -761,6 +766,7 @@ const FALLBACK_TEXT: Record<VerdictCacheFallbackReason, string> = {
   'retry-attempt': 'this is a retry attempt',
   'same-head': 'the previous review was of this same head',
   'prior-identity-mismatch': 'the previous review record did not match this pull request',
+  'prior-coverage-incomplete': 'the previous review did not complete full current-source coverage',
   'prior-not-ship-complete': 'the previous review was not a complete SHIP',
   'policy-or-config-changed': 'the review policy or persona configuration changed',
   'prior-too-old': 'the previous review is older than the configured age',
