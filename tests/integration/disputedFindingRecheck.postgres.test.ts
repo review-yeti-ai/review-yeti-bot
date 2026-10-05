@@ -506,8 +506,15 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
         composedMaxTasks: 1, changedFiles: [{ path: 'src/auth/guard.ts',
           patch: '@@ -0,0 +1 @@\n+export const guard = true;\n' }], coverageComplete: true, quorumSatisfied: true } };
     const gateRepo = new PostgresReviewGateRepository(pool!, { lifecycleEvents: 'enabled' });
-    await expect(gateRepo.recordWorkerResult(targetCompletion, { workerTokenDigest: sha256(workerToken) },
-      async () => trusted, gateNow)).resolves.toBe('recorded');
+    const previousPassthrough = process.env['REVIEW_YETI_PASSTHROUGH'];
+    process.env['REVIEW_YETI_PASSTHROUGH'] = 'true';
+    try {
+      await expect(gateRepo.recordWorkerResult(targetCompletion, { workerTokenDigest: sha256(workerToken) },
+        async () => trusted, gateNow)).resolves.toBe('recorded');
+    } finally {
+      if (previousPassthrough === undefined) delete process.env['REVIEW_YETI_PASSTHROUGH'];
+      else process.env['REVIEW_YETI_PASSTHROUGH'] = previousPassthrough;
+    }
     const gateDecision = (await pool!.query(`SELECT decision FROM review_gate_attempts WHERE attempt_id = $1`,
       [admission.gate_attempt_id])).rows[0].decision;
     const targetReservation = (await pool!.query(`SELECT status, decision_receipt->'gateDecision' AS gate_decision
