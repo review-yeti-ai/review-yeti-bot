@@ -1,0 +1,120 @@
+{
+  "schemaVersion": "GroundedLifecycleInput.v1",
+  "caseId": "lc_41c8d2f709ae35b6",
+  "source": {
+    "repository": {
+      "repositoryId": 73001,
+      "owner": "synthetic",
+      "repo": "fixture-project"
+    },
+    "baseSha": "8667659d4ba0e2181d1b2b473923785eff33b604",
+    "headSha": "ea555cbb2d769228ff8c6a8c8aa491b8f6de55fa",
+    "changedPaths": [
+      "manifest-reader.ts"
+    ],
+    "revisions": [
+      {
+        "commitSha": "8667659d4ba0e2181d1b2b473923785eff33b604",
+        "treeSha": "cae9494a4db69157835c712966722ad338718b5c",
+        "parentSha": null,
+        "commitTimestamp": 1700004000,
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "manifest-reader.ts",
+            "mode": "100644",
+            "gitBlobSha": "4c687a5a37fbdb890266182bdb54d63f06665fb5",
+            "sha256": "47765e1b35185d52763508057fcd968ced717dc39446fe34846f5d56f74be530",
+            "content": "export function readManifest(value: unknown): Record<string, unknown> {\n  return value as Record<string, unknown>;\n}\n"
+          }
+        ]
+      },
+      {
+        "commitSha": "ea555cbb2d769228ff8c6a8c8aa491b8f6de55fa",
+        "treeSha": "045e1387ada0609999b0829541288ee71d1577b3",
+        "parentSha": "8667659d4ba0e2181d1b2b473923785eff33b604",
+        "commitTimestamp": 1700004060,
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "manifest-reader.ts",
+            "mode": "100644",
+            "gitBlobSha": "39e98efa46cd2b320b7786002adbc91762f34b1a",
+            "sha256": "31f777c731d6ce4be2c05902e54fea7373ff17fccd5b28c1860e86a8ecb8ebf9",
+            "content": "export function readManifest(value: unknown): Record<string, unknown> {\n  if (value === null || typeof value !== \"object\" || Array.isArray(value)) throw new Error(\"invalid manifest\");\n  return value as Record<string, unknown>;\n}\n"
+          }
+        ]
+      }
+    ],
+    "patches": [
+      {
+        "path": "manifest-reader.ts",
+        "patch": "diff --git a/manifest-reader.ts b/manifest-reader.ts\nindex 4c687a5..39e98ef 100644\n--- a/manifest-reader.ts\n+++ b/manifest-reader.ts\n@@ -1,3 +1,4 @@\n export function readManifest(value: unknown): Record<string, unknown> {\n+  if (value === null || typeof value !== \"object\" || Array.isArray(value)) throw new Error(\"invalid manifest\");\n   return value as Record<string, unknown>;\n }",
+        "sha256": "f6a0dac5ac4b818e289aa0c8880b9dd6ebb0c9b553fe7dfceadc87771766470c"
+      }
+    ],
+    "policyDigest": "7ce2cf1694ea74c35fba4cf0382e3fae2f43760f1314605db3bde8738cdce15c",
+    "configDigest": "744b6cf1786ed566c8ae76718874671a2b8fe65833b66f7873d1fe0a59efea7b",
+    "contextDigest": "7ead6b8636db338b14f7e617c6677124889bfe05bbe133cbebbb173805270a13"
+  },
+  "candidates": [
+    {
+      "severity": "P1",
+      "path": "manifest-reader.ts",
+      "line": 2,
+      "title": "Manifest values can bypass the required object validation",
+      "claimType": "generic",
+      "fingerprint": "fp1_66cc4b8052675fba99f2b4a3"
+    }
+  ],
+  "history": {
+    "sourceObservation": {
+      "validation": "digest-mismatch",
+      "snapshot": {
+        "version": "PrLifecycleHistorySnapshot.v1",
+        "snapshotId": "9d3e18be-68a2-4b05-a0c0-0d661ed3de8f",
+        "runId": "run_234540e6ad58e9dab6022b3f746839ee",
+        "executionAttempt": 1,
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project",
+        "prNumber": 41,
+        "headSha": "ea555cbb2d769228ff8c6a8c8aa491b8f6de55fa",
+        "baseSha": "8667659d4ba0e2181d1b2b473923785eff33b604",
+        "policyDigest": "7ce2cf1694ea74c35fba4cf0382e3fae2f43760f1314605db3bde8738cdce15c",
+        "configDigest": "744b6cf1786ed566c8ae76718874671a2b8fe65833b66f7873d1fe0a59efea7b",
+        "contextDigest": "7ead6b8636db338b14f7e617c6677124889bfe05bbe133cbebbb173805270a13",
+        "eventCount": 0,
+        "findingCount": 0,
+        "eventOmittedCount": 0,
+        "findingOmittedCount": 0,
+        "legacyOmittedCount": 0,
+        "eventsDigest": "67606d3195d14344720b0366e448060c09ffe86d9e2126666f82175528fbe49e",
+        "findingsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "expiresAt": "2030-01-01T00:00:00.000Z"
+      },
+      "digestMatches": false,
+      "expectedEventsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "suppliedEventsDigest": "67606d3195d14344720b0366e448060c09ffe86d9e2126666f82175528fbe49e"
+    },
+    "load": {
+      "status": "partial",
+      "snapshotId": "9d3e18be-68a2-4b05-a0c0-0d661ed3de8f",
+      "contextDigest": "7ead6b8636db338b14f7e617c6677124889bfe05bbe133cbebbb173805270a13",
+      "events": [],
+      "findings": [],
+      "eventCount": 0,
+      "findingCount": 0,
+      "loadedEventCount": 0,
+      "loadedFindingCount": 0,
+      "eventOmittedCount": 0,
+      "findingOmittedCount": 0,
+      "legacyOmittedCount": 0,
+      "eventsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "findingsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "omissions": [
+        "history page identity digest did not match snapshot"
+      ]
+    }
+  }
+}
