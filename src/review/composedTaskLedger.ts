@@ -85,12 +85,13 @@ const diagnosticsSchema: z.ZodType<ComposedTaskFailureDiagnostics> = z.object({
   lastToolOutcome: z.enum(['none', 'returned', 'requested_after_finalization']),
 }).strict();
 const outcomeBase = { version: z.literal(COMPOSED_TASK_OUTCOME_VERSION).default(COMPOSED_TASK_OUTCOME_VERSION),
-  planDigest: digest, taskId: z.string().regex(TASK_ID_PATTERN), usage: usageSchema,
-  sourceDelivery: taskSourceReceiptSchema.optional() };
+  planDigest: digest, taskId: z.string().regex(TASK_ID_PATTERN), usage: usageSchema };
 const outcomeSchema = z.discriminatedUnion('status', [
-  z.object({ ...outcomeBase, status: z.literal('complete'), findings: findingsSchema }).strict(),
-  z.object({ ...outcomeBase, status: z.literal('blocked') }).strict(),
-  z.object({ ...outcomeBase, status: z.literal('exhausted'), diagnostics: diagnosticsSchema }).strict(),
+  z.object({ ...outcomeBase, status: z.literal('complete'), findings: findingsSchema,
+    sourceDelivery: taskSourceReceiptSchema }).strict(),
+  z.object({ ...outcomeBase, status: z.literal('blocked'), sourceDelivery: taskSourceReceiptSchema.optional() }).strict(),
+  z.object({ ...outcomeBase, status: z.literal('exhausted'), diagnostics: diagnosticsSchema,
+    sourceDelivery: taskSourceReceiptSchema.optional() }).strict(),
 ]);
 export type ComposedTaskOutcome = z.output<typeof outcomeSchema>;
 
@@ -184,7 +185,7 @@ export function createComposedTaskOutcome(plan: ComposedTaskRecord<ComposedTaskP
     const task = plan.payload.tasks.find(candidate => candidate.id === outcome.taskId);
     if (!task || outcome.planDigest !== plan.digest) throw new Error();
     if (outcome.status === 'complete') {
-      if (outcome.sourceDelivery && !validateTaskSourceReceipt(outcome.sourceDelivery, {
+      if (!validateTaskSourceReceipt(outcome.sourceDelivery, {
         taskId:task.id, paths:task.paths, files:changedFiles, headSha:plan.payload.identity.headSha,
         baseSha:plan.payload.identity.baseSha,
       })) throw new Error();
