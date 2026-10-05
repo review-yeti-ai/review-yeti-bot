@@ -17,7 +17,6 @@ import { sha256 } from '../../../review/reviewCore';
 import { buildReviewRunIdentity, deriveReviewRunId } from '../../../review/reviewAdmission';
 import type { AuthoritativePublishingResolver } from '../../../review/authoritativePublishingResolver';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
-import type { PassthroughShipPublisher } from '../../../review/passthroughShipPublisher';
 import type { ReviewDispatchRepository } from '../../../persistence/reviewDispatchRepository';
 import {
   createMcpStaticAdminRecoveryOrigin,
@@ -55,8 +54,6 @@ export const triggerReviewDefinition: ToolDefinition = {
 export interface TriggerReviewDependencies {
   /** Skip new durable review admission after exact caller, repository and candidate checks. */
   passthroughEnabled?: boolean;
-  /** Under passthrough, post the service-owned SHIP check for the exact non-draft head. */
-  passthroughShip?: PassthroughShipPublisher;
   admissionRepository?: Pick<ReviewDispatchRepository, 'admit'>;
   authoritativePublishing?: AuthoritativeReviewAdmission | {
     admission?: AuthoritativeReviewAdmission | ((candidate: any) => Promise<unknown>);
@@ -174,9 +171,32 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
       const resolvedRunId = deriveReviewRunId(resolvedIdentity);
 
       if (deps.passthroughEnabled === true) {
-        const passthroughCheck = deps.passthroughShip
-          ? await deps.passthroughShip.publish({ owner, repo, repositoryId, prNumber: pull_number, headSha, baseSha })
-          : undefined;
+        const authorizedRepository = context?.authorizedRepository;
+        if (context?.authenticatedByConfiguredAuthenticator !== true || !authorizedRepository
+          || authorizedRepository.owner.toLowerCase() !== owner.toLowerCase()
+          || authorizedRepository.repo.toLowerCase() !== repo.toLowerCase()) {
+          throw new Error('Operator passthrough requires configured MCP authentication and exact repository authorization');
+        }
+        if (!resolved?.current || !resolved.current.open || resolved.current.draft !== false
+          || resolved.current.repositoryId !== repositoryId || resolved.current.owner !== owner
+          || resolved.current.repo !== repo || resolved.current.prNumber !== pull_number
+          || resolved.current.headSha !== headSha || resolved.current.baseSha !== baseSha) {
+          throw new Error('Operator passthrough requires the exact current open pull request');
+        }
+        const maintenance = (authoritative as (typeof authoritative & {
+          maintenance?: { request(input: { source: 'mcp-trigger'; candidate: typeof requested }):
+            Promise<{ status: 'published' | 'pending'; receipt: unknown }> };
+        }) | undefined)?.maintenance;
+        if (!maintenance) throw new Error('Operator maintenance publication is unavailable');
+        const publication = await maintenance.request({ source: 'mcp-trigger', candidate: requested });
+        if (publication.status !== 'published') {
+          return buildToolResultJson({
+            dispatched: false, job_crd_created: false, status: 'maintenance_pending',
+            reason: 'operator_global_passthrough', review_started: false,
+            owner, repo, pull_number, head_sha: headSha, maintenance: publication,
+            message: 'Maintenance SHIP publication is pending reconciliation.',
+          });
+        }
         return buildToolResultJson({
           dispatched: false,
           job_crd_created: false,
@@ -187,8 +207,8 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
           repo,
           pull_number,
           head_sha: headSha,
-          ...(passthroughCheck ? { passthrough_check: passthroughCheck } : {}),
           message: 'Review request acknowledged; operator passthrough is enabled, so no review was started.',
+          maintenance: publication,
         });
       }
 

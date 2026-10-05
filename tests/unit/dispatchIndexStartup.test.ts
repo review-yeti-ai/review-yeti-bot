@@ -49,7 +49,7 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock('../../src/auth/githubActionsOidc', () => ({
-  githubActionsOidcPolicyFromEnv: () => ({ allowAppGate: true }),
+  githubActionsOidcPolicyFromEnv: () => ({ allowAppGate: true, repositoryIds: new Set(['123']), ownerIds: new Set(['99']) }),
   GitHubActionsOidcVerifier: class {},
 }));
 vi.mock('../../src/dispatchServer', () => ({ createActionDispatchApp: mocks.createApp }));
@@ -232,6 +232,28 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.listen).toHaveBeenCalledOnce();
   });
 
+  it('composes the durable marked-maintenance publisher and authenticated merge-group recovery verifier', async () => {
+    mocks.serviceConfig.mockReturnValue(authoritativeConfig());
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+    vi.stubEnv('GITHUB_APP_WEBHOOK_ENABLED', 'true');
+    vi.stubEnv('GITHUB_APP_WEBHOOK_ADMISSION_ENABLED', 'true');
+    vi.stubEnv('GITHUB_WEBHOOK_SECRET', 'synthetic-webhook-secret-value-32');
+    vi.stubEnv('GITHUB_APP_WEBHOOK_REPOSITORY_IDS', '123');
+    vi.stubEnv('GITHUB_APP_WEBHOOK_OWNER_IDS', '99');
+
+    await start();
+
+    expect(mocks.authoritative).toHaveBeenCalledOnce();
+    const options = mocks.authoritative.mock.calls[0][0];
+    expect(options.passthroughEnabled).toBe(true);
+    expect(options.operatorMaintenanceRepository).toBeDefined();
+    expect(options.verifyMergeGroupCurrent).toEqual(expect.any(Function));
+    expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
+      githubWebhook: expect.objectContaining({ onEvent: expect.any(Function) }),
+      authoritativePublishing: expect.any(Object),
+    }));
+  });
+
   it('wires only the exact configured self-hosted central-dispatch target', async () => {
     vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-bot');
     vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', String(PUBLIC_REVIEW_APP_ID));
@@ -402,6 +424,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
       config, repository: mocks.gateStorage, getStoredPrepared: expect.any(Function), appId: String(AUTHORITATIVE_REVIEW_APP_ID),
       privateKey: 'synthetic-startup-private-key', baseUrl: 'https://api.github.com',
       workerId: 'authoritative-review-startup-test',
+      passthroughEnabled: false,
       // ADR 0002: resolves the review App's bot login for finding-thread author verification.
       findingThreadAuthor: expect.any(Function),
     });

@@ -24,7 +24,6 @@ import { githubWebhookConfigFromEnv } from './auth/githubWebhookConfig';
 import { createGitHubWebhookAdmissionHandler } from './review/githubWebhookAdmission';
 import { PostgresMergeGroupGateRepository } from './persistence/mergeGroupGateRepository';
 import { createMergeGroupGate } from './review/mergeGroupGate';
-import { createPassthroughShipPublisher } from './review/passthroughShipPublisher';
 import { reviewCiConfigFromEnv } from './auth/reviewCiConfig';
 import { createReviewCiRuntime } from './reviewCiRuntime';
 import { findReviewCiEnrollment } from './review/reviewCi';
@@ -37,6 +36,8 @@ import { PostgresVerdictCacheBaseLookup } from './persistence/verdictCacheSource
 import { verdictCacheMaxAgeMsFrom } from './review/verdictCache';
 import { PROVIDER_CONCURRENCY_ENV, providerLeaseServiceConfigFromEnv } from './config/providerConcurrency';
 import { PostgresProviderLeaseStore } from './persistence/providerConcurrencyLeaseRepository';
+import { PostgresOperatorMaintenanceRepository } from './persistence/operatorMaintenanceRepository';
+import { createMergeGroupMaintenanceQueue } from './review/mergeGroupMaintenanceQueue';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
@@ -90,6 +91,12 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const verdictCacheMaxAgeMs = verdictCacheMaxAgeMsFrom(environment);
   const webhookConfig = githubWebhookConfigFromEnv(environment, policy);
   const ciConfig = reviewCiConfigFromEnv(environment, authoritativeConfig);
+  const mergeGroupTokenFor = async (owner: string, repo: string) => (await getBoundedRepositoryToken({
+    appId, privateKey, owner, repo, baseUrl,
+  }, 'merge-group')).token;
+  const maintenanceQueue = webhookConfig && dispatchConfig.passthroughEnabled
+    ? createMergeGroupMaintenanceQueue({ config: webhookConfig, tokenFor: mergeGroupTokenFor, baseUrl })
+    : undefined;
   const store = new PostgresStore();
   await store.initialize();
   const pool = store.getPool();
@@ -106,6 +113,9 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     : undefined;
   const authoritative = authoritativeConfig ? createAuthoritativeReviewService({
     config: authoritativeConfig, appId, privateKey, baseUrl,
+    passthroughEnabled: dispatchConfig.passthroughEnabled,
+    ...(dispatchConfig.passthroughEnabled ? { operatorMaintenanceRepository: new PostgresOperatorMaintenanceRepository(pool) } : {}),
+    ...(maintenanceQueue ? { verifyMergeGroupCurrent: maintenanceQueue.verifyCurrent } : {}),
     ...(dispatchConfig.centralExternalAppCredentials ? { publicAppCredentials: dispatchConfig.centralExternalAppCredentials } : {}),
     findingThreadAuthor: (selected) => boundedBotLogin(installationCredentialsForRepository(selected.owner, selected.repo)),
     repository: new PostgresReviewGateRepository(pool, { lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000,
@@ -146,14 +156,6 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     } } : {}),
     requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
   });
-  // Operator passthrough: the service itself posts the official check as SHIP and labels it.
-  const passthroughShip = dispatchConfig.passthroughEnabled ? createPassthroughShipPublisher({
-    appId: Number(appId),
-    baseUrl,
-    ...(authoritative ? { authoritativePublishing: authoritative.admission } : {}),
-    tokenFor: async (owner, repo, mode) => (await getBoundedRepositoryToken(
-      installationCredentialsForRepository(owner, repo), mode)).token,
-  }) : undefined;
   const githubWebhook = webhookConfig ? {
     secret: webhookConfig.secret,
     onEvent: createGitHubWebhookAdmissionHandler({
@@ -166,14 +168,13 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
         return { open: current.open };
       },
       ...(authoritative ? { authoritativePublishing: authoritative.admission } : {}),
-      ...(passthroughShip ? { passthroughShip } : {}),
       mergeGroupGate: createMergeGroupGate({
         config: webhookConfig,
         repository: new PostgresMergeGroupGateRepository(pool),
+        ...(authoritative?.admission.maintenance ? { operatorMaintenance: authoritative.admission.maintenance } : {}),
+        ...(maintenanceQueue ? { maintenanceQueue } : {}),
         baseUrl,
-        tokenFor: async (owner, repo) => (await getBoundedRepositoryToken({
-          appId, privateKey, owner, repo, baseUrl,
-        }, 'merge-group')).token,
+        tokenFor: mergeGroupTokenFor,
       }),
     }),
   } : undefined;
@@ -201,7 +202,6 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       modelClient,
       triggerDeps: {
         passthroughEnabled: dispatchConfig.passthroughEnabled,
-        ...(passthroughShip ? { passthroughShip } : {}),
         authoritativePublishing: authoritative?.admission,
         resolveGitHubPullRequest: async (owner: string, repo: string, pullNumber: number) => {
           const credentials = installationCredentialsForRepository(owner, repo);
@@ -236,7 +236,6 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     admission: repository,
     allowAppGate: policy.allowAppGate,
     passthroughEnabled: dispatchConfig.passthroughEnabled,
-    ...(passthroughShip ? { passthroughShip } : {}),
     requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
     centralExternalRepositories: dispatchConfig.centralExternalRepositories,
     mcpConfig: dispatchConfig.mcp,

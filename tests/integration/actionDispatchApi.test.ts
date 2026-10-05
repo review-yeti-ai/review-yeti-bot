@@ -94,7 +94,6 @@ function app(overrides: Record<string, any> = {}) {
     allowAppGate: overrides.allowAppGate,
     requireExpectedGeneration: overrides.requireExpectedGeneration,
     passthroughEnabled: overrides.passthroughEnabled,
-    passthroughShip: overrides.passthroughShip,
     centralExternalRepositories: overrides.centralExternalRepositories,
     authoritativePublishing: overrides.authoritativePublishing,
     now: overrides.now,
@@ -194,18 +193,24 @@ const terminalSuccessResult = {
 } as const;
 
 describe('POST /api/dispatch/action', () => {
-  it('acknowledges an authenticated Action dispatch without resolving or admitting new work', async () => {
+  it('publishes a marked SHIP for an authenticated exact current target without admitting review work', async () => {
     const resolveInstallationId = vi.fn(async () => 456);
     const admission = { admit: vi.fn(async () => { throw new Error('must not admit'); }) };
+    const candidate = { repositoryId: body.repositoryId, owner: body.owner, repo: body.repo,
+      prNumber: body.prNumber, headSha: body.headSha, baseSha: body.baseSha };
+    const resolve = vi.fn(async () => ({ current: { ...candidate, open: true, draft: false } }));
+    const receipt = { version: 'OperatorMaintenanceReceipt.v1', reviewCompleted: false, decision: 'SHIP' };
+    const maintenanceRequest = vi.fn(async () => ({ status: 'published' as const, receipt }));
     const fixture = app({
       passthroughEnabled: true,
       resolveInstallationId,
       admission,
       authoritativePublishing: {
-        expectedAppId: 789,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [123],
         acceptNewRequests: false,
-        resolver: { resolve: vi.fn(async () => { throw new Error('must not resolve'); }) },
+        resolver: { resolve },
+        maintenance: { request: maintenanceRequest },
       },
     });
     const response = await request(fixture.instance)
@@ -214,7 +219,7 @@ describe('POST /api/dispatch/action', () => {
       .send({ ...body, expectedGeneration: 999 });
 
     expect(response.status).toBe(200);
-    expect(response.body).toEqual({
+    expect(response.body).toMatchObject({
       version: 'ActionDispatchPassthrough.v1',
       status: 'passthrough',
       reason: 'operator_global_passthrough',
@@ -228,37 +233,41 @@ describe('POST /api/dispatch/action', () => {
       headSha: body.headSha,
       baseSha: body.baseSha,
       callerKind: 'direct',
+      maintenance: { status: 'published', receipt },
     });
     expect(response.body).not.toHaveProperty('runId');
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(candidate);
+    expect(maintenanceRequest).toHaveBeenCalledExactlyOnceWith({ source: 'central-action-dispatch', candidate });
     expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
     expect(fixture.admission.admit).not.toHaveBeenCalled();
   });
 
-  it('posts the service-owned SHIP check for the exact head during passthrough and fails loudly when it cannot', async () => {
-    const publish = vi.fn(async () => ({ status: 'published', checkId: 7, reviewMode: 'passthrough' }));
-    const fixture = app({ passthroughEnabled: true, passthroughShip: { publish } });
+  it('returns a retryable failure when maintenance publication cannot complete', async () => {
+    const candidate = { repositoryId: body.repositoryId, owner: body.owner, repo: body.repo,
+      prNumber: body.prNumber, headSha: body.headSha, baseSha: body.baseSha };
+    const fixture = app({ passthroughEnabled: true, authoritativePublishing: {
+      expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [123],
+      resolver: { resolve: vi.fn(async () => ({ current: { ...candidate, open: true, draft: false } })) },
+      maintenance: { request: vi.fn(async () => { throw new Error('GitHub unavailable'); }) },
+    } });
     const response = await request(fixture.instance)
       .post('/api/dispatch/action').set('Authorization', 'Bearer signed-oidc-token').send(body);
-    expect(response.status).toBe(200);
-    expect(publish).toHaveBeenCalledWith({
-      owner: body.owner, repo: body.repo, repositoryId: body.repositoryId,
-      prNumber: body.prNumber, headSha: body.headSha, baseSha: body.baseSha,
-    });
-    expect(response.body).toMatchObject({ status: 'passthrough', reviewStarted: false,
-      passthroughCheck: { status: 'published', checkId: 7, reviewMode: 'passthrough' } });
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Operator maintenance publication is unavailable' });
     expect(fixture.admission.admit).not.toHaveBeenCalled();
-
-    const failing = app({ passthroughEnabled: true,
-      passthroughShip: { publish: vi.fn(async () => { throw new Error('GitHub unavailable'); }) } });
-    const failed = await request(failing.instance)
-      .post('/api/dispatch/action').set('Authorization', 'Bearer signed-oidc-token').send(body);
-    expect(failed.status).toBe(502);
   });
 
-  it('does not compare or consume the supplied central generation during passthrough', async () => {
+  it('does not compare or consume the supplied central generation during typed maintenance passthrough', async () => {
     const claims = centralManualClaims;
     const resolveInstallationId = vi.fn(async () => 456);
-    const resolve = vi.fn(async () => { throw new Error('must not resolve'); });
+    const candidate = {
+      repositoryId: centralManualTarget.repositoryId, owner: centralManualTarget.owner,
+      repo: centralManualTarget.repo, prNumber: body.prNumber,
+      headSha: body.headSha, baseSha: body.baseSha,
+    };
+    const resolve = vi.fn(async () => ({ current: { ...candidate, open: true, draft: false } }));
+    const maintenanceRequest = vi.fn(async () => ({ status: 'published' as const,
+      receipt: { version: 'OperatorMaintenanceReceipt.v1', intentId: 'maintenance-intent', reviewCompleted: false } }));
     const admission = { admit: vi.fn(async () => { throw new Error('must not admit'); }) };
     const fixture = app({
       passthroughEnabled: true,
@@ -269,10 +278,11 @@ describe('POST /api/dispatch/action', () => {
       resolveInstallationId,
       admission,
       authoritativePublishing: {
-        expectedAppId: 789,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [1326169548],
         acceptNewRequests: false,
         resolver: { resolve },
+        maintenance: { request: maintenanceRequest },
       },
     });
     const response = await request(fixture.instance)
@@ -294,11 +304,14 @@ describe('POST /api/dispatch/action', () => {
       reviewStarted: false,
       callerKind: 'central',
       repositoryId: 1326169548,
+      maintenance: { status: 'published', receipt: { version: 'OperatorMaintenanceReceipt.v1',
+        intentId: 'maintenance-intent', reviewCompleted: false } },
     });
     expect(response.body).not.toHaveProperty('runId');
     expect(response.body).not.toHaveProperty('expectedGeneration');
     expect(resolveInstallationId).not.toHaveBeenCalled();
-    expect(resolve).not.toHaveBeenCalled();
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(candidate);
+    expect(maintenanceRequest).toHaveBeenCalledExactlyOnceWith({ source: 'central-action-dispatch', candidate });
     expect(admission.admit).not.toHaveBeenCalled();
   });
 

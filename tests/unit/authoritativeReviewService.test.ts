@@ -10,6 +10,7 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { createAuthoritativeReviewService, type AuthoritativeReviewServiceOptions } from '../../src/review/authoritativeReviewService';
 import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
 import type { ReviewAdmissionInput } from '../../src/review/reviewRun';
+import type { OperatorMaintenanceRepository } from '../../src/review/operatorMaintenanceContracts';
 
 const mocks = vi.hoisted(() => ({
   publisherConstructor: vi.fn(), resolverConstructor: vi.fn(),
@@ -82,7 +83,7 @@ function fixture() {
     claimPublication: vi.fn(), publishLocked: vi.fn(), retryPublication: vi.fn(), recordWorkerResult: vi.fn(),
   };
   const fetchImplementation = vi.fn<typeof fetch>().mockRejectedValue(new Error('No live requests in unit tests'));
-  const options = { config, repository, getStoredPrepared: mocks.getPrepared,
+  const options: AuthoritativeReviewServiceOptions = { config, repository, getStoredPrepared: mocks.getPrepared,
     appId: String(APP_ID), privateKey: 'fake-app-private-key',
     baseUrl: 'https://github.example.invalid/api/v3', workerId: 'authoritative-review-test', fetchImplementation };
   const gate: StoredReviewGate = {
@@ -218,6 +219,19 @@ describe('createAuthoritativeReviewService wiring', () => {
       expect(call).not.toHaveBeenCalled();
     }
     expect(f.options.fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it('runs the bounded maintenance recovery sweep from the authoritative timer even when normal publication fails', async () => {
+    const f = fixture();
+    const listPending = vi.fn(async () => []);
+    f.options.passthroughEnabled = true;
+    f.options.operatorMaintenanceRepository = { listPending } as unknown as OperatorMaintenanceRepository;
+    mocks.publish.mockRejectedValueOnce(new Error('ordinary review publisher unavailable'));
+    const service = createAuthoritativeReviewService(f.options);
+
+    await expect(service.runOnce()).rejects.toThrow('ordinary review publisher unavailable');
+
+    expect(listPending).toHaveBeenCalledExactlyOnceWith(20, undefined);
   });
 
   it('keeps completion and publication active while new admissions are paused for draining', async () => {

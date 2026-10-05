@@ -138,7 +138,7 @@ describe('trigger_review governed admission', () => {
     });
   });
 
-  it('returns a distinct MCP passthrough result without querying or admitting a review', async () => {
+  it('publishes a maintenance receipt for a current MCP target without querying or admitting a review', async () => {
     const identity = {
       owner: 'exampleorg', repo: 'example-api', prNumber: 73,
       headSha: HEAD_SHA, baseSha: BASE_SHA,
@@ -149,7 +149,10 @@ describe('trigger_review governed admission', () => {
     const resolvePullRequest = vi.fn(async () => ({
       headSha: HEAD_SHA, baseSha: BASE_SHA, repositoryId: 101, installationId: 22,
     }));
-    const resolvePolicy = vi.fn(async () => ({ identity, prepared }));
+    const current = { repositoryId: 101, ...identity, open: true, draft: false };
+    const resolvePolicy = vi.fn(async () => ({ identity, prepared, current }));
+    const receipt = { version: 'OperatorMaintenanceReceipt.v1', intentId: 'maintenance-intent', reviewCompleted: false };
+    const maintenanceRequest = vi.fn(async () => ({ status: 'published', receipt }));
     const tool = createTriggerReviewTool({
       passthroughEnabled: true,
       queryableDatabase: { query },
@@ -160,10 +163,14 @@ describe('trigger_review governed admission', () => {
         repositoryIds: [101],
         acceptNewRequests: false,
         resolver: { resolve: resolvePolicy },
+        maintenance: { request: maintenanceRequest },
       },
     } as any);
 
-    const result = await tool.execute(request);
+    const result = await tool.execute(request, {
+      authenticatedByConfiguredAuthenticator: true,
+      authorizedRepository: { owner: 'exampleorg', repo: 'example-api' },
+    });
     const output = JSON.parse((result.content[0] as any).text);
     expect(output).toEqual({
       dispatched: false,
@@ -176,50 +183,46 @@ describe('trigger_review governed admission', () => {
       pull_number: 73,
       head_sha: HEAD_SHA,
       message: 'Review request acknowledged; operator passthrough is enabled, so no review was started.',
+      maintenance: { status: 'published', receipt },
     });
     expect(output).not.toHaveProperty('attempt_id');
     expect(resolvePullRequest).toHaveBeenCalledOnce();
     expect(resolvePolicy).toHaveBeenCalledOnce();
+    expect(maintenanceRequest).toHaveBeenCalledExactlyOnceWith({
+      source: 'mcp-trigger',
+      candidate: { repositoryId: 101, ...identity },
+    });
     expect(query).not.toHaveBeenCalled();
     expect(admit).not.toHaveBeenCalled();
   });
 
-  it('posts the service-owned SHIP check through the publisher during MCP passthrough', async () => {
+  it('returns pending while the durable MCP maintenance pair is being reconciled', async () => {
     const identity = { owner: 'exampleorg', repo: 'example-api', prNumber: 73, headSha: HEAD_SHA, baseSha: BASE_SHA };
-    const publish = vi.fn(async () => ({ status: 'published', checkId: 5, reviewMode: 'passthrough' }));
+    const maintenanceRequest = vi.fn(async () => ({ status: 'pending' as const,
+      receipt: { version: 'OperatorMaintenanceReceipt.v1', reviewCompleted: false } }));
     const tool = createTriggerReviewTool({
       passthroughEnabled: true,
-      passthroughShip: { publish },
       resolveGitHubPullRequest: vi.fn(async () => ({
         headSha: HEAD_SHA, baseSha: BASE_SHA, repositoryId: 101, installationId: 22,
       })),
       authoritativePublishing: {
         expectedAppId: 42, repositoryIds: [101], acceptNewRequests: false,
-        resolver: { resolve: vi.fn(async () => ({ identity, prepared: { policy: { effectivePolicyDigest: POLICY_DIGEST } } })) },
+        resolver: { resolve: vi.fn(async () => ({ identity,
+          current: { repositoryId: 101, ...identity, open: true, draft: false },
+          prepared: { policy: { effectivePolicyDigest: POLICY_DIGEST } } })) },
+        maintenance: { request: maintenanceRequest },
       },
     } as any);
-    const output = JSON.parse(((await tool.execute(request)).content[0] as any).text);
-    expect(publish).toHaveBeenCalledWith({
-      owner: 'exampleorg', repo: 'example-api', repositoryId: 101, prNumber: 73, headSha: HEAD_SHA, baseSha: BASE_SHA,
+    const result = await tool.execute(request, {
+      authenticatedByConfiguredAuthenticator: true,
+      authorizedRepository: { owner: 'exampleorg', repo: 'example-api' },
     });
-    expect(output).toMatchObject({ status: 'passthrough', review_started: false,
-      passthrough_check: { status: 'published', checkId: 5, reviewMode: 'passthrough' } });
-  });
-
-  it('surfaces a publisher failure from MCP passthrough instead of acknowledging', async () => {
-    const identity = { owner: 'exampleorg', repo: 'example-api', prNumber: 73, headSha: HEAD_SHA, baseSha: BASE_SHA };
-    const tool = createTriggerReviewTool({
-      passthroughEnabled: true,
-      passthroughShip: { publish: vi.fn(async () => { throw new Error('GitHub unavailable'); }) },
-      resolveGitHubPullRequest: vi.fn(async () => ({
-        headSha: HEAD_SHA, baseSha: BASE_SHA, repositoryId: 101, installationId: 22,
-      })),
-      authoritativePublishing: {
-        expectedAppId: 42, repositoryIds: [101], acceptNewRequests: false,
-        resolver: { resolve: vi.fn(async () => ({ identity, prepared: { policy: { effectivePolicyDigest: POLICY_DIGEST } } })) },
-      },
-    } as any);
-    await expect(tool.execute(request)).rejects.toThrow(/GitHub unavailable/);
+    const output = JSON.parse((result.content[0] as any).text);
+    expect(output).toMatchObject({ status: 'maintenance_pending', review_started: false,
+      maintenance: { status: 'pending', receipt: { version: 'OperatorMaintenanceReceipt.v1', reviewCompleted: false } } });
+    expect(maintenanceRequest).toHaveBeenCalledExactlyOnceWith({ source: 'mcp-trigger', candidate: {
+      repositoryId: 101, ...identity,
+    } });
   });
 
   it('does not let MCP passthrough bypass incomplete-P2 recovery authorization', async () => {

@@ -15,6 +15,7 @@ import {
   type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
 import { buildReviewRunIdentity } from '../review/reviewAdmission';
+import type { RequestedReviewCandidate } from '../review/authoritativePublishingResolver';
 import {
   actionDispatchRequestSchema,
   actionDispatchDigestInput,
@@ -40,7 +41,6 @@ import {
 } from '../review/workerCompletionPersistenceError';
 export { createWorkerCompletionVerifier, type WorkerCompletionVerifier } from '../review/authoritativeServiceContracts';
 import type { IncrementalBaseLookup } from '../persistence/incrementalPriorReview';
-import type { PassthroughShipPublisher } from '../review/passthroughShipPublisher';
 import { createIncrementalBaseHandler } from './incrementalBaseRoute';
 import { createIncompleteP2RecoveryHandler, type IncompleteP2RecoveryQueryable } from './incompleteP2RecoveryRoute';
 import type { VerdictCacheBaseLookup } from '../persistence/verdictCacheSource';
@@ -64,8 +64,6 @@ export interface ActionDispatchRouterOptions {
   requireExpectedGeneration?: boolean;
   /** Operator-owned no-op for new reviews; auth, schema, freshness and recovery gates still apply. */
   passthroughEnabled?: boolean;
-  /** Under passthrough, post the service-owned SHIP check for the exact non-draft head. */
-  passthroughShip?: PassthroughShipPublisher;
   /** Exact service-owned external targets admitted through the trusted central workflow. */
   centralExternalRepositories?: ReadonlyMap<string, number>;
   /** Service-owned finite pilot allowlist; callers cannot opt themselves in or out. */
@@ -211,40 +209,46 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
       return response.status(400).json({ error: 'Action dispatch request timestamp is outside the accepted window' });
     }
     if (options.passthroughEnabled === true) {
-      const receipt = {
-        version: 'ActionDispatchPassthrough.v1',
-        status: 'passthrough',
-        reason: 'operator_global_passthrough',
-        reviewStarted: false,
-        deliveryId: dispatch.deliveryId,
-        eventName: dispatch.caller.eventName,
-        repositoryId: dispatch.repositoryId,
-        owner: dispatch.owner,
-        repo: dispatch.repo,
-        prNumber: dispatch.prNumber,
-        headSha: dispatch.headSha,
-        baseSha: dispatch.baseSha,
-        callerKind,
-      } as const;
-      logger.info('GitHub Actions review skipped by operator-wide passthrough', receipt);
-      if (options.passthroughShip) {
-        try {
-          const passthroughCheck = await options.passthroughShip.publish({
-            owner: dispatch.owner, repo: dispatch.repo, repositoryId: dispatch.repositoryId,
-            prNumber: dispatch.prNumber, headSha: dispatch.headSha, baseSha: dispatch.baseSha,
-          });
-          return response.status(200).json({ ...receipt, passthroughCheck });
-        } catch (error) {
-          logger.error('Passthrough SHIP check publication failed', {
-            repositoryId: dispatch.repositoryId, prNumber: dispatch.prNumber, headSha: dispatch.headSha,
-            reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
-          });
-          return response.status(502).json({ error: 'Passthrough check publication failed; retry the request' });
-        }
+      const maintenance = authoritative?.maintenance;
+      if (!authoritative || !authoritativeRepositories.has(dispatch.repositoryId)) {
+        return response.status(403).json({ error: 'Operator passthrough requires an enrolled authoritative repository' });
       }
-      return response.status(200).json(receipt);
+      if (!maintenance) {
+        return response.status(503).json({ error: 'Operator maintenance publication is unavailable' });
+      }
+      const candidate = {
+        repositoryId: dispatch.repositoryId, owner: dispatch.owner, repo: dispatch.repo,
+        prNumber: dispatch.prNumber, headSha: dispatch.headSha, baseSha: dispatch.baseSha,
+      };
+      try {
+        const resolved = await authoritative.resolver.resolve(candidate);
+        if (!resolved.current.open || resolved.current.draft !== false
+          || resolved.current.repositoryId !== candidate.repositoryId
+          || resolved.current.owner !== candidate.owner || resolved.current.repo !== candidate.repo
+          || resolved.current.prNumber !== candidate.prNumber
+          || resolved.current.headSha !== candidate.headSha || resolved.current.baseSha !== candidate.baseSha) {
+          return response.status(409).json({ error: 'Operator maintenance candidate is no longer current and reviewable' });
+        }
+        expectedReviewAppIdFor(authoritative, candidate);
+        const publication = await maintenance.request({ source: 'central-action-dispatch', candidate });
+        const receipt = {
+          version: 'ActionDispatchPassthrough.v1',
+          status: publication.status === 'published' ? 'passthrough' : 'maintenance_pending',
+          reason: 'operator_global_passthrough', reviewStarted: false,
+          deliveryId: dispatch.deliveryId, eventName: dispatch.caller.eventName,
+          ...candidate, callerKind,
+          maintenance: publication,
+        } as const;
+        logger.info('GitHub Actions review skipped by operator-wide passthrough', {
+          intentId: (publication.receipt as { intentId?: unknown })?.intentId,
+          status: publication.status,
+          repositoryId: dispatch.repositoryId,
+        });
+        return response.status(publication.status === 'published' ? 200 : 503).json(receipt);
+      } catch {
+        return response.status(503).json({ error: 'Operator maintenance publication is unavailable' });
+      }
     }
-
     if (authoritative?.acceptNewRequests === false && dispatch.publishMode === 'app-gate'
       && authoritativeRepositories.has(dispatch.repositoryId)) {
       return response.status(503).json({ error: 'Authoritative review admission is paused' });
