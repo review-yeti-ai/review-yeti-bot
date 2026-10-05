@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { taskSourceReceiptSchema } from './taskSourceDelivery';
-import { evaluateFindingConvergence, findingFingerprint, findingFingerprintForClaimType, type PriorFindingThread } from './findingConvergence';
+import { evaluateFindingConvergence, findingClaimType, findingFingerprint, findingFingerprintForClaimType,
+  type PriorFindingThread } from './findingConvergence';
 import { DELETION_CLASSIFICATION_VERSION } from './deletionClassification';
 import { computeAppVerdict } from './reviewAdapters';
 import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane } from './reviewCore';
@@ -1009,9 +1010,21 @@ function groundedReviewReceiptError(
   }
   const changedByPath = new Map(changedFiles.map((file) => [file.path, file]));
   const outcomes = new Map<string, typeof receipt.verification.outcomes[number]>();
+  const currentFindings = result.personas.flatMap((persona) => persona.findings);
+  if (required && currentFindings.some((finding) => {
+    const claimType = findingClaimType({ path: finding.path, title: finding.title });
+    const severity = publishedFindingSeverity(finding);
+    return claimType === 'missing-tests' && (severity === 'P0' || severity === 'P1');
+  })) return 'test-coverage-only claim cannot be blocking';
   for (const outcome of receipt.verification.outcomes) {
     if (outcomes.has(outcome.fingerprint)) return 'grounded receipt contains duplicate finding identities';
     outcomes.set(outcome.fingerprint, outcome);
+    const semanticClaimType = findingClaimType(required
+      ? { path: outcome.path, title: outcome.title }
+      : { path: outcome.path, title: outcome.title, body: outcome.title });
+    if (required && outcome.claimType !== semanticClaimType) {
+      return 'grounded outcome claim type does not match its semantic title';
+    }
     if (findingFingerprintForClaimType({ path: outcome.path, title: outcome.title }, outcome.claimType) !== outcome.fingerprint) {
       return 'grounded outcome identity does not match its claim locator';
     }
@@ -1060,9 +1073,13 @@ function groundedReviewReceiptError(
       }
     }
   }
-  const currentFindings = result.personas.flatMap((persona) => persona.findings);
+  const groundedFingerprint = (finding: { path: string; title: string; body?: string }): string => {
+    if (!required) return findingFingerprint(finding);
+    const claimType = findingClaimType({ path: finding.path, title: finding.title });
+    return findingFingerprintForClaimType({ path: finding.path, title: finding.title }, claimType);
+  };
   for (const outcome of receipt.verification.outcomes) {
-    const matching = currentFindings.some((finding) => findingFingerprint(finding) === outcome.fingerprint);
+    const matching = currentFindings.some((finding) => groundedFingerprint(finding) === outcome.fingerprint);
     if ((outcome.status === 'confirmed' && !matching) || (outcome.status === 'contradicted' && matching)
       || (outcome.status === 'insufficient' && (outcome.severity === 'P0' || outcome.severity === 'P1') && matching)) {
       return 'grounded findings were not reconciled with the independent outcome';
@@ -1070,7 +1087,7 @@ function groundedReviewReceiptError(
   }
   for (const finding of currentFindings) {
     const severity = publishedFindingSeverity(finding);
-    if ((severity === 'P0' || severity === 'P1') && outcomes.get(findingFingerprint(finding))?.status !== 'confirmed') {
+    if ((severity === 'P0' || severity === 'P1') && outcomes.get(groundedFingerprint(finding))?.status !== 'confirmed') {
       return 'blocking finding lacks a current confirmed independent verification';
     }
   }

@@ -1,8 +1,9 @@
 import { posix } from 'node:path';
 import { canonicalJson, changedLineNumbers, sha256, type ReviewChangedFile } from './reviewCore';
 import { affectedContextDigest } from './semanticContext';
-import { findingClaimType, findingFingerprint, findingFingerprintForClaimType, normalizeFindingSeverity,
+import { findingClaimType, findingFingerprintForClaimType, normalizeFindingSeverity,
   type FindingClaimType } from './findingConvergence';
+import { REVIEW_SEVERITY_POLICY_V2 } from './reviewDecision';
 import { classifyUnavailablePatch } from './patchAvailability';
 import type { ReviewModelClient } from '../gateway/openRouterClient';
 import type { RepoFileProvider } from '../panel/panelEngine';
@@ -154,6 +155,30 @@ export interface GroundedFindingCandidate {
   title: string;
   claimType: FindingClaimType;
   fingerprint: string;
+}
+
+function groundedClaimType(
+  finding: { path?: unknown; title?: unknown; body?: unknown },
+  severityPolicyVersion?: typeof REVIEW_SEVERITY_POLICY_V2,
+): FindingClaimType {
+  const text = severityPolicyVersion === REVIEW_SEVERITY_POLICY_V2
+    // In v2 the title is the normalized issue claim. A body-level test recommendation must not
+    // reclassify a separate shipped-behavior defect as a missing-tests claim.
+    ? { path: String(finding.path ?? ''), title: String(finding.title ?? '') }
+    : finding as { path: string; title: string; body?: string };
+  return findingClaimType(text);
+}
+
+/** Test-coverage-only findings are advisory under v2; legacy v1 severity behavior is unchanged. */
+export function calibrateGroundedFinding<F extends { severity?: unknown; path?: unknown; title?: unknown; body?: unknown }>(
+  finding: F,
+  severityPolicyVersion?: typeof REVIEW_SEVERITY_POLICY_V2,
+): F {
+  const severity = normalizeFindingSeverity(finding);
+  const type = groundedClaimType(finding, severityPolicyVersion);
+  if (severityPolicyVersion !== REVIEW_SEVERITY_POLICY_V2 || type !== 'missing-tests'
+    || (severity !== 'P0' && severity !== 'P1')) return finding;
+  return { ...finding, severity: 'P2' } as F;
 }
 
 export interface GroundedVerificationOutcome {
@@ -310,7 +335,8 @@ function severityOrder(severity: string): number {
   return ({ P0: 0, P1: 1, P2: 2, P3: 3, NIT: 4 } as Record<string, number>)[severity] ?? 5;
 }
 
-function claimOf(finding: Record<string, unknown>): GroundedFindingCandidate | null {
+function claimOf(finding: Record<string, unknown>,
+  severityPolicyVersion?: typeof REVIEW_SEVERITY_POLICY_V2): GroundedFindingCandidate | null {
   const severity = normalizeFindingSeverity(finding as { severity?: unknown });
   const path = normalizedPath(finding.path);
   const line = Number(finding.line);
@@ -319,8 +345,10 @@ function claimOf(finding: Record<string, unknown>): GroundedFindingCandidate | n
   // The independent lane receives only a minimal untrusted claim locator. Proposer body,
   // blocker rationale, replacement text, author receipts, and history prose stay out of its prompt.
   const locator = { path, title: title.slice(0, 1_000) };
-  const claimType = findingClaimType(finding as { path: string; title: string; body?: string });
-  return { severity, path, line, title: locator.title, claimType,
+  const claimType = groundedClaimType(finding, severityPolicyVersion);
+  const calibratedSeverity = severityPolicyVersion === REVIEW_SEVERITY_POLICY_V2 && claimType === 'missing-tests'
+    && (severity === 'P0' || severity === 'P1') ? 'P2' : severity;
+  return { severity: calibratedSeverity, path, line, title: locator.title, claimType,
     fingerprint: findingFingerprintForClaimType(locator, claimType) };
 }
 
@@ -428,6 +456,7 @@ export async function runIndependentGroundedVerification(input: {
   repository: string;
   client: ReviewModelClient;
   model: string;
+  severityPolicyVersion?: typeof REVIEW_SEVERITY_POLICY_V2;
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   headSha: string;
   baseSha: string;
@@ -455,7 +484,7 @@ export async function runIndependentGroundedVerification(input: {
   const changedFilesByPath = changedPathMap(input.changedFiles);
   const candidateByFingerprint = new Map<string, GroundedFindingCandidate>();
   for (const finding of input.findings) {
-    const candidate = claimOf(finding);
+    const candidate = claimOf(finding, input.severityPolicyVersion);
     if (!candidate || !changedPaths.has(candidate.path)) continue;
     const previous = candidateByFingerprint.get(candidate.fingerprint);
     if (!previous) {
@@ -566,20 +595,22 @@ export function applyGroundedVerificationToPersonas<
   personas: readonly P[],
   verification: { outcomes: readonly Pick<GroundedVerificationOutcome, 'fingerprint' | 'status' | 'severity'>[]; coverageComplete: boolean },
   changedFiles?: readonly ReviewChangedFile[],
+  severityPolicyVersion?: typeof REVIEW_SEVERITY_POLICY_V2,
 ): { personas: Array<Omit<P, 'findings'> & { findings: F[] }>; coverageComplete: boolean; unverifiedBlockerCount: number; coverageGaps: string[] } {
   const byFingerprint = new Map(verification.outcomes.map((outcome) => [outcome.fingerprint, outcome]));
   const changedPaths = changedFiles ? new Set(changedFiles.map((file) => normalizedPath(file.path))) : undefined;
   let unverifiedBlockerCount = 0;
   const coverageGaps: string[] = [];
   const output = personas.map((persona) => ({ ...persona, findings: persona.findings.flatMap((finding) => {
-    const candidate = claimOf(finding as Record<string, unknown>);
+    const calibratedFinding = calibrateGroundedFinding(finding, severityPolicyVersion);
+    const candidate = claimOf(finding as Record<string, unknown>, severityPolicyVersion);
     // Invalid and out-of-diff hypotheses are left to the canonical changed-line
     // sanitizer. They are not independent-verification coverage gaps because
     // they cannot enter the current-head arbitration result.
-    if (changedPaths && (!candidate || !changedPaths.has(candidate.path))) return [finding as F];
-    const result = candidate ? byFingerprint.get(findingFingerprint(candidate)) : undefined;
-    const severity = candidate?.severity ?? normalizeFindingSeverity(finding);
-    if (result?.status === 'confirmed') return [finding as F];
+    if (changedPaths && (!candidate || !changedPaths.has(candidate.path))) return [calibratedFinding];
+    const result = candidate ? byFingerprint.get(candidate.fingerprint) : undefined;
+    const severity = candidate?.severity ?? normalizeFindingSeverity(calibratedFinding);
+    if (result?.status === 'confirmed') return [calibratedFinding];
     if (result?.status === 'contradicted') return [];
     if (severity === 'P0' || severity === 'P1') {
       unverifiedBlockerCount += 1;
@@ -587,7 +618,7 @@ export function applyGroundedVerificationToPersonas<
       return [];
     }
     // An uncertain advisory remains visible as advisory evidence and can never block the result.
-    return [finding as F];
+    return [calibratedFinding];
   }) }));
   return { personas: output, coverageComplete: verification.coverageComplete && unverifiedBlockerCount === 0,
     unverifiedBlockerCount, coverageGaps: [...new Set(coverageGaps)] };
