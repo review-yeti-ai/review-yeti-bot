@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // @ts-expect-error JavaScript benchmark adapter intentionally has no public TypeScript surface.
 import * as benchmark from '../../scripts/competitive-review-benchmark.mjs';
@@ -32,6 +36,22 @@ function referenceRows() {
 }
 
 describe('competitive review benchmark input boundaries', () => {
+  it('hashes the exact prepared input bytes consumed by a run', () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-prepared-input-'));
+    try {
+      const inputPath = path.join(directory, 'cases.json');
+      const bytes = Buffer.from('{"datasetSha256":"pinned"}\n');
+      fs.writeFileSync(inputPath, bytes);
+
+      const prepared = benchmark.readPreparedInput(inputPath);
+      expect(prepared.value).toEqual({ datasetSha256: 'pinned' });
+      expect(prepared.sha256).toBe(crypto.createHash('sha256').update(bytes).digest('hex'));
+      expect(prepared.sha256).toMatch(/^[a-f0-9]{64}$/u);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('creates an opaque, context-stratified verification panel without labels in reviewer input', () => {
     const cases = benchmark.buildVerificationCases(referenceRows(), manifest);
     expect(cases).toHaveLength(6);
@@ -55,8 +75,61 @@ describe('competitive review benchmark input boundaries', () => {
     }], manifest);
     expect(result.referenceAnchorRecall).toBe(1);
     expect(result.precision).toBeNull();
+    expect(result.adjudicatedSubsetPrecision).toBeNull();
     expect(result.unjudgedGeneratedFindingCount).toBe(1);
     expect(result.qualified).toBe(false);
+
+    const partiallyAdjudicated = benchmark.scoreDiscoveryCases([{
+      ...rows[0],
+      findings: [
+        { id: 'finding-1', path: 'src/app.js', line: 12 },
+        { id: 'finding-2', path: 'src/other.js', line: 8 },
+      ],
+    }], manifest, {
+      judge: { kind: 'independent_human', protocolId: 'double-blind-v1' },
+      judgments: [{ findingId: 'finding-1', verdict: 'valid' }],
+    });
+    expect(partiallyAdjudicated.precision).toBeNull();
+    expect(partiallyAdjudicated.precision95).toBeNull();
+    expect(partiallyAdjudicated.adjudicatedSubsetPrecision).toBe(1);
+    expect(partiallyAdjudicated.adjudicatedSubsetPrecisionDenominator).toBe(1);
+    expect(partiallyAdjudicated.unjudgedGeneratedFindingCount).toBe(1);
+    expect(partiallyAdjudicated.qualified).toBe(false);
+
+    const ambiguousJudgments = benchmark.scoreDiscoveryCases([{
+      ...rows[0],
+      findings: [
+        { id: 'finding-1', path: 'src/app.js', line: 12 },
+        { id: 'finding-2', path: 'src/other.js', line: 8 },
+      ],
+    }], manifest, {
+      judge: { kind: 'independent_human', protocolId: 'double-blind-v1' },
+      judgments: [
+        { findingId: 'finding-1', verdict: 'valid' },
+        { findingId: 'finding-1', verdict: 'invalid' },
+        { findingId: 'not-generated', verdict: 'valid' },
+      ],
+    });
+    expect(ambiguousJudgments.precision).toBeNull();
+    expect(ambiguousJudgments.adjudicatedSubsetPrecision).toBeNull();
+    expect(ambiguousJudgments.adjudicatedSubsetPrecisionDenominator).toBe(0);
+    expect(ambiguousJudgments.unjudgedGeneratedFindingCount).toBe(2);
+
+    const duplicateGeneratedIds = benchmark.scoreDiscoveryCases([{
+      ...rows[0],
+      findings: [
+        { id: 'finding-1', path: 'src/app.js', line: 12 },
+        { id: 'finding-1', path: 'src/other.js', line: 8 },
+      ],
+    }], manifest, {
+      judge: { kind: 'independent_human', protocolId: 'double-blind-v1' },
+      judgments: [
+        { findingId: 'finding-1', verdict: 'valid' },
+        { findingId: 'foreign-finding', verdict: 'valid' },
+      ],
+    });
+    expect(duplicateGeneratedIds.precision).toBeNull();
+    expect(duplicateGeneratedIds.qualified).toBe(false);
 
     const adjudicated = benchmark.scoreDiscoveryCases([{
       ...rows[0],
@@ -66,7 +139,38 @@ describe('competitive review benchmark input boundaries', () => {
       judgments: [{ findingId: 'finding-1', verdict: 'valid' }],
     });
     expect(adjudicated.precision).toBe(1);
+    expect(adjudicated.adjudicatedSubsetPrecision).toBe(1);
     expect(adjudicated.qualified).toBe(true);
+  });
+
+  it('does not score a verifier result when its pinned source snapshot has omissions', async () => {
+    const testCase = benchmark.buildVerificationCases(referenceRows(), manifest)
+      .find((entry: any) => entry.context === 'Diff Level');
+    let verifierCalls = 0;
+    const result = await benchmark.runActualVerificationCase(testCase, {
+      changedFiles: [{ path: testCase.reference.path, patch: 'diff --git a/src/app.js b/src/app.js\n+changed' }],
+      omissions: ['head_blob_fetch_failed'],
+    }, {
+      resolveModelConfig: () => ({ enabled: true, transports: [
+        { name: 'route', apiKey: 'secret', model: 'vendor/model' },
+      ] }),
+    }, {
+      falsification: {
+        runFindingFalsification: async () => {
+          verifierCalls += 1;
+          return { outcomes: [{ verdict: 'CONFIRM', reason: 'confirmed' }], receipt: { usage: {} } };
+        },
+      },
+    });
+
+    expect(result.status).toBe('incomplete');
+    expect(result.verdict).toBe('ABSTAIN');
+    expect(result.sourceOmissions).toEqual(['head_blob_fetch_failed']);
+    expect(verifierCalls).toBe(0);
+
+    const score = benchmark.scoreVerificationCases([testCase], [result]);
+    expect(score.completed).toBe(0);
+    expect(score.byContext['Diff Level'].scoredCompleted).toBe(0);
   });
 
   it('requires a single credentialed real transport and refuses synthetic scoring', () => {
@@ -196,5 +300,20 @@ describe('competitive review benchmark input boundaries', () => {
       completion: { completed: 1, total: 1, allRuntimeReceiptsComplete: true },
       cases: [{ status: 'completed' }],
     })).toThrow('discovery_runtime_evaluation_incomplete');
+    expect(() => benchmark.assertDiscoveryRunEligible({
+      executionPurpose: 'paired_heldout_evaluation',
+      qualification: 'eligible_for_independent_adjudication',
+      panelSize: 1,
+      completion: { completed: 1, total: 1, allRuntimeReceiptsComplete: true },
+      cases: [{ status: 'completed' }],
+    })).toThrow('run_missing_prepared_input_digest');
+    expect(() => benchmark.assertDiscoveryRunEligible({
+      executionPurpose: 'paired_heldout_evaluation',
+      qualification: 'eligible_for_independent_adjudication',
+      panelSize: 1,
+      completion: { completed: 1, total: 1, allRuntimeReceiptsComplete: true },
+      cases: [{ status: 'completed' }],
+      preparedInputSha256: 'a'.repeat(64),
+    })).toThrow('run_source_verification_boundary_missing');
   });
 });
