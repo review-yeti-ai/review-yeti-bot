@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import * as benchmark from '../../scripts/competitive-review-benchmark.mjs';
+import { resolveComposedEngineMaxTurns } from '../../src/panel/composedEngine';
 
 const manifest = {
   schemaVersion: 'review-yeti-competitive-benchmark-manifest-v1',
@@ -35,6 +36,25 @@ function referenceRows() {
 }
 
 describe('competitive review benchmark input boundaries', () => {
+  it('rejects a modified manifest that retains the pinned AACR dataset hash', () => {
+    const canonicalBytes = fs.readFileSync(path.join(process.cwd(),
+      'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json'));
+    const binding = benchmark.assertCanonicalHeldoutManifestBytes(canonicalBytes);
+    expect(binding).toMatchObject({
+      sha256: benchmark.AACR_HELDOUT_MANIFEST_SHA256,
+      manifest: { datasetSha256: benchmark.AACR_BENCHMARK.sha256 },
+    });
+    const ids = binding.manifest.cases.map((entry: { id: string }) => entry.id);
+    expect(benchmark.assertExactCaseIdSet(ids, ids)).toBe(true);
+    expect(() => benchmark.assertExactCaseIdSet([...ids.slice(0, -1), ids[0]], ids))
+      .toThrow('discovery_input_case_ids_do_not_match_fixed_panel');
+
+    const modified = JSON.parse(canonicalBytes.toString('utf8'));
+    modified.cases[0].repository = 'attacker/repo';
+    expect(() => benchmark.assertCanonicalHeldoutManifestBytes(Buffer.from(JSON.stringify(modified))))
+      .toThrow('heldout_manifest_digest_mismatch');
+  });
+
   it('rejects discovery bundles that expose labels or oracle rows to the reviewer', () => {
     expect(benchmark.assertBlindDiscoveryInputCases([{ caseId: 'opaque', diff: 'public source' }])).toBe(true);
     expect(() => benchmark.assertBlindDiscoveryInputCases([{ caseId: 'opaque', expectedLabel: 1 }]))
@@ -83,6 +103,32 @@ describe('competitive review benchmark input boundaries', () => {
     });
   });
 
+  it('forces the smoke turn ceiling over an inherited process override and restores the caller environment', async () => {
+    const prior = process.env.COMPOSED_ENGINE_MAX_TURNS;
+    process.env.COMPOSED_ENGINE_MAX_TURNS = '100';
+    try {
+      expect(resolveComposedEngineMaxTurns(process.env)).toBe(100);
+      await expect(benchmark.withScopedComposedEngineTurnLimit(4, async () => {
+        expect(process.env.COMPOSED_ENGINE_MAX_TURNS).toBe('4');
+        return resolveComposedEngineMaxTurns(process.env);
+      })).resolves.toBe(4);
+      expect(process.env.COMPOSED_ENGINE_MAX_TURNS).toBe('100');
+
+      await expect(benchmark.withScopedComposedEngineTurnLimit(2, async () => {
+        throw new Error('smoke_runner_failed');
+      })).rejects.toThrow('smoke_runner_failed');
+      expect(process.env.COMPOSED_ENGINE_MAX_TURNS).toBe('100');
+
+      delete process.env.COMPOSED_ENGINE_MAX_TURNS;
+      await expect(benchmark.withScopedComposedEngineTurnLimit(3, async () =>
+        resolveComposedEngineMaxTurns(process.env))).resolves.toBe(3);
+      expect(process.env.COMPOSED_ENGINE_MAX_TURNS).toBeUndefined();
+    } finally {
+      if (prior === undefined) delete process.env.COMPOSED_ENGINE_MAX_TURNS;
+      else process.env.COMPOSED_ENGINE_MAX_TURNS = prior;
+    }
+  });
+
   it('rejects qualification policies that narrow the full production envelope or mismatch effort', () => {
     const sourcePolicy = {
       review_engine: 'dsh',
@@ -115,15 +161,31 @@ describe('competitive review benchmark input boundaries', () => {
       coverage: { rosterValid: true, quorumSatisfied: true, fullPanelComplete: true },
       sourceReadOmissions: [], groundedReview: null,
     })).toBe(false);
-    expect(benchmark.assertDiscoveryCaseQualification({
+    const qualificationInput = {
       purpose: 'qualification', verdict: 'APPROVE', selectedRunnerInvoked: true,
       coverage: { rosterValid: true, quorumSatisfied: true, fullPanelComplete: true },
       sourceReadOmissions: [], groundedReview: {
         version: 'GroundedReviewReceipt.v1',
         coverage: { complete: true, regionCount: 4, coveredRegionCount: 4, assignmentCount: 4 },
-        verification: { version: 'GroundedIndependentVerification.v1', coverageComplete: true },
+        verification: { version: 'GroundedIndependentVerification.v1', coverageComplete: true,
+          calls: 12, budget: { totalCalls: 12, callsPerTask: 12 } },
       },
-    })).toBe(true);
+    };
+    expect(benchmark.assertDiscoveryCaseQualification(qualificationInput)).toBe(true);
+    expect(benchmark.assertDiscoveryCaseQualification({ ...qualificationInput,
+      groundedReview: { ...qualificationInput.groundedReview,
+        verification: { ...qualificationInput.groundedReview.verification, calls: 13 } } })).toBe(false);
+    expect(benchmark.assertDiscoveryCaseQualification({ ...qualificationInput,
+      groundedReview: { ...qualificationInput.groundedReview,
+        verification: { ...qualificationInput.groundedReview.verification,
+          budget: { totalCalls: 100, callsPerTask: 12 } } } })).toBe(false);
+    expect(benchmark.assertDiscoveryCaseQualification({ ...qualificationInput,
+      groundedReview: { ...qualificationInput.groundedReview,
+        verification: { ...qualificationInput.groundedReview.verification,
+          budget: { totalCalls: 12, callsPerTask: 13 } } } })).toBe(false);
+    expect(benchmark.assertDiscoveryCaseQualification({ ...qualificationInput,
+      groundedReview: { ...qualificationInput.groundedReview,
+        verification: { ...qualificationInput.groundedReview.verification, budget: undefined } } })).toBe(false);
     expect(benchmark.assertDiscoveryCaseQualification({
       purpose: 'baseline', verdict: 'APPROVE', selectedRunnerInvoked: true,
       coverage: { rosterValid: true, quorumSatisfied: true, fullPanelComplete: true },

@@ -31,6 +31,7 @@ export const AACR_BENCHMARK = Object.freeze({
   rowCount: 2145,
   license: 'Apache-2.0',
 });
+export const AACR_HELDOUT_MANIFEST_SHA256 = 'bf3a09a1d8a10097480ed7cafd35f4ef2309312d23f3dface79ac55f765e2aab';
 
 export const HELDOUT_LANGUAGES = Object.freeze([
   'C', 'C#', 'C++', 'Go', 'Java', 'JavaScript', 'PHP', 'Python', 'Rust', 'TypeScript',
@@ -42,6 +43,7 @@ const CONTEXT_ORDER = Object.freeze(['Diff Level', 'File Level', 'Repo Level']);
 const HASH_RE = /^[a-f0-9]{40}$/iu;
 const SHA256_RE = /^[a-f0-9]{64}$/iu;
 const SOURCE_SNAPSHOT_VERIFICATION = 'preparation_stage_only_not_reverified_at_run';
+let composedEngineTurnLimitScopeActive = false;
 export const V1_BASELINE_RUNTIME_SHA = 'e70749fd4b14cb284b1497974306975cbce2d47a';
 export const V1_POLICY_PROVENANCE = Object.freeze({
   revision: '216d33cd75605d97b0e0b8becb7457ce7e326ecd',
@@ -221,6 +223,36 @@ export function assertKnownPolicyProjection(effortProfile, projectionSha256) {
   return true;
 }
 
+/**
+ * The composed engine reads this operator override from process.env, outside the worker env
+ * object. Scope the smoke cap around the production call and restore the caller's value even
+ * when the worker throws; otherwise an inherited larger override silently defeats smoke limits.
+ */
+export async function withScopedComposedEngineTurnLimit(maxTurnsTotal, operation) {
+  if (!Number.isSafeInteger(maxTurnsTotal) || maxTurnsTotal < 1 || typeof operation !== 'function') {
+    throw new Error('invalid_scoped_composed_turn_limit');
+  }
+  if (composedEngineTurnLimitScopeActive) throw new Error('composed_engine_turn_limit_scope_already_active');
+  const previous = process.env.COMPOSED_ENGINE_MAX_TURNS;
+  composedEngineTurnLimitScopeActive = true;
+  try {
+    process.env.COMPOSED_ENGINE_MAX_TURNS = String(maxTurnsTotal);
+    return await operation();
+  } finally {
+    if (previous === undefined) delete process.env.COMPOSED_ENGINE_MAX_TURNS;
+    else process.env.COMPOSED_ENGINE_MAX_TURNS = previous;
+    composedEngineTurnLimitScopeActive = false;
+  }
+}
+
+function groundedVerifierBudgetIsBounded(verification) {
+  const budget = verification?.budget;
+  return Number.isSafeInteger(verification?.calls) && verification.calls >= 0
+    && Number.isSafeInteger(budget?.totalCalls) && budget.totalCalls >= 0 && budget.totalCalls <= 12
+    && Number.isSafeInteger(budget?.callsPerTask) && budget.callsPerTask > 0 && budget.callsPerTask <= 12
+    && verification.calls <= budget.totalCalls;
+}
+
 /** @param {{purpose?: string, verdict?: string, coverage?: {rosterValid?: boolean, quorumSatisfied?: boolean, fullPanelComplete?: boolean}, selectedRunnerInvoked?: boolean, sourceReadOmissions?: string[], groundedReview?: any}} input */
 export function assertDiscoveryCaseQualification({
   purpose, verdict, coverage, selectedRunnerInvoked, sourceReadOmissions = [], groundedReview,
@@ -236,7 +268,8 @@ export function assertDiscoveryCaseQualification({
       && Number.isSafeInteger(groundedReview.coverage.assignmentCount) && groundedReview.coverage.assignmentCount > 0
       && groundedReview.coverage.assignmentCount <= COMPOSED_BENCHMARK_DEFAULTS.coverageAssignmentCeiling
       && groundedReview.verification?.version === 'GroundedIndependentVerification.v1'
-      && groundedReview.verification.coverageComplete === true;
+      && groundedReview.verification.coverageComplete === true
+      && groundedVerifierBudgetIsBounded(groundedReview.verification);
   }
   return purpose === 'baseline' || purpose === 'smoke';
 }
@@ -769,6 +802,38 @@ function manifestCaseIds(manifest) {
     throw new Error('benchmark manifest is incompatible with the pinned AACR dataset');
   }
   return new Set(manifest.cases.map((entry) => `${entry.repository}#${entry.prNumber}`));
+}
+
+function parseHeldoutManifestBytes(bytes) {
+  const raw = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  let manifest;
+  try {
+    manifest = JSON.parse(raw.toString('utf8'));
+  } catch {
+    throw new Error('benchmark manifest is not valid JSON');
+  }
+  manifestCaseIds(manifest);
+  return { manifest, sha256: sha256(raw) };
+}
+
+export function assertCanonicalHeldoutManifestBytes(bytes) {
+  const binding = parseHeldoutManifestBytes(bytes);
+  if (binding.sha256 !== AACR_HELDOUT_MANIFEST_SHA256) {
+    throw new Error('heldout_manifest_digest_mismatch');
+  }
+  return binding;
+}
+
+export function assertExactCaseIdSet(actualCaseIds, expectedCaseIds) {
+  if (!Array.isArray(actualCaseIds) || !Array.isArray(expectedCaseIds)
+    || actualCaseIds.length !== expectedCaseIds.length
+    || expectedCaseIds.some((caseId) => typeof caseId !== 'string')
+    || new Set(actualCaseIds).size !== actualCaseIds.length
+    || new Set(expectedCaseIds).size !== expectedCaseIds.length
+    || actualCaseIds.some((caseId) => typeof caseId !== 'string' || !expectedCaseIds.includes(caseId))) {
+    throw new Error('discovery_input_case_ids_do_not_match_fixed_panel');
+  }
+  return true;
 }
 
 function getRevisionRecords(rows, manifest) {
@@ -1525,6 +1590,11 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
       || arguments[3]?.maxTurnsPerTask !== undefined) throw new Error('qualification_resource_overrides_not_allowed');
   }
   if (purpose !== 'smoke' && purpose !== 'baseline' && purpose !== 'qualification') throw new Error('unsupported_discovery_purpose');
+  if (purpose === 'smoke' && (!Number.isSafeInteger(maxTasks) || maxTasks < 1 || maxTasks > 2
+    || !Number.isSafeInteger(maxTurnsTotal) || maxTurnsTotal < 1 || maxTurnsTotal > 4
+    || !Number.isSafeInteger(maxTurnsPerTask) || maxTurnsPerTask !== 1)) {
+    throw new Error('discovery_resource_limits_exceed_benchmark_ceiling');
+  }
   const gatewayBaseUrl = transportEnv.REVIEW_YETI_GATEWAY_BASE_URL || '';
   const gatewayApiKey = transportEnv.REVIEW_YETI_BIFROST_API_KEY || '';
   if (!gatewayBaseUrl || !gatewayApiKey) throw new Error('actual_model_credentials_unavailable');
@@ -1647,7 +1717,10 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
   try {
     process.stdout.write = () => true;
     process.stderr.write = () => true;
-    receipt = await runtime.publishing.runPublishingReviewWorker(runtimeEnv, deps);
+    const runWorker = () => runtime.publishing.runPublishingReviewWorker(runtimeEnv, deps);
+    receipt = purpose === 'smoke'
+      ? await withScopedComposedEngineTurnLimit(maxTurnsTotal, runWorker)
+      : await runWorker();
   } finally {
     process.stdout.write = stdoutWrite;
     process.stderr.write = stderrWrite;
@@ -1840,8 +1913,9 @@ export async function main(argv = process.argv) {
     return 0;
   }
   if (command === 'prepare-discovery') {
-    const manifest = readJson(arg('--manifest', path.join(repoRoot, 'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json')));
-    manifestCaseIds(manifest);
+    const manifestBytes = fs.readFileSync(path.resolve(arg('--manifest',
+      path.join(repoRoot, 'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json'))));
+    const { manifest, sha256: heldoutManifestSha256 } = assertCanonicalHeldoutManifestBytes(manifestBytes);
     const cacheRoot = path.resolve(arg('--cache', path.join(os.tmpdir(), 'review-yeti-aacr-public-repos')));
     const cases = [];
     for (const prCase of manifest.cases) {
@@ -1863,7 +1937,8 @@ export async function main(argv = process.argv) {
       });
     }
     const out = arg('--out', path.join(os.tmpdir(), 'review-yeti-aacr-discovery-input.json'));
-    writeJson(out, { schemaVersion: 'review-yeti-discovery-cases-v1', datasetSha256: AACR_BENCHMARK.sha256, cases });
+    writeJson(out, { schemaVersion: 'review-yeti-discovery-cases-v1', datasetSha256: AACR_BENCHMARK.sha256,
+      heldoutManifestSha256, cases });
     process.stdout.write(JSON.stringify({ status: 'prepared', cases: cases.length,
       sourceOmissions: cases.filter((entry) => entry.sourceOmissions.length).length,
       changedFiles: cases.reduce((total, entry) => total + entry.changedFiles.length, 0) }) + '\n');
@@ -1873,20 +1948,25 @@ export async function main(argv = process.argv) {
     const preparedInput = readPreparedInput(arg('--cases', path.join(os.tmpdir(), 'review-yeti-aacr-discovery-input.json')));
     const input = preparedInput.value;
     if (input.datasetSha256 !== AACR_BENCHMARK.sha256 || !Array.isArray(input.cases)) throw new Error('discovery case bundle is not pinned');
-    const manifest = readJson(arg('--manifest', path.join(repoRoot, 'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json')));
+    const executionPurpose = arg('--purpose', 'smoke', argv);
+    if (!['smoke', 'baseline', 'qualification'].includes(executionPurpose)) {
+      throw new Error('unsupported_discovery_purpose');
+    }
+    const manifestBytes = fs.readFileSync(path.resolve(arg('--manifest',
+      path.join(repoRoot, 'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json'))));
+    const manifestBinding = executionPurpose === 'smoke'
+      ? parseHeldoutManifestBytes(manifestBytes) : assertCanonicalHeldoutManifestBytes(manifestBytes);
+    const { manifest, sha256: heldoutManifestSha256 } = manifestBinding;
     const expectedCases = new Map(manifest.cases.map((entry) => [entry.id, entry]));
-    if (input.cases.length !== expectedCases.size || input.cases.some((entry) => !expectedCases.has(entry.caseId))) {
-      throw new Error('discovery input case IDs differ from the fixed held-out panel');
+    assertExactCaseIdSet(input.cases.map((entry) => entry.caseId), manifest.cases.map((entry) => entry.id));
+    if (executionPurpose !== 'smoke' && input.heldoutManifestSha256 !== heldoutManifestSha256) {
+      throw new Error('discovery_input_manifest_digest_mismatch');
     }
     const runtimeRoot = path.resolve(arg('--runtime-root', repoRoot));
     const cacheRoot = path.resolve(arg('--cache', path.join(os.tmpdir(), 'review-yeti-aacr-public-repos')));
     const runtime = loadRuntime(runtimeRoot);
     const runtimeIdentity = runtimeGitIdentity(runtimeRoot);
     const results = [];
-    const executionPurpose = arg('--purpose', 'smoke', argv);
-    if (!['smoke', 'baseline', 'qualification'].includes(executionPurpose)) {
-      throw new Error('unsupported_discovery_purpose');
-    }
     const maxCasesValue = Number(arg('--max-cases', executionPurpose === 'smoke' ? '1' : String(input.cases.length)));
     if (!Number.isSafeInteger(maxCasesValue) || maxCasesValue < 1 || maxCasesValue > input.cases.length) {
       throw new Error('max_cases_must_be_between_one_and_fixed_panel_size');
@@ -2010,6 +2090,7 @@ export async function main(argv = process.argv) {
         task: 'discovery',
         benchmark: AACR_BENCHMARK.name,
         datasetSha256: input.datasetSha256,
+        heldoutManifestSha256,
         preparedInputSha256: preparedInput.sha256,
         sourceSnapshotVerification: SOURCE_SNAPSHOT_VERIFICATION,
         runtime: runtimeIdentity,
@@ -2061,6 +2142,7 @@ export async function main(argv = process.argv) {
       task: 'discovery',
       benchmark: AACR_BENCHMARK.name,
       datasetSha256: input.datasetSha256,
+      heldoutManifestSha256,
       preparedInputSha256: preparedInput.sha256,
       sourceSnapshotVerification: SOURCE_SNAPSHOT_VERIFICATION,
       runtime: runtimeIdentity,
@@ -2078,9 +2160,12 @@ export async function main(argv = process.argv) {
   }
   if (command === 'score-discovery') {
     const rows = loadPinnedAacrDataset(arg('--dataset', ''));
-    const manifest = readJson(arg('--manifest', path.join(repoRoot, 'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json')));
+    const manifestBytes = fs.readFileSync(path.resolve(arg('--manifest',
+      path.join(repoRoot, 'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json'))));
+    const { manifest, sha256: heldoutManifestSha256 } = assertCanonicalHeldoutManifestBytes(manifestBytes);
     const run = readJson(arg('--run', path.join(os.tmpdir(), 'review-yeti-aacr-discovery-run.json')));
     if (run.datasetSha256 !== AACR_BENCHMARK.sha256 || !Array.isArray(run.cases)) throw new Error('discovery run is not pinned to AACR data');
+    if (run.heldoutManifestSha256 !== heldoutManifestSha256) throw new Error('discovery_run_manifest_digest_mismatch');
     const preparedInputSha256 = requirePreparedInputReceipt(run);
     assertDiscoveryRunEligible(run);
     const ids = manifestCaseIds(manifest);
@@ -2101,6 +2186,7 @@ export async function main(argv = process.argv) {
     const output = {
       ...scored,
       preparedInputSha256,
+      heldoutManifestSha256,
       sourceSnapshotVerification: run.sourceSnapshotVerification || 'unknown',
       runtime: run.runtime,
       runtimeCompletion: run.completion,
