@@ -60,6 +60,7 @@ describe('actionDispatchConfig', () => {
   describe('actionDispatchConfigFromEnv', () => {
     it('provides safe defaults when environment is empty', () => {
       const config = actionDispatchConfigFromEnv({});
+      expect(config.passthroughEnabled).toBe(false);
       expect(config.requireExpectedGeneration).toBe(false);
       expect(config.centralExternalRepositories.size).toBe(0);
       expect(config.mcp.enabled).toBe(false);
@@ -72,6 +73,21 @@ describe('actionDispatchConfig', () => {
       expect(config.mcp.rateLimit).toEqual({
         windowMs: 60_000,
         max: 60,
+      });
+    });
+
+    describe('REVIEW_YETI_PASSTHROUGH parsing', () => {
+      it('enables only the exact true value and defaults off', () => {
+        expect(actionDispatchConfigFromEnv({}).passthroughEnabled).toBe(false);
+        expect(actionDispatchConfigFromEnv({ REVIEW_YETI_PASSTHROUGH: 'false' }).passthroughEnabled).toBe(false);
+        expect(actionDispatchConfigFromEnv({ REVIEW_YETI_PASSTHROUGH: 'true' }).passthroughEnabled).toBe(true);
+      });
+
+      it('fails closed on values other than exact true or false', () => {
+        expect(() => actionDispatchConfigFromEnv({ REVIEW_YETI_PASSTHROUGH: 'yes' }))
+          .toThrow('REVIEW_YETI_PASSTHROUGH must be exactly true or false');
+        expect(() => actionDispatchConfigFromEnv({ REVIEW_YETI_PASSTHROUGH: 'TRUE' }))
+          .toThrow('REVIEW_YETI_PASSTHROUGH must be exactly true or false');
       });
     });
 

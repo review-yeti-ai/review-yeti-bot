@@ -892,6 +892,7 @@ export function createApp(): Express {
       verifier: new GitHubActionsOidcVerifier({ policy: oidcPolicy }),
       admission: dispatchRepository,
       allowAppGate: oidcPolicy.allowAppGate,
+      passthroughEnabled: dispatchConfig.passthroughEnabled,
       requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
       centralExternalRepositories: dispatchConfig.centralExternalRepositories,
       workerCompletion: {
