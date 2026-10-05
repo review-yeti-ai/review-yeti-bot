@@ -1,0 +1,114 @@
+{
+  "schemaVersion": "GroundedLifecycleInput.v1",
+  "caseId": "lc_38e1a5d904bf62c7",
+  "source": {
+    "repository": {
+      "repositoryId": 73001,
+      "owner": "synthetic",
+      "repo": "fixture-project"
+    },
+    "baseSha": "6e5d67004a209e98c660f083b78509d374e44384",
+    "headSha": "f1b3054ed9f8dfb90d66747b2f9ddb67ccd63161",
+    "changedPaths": [
+      "quota-policy.ts"
+    ],
+    "revisions": [
+      {
+        "commitSha": "6e5d67004a209e98c660f083b78509d374e44384",
+        "treeSha": "1a981cdfc840dfd2d2416d28bb7961be01356ee9",
+        "parentSha": null,
+        "commitTimestamp": 1700003000,
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "quota-policy.ts",
+            "mode": "100644",
+            "gitBlobSha": "e6431fc4c2a7b0125a73e8a29d2a9988390e5dcc",
+            "sha256": "8ce32594a0ff00f8065fa084c4e2c9308ea7185b6d9b4d9d5bacfb55ce9d62eb",
+            "content": "export function mayCreate(used: number, limit: number): boolean {\n  return used < limit;\n}\n"
+          }
+        ]
+      },
+      {
+        "commitSha": "f1b3054ed9f8dfb90d66747b2f9ddb67ccd63161",
+        "treeSha": "a9be6f67e15a607a08bb8e9fd62a589abe015c3d",
+        "parentSha": "6e5d67004a209e98c660f083b78509d374e44384",
+        "commitTimestamp": 1700003060,
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "quota-policy.ts",
+            "mode": "100644",
+            "gitBlobSha": "627fc8b587d8dc59939e663ee6220bec2fa25dfd",
+            "sha256": "ca4ec4e3c4b7c073ec4d7b8ea139de9d171a3e4eda16e2adbfefe830e7779ffe",
+            "content": "export function mayCreate(used: number, limit: number): boolean {\n  return used <= limit;\n}\n"
+          }
+        ]
+      }
+    ],
+    "patches": [
+      {
+        "path": "quota-policy.ts",
+        "patch": "diff --git a/quota-policy.ts b/quota-policy.ts\nindex e6431fc..627fc8b 100644\n--- a/quota-policy.ts\n+++ b/quota-policy.ts\n@@ -1,3 +1,3 @@\n export function mayCreate(used: number, limit: number): boolean {\n-  return used < limit;\n+  return used <= limit;\n }",
+        "sha256": "af83d988ef2340f725836e12a33ba357a2aaa0bc6798c92b7e28554f0d0daaf6"
+      }
+    ],
+    "policyDigest": "c7aa103c22f3328889be1a75f78e15a19ffd863f404a6a795c9445092cf44081",
+    "configDigest": "a52ebb6fcdc418736d17adfad0524d36df82d87b0a2b6e42fa3cdb7b05e539eb",
+    "contextDigest": "c440fafc83012639e16252a0614fd6fbbc6f947ec42fd27dc56bc63cdb813c46"
+  },
+  "candidates": [
+    {
+      "severity": "P1",
+      "path": "quota-policy.ts",
+      "line": 2,
+      "title": "The quota boundary permits one request beyond the configured limit",
+      "claimType": "generic",
+      "fingerprint": "fp1_24989c96fded6cc7b0b1e011"
+    }
+  ],
+  "history": {
+    "sourceObservation": {
+      "validation": "identity-mismatch",
+      "snapshot": {
+        "version": "PrLifecycleHistorySnapshot.v1",
+        "snapshotId": "42dd1ace-4a0c-4ccd-a043-a5f82148452e",
+        "runId": "run_5b86969b0496ae83ea2c9f3e9f7d4f3d",
+        "executionAttempt": 1,
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project",
+        "prNumber": 41,
+        "headSha": "6e5d67004a209e98c660f083b78509d374e44384",
+        "baseSha": "6e5d67004a209e98c660f083b78509d374e44384",
+        "policyDigest": "c7aa103c22f3328889be1a75f78e15a19ffd863f404a6a795c9445092cf44081",
+        "configDigest": "a52ebb6fcdc418736d17adfad0524d36df82d87b0a2b6e42fa3cdb7b05e539eb",
+        "contextDigest": "76ca1d89c5b92efff11fa5cad9e18bf6d4b4050ff5a072b0428d48a09c5a4776",
+        "eventCount": 1,
+        "findingCount": 1,
+        "eventOmittedCount": 0,
+        "findingOmittedCount": 0,
+        "legacyOmittedCount": 0,
+        "eventsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "findingsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "expiresAt": "2030-01-01T00:00:00.000Z"
+      },
+      "digestMatches": true
+    },
+    "load": {
+      "status": "unavailable",
+      "events": [],
+      "findings": [],
+      "eventCount": 0,
+      "findingCount": 0,
+      "loadedEventCount": 0,
+      "loadedFindingCount": 0,
+      "eventOmittedCount": 0,
+      "findingOmittedCount": 0,
+      "legacyOmittedCount": 0,
+      "omissions": [
+        "snapshot identity does not match this review run"
+      ]
+    }
+  }
+}

@@ -1,0 +1,145 @@
+{
+  "schemaVersion": "GroundedLifecycleInput.v1",
+  "caseId": "lc_7a3c5e91d4b8062f",
+  "source": {
+    "repository": {
+      "repositoryId": 73001,
+      "owner": "synthetic",
+      "repo": "fixture-project"
+    },
+    "baseSha": "72cb38c139136fdadb2124baa413894d8f88bd3b",
+    "headSha": "d7ad692f8aefe0419cae05cde8b8afa3ad4dd7d1",
+    "changedPaths": [
+      "audience-contract.ts",
+      "route-policy.ts"
+    ],
+    "revisions": [
+      {
+        "commitSha": "72cb38c139136fdadb2124baa413894d8f88bd3b",
+        "treeSha": "7828904ef8facefe530455eb7c210a38b898d950",
+        "parentSha": null,
+        "commitTimestamp": 1700007000,
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "audience-contract.ts",
+            "mode": "100644",
+            "gitBlobSha": "d7e998517290c59cd55fbb439e8993e7551f925a",
+            "sha256": "52083cb5668d585f4fa6010033c53973eee9e396ab352288b69e27c78e172156",
+            "content": "export const DEFAULT_ROUTE_AUDIENCE = \"private\";\n"
+          },
+          {
+            "path": "route-policy.ts",
+            "mode": "100644",
+            "gitBlobSha": "3c57b0f0902844392a356fa02c16b24d172f4572",
+            "sha256": "8b21b39057d2aeaae4f4026ec312ddd1f4512afabc68bb3f49c24b420354878b",
+            "content": "import { DEFAULT_ROUTE_AUDIENCE } from \"./audience-contract\";\n\nexport function mayEnter(claimed: string | undefined, configured?: string): boolean {\n  const required = configured ?? DEFAULT_ROUTE_AUDIENCE;\n  return claimed !== undefined && claimed === required;\n}\n"
+          }
+        ]
+      },
+      {
+        "commitSha": "d7ad692f8aefe0419cae05cde8b8afa3ad4dd7d1",
+        "treeSha": "cb9c7f93374ce61032253ea4d29afa49960b8379",
+        "parentSha": "72cb38c139136fdadb2124baa413894d8f88bd3b",
+        "commitTimestamp": 1700007060,
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "audience-contract.ts",
+            "mode": "100644",
+            "gitBlobSha": "05ce01f4ebc9edcff9a193a5b13d15a6437dce09",
+            "sha256": "1ee519ef76ba3b7a5ef5c7645c5f801e559d86de9fc8a712208c6ac33bd024f0",
+            "content": "export const DEFAULT_ROUTE_AUDIENCE = \"public\";\n"
+          },
+          {
+            "path": "route-policy.ts",
+            "mode": "100644",
+            "gitBlobSha": "bd354d8ac517d08649e93b9fec15f25adb7ffdc8",
+            "sha256": "124068d154cddb4f2266e710cddebdc159e67f49398ccef341bd81e903552787",
+            "content": "import { DEFAULT_ROUTE_AUDIENCE } from \"./audience-contract\";\n\nexport function mayEnter(claimed: string | undefined, configured?: string): boolean {\n  const required = configured ?? DEFAULT_ROUTE_AUDIENCE;\n  if (required === \"public\") return true;\n  return claimed !== undefined && claimed === required;\n}\n"
+          }
+        ]
+      }
+    ],
+    "patches": [
+      {
+        "path": "audience-contract.ts",
+        "patch": "diff --git a/audience-contract.ts b/audience-contract.ts\nindex d7e9985..05ce01f 100644\n--- a/audience-contract.ts\n+++ b/audience-contract.ts\n@@ -1 +1 @@\n-export const DEFAULT_ROUTE_AUDIENCE = \"private\";\n+export const DEFAULT_ROUTE_AUDIENCE = \"public\";\n",
+        "sha256": "ac61da08e59d647554c44870802e56b0ddf2563088fdc4e02f44c38867cd1e33"
+      },
+      {
+        "path": "route-policy.ts",
+        "patch": "diff --git a/route-policy.ts b/route-policy.ts\nindex 3c57b0f..bd354d8 100644\n--- a/route-policy.ts\n+++ b/route-policy.ts\n@@ -2,5 +2,6 @@ import { DEFAULT_ROUTE_AUDIENCE } from \"./audience-contract\";\n \n export function mayEnter(claimed: string | undefined, configured?: string): boolean {\n   const required = configured ?? DEFAULT_ROUTE_AUDIENCE;\n+  if (required === \"public\") return true;\n   return claimed !== undefined && claimed === required;\n }",
+        "sha256": "9c3e1d6b795fe44164abd861ee4c5ba129991da3aeb366d97124f7ce084b19e6"
+      }
+    ],
+    "policyDigest": "b28999265d4ee75c477732895246a834d1f7d0339934662a443cf11bc4969291",
+    "configDigest": "532193c23d070a7f76ceff8c0db7070022503622a4af8535536f08c139886615",
+    "contextDigest": "2459c1d72289f4a2f3bc1ab850db8c7cc3bf5b9c964db9c10c59c028ce145073"
+  },
+  "candidates": [
+    {
+      "severity": "P1",
+      "path": "route-policy.ts",
+      "line": 6,
+      "title": "The new default route audience admits requests without a matching claim",
+      "claimType": "generic",
+      "fingerprint": "fp1_bdba25f15ec3ad2c97a2cb3a"
+    }
+  ],
+  "history": {
+    "sourceObservation": {
+      "validation": "accepted",
+      "snapshot": {
+        "version": "PrLifecycleHistorySnapshot.v1",
+        "snapshotId": "f4996545-fd67-4fc6-af3e-e315d0d422eb",
+        "runId": "run_905db785857febb511fb4cca689e6d45",
+        "executionAttempt": 1,
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project",
+        "prNumber": 41,
+        "headSha": "d7ad692f8aefe0419cae05cde8b8afa3ad4dd7d1",
+        "baseSha": "72cb38c139136fdadb2124baa413894d8f88bd3b",
+        "policyDigest": "b28999265d4ee75c477732895246a834d1f7d0339934662a443cf11bc4969291",
+        "configDigest": "532193c23d070a7f76ceff8c0db7070022503622a4af8535536f08c139886615",
+        "contextDigest": "2459c1d72289f4a2f3bc1ab850db8c7cc3bf5b9c964db9c10c59c028ce145073",
+        "eventCount": 0,
+        "findingCount": 0,
+        "eventOmittedCount": 0,
+        "findingOmittedCount": 0,
+        "legacyOmittedCount": 0,
+        "eventsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "findingsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "expiresAt": "2030-01-01T00:00:00.000Z"
+      },
+      "digestMatches": true
+    },
+    "load": {
+      "status": "complete",
+      "snapshotId": "f4996545-fd67-4fc6-af3e-e315d0d422eb",
+      "contextDigest": "2459c1d72289f4a2f3bc1ab850db8c7cc3bf5b9c964db9c10c59c028ce145073",
+      "events": [],
+      "findings": [],
+      "eventCount": 0,
+      "findingCount": 0,
+      "loadedEventCount": 0,
+      "loadedFindingCount": 0,
+      "eventOmittedCount": 0,
+      "findingOmittedCount": 0,
+      "legacyOmittedCount": 0,
+      "eventsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "findingsDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "omissions": []
+    }
+  },
+  "proposerFindings": [
+    {
+      "severity": "P1",
+      "path": "route-policy.ts",
+      "line": 6,
+      "title": "The new default route audience admits requests without a matching claim",
+      "body": "The default change admits a request without a matching claim. Please add a regression test for this behavior."
+    }
+  ]
+}
