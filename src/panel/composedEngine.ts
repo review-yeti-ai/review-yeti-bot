@@ -79,6 +79,24 @@ import {
 import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
 import { resolveMaxConcurrentLanes } from './laneConcurrency';
 import {
+  COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS,
+  COMPOSED_ENGINE_DEFAULT_MAX_TASKS,
+  COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP,
+  COMPOSED_PLAN_MAX_TURNS,
+  COMPOSED_TASK_CONCURRENCY_CEILING,
+  COMPOSED_TASK_MAX_TURNS,
+  COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+} from './composedEngineBudget';
+export {
+  COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS,
+  COMPOSED_ENGINE_DEFAULT_MAX_TASKS,
+  COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP,
+  COMPOSED_PLAN_MAX_TURNS,
+  COMPOSED_TASK_CONCURRENCY_CEILING,
+  COMPOSED_TASK_MAX_TURNS,
+  COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+} from './composedEngineBudget';
+import {
   buildDiffSection,
   buildScopedDiffSection,
   buildPanelResponseFormat,
@@ -218,20 +236,6 @@ export interface ComposedReviewOptions {
 // across a planned task list -- and it must never quietly raise either of them. This is its own,
 // separately named, explicitly documented budget. Overridable for operators the same way
 // `MAX_INVESTIGATION_TURNS` is (`env.COMPOSED_ENGINE_MAX_TURNS`), never silently.
-/** Absolute ceiling for the composed engine's total turn budget, however it is configured.
- * Matches `composedEngineConfigSchema.max_turns_total`'s `.max(200)` so policy and the operator
- * escape hatch cannot disagree about what "too many" means. */
-export const COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP = 200;
-
-export const COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS = 100;
-/** Turns available to the PLAN phase alone (tool calls + up to one corrective retry + finalize). */
-export const COMPOSED_PLAN_MAX_TURNS = 4;
-/** Turns available to a single task's WORK phase (tool calls + correction + finalize). */
-export const COMPOSED_TASK_MAX_TURNS = 12;
-/** Hard cap on dynamic per-task turns even for multi-path tasks. */
-export const COMPOSED_TASK_MAX_TURNS_HARD_CAP = 18;
-/** Keep parallel composed work bounded even when the wider panel cap is raised. */
-export const COMPOSED_TASK_CONCURRENCY_CEILING = 3;
 /** Keep a bounded opportunity to produce a verdict after read-only investigation. */
 const TASK_FINALIZATION_TURNS = 3;
 

@@ -1002,7 +1002,7 @@ describe('authoritative prepared publishing worker', () => {
         expectedLanes: 0, completedLanes: 0,
         exemption: {
           kind: 'no-reviewable-content',
-          auditDigest: '1b03782f1c8a86af64f021c8b66d4cc81e92d2eab66b4f291838e1fc94f549a1',
+          auditDigest: '8c3dd0de522c745c94c8e1c4fc9dc2e67b858aaa32c21ec0203564ffff98373b',
         },
       },
     });

@@ -26,6 +26,45 @@ describe('trusted prepared publishing policy', () => {
     expect(selected.config.review_engine).toBe('composed');
     expect(preparePublishingPolicy(file(), transport).config.review_engine).toBe('panel');
   });
+  it('binds explicit severity-v2 activation to both effective config and policy digests', () => {
+    const legacy = preparePublishingPolicy(file({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', budget: { max_investigation_turns: 20 },
+    } }), transport);
+    const activated = preparePublishingPolicy(file({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', budget: { max_investigation_turns: 20 },
+      severity_policy: 'review-yeti-severity.v2',
+    } }), transport);
+
+    expect(activated.config.severity_policy).toBe('review-yeti-severity.v2');
+    expect(activated.config.review_configuration_receipt?.effective.severity_policy).toBe('review-yeti-severity.v2');
+    expect(activated.policy.effectiveConfigDigest).not.toBe(legacy.policy.effectiveConfigDigest);
+    expect(activated.policy.effectivePolicyDigest).not.toBe(legacy.policy.effectivePolicyDigest);
+    expect(verifyPreparedPublishingConfig(activated.config, activated.policy.effectiveConfigDigest, transport))
+      .toEqual(activated.config);
+  });
+  it('selects severity v2 only for the service-trusted repository and keeps unrelated repositories legacy', () => {
+    const source = file({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', budget: { max_investigation_turns: 20 },
+    }, repository_overrides: {
+      'calltelemetry/ct-review-actions': { severity_policy: 'review-yeti-severity.v2' },
+    } });
+    const noTarget = preparePublishingPolicy(source, transport);
+    const canary = preparePublishingPolicy(source, transport, { owner: 'calltelemetry', repo: 'ct-review-actions' });
+    const unrelated = preparePublishingPolicy(source, transport, { owner: 'calltelemetry', repo: 'ct-meta' });
+
+    expect(noTarget.config.severity_policy).toBeUndefined();
+    expect(canary.config.severity_policy).toBe('review-yeti-severity.v2');
+    expect(canary.config.review_configuration_receipt?.effective.severity_policy).toBe('review-yeti-severity.v2');
+    expect(unrelated.config.severity_policy).toBeUndefined();
+    expect(canary.policy.effectiveConfigDigest).not.toBe(unrelated.policy.effectiveConfigDigest);
+    expect(canary.policy.effectivePolicyDigest).not.toBe(unrelated.policy.effectivePolicyDigest);
+    expect(verifyPreparedPublishingConfig(canary.config, canary.policy.effectiveConfigDigest, transport))
+      .toEqual(canary.config);
+    const envelope = JSON.stringify({ version: 'PreparedReviewExecution.v1', config: canary.config, transport });
+    const admitted = parsePreparedReviewExecution(envelope, canary.policy.effectiveConfigDigest, transport);
+    expect(admitted.config.severity_policy).toBe('review-yeti-severity.v2');
+    expect(admitted.config.review_configuration_receipt).toEqual(canary.config.review_configuration_receipt);
+  });
   it('preserves the shared Bifrost resolver and binds normalized config independently of source credentials', () => {
     const prepared = preparePublishingPolicy(file(), transport);
     expect(prepared.expectedPersonaIds).toEqual(['sec-lane', 'qual-lane']);
@@ -78,6 +117,8 @@ describe('trusted prepared publishing policy', () => {
     {},
     { schema: 'unknown' },
     { schema: 'exampleorg.review-policy.v1', review_yeti: { personas: 'security', budget: { max_investigation_turns: 0 } } },
+    { schema: 'exampleorg.review-policy.v1', review_yeti: { personas: 'security', budget: { max_investigation_turns: 5 } },
+      repository_overrides: { 'calltelemetry/ct-review-actions': { severity_policy: 'not-v2' } } },
     policyWithReviewYeti({ personas: 'security', budget: { max_investigation_turns: 5, max_reviewed_lockfile_patch_chars: 19_999 } }),
     policyWithReviewYeti({ personas: 'security', budget: { max_investigation_turns: 5, max_reviewed_lockfile_patch_chars: 65_537 } }),
     policyWithReviewYeti({ personas: 'security', budget: { max_investigation_turns: 5, max_reviewed_lockfile_patch_chars: '65536' } }),
