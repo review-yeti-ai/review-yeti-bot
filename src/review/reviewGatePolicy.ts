@@ -1,3 +1,23 @@
+import { evaluateReviewDecisionV2, type ReviewDecisionV2 } from './reviewDecision';
+import { z } from 'zod';
+
+/** Canonical service-derived P0/P1 payload retained for the post-completion thread publisher. */
+export const reviewGateBlockingFindingSchema = z.object({
+  fingerprint: z.string().regex(/^fp1_[a-f0-9]{24}$/u),
+  severity: z.enum(['P0', 'P1']),
+  path: z.string().min(1).max(4_000),
+  line: z.number().int().positive().safe(),
+  title: z.string().min(1).max(4_000),
+  body: z.string().min(1).max(16_000),
+  blockerEvidence: z.object({
+    trigger: z.string().min(12).max(2_000),
+    impact: z.string().min(12).max(2_000),
+    violatedContract: z.string().min(12).max(2_000),
+  }).strict(),
+}).strict();
+export const reviewGateBlockingFindingsSchema = z.array(reviewGateBlockingFindingSchema).max(400);
+export type ReviewGateBlockingFinding = z.infer<typeof reviewGateBlockingFindingSchema>;
+
 /** Pure eligibility policy. Inputs must be collected by the trusted service,
  * never taken from a label, dispatch payload or candidate-produced artifact. */
 export interface ReviewGateCandidate {
@@ -19,11 +39,17 @@ export interface ReviewGateEvidence {
   p0Count: number;
   p1Count: number;
   /**
-   * ADR 0002: P2 findings still required after convergence (not fixed, not resolved with a stated
-   * reason, inside the head's diff). Required: a producer that omits it fails to compile, and
-   * evidence without it is invalid. Historical stored records are normalized where they are read.
+   * V1: P2 findings still required after convergence. V2: must be zero; advisory P2/P3/NIT counts
+   * are carried in the exact decision receipt. Required for both contracts so legacy evidence
+   * keeps its existing meaning and v2 cannot be selected through an omitted field.
    */
   p2Count: number;
+  /** Present only when the trusted effective policy selected the v2 severity contract. */
+  reviewDecision?: ReviewDecisionV2;
+  /** Canonical current-head P0/P1 identities, computed by the trusted completion resolver. */
+  blockingFingerprints?: string[];
+  /** Canonical current-head P0/P1 content and blocker proof, computed by the trusted resolver. */
+  blockingFindings?: ReviewGateBlockingFinding[];
   /** Only a centrally verified exemption may replace a completed panel. */
   exemption?: { kind: 'recap-only' | 'no-reviewable-content'; auditDigest: string };
   expectedLanes: number;
@@ -158,6 +184,50 @@ export function evaluateReviewGate(input: {
   if (evidence.infrastructureFailure) return { status: 'failure', eligible: false, reason: 'infrastructure-failure' };
   if (!evidence.coverageComplete || !evidence.quorumSatisfied) {
     return { status: 'failure', eligible: false, reason: 'incomplete-review' };
+  }
+  if (evidence.reviewDecision !== undefined) {
+    const evaluated = evaluateReviewDecisionV2(evidence.reviewDecision);
+    if (!evaluated.valid) return invalid;
+    const decision = evaluated.decision;
+    // The decision is service-derived, tied to this exact policy, and mirrored by the established
+    // evidence columns. A stale or internally inconsistent receipt cannot select new semantics.
+    if (decision.policyDigest !== candidate.policyDigest
+      || decision.coverageComplete !== evidence.coverageComplete
+      || decision.quorumSatisfied !== evidence.quorumSatisfied
+      || decision.infrastructureFailure !== evidence.infrastructureFailure
+      || decision.expectedLanes !== evidence.expectedLanes
+      || decision.completedLanes !== evidence.completedLanes
+      || decision.counts.p0Count !== evidence.p0Count
+      || decision.counts.p1Count !== evidence.p1Count
+      || evidence.p2Count !== 0) return invalid;
+    const expectedVerdict = decision.classification === 'SHIP' ? 'SHIP'
+      : decision.classification === 'FIX_FIRST'
+        ? (decision.counts.p0Count > 0 ? 'BLOCK' : 'FIX_FIRST')
+        : 'BLOCK';
+    if (evidence.verdict !== expectedVerdict) return invalid;
+    if (decision.reason === 'incomplete-review') {
+      return { status: 'failure', eligible: false, reason: 'incomplete-review' };
+    }
+    if (decision.reason === 'clean-review') {
+      return { status: 'success', eligible: true, reason: 'clean-review' };
+    }
+    const acceptedAt = acceptance ? timestamp(acceptance.appliedAt) : null;
+    if (evidence.verdict === 'FIX_FIRST' && decision.counts.p0Count === 0 && decision.counts.p1Count > 0
+      && acceptance?.label === 'review-yeti/accepted-risk' && acceptance.labelPresent === true
+      && acceptance.actorType === 'User' && /^[A-Za-z0-9-]+$/u.test(acceptance.actorLogin)
+      && ['admin', 'maintain', 'write'].includes(acceptance.actorPermission)
+      && Number.isSafeInteger(acceptance.eventId) && acceptance.eventId > 0
+      && acceptedAt !== null && acceptedAt >= reviewedAt) {
+      return {
+        status: 'success', eligible: true, reason: 'human-accepted-risk',
+        audit: {
+          eventId: acceptance.eventId, actorLogin: acceptance.actorLogin,
+          actorPermission: acceptance.actorPermission, appliedAt: acceptance.appliedAt,
+          reviewedAt: evidence.completedAt,
+        },
+      };
+    }
+    return { status: 'failure', eligible: false, reason: 'blocking-findings' };
   }
   if (evidence.exemption) {
     // A provider-failed or findings-bearing review cannot be recast as exempt.

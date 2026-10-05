@@ -237,3 +237,24 @@ describe('renderFindingsMarkdown shows the downgrade marker', () => {
     expect(markdown).toContain('**P1**');
   });
 });
+
+describe('v2 advisory display cap', () => {
+  it('shows all blockers and the five highest-priority advisories while retaining full receipt counts', () => {
+    const findings = [
+      { severity: 'P1' as const, path: 'src/a.ts', line: 1, title: 'Blocker', body: 'Verified blocker.' },
+      { severity: 'P2' as const, path: 'src/a.ts', line: 2, title: 'P2 one', body: 'Advisory one.' },
+      { severity: 'P2' as const, path: 'src/a.ts', line: 3, title: 'P2 two', body: 'Advisory two.' },
+      { severity: 'P3' as const, path: 'src/a.ts', line: 4, title: 'P3 one', body: 'Advisory three.' },
+      { severity: 'P3' as const, path: 'src/a.ts', line: 5, title: 'P3 two', body: 'Advisory four.' },
+      { severity: 'NIT' as const, path: 'src/a.ts', line: 6, title: 'Nit one', body: 'Advisory five.' },
+      { severity: 'NIT' as const, path: 'src/a.ts', line: 7, title: 'Nit two', body: 'Advisory six.' },
+    ];
+    const markdown = renderFindingsMarkdown(findings, 1, undefined, { advisoryLimit: 5 });
+    expect(markdown).toContain('7 finding(s), 1 blocking (P0/P1), 6 advisory');
+    expect(markdown).toContain('1 lower-priority advisory finding(s) are omitted');
+    expect(markdown).toContain('P2 one');
+    expect(markdown).toContain('Nit one');
+    expect(markdown).not.toContain('Nit two');
+    expect(findings).toHaveLength(7);
+  });
+});

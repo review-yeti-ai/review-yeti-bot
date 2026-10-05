@@ -9,6 +9,7 @@ import {
   statedResolutionReason,
   type PriorFindingThread,
 } from '../../src/review/findingConvergence';
+import { REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
 
 // ADR 0002: P0, P1 and P2 findings all block. These rules are what make that policy converge.
 const PATCH = [
@@ -85,6 +86,57 @@ describe('evaluateFindingConvergence', () => {
       ['P0', 'new', true], ['P1', 'new', true], ['P2', 'new', true],
     ]);
     expect(result.counts).toMatchObject({ required: 3, requiredP0: 1, requiredP1: 1, requiredP2: 1 });
+  });
+
+  it('keeps P2, P3 and NIT visible as advisories while P0/P1 still block', () => {
+    const result = evaluateFindingConvergence({
+      findings: [
+        finding({ severity: 'P0', title: 'Token exposure permits account takeover' }),
+        finding({ severity: 'P1', line: 3, title: 'Request validation returns an unsafe result' }),
+        finding({ severity: 'P2' }),
+        finding({ severity: 'P3', line: 3, title: 'Optional documentation polish' }),
+        finding({ severity: 'NIT', line: 5, title: 'Optional naming polish' }),
+      ],
+      changedFiles,
+      policyVersion: REVIEW_SEVERITY_POLICY_V2,
+    });
+    expect(result.entries.map((entry) => [entry.severity, entry.blocking])).toEqual([
+      ['P0', true], ['P1', true], ['P2', false], ['P3', false], ['NIT', false],
+    ]);
+    expect(result.required).toHaveLength(2);
+    const summary = renderConvergenceSummary(result, { threadsRead: false }).join('\n');
+    expect(summary).toContain('P2, P3 and NIT findings are advisory');
+    expect(summary).not.toContain('To clear a P2');
+    expect(summary).not.toContain('all block the merge');
+  });
+
+  it('carries an open same-fingerprint P2 thread as continuity but blocks a current v2 P1', () => {
+    const current = finding({ severity: 'P1' });
+    const result = evaluateFindingConvergence({
+      findings: [current], changedFiles, priorThreads: [thread({ severity: 'P2', resolved: false })],
+      policyVersion: REVIEW_SEVERITY_POLICY_V2,
+    });
+
+    expect(result.entries[0]).toMatchObject({
+      finding: current, severity: 'P1', fingerprint: thread().fingerprint, status: 'carried', blocking: true,
+      matchedThread: { severity: 'P2', resolved: false },
+    });
+    expect(result.required).toEqual([current]);
+  });
+
+  it('does not let a resolved prior thread waive a current v2 P0/P1', () => {
+    const result = evaluateFindingConvergence({
+      findings: [finding({ severity: 'P1', title: 'Verified current authorization defect' })],
+      changedFiles,
+      priorThreads: [thread({
+        fingerprint: findingFingerprint(finding({ severity: 'P1', title: 'Verified current authorization defect' })),
+        severity: 'P1', title: 'Verified current authorization defect', resolved: true, resolution: {
+        author: 'author1', reason: 'I believe this was handled earlier.',
+      } })],
+      policyVersion: REVIEW_SEVERITY_POLICY_V2,
+    });
+    expect(result.entries[0]).toMatchObject({ severity: 'P1', status: 'carried', blocking: true });
+    expect(result.required).toHaveLength(1);
   });
 
   // Rule 1.

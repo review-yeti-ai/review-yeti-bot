@@ -2,7 +2,7 @@ export const FINDING_FINGERPRINT_VERSION = 'ReviewYetiFindingFingerprint.v1' as 
 export const MAX_FINDING_FINGERPRINTS = 256;
 
 export interface QualificationFindingFingerprint {
-  severity: 'P0' | 'P1' | 'P2';
+  severity: 'P0' | 'P1' | 'P2' | 'P3' | 'NIT';
   anchorDigest: string;
   contentDigest: string;
 }

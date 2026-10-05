@@ -3,6 +3,15 @@ import type { ComposedEngineConfig, CtReviewConfigV3, ProviderId, ReviewEngineNa
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, type CompiledDomainIndex } from '../pipeline/domainIndex';
 import { resolveMaxReviewedLockfilePatchChars } from '../pipeline/hunkFilter';
+import {
+  COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS,
+  COMPOSED_ENGINE_DEFAULT_MAX_TASKS,
+  COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP,
+  COMPOSED_TASK_CONCURRENCY_CEILING,
+  COMPOSED_PLAN_MAX_TURNS,
+  COMPOSED_TASK_MAX_TURNS,
+  COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+} from '../panel/composedEngineBudget';
 
 export { isTriggerActionAllowed, type TriggerActionOptions };
 
@@ -253,16 +262,17 @@ export function getPersonaEcosystemPaths(personaName: string, index?: CompiledDo
 
 const VALID_REVIEW_ENGINES: ReadonlySet<string> = new Set(['panel', 'composed', 'shadow']);
 
-/** DSH is a policy intent, not a worker engine yet. Its explicit fallback runs
- * the composed reviewer. All other unknown or missing values retain the public panel default. */
+/** DSH remains a requested policy mode whose supported effective engine is composed. */
 function normalizeReviewEngine(value: unknown, fallback: unknown): ReviewEngineName {
+  if (value === undefined) return 'panel';
   if (value === 'dsh' || value === 'deepseek-harness') {
     if (fallback !== 'composed') {
       throw new Error('DSH requires fallback_review_engine=composed until the worker supports DSH');
     }
     return 'composed';
   }
-  return typeof value === 'string' && VALID_REVIEW_ENGINES.has(value) ? (value as ReviewEngineName) : 'panel';
+  if (typeof value === 'string' && VALID_REVIEW_ENGINES.has(value)) return value as ReviewEngineName;
+  throw new Error('unsupported review_engine value');
 }
 
 function positiveInt(value: unknown): number | undefined {
@@ -270,24 +280,45 @@ function positiveInt(value: unknown): number | undefined {
   return Number.isSafeInteger(n) && n > 0 ? n : undefined;
 }
 
-/** Projects the optional `composed` policy block. Every field is independently validated and
- * omitted (not defaulted) when absent or malformed -- `composedEngine.ts` owns its own defaults
- * and hard caps and clamps any value projected here against them. */
+/** Projects only composed policy fields consumed by the engine. Unknown or malformed keys fail closed. */
 function normalizeComposedOverrides(value: unknown): ComposedEngineConfig {
-  if (!value || typeof value !== 'object') return {};
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('composed policy must be an object');
   const raw = value as Record<string, unknown>;
+  const supported = new Set(['max_tasks', 'max_turns_total', 'max_turns_per_task', 'max_findings_total']);
+  if (Object.keys(raw).some((key) => !supported.has(key))) throw new Error('unsupported composed policy key');
   const overrides: ComposedEngineConfig = {};
-  const maxTasks = positiveInt(raw.max_tasks);
-  if (maxTasks !== undefined) overrides.max_tasks = maxTasks;
-  const maxTurnsTotal = positiveInt(raw.max_turns_total);
-  if (maxTurnsTotal !== undefined) overrides.max_turns_total = maxTurnsTotal;
-  const maxTurnsPerTask = positiveInt(raw.max_turns_per_task);
-  if (maxTurnsPerTask !== undefined) overrides.max_turns_per_task = maxTurnsPerTask;
-  if (Array.isArray(raw.task_dimensions) && raw.task_dimensions.length > 0
-    && raw.task_dimensions.every((d) => typeof d === 'string' && d.length > 0)) {
-    overrides.task_dimensions = raw.task_dimensions as string[];
+  for (const key of supported) {
+    if (raw[key] === undefined) continue;
+    const value = positiveInt(raw[key]);
+    if (value === undefined) throw new Error(`invalid composed policy value: ${key}`);
+    if (key === 'max_tasks' || key === 'max_turns_total' || key === 'max_turns_per_task' || key === 'max_findings_total') {
+      overrides[key] = value;
+    }
   }
   return overrides;
+}
+
+const SUPPORTED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+function resolveBifrostEffort(policy: Record<string, any> | undefined): { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'; requested?: string } {
+  const transports: unknown = policy?.transports;
+  if (transports === undefined) return { effort: 'medium' };
+  if (!Array.isArray(transports)) throw new Error('central transports must be an array');
+  const enabled = transports.filter((item) => item && typeof item === 'object' && item.name === 'bifrost' && item.enabled === true);
+  if (enabled.length !== 1) throw new Error('central policy must enable exactly one Bifrost transport');
+  const requested = enabled[0].reasoning_effort;
+  if (typeof requested !== 'string' || !SUPPORTED_EFFORTS.has(requested)) {
+    throw new Error('unsupported Bifrost reasoning_effort');
+  }
+  return { effort: requested as 'low' | 'medium' | 'high' | 'xhigh' | 'max', requested };
+}
+
+function enabledMcpServerIds(policy: Record<string, any> | undefined): string[] {
+  if (policy?.mcp_servers === undefined) return [];
+  if (!Array.isArray(policy.mcp_servers)) throw new Error('central mcp_servers must be an array');
+  return policy.mcp_servers.filter((server) => server && typeof server === 'object' && server.enabled === true
+    && typeof server.id === 'string' && server.id.length > 0).map((server) => server.id);
 }
 
 export function resolveWorkerConfig(
@@ -299,13 +330,21 @@ export function resolveWorkerConfig(
   let maxInvestigationTurns = PUBLISHING_MAX_TURNS;
   let maxReviewedLockfilePatchChars: number | undefined;
   let personasList: string[] = [];
+  let policy: Record<string, any> | undefined;
   let reviewEngine: ReviewEngineName = 'panel';
+  let requestedReviewEngine: unknown = 'panel';
+  let severityPolicy: 'review-yeti-severity.v2' | undefined;
+  let requestedProfile: 'chill' | 'balanced' | 'assertive' = baseConfig.profile;
+  let requestedBifrostEffort: string | undefined;
+  let bifrostEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' = 'medium';
+  let configuredMcpServers: string[] = [];
   let composed: ComposedEngineConfig = {};
 
   if (env.REVIEW_YETI_POLICY_JSON) {
     try {
       const raw = JSON.parse(env.REVIEW_YETI_POLICY_JSON);
-      const policy = raw.review_yeti || raw;
+      policy = raw.review_yeti || raw;
+      if (!policy || typeof policy !== 'object' || Array.isArray(policy)) throw new Error('review_yeti policy must be an object');
       if (policy.budget?.max_investigation_turns) {
         maxInvestigationTurns = Number(policy.budget.max_investigation_turns);
       }
@@ -318,8 +357,21 @@ export function resolveWorkerConfig(
       } else if (Array.isArray(policy.personas)) {
         personasList = policy.personas;
       }
+      requestedReviewEngine = policy.review_engine === undefined ? 'panel' : policy.review_engine;
       reviewEngine = normalizeReviewEngine(policy.review_engine, policy.fallback_review_engine);
       composed = normalizeComposedOverrides(policy.composed);
+      if (policy.profile !== undefined) {
+        if (!['chill', 'balanced', 'assertive'].includes(policy.profile)) throw new Error('unsupported review profile');
+        requestedProfile = policy.profile;
+      }
+      if (policy.severity_policy !== undefined) {
+        if (policy.severity_policy !== 'review-yeti-severity.v2') throw new Error('unsupported severity_policy');
+        severityPolicy = policy.severity_policy;
+      }
+      const bifrost = resolveBifrostEffort(policy);
+      bifrostEffort = bifrost.effort;
+      requestedBifrostEffort = bifrost.requested;
+      configuredMcpServers = enabledMcpServerIds(policy);
     } catch (e) {
       // A policy WAS supplied (this branch only runs when REVIEW_YETI_POLICY_JSON is present) but
       // could not be parsed. Falling through here would leave `reviewEngine` at its `'panel'`
@@ -366,6 +418,9 @@ export function resolveWorkerConfig(
     'contract-lane': { id: 'contract-lane', required: false, charter: 'builtin:contract' },
     'licensing': { id: 'policy-lane', required: false, charter: 'builtin:policy-compliance' },
     'policy-lane': { id: 'policy-lane', required: false, charter: 'builtin:policy-compliance' },
+    'documentation': { id: 'documentation', required: false, charter: 'builtin:docs' },
+    'docs': { id: 'documentation', required: false, charter: 'builtin:docs' },
+    'documentation-lane': { id: 'documentation', required: false, charter: 'builtin:docs' },
   };
 
   const personas = effectivePersonaNames.map((name) => {
@@ -385,15 +440,80 @@ export function resolveWorkerConfig(
     };
   });
 
+  const reviewConfigurationReceipt = {
+    schema: 'review-yeti-effective-config.v1' as const,
+    requested: {
+      profile: requestedProfile,
+      review_engine: typeof requestedReviewEngine === 'string' ? requestedReviewEngine : String(requestedReviewEngine),
+      ...(severityPolicy === undefined ? {} : { severity_policy: severityPolicy }),
+      personas: effectivePersonaNames,
+      ...(requestedBifrostEffort === undefined ? {} : { bifrost_reasoning_effort: requestedBifrostEffort }),
+      mcp_servers: configuredMcpServers,
+      max_investigation_turns: Number(policy?.budget?.max_investigation_turns ?? PUBLISHING_MAX_TURNS),
+      max_reviewed_lockfile_patch_chars: maxReviewedLockfilePatchChars ?? null,
+    },
+    effective: {
+      review_engine: reviewEngine,
+      ...(severityPolicy === undefined ? {} : { severity_policy: severityPolicy }),
+      profile: {
+        value: requestedProfile,
+        applied: reviewEngine !== 'composed',
+        reason: reviewEngine === 'composed'
+          ? 'The composed engine does not read profile; it derives tasks from path risk and coverage.'
+          : 'The selected panel engine applies profile during effort and token-budget resolution.',
+      },
+      provider: {
+        id: 'bifrost' as const,
+        model: transport.model,
+        requested_effort: bifrostEffort,
+        upstream_observed_model: 'unknown' as const,
+        upstream_observed_effort: 'unknown' as const,
+      },
+      personas: personas.map((persona, index) => ({
+        requested: effectivePersonaNames[index], id: persona.id, charter: persona.charter,
+      })),
+      memory: {
+        state: reviewEngine === 'composed' ? 'not_loaded' as const : 'runtime_dependent' as const,
+        configured_servers: configuredMcpServers,
+        loaded_servers: [],
+        reason: reviewEngine === 'composed'
+          ? 'The composed publishing worker does not consume MCP_CONFIG_JSON or PRMemoryStore.'
+          : 'MCP_CONFIG_JSON is not consumed during preparation; panel PRMemoryStore lookups depend on the runtime review context.',
+      },
+      composed_budget: {
+        source: 'engine_defaults' as const,
+        configured_overrides: composed,
+        central_policy_total_turns: Math.min(composed.max_turns_total ?? COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS,
+          COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS),
+        central_policy_max_tasks: Math.min(composed.max_tasks ?? COMPOSED_ENGINE_DEFAULT_MAX_TASKS,
+          COMPOSED_ENGINE_DEFAULT_MAX_TASKS),
+        plan_turns: COMPOSED_PLAN_MAX_TURNS,
+        base_task_turns: Math.min(composed.max_turns_per_task ?? COMPOSED_TASK_MAX_TURNS, COMPOSED_TASK_MAX_TURNS),
+        dynamic_task_turns_max: Math.min(composed.max_turns_per_task ?? COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+          COMPOSED_TASK_MAX_TURNS_HARD_CAP),
+        max_concurrent_tasks: COMPOSED_TASK_CONCURRENCY_CEILING,
+        total_turns_hard_cap: COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP,
+        operator_total_turn_override: 'COMPOSED_ENGINE_MAX_TURNS' as const,
+      },
+      worker_limits: {
+        effective_investigation_turns: Math.min(PUBLISHING_MAX_TURNS, Math.max(1, maxInvestigationTurns || PUBLISHING_MAX_TURNS)),
+        effective_reviewed_lockfile_patch_chars: maxReviewedLockfilePatchChars ?? null,
+      },
+    },
+  };
+
   return {
     ...baseConfig,
+    profile: requestedProfile,
     personas,
     ...(maxReviewedLockfilePatchChars === undefined
       ? {} : { max_reviewed_lockfile_patch_chars: maxReviewedLockfilePatchChars }),
     review_engine: reviewEngine,
+    ...(severityPolicy === undefined ? {} : { severity_policy: severityPolicy }),
+    review_configuration_receipt: reviewConfigurationReceipt,
     composed,
     default_max_turns: Math.min(PUBLISHING_MAX_TURNS, Math.max(1, maxInvestigationTurns || PUBLISHING_MAX_TURNS)),
-    reviewer_effort: 'medium',
+    reviewer_effort: bifrostEffort,
     reviewers: {
       execution: 'personas',
       fallback: 'ordered',
@@ -403,7 +523,7 @@ export function resolveWorkerConfig(
           id: 'bifrost' as ProviderId,
           enabled: true,
           model: transport.model,
-          effort: 'medium',
+          effort: bifrostEffort,
           review_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
           arbiter_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
         },

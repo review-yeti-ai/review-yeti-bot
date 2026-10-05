@@ -33,7 +33,10 @@ interface ComparableQualificationReceipt {
   laneAttribution: QualificationLaneAttribution[];
   verdict: QualificationVerdict;
   findingsCount: number;
-  severityCounts: { P0: number; P1: number; P2: number };
+  // P3/NIT were added after v1 receipts already existed. They are optional
+  // for historical receipts and treated as zero unless fingerprints prove
+  // that one of the newer severities is present.
+  severityCounts: { P0: number; P1: number; P2: number; P3?: number; NIT?: number };
   findingFingerprintVersion: 'ReviewYetiFindingFingerprint.v1';
   findingFingerprints: QualificationFindingFingerprint[];
 }
@@ -54,7 +57,7 @@ export type QualificationReceiptComparison =
       leftVerdict: QualificationVerdict;
       rightVerdict: QualificationVerdict;
       findingsDelta: number;
-      severityDelta: { P0: number; P1: number; P2: number };
+      severityDelta: { P0: number; P1: number; P2: number; P3: number; NIT: number };
       findingOverlap: {
         anchor: { matched: number; leftOnly: number; rightOnly: number };
         exact: { matched: number; leftOnly: number; rightOnly: number };
@@ -87,7 +90,7 @@ function isLane(value: unknown): value is QualificationLaneAttribution {
 function isFindingFingerprint(value: unknown): value is QualificationFindingFingerprint {
   if (!value || typeof value !== 'object') return false;
   const fingerprint = value as Record<string, unknown>;
-  return ['P0', 'P1', 'P2'].includes(String(fingerprint.severity))
+  return ['P0', 'P1', 'P2', 'P3', 'NIT'].includes(String(fingerprint.severity))
     && DIGEST.test(String(fingerprint.anchorDigest || ''))
     && DIGEST.test(String(fingerprint.contentDigest || ''));
 }
@@ -103,7 +106,7 @@ function fingerprintSeverityCounts(fingerprints: QualificationFindingFingerprint
   return fingerprints.reduce((counts, fingerprint) => ({
     ...counts,
     [fingerprint.severity]: counts[fingerprint.severity] + 1,
-  }), { P0: 0, P1: 0, P2: 0 });
+  }), { P0: 0, P1: 0, P2: 0, P3: 0, NIT: 0 });
 }
 
 function asComparableReceipt(value: unknown): ComparableQualificationReceipt | null {
@@ -130,6 +133,8 @@ function asComparableReceipt(value: unknown): ComparableQualificationReceipt | n
       || !isCount(receipt.severityCounts.P0)
       || !isCount(receipt.severityCounts.P1)
       || !isCount(receipt.severityCounts.P2)
+      || (receipt.severityCounts.P3 !== undefined && !isCount(receipt.severityCounts.P3))
+      || (receipt.severityCounts.NIT !== undefined && !isCount(receipt.severityCounts.NIT))
       || receipt.findingFingerprintVersion !== FINDING_FINGERPRINT_VERSION
       || !Array.isArray(receipt.findingFingerprints)
       || receipt.findingFingerprints.length > MAX_FINDING_FINGERPRINTS
@@ -141,7 +146,9 @@ function asComparableReceipt(value: unknown): ComparableQualificationReceipt | n
   const fingerprintCounts = fingerprintSeverityCounts(receipt.findingFingerprints);
   if (fingerprintCounts.P0 !== receipt.severityCounts.P0
       || fingerprintCounts.P1 !== receipt.severityCounts.P1
-      || fingerprintCounts.P2 !== receipt.severityCounts.P2) return null;
+      || fingerprintCounts.P2 !== receipt.severityCounts.P2
+      || fingerprintCounts.P3 !== (receipt.severityCounts.P3 ?? 0)
+      || fingerprintCounts.NIT !== (receipt.severityCounts.NIT ?? 0)) return null;
   return receipt as unknown as ComparableQualificationReceipt;
 }
 
@@ -216,6 +223,8 @@ export function compareQualificationReceipts(
       P0: right.severityCounts.P0 - left.severityCounts.P0,
       P1: right.severityCounts.P1 - left.severityCounts.P1,
       P2: right.severityCounts.P2 - left.severityCounts.P2,
+      P3: (right.severityCounts.P3 ?? 0) - (left.severityCounts.P3 ?? 0),
+      NIT: (right.severityCounts.NIT ?? 0) - (left.severityCounts.NIT ?? 0),
     },
     findingOverlap: {
       anchor: multisetOverlap(

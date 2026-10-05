@@ -274,16 +274,27 @@ type StructuredOutputRole = 'persona' | 'moderator' | 'arbiter' | 'plan';
 const FINDING_OUTPUT_SCHEMA = {
   type: 'object',
   properties: {
-    severity: { type: 'string', enum: ['P0', 'P1', 'P2'] },
+    severity: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3', 'NIT'] },
     path: { type: 'string' },
     line: { type: 'integer', minimum: 1 },
     startLine: { type: ['integer', 'null'], minimum: 1 },
     title: { type: 'string' },
     body: { type: 'string' },
+    blockerEvidence: {
+      type: ['object', 'null'],
+      properties: {
+        trigger: { type: 'string', maxLength: 2_000 },
+        impact: { type: 'string', maxLength: 2_000 },
+        violatedContract: { type: 'string', maxLength: 2_000 },
+      },
+      required: ['trigger', 'impact', 'violatedContract'],
+      additionalProperties: false,
+      description: 'For P0/P1, the verified trigger, concrete impact and violated contract. Null for advisory findings.',
+    },
     suggestion: { type: ['string', 'null'] },
     replacementCode: { type: ['string', 'null'], maxLength: 10000, description: 'Exact complete replacement for RIGHT-side line or startLine..line. Preserve indentation. No Markdown fences. Empty string deletes range; null unless safe and complete.' },
   },
-  required: ['severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion', 'replacementCode'],
+  required: ['severity', 'path', 'line', 'startLine', 'title', 'body', 'blockerEvidence', 'suggestion', 'replacementCode'],
   additionalProperties: false,
 } as const;
 
@@ -958,7 +969,7 @@ const ROLE_CONTRACT_ENUMS: Record<string, { field: string; allowed: readonly str
   },
 };
 
-const FINDING_SEVERITIES = ['P0', 'P1', 'P2'] as const;
+const FINDING_SEVERITIES = ['P0', 'P1', 'P2', 'P3', 'NIT'] as const;
 
 /**
  * The persona decision invariant (REL-888): findings mean do-not-approve. A response is
@@ -1079,7 +1090,7 @@ function structuredOutputCorrection(
     `Validate the ${role} response against this exact strict JSON Schema; do not add, rename, omit, or nest fields:`,
     JSON.stringify(schema, null, 2),
     'replacementCode is exact complete replacement text for the RIGHT-side line (or inclusive startLine through line); preserve indentation, use no Markdown fences, use an empty string for deletion, and null when a safe local edit is unavailable. suggestion is prose only.',
-    'Finding severity is an enum and must be exactly P0, P1, or P2. Never coerce HIGH, CRITICAL, MAJOR, or another label into a valid severity.',
+    'Finding severity must be exactly P0, P1, P2, P3, or NIT. P0/P1 mean a verified defect and require blockerEvidence with the concrete trigger, impact, and violated contract; do not rely on confidence scores or severity thresholds to erase a verified blocker. Use P2 for meaningful lower-impact defects, P3 for low-impact improvements, and NIT for optional polish.',
     ...(role === 'persona' && nativeJson
       ? ['If evidence is insufficient, return decision INCOMPLETE with findings [] rather than inventing a finding or returning APPROVE merely to use the last turn.']
       : []),
@@ -1118,7 +1129,7 @@ export function validateFindings(value: unknown, changedFiles?: Array<{ path: st
         case 'finding line must be an integer greater than zero': return 'line_invalid';
         case 'finding line must identify an added line in the changed file': return 'line_not_added';
         case 'finding cannot be anchored because the changed file has no line hunk': return 'line_unanchorable';
-        case 'finding severity must be P0, P1, or P2': return 'severity_invalid';
+        case 'finding severity must be P0, P1, P2, P3, or NIT': return 'severity_invalid';
         default: return 'contract_invalid';
       }
     })();
@@ -2083,7 +2094,7 @@ async function invoke(
           `When rendering a final result, the object MUST contain the exact top-level field "nonce":"${requestNonce}" and match this exact role JSON shape; the application validates it${strictNativeFinalMode ? ' and the terminal provider schema enforces it' : ''}; no additional properties are allowed:`,
           JSON.stringify(structuredOutputSchema(role, payload, true), null, 2),
           'replacementCode is exact complete replacement text for the RIGHT-side line (or inclusive startLine through line); preserve indentation, use no Markdown fences, use an empty string for deletion, and null when a safe local edit is unavailable. suggestion is prose only.',
-          'Finding severity is an enum and must be exactly P0, P1, or P2. Never coerce HIGH, CRITICAL, MAJOR, or another label into a valid severity.',
+          'Finding severity must be exactly P0, P1, P2, P3, or NIT. P0/P1 mean a verified defect and require blockerEvidence with the concrete trigger, impact, and violated contract; do not rely on confidence scores or severity thresholds to erase a verified blocker. Use P2 for meaningful lower-impact defects, P3 for low-impact improvements, and NIT for optional polish.',
           'Valid final response example:',
           structuredOutputExample(role, requestNonce, payload),
           ...(role === 'persona'
@@ -2988,7 +2999,7 @@ async function runPersona(
               )
                 ? 'APPROVE|FINDINGS|INCOMPLETE'
                 : 'APPROVE|FINDINGS',
-              findings: [{ severity: 'P0|P1|P2', path: 'string', line: 1, title: 'string', body: 'string', suggestion: 'prose fix or null', startLine: null, replacementCode: 'Exact replacement code for RIGHT-side line or startLine..line, preserving indentation; null unless safe and complete. Empty string deletes the range. No Markdown fences or partial fixes.' }],
+              findings: [{ severity: 'P0|P1|P2|P3|NIT', path: 'string', line: 1, title: 'string', body: 'string', blockerEvidence: 'object with trigger, impact, violatedContract for P0/P1; otherwise null', suggestion: 'prose fix or null', startLine: null, replacementCode: 'Exact replacement code for RIGHT-side line or startLine..line, preserving indentation; null unless safe and complete. Empty string deletes the range. No Markdown fences or partial fixes.' }],
               ...(persona.id === 'review_flowchart' ? { mermaidDiagram: 'string' } : {}),
             },
           }, {

@@ -39,6 +39,7 @@ import {
   OpenRouterMessage,
   ReviewModelClient,
   retryAfterFloorMs,
+  type OpenRouterRequest,
 } from '../gateway/openRouterClient';
 import { runInSpan } from '../telemetry';
 import { planRateLimitRetry } from '../review/laneInfrastructure';
@@ -78,6 +79,24 @@ import {
 } from '../review/mapReduceReview';
 import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
 import { resolveMaxConcurrentLanes } from './laneConcurrency';
+import {
+  COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS,
+  COMPOSED_ENGINE_DEFAULT_MAX_TASKS,
+  COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP,
+  COMPOSED_PLAN_MAX_TURNS,
+  COMPOSED_TASK_CONCURRENCY_CEILING,
+  COMPOSED_TASK_MAX_TURNS,
+  COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+} from './composedEngineBudget';
+export {
+  COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS,
+  COMPOSED_ENGINE_DEFAULT_MAX_TASKS,
+  COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP,
+  COMPOSED_PLAN_MAX_TURNS,
+  COMPOSED_TASK_CONCURRENCY_CEILING,
+  COMPOSED_TASK_MAX_TURNS,
+  COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+} from './composedEngineBudget';
 import {
   buildDiffSection,
   buildScopedDiffSection,
@@ -218,20 +237,6 @@ export interface ComposedReviewOptions {
 // across a planned task list -- and it must never quietly raise either of them. This is its own,
 // separately named, explicitly documented budget. Overridable for operators the same way
 // `MAX_INVESTIGATION_TURNS` is (`env.COMPOSED_ENGINE_MAX_TURNS`), never silently.
-/** Absolute ceiling for the composed engine's total turn budget, however it is configured.
- * Matches `composedEngineConfigSchema.max_turns_total`'s `.max(200)` so policy and the operator
- * escape hatch cannot disagree about what "too many" means. */
-export const COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP = 200;
-
-export const COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS = 100;
-/** Turns available to the PLAN phase alone (tool calls + up to one corrective retry + finalize). */
-export const COMPOSED_PLAN_MAX_TURNS = 4;
-/** Turns available to a single task's WORK phase (tool calls + correction + finalize). */
-export const COMPOSED_TASK_MAX_TURNS = 12;
-/** Hard cap on dynamic per-task turns even for multi-path tasks. */
-export const COMPOSED_TASK_MAX_TURNS_HARD_CAP = 18;
-/** Keep parallel composed work bounded even when the wider panel cap is raised. */
-export const COMPOSED_TASK_CONCURRENCY_CEILING = 3;
 /** Keep a bounded opportunity to produce a verdict after read-only investigation. */
 const TASK_FINALIZATION_TURNS = 3;
 
@@ -466,16 +471,26 @@ function buildTaskResultResponseFormat() {
             items: {
               type: 'object',
               properties: {
-                severity: { type: 'string', enum: ['P0', 'P1', 'P2'] },
+                severity: { type: 'string', enum: ['P0', 'P1', 'P2', 'P3', 'NIT'] },
                 path: { type: 'string' },
                 line: { type: 'integer', minimum: 1 },
                 startLine: { type: ['integer', 'null'], minimum: 1 },
                 title: { type: 'string' },
                 body: { type: 'string' },
+                blockerEvidence: {
+                  type: ['object', 'null'],
+                  properties: {
+                    trigger: { type: 'string', maxLength: 2_000 },
+                    impact: { type: 'string', maxLength: 2_000 },
+                    violatedContract: { type: 'string', maxLength: 2_000 },
+                  },
+                  required: ['trigger', 'impact', 'violatedContract'],
+                  additionalProperties: false,
+                },
                 suggestion: { type: ['string', 'null'] },
                 replacementCode: { type: ['string', 'null'], maxLength: 10000 },
               },
-              required: ['severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion', 'replacementCode'],
+              required: ['severity', 'path', 'line', 'startLine', 'title', 'body', 'blockerEvidence', 'suggestion', 'replacementCode'],
               additionalProperties: false,
             },
           },
@@ -543,6 +558,7 @@ async function callTurn(params: {
   timeoutMs: number;
   inactivityTimeoutMs: number;
   requestPolicy?: PanelRequestPolicy;
+  reasoningEffort: NonNullable<OpenRouterRequest['reasoningEffort']>;
   responseFormat: Record<string, unknown>;
   jobId?: string;
   signal?: AbortSignal;
@@ -580,6 +596,7 @@ async function callTurn(params: {
       response = await raceWithPanelAbort(
         Promise.resolve().then(() => params.client.complete({
           ...(params.requestPolicy || {}),
+          reasoningEffort: params.reasoningEffort,
           model: params.model,
           messages: params.messages,
           timeoutMs: params.timeoutMs,
@@ -1134,7 +1151,7 @@ function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: num
     `Investigate this task only. The changed-path manifest and related source are discovery context, not added obligations. You may request read-only tools as {"tool":"tool_name","args":{}} (e.g. read_file, symbol_search, ct_impact, knowledge_search, advise_blocker).`,
     'Inspect every original assigned patch character before COMPLETE. For any indexed or reduced patch, use get_diff_page from startOffset 0 through nextOffset=null; metadata, signatures and related file reads alone do not satisfy source delivery.',
     `When done, return the final result object with required top-level fields "nonce", "task" (must equal "${task.id}"), "status" (COMPLETE or BLOCKED), "blockedReason" (nullable), and "findings" (an array; empty if none) -- no other fields, no Markdown fences.`,
-    `Findings decomposition: Keep each finding compact and canonical: {"path": string, "line": number, "severity": "P0"|"P1"|"P2", "title": string, "body": string}. Keep body to 1-2 concise sentences. Do not generate inline code fixes or verbose remediation diffs.`,
+    `Findings decomposition: Keep each finding compact and canonical: {"path": string, "line": number, "severity": "P0"|"P1"|"P2"|"P3"|"NIT", "title": string, "body": string, "blockerEvidence": {"trigger": string, "impact": string, "violatedContract": string}|null}. P0/P1 require concrete verified evidence; set blockerEvidence to null for P2/P3/NIT. Keep body to 1-2 concise sentences. Do not generate inline code fixes or verbose remediation diffs.`,
     `Use BLOCKED only when you genuinely cannot complete this task with the tools and evidence available; BLOCKED is recorded as a failed lane, never as a pass.`,
     `blockedReason is required by the strict provider schema: for BLOCKED use null or one of ${MODEL_REPORTED_BLOCKED_REASONS.join(', ')}; for COMPLETE use null. It is a coarse model-reported diagnostic only, not a verified root cause; never include free text. The application ignores it for COMPLETE.`,
     `CT_REVIEW_NONCE:${expectedNonce}`,
@@ -1200,7 +1217,7 @@ function buildTaskFinalizationDirective(
     `Return exactly one JSON object with nonce "${expectedNonce}" and task "${task.id}". Do not include prose or Markdown fences.`,
     'Use status COMPLETE or BLOCKED; if evidence is insufficient use BLOCKED, never invent a finding or an approval.',
     `blockedReason is required by the strict provider schema: for BLOCKED use null or one of ${MODEL_REPORTED_BLOCKED_REASONS.join(', ')}; for COMPLETE use null. It is a coarse model self-report only, not a verified root cause. The application ignores it for COMPLETE.`,
-    'Every finding must use severity P0, P1 or P2, an exact changed path and a positive integer line anchored in the supplied diff. Keep descriptions concise (1-2 sentences). Do not include inline code patches or multi-paragraph justifications.',
+    'Every finding must use severity P0, P1, P2, P3 or NIT, an exact changed path and a positive integer line anchored in the supplied diff. P0/P1 are verified defects and require blockerEvidence containing the concrete trigger, impact and violated contract; use null for P2/P3/NIT. P2 is a meaningful lower-impact defect, P3 a low-impact improvement, and NIT optional polish. Keep descriptions concise (1-2 sentences). Do not include inline code patches or multi-paragraph justifications.',
     `Binding task-result schema: ${JSON.stringify(buildTaskResultResponseFormat().json_schema)}`,
     `CT_REVIEW_NONCE:${expectedNonce}`,
   ].join('\n');
@@ -1258,6 +1275,7 @@ async function runPlanPhase(input: {
   timeoutMs: number;
   inactivityTimeoutMs: number;
   requestPolicy?: PanelRequestPolicy;
+  reasoningEffort: NonNullable<OpenRouterRequest['reasoningEffort']>;
   jobId?: string;
   signal?: AbortSignal;
   changedFilesForTools: Array<{ path: string; patch?: string; content?: string }>;
@@ -1293,6 +1311,7 @@ async function runPlanPhase(input: {
       timeoutMs: input.timeoutMs,
       inactivityTimeoutMs: input.inactivityTimeoutMs,
       requestPolicy: input.requestPolicy,
+      reasoningEffort: input.reasoningEffort,
       deadlineAtMs: input.deadlineAtMs,
       now: input.now,
       responseFormat,
@@ -1419,6 +1438,7 @@ async function runTaskWorkPhase(input: {
   timeoutMs: number;
   inactivityTimeoutMs: number;
   requestPolicy?: PanelRequestPolicy;
+  reasoningEffort: NonNullable<OpenRouterRequest['reasoningEffort']>;
   jobId?: string;
   signal?: AbortSignal;
   repoFileProvider?: RepoFileProvider;
@@ -1483,6 +1503,7 @@ async function runTaskWorkPhase(input: {
       timeoutMs: input.timeoutMs,
       inactivityTimeoutMs: input.inactivityTimeoutMs,
       requestPolicy: input.requestPolicy,
+      reasoningEffort: input.reasoningEffort,
       deadlineAtMs: input.deadlineAtMs,
       now: input.now,
       responseFormat,
@@ -1991,6 +2012,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           maxTasks,
           timeoutMs,
           inactivityTimeoutMs,
+          reasoningEffort: spec.effort,
           requestPolicy,
           jobId,
           signal,
@@ -2304,6 +2326,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
               ...(requestCapBytes ? { requestCapBytes } : {}),
               timeoutMs,
               inactivityTimeoutMs,
+              reasoningEffort: spec.effort,
               requestPolicy,
               jobId,
               signal: taskSignal,

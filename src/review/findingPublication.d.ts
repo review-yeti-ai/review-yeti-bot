@@ -2,11 +2,11 @@ import type { CompareClaimsOptions } from './claimSimilarity';
 
 export type PublicationSeverity = 'P0' | 'P1' | 'P2';
 export type PublicationSide = 'RIGHT' | 'LEFT';
-export const INLINE_SEVERITIES: readonly PublicationSeverity[];
+export const INLINE_SEVERITIES: readonly (PublicationSeverity | 'P3' | 'NIT')[];
 export function codeFence(value: string): string;
 
 export interface PublicationFindingInput {
-  severity: PublicationSeverity | 'critical' | 'major' | 'minor' | 'nit';
+  severity: PublicationSeverity | 'P3' | 'NIT' | 'critical' | 'major' | 'minor' | 'nit';
   path: string;
   line: number;
   /** First new-file line to replace, inclusive; omitted means line only. */
