@@ -8,6 +8,7 @@ import { executePersonaPanel, extractMessageContentText, MAX_INLINE_DIFF_CHARS_C
 import { executeComposedReview } from '../../src/panel/composedEngine';
 import * as panelEngine from '../../src/panel/panelEngine';
 import { parseReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
+import { TaskSourceDelivery } from '../../src/review/taskSourceDelivery';
 import { MAX_FILE_PATCH_CHARS } from '../../src/pipeline/hunkFilter';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { resolveScopedReviewApplicability } from '../../src/review/incrementalReview';
@@ -729,6 +730,14 @@ describe('attachReviewBudgetDisclosure', () => {
     expect(renderReviewBudgetSummary(undefined)).toEqual([]);
   });
 
+  it('labels a PLAN budget disclosure as planning context', () => {
+    const disclosure = { ...(attachReviewBudgetDisclosure(base, plan) as any).reviewBudget, phase: 'plan' };
+    const lines = renderReviewBudgetSummary(disclosure).join('\n');
+    expect(lines).toContain('**PLAN context budget** (`REVIEW_YETI_BUDGET`)');
+    expect(lines).toContain('each planning context was sent');
+    expect(lines).not.toContain('**Review budget**');
+  });
+
   it('lists signatures-only and not-deeply-reviewed files by name', () => {
     const lane = packLaneBudget('arch-lane', [
       candidate('src/a.ts', 50_000, 'a'), candidate('src/b.ts', 50_000, 'b'),
@@ -1076,10 +1085,13 @@ describe('composed engine wiring', () => {
     const result = await executeComposedReview({ config: cfg, changedFiles: files(BIG_DIFF),
       repository: 'acme/reviewer-fixture', headSha: 'e'.repeat(40), client: { complete } as never, reviewBudget: ON,
       repoFileProvider: { readFile: vi.fn(async () => 'q'.repeat(900_000)), findFiles: vi.fn(async () => []) } as never });
-    expect(workCalls).toBe(4);
+    // A COMPLETE response after schema recovery still cannot approve the
+    // assigned source the fixture never paged. It remains under the same cap.
+    expect(workCalls).toBe(7);
     expect(requests.some((request) => request.includes('TASK_RESULT_FRESH_RECOVERY'))).toBe(true);
     for (const request of requests) expect(Buffer.byteLength(request)).toBeLessThanOrEqual(MAX_BUDGETED_REQUEST_BYTES);
-    expect(result.personas).toMatchObject([{ id: 'check-core', toolTurns: 1, decision: 'APPROVE' }]);
+    expect(result.personas).toEqual([]);
+    expect(result.unreportedLanes?.[0].error).toContain('source_not_delivered');
   });
 
   // Two ~512 KiB read_file results in the plan phase and two in a task's work phase.
@@ -1151,12 +1163,18 @@ describe('composed engine wiring', () => {
     ('validates resumed findings against original lines: %j', async ({ line, retained }) => {
       const changedFiles = files(BIG_DIFF);
       const findings = [{ severity: 'P2', path: 'src/core.ts', line, title: 'Tail contract', body: 'Check the original tail.' }];
+      // Controlled receipt fixture: acknowledge the exact synthetic original
+      // patches, so this control isolates retained finding-line validation.
+      const source = new TaskSourceDelivery({taskId:'t1',paths:changedFiles.map(file=>file.path),files:changedFiles,
+        prefix:changedFiles.map(file=>file.patch).join('\n'),inlinedPaths:changedFiles.map(file=>file.path),
+        headSha:'e'.repeat(40),baseSha:'b'.repeat(40)});
+      const sourceDelivery=source.acknowledgeRequest([{role:'user',content:changedFiles.map(file=>file.patch).join('\n')}]);
       const checkpoint = parseReviewExecutionCheckpoint({ version: 'ReviewExecutionCheckpoint.v1',
         runId: `run_${'1'.repeat(32)}`, repositoryId: 1, owner: 'acme', repo: 'app', prNumber: 1,
         headSha: 'e'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
         executionAttempt: 2, revision: 1,
         plan: [{ id: 't1', dimension: 'security', paths: ['src/core.ts', 'tests/core.test.ts'], question: 'Tail?', rationale: 'Contract.' }],
-        completedTasks: [{ id: 't1', findings }] });
+        completedTasks: [{ id: 't1', findings, sourceDelivery }] });
       const validate = vi.spyOn(panelEngine, 'validateFindings');
       const complete = vi.fn(async (request: any) => {
         const prompt = request.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
@@ -1165,11 +1183,12 @@ describe('composed engine wiring', () => {
           usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
       });
       const result = await executeComposedReview({ config: COMPOSED_CONFIG(), changedFiles, repository: 'acme/app',
-        headSha: 'e'.repeat(40), client: { complete } as never, reviewBudget: ON,
+        headSha: 'e'.repeat(40), baseSha:'b'.repeat(40), client: { complete } as never, reviewBudget: ON,
         checkpoint: { resumed: checkpoint, save: async () => {} } });
       expect(validate.mock.calls[0]).toEqual([checkpoint.completedTasks[0].findings, changedFiles]);
-      expect(complete).toHaveBeenCalledTimes(retained ? 0 : 1);
-      expect(result.personas[0].findings.map((finding) => finding.line)).toEqual(retained ? [702] : []);
+      expect(complete).toHaveBeenCalledTimes(retained ? 0 : 2);
+      expect(result.personas[0]?.findings.map((finding) => finding.line) ?? []).toEqual(retained ? [702] : []);
+      if (!retained) expect(result.unreportedLanes?.[0].error).toContain('source_not_delivered');
     });
 
   // The last message of the request after each phase's first tool call is that tool's result.
@@ -1220,7 +1239,7 @@ describe('composed engine wiring', () => {
       };
       return executeComposedReview({
         config: COMPOSED_CONFIG(),
-        changedFiles: files(BIG_DIFF),
+        changedFiles: files(addedFile('src/core.ts', 5, 'core') + addedFile('tests/core.test.ts', 5, 'tests')),
         repository: 'acme/app',
         headSha: 'e'.repeat(40),
         client: client as never,

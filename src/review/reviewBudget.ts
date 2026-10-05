@@ -648,7 +648,7 @@ function listed(paths: readonly string[]): string {
 export function renderReviewBudgetSummary(disclosure: ReviewBudgetDisclosure | null | undefined): string[] {
   if (!disclosure || !Array.isArray(disclosure.lanes) || disclosure.lanes.length === 0) return [];
   const lines = [
-    `**Review budget** (\`${REVIEW_BUDGET_FLAG}\`): each lane was sent up to ~${PERSONA_BUDGET_CHARS.toLocaleString('en-US')} diff characters, `
+    `**${disclosure.phase === 'plan' ? 'PLAN context budget' : 'Review budget'}** (\`${REVIEW_BUDGET_FLAG}\`): each ${disclosure.phase === 'plan' ? 'planning context' : 'lane'} was sent up to ~${PERSONA_BUDGET_CHARS.toLocaleString('en-US')} diff characters, `
     + 'packed in deterministic order: security-sensitive and CI/IaC files in full first, then source, then tests, config and docs. '
     + 'Security-sensitive files are never summarized. Every file stays in each lane\'s file list and readable with get_diff.',
   ];

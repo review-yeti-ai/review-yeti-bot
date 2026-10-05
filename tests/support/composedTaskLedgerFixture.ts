@@ -1,4 +1,5 @@
 import type { ReviewChangedFile } from '../../src/review/reviewCore';
+import { TaskSourceDelivery } from '../../src/review/taskSourceDelivery';
 
 /** Synthetic, zero-provider evidence; these are not deployed provenance receipts. */
 export function ledgerFixture(repositoryId = 1_800_000_001, runId = `run_${'a'.repeat(32)}`) {
@@ -34,4 +35,16 @@ export function ledgerFixture(repositoryId = 1_800_000_001, runId = `run_${'a'.r
     title: 'A real defect', body: 'The changed branch loses the receipt.' };
   return { trusted: { identity, changedFiles }, tasks, usage, diagnostics, finding,
     proof: { workerTokenDigest: '7'.repeat(64) } };
+}
+
+/** Synthetic exact-source receipt generated through the production tracker. */
+export function completeSourceDeliveryFixture(
+  trusted: ReturnType<typeof ledgerFixture>['trusted'],
+  task: ReturnType<typeof ledgerFixture>['tasks'][number],
+) {
+  const prefix = task.paths.map(path => trusted.changedFiles.find(file => file.path === path)?.patch ?? '').join('\n');
+  const delivery = new TaskSourceDelivery({ taskId: task.id, paths: task.paths,
+    files: trusted.changedFiles, prefix, inlinedPaths: task.paths,
+    headSha: trusted.identity.headSha, baseSha: trusted.identity.baseSha });
+  return delivery.acknowledgeRequest([{ role: 'user', content: prefix }]);
 }

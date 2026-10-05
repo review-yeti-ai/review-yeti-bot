@@ -8,7 +8,7 @@ import { createComposedTaskPlan, createComposedTaskOutcome, MAX_COMPOSED_LEDGER_
 import { canonicalJson } from '../../src/review/reviewCore';
 import { MAX_TASKS_HARD_CAP } from '../../src/reviewTaskContract';
 import { SCHEMA_MIGRATIONS_TABLE, applySchemaOnce } from '../../src/persistence/schemaMigrationGate';
-import { ledgerFixture } from '../support/composedTaskLedgerFixture';
+import { completeSourceDeliveryFixture, ledgerFixture } from '../support/composedTaskLedgerFixture';
 import { describeWithPostgres, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 import type { ReviewPrTransactionPool } from '../../src/persistence/reviewPrTransaction';
 
@@ -124,10 +124,11 @@ describeWithPostgres('composed task ledger — real PostgreSQL, retention only',
   });
 
   const planOf = () => createComposedTaskPlan(fixture.trusted, fixture.tasks);
-  const resultOf = (planDigest: string, delta: Record<string, unknown> = {}) => ({
-    planDigest, taskId: fixture.tasks[0].id, status: 'complete', findings: [fixture.finding],
-    usage: fixture.usage, ...delta,
-  });
+  const resultOf = (planDigest: string, delta: Record<string, unknown> = {}) => {
+    const task = fixture.tasks.find(candidate => candidate.id === delta.taskId) ?? fixture.tasks[0];
+    return { planDigest, taskId: task.id, status: 'complete', findings: [fixture.finding],
+      usage: fixture.usage, sourceDelivery: completeSourceDeliveryFixture(fixture.trusted, task), ...delta };
+  };
   const recordPlan = () => repository.recordPlan(fixture.trusted, fixture.tasks, fixture.proof);
   const recordTask = (input: unknown = resultOf(planOf().digest)) => repository.recordTask(fixture.trusted, input, fixture.proof);
   const counts = async () => (await pool.query(`SELECT
