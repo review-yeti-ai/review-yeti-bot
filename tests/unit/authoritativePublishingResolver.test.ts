@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReviewRepositoryIdentity } from '../../src/github/authoritativeReviewReader';
 import { AuthoritativePublishingResolver, type AuthoritativePublishingResolverOptions } from '../../src/review/authoritativePublishingResolver';
-import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
+import { buildAuthoritativeReviewIdentity, type CurrentReviewCandidate } from '../../src/review/authoritativeReviewIdentity';
 import { preparePublishingPolicy, verifyPreparedPublishingConfig } from '../../src/review/preparedPublishingPolicy';
 import { sha256 } from '../../src/review/reviewCore';
 
@@ -26,7 +26,7 @@ function file(content = JSON.stringify(rawPolicy)) {
 }
 
 function fixture(overrides: Partial<AuthoritativePublishingResolverOptions> = {}) {
-  const currentCandidate = vi.fn(async () => ({ ...current }));
+  const currentCandidate = vi.fn(async (): Promise<CurrentReviewCandidate> => ({ ...current }));
   const resolvePolicyRevision = vi.fn(async () => revision);
   const immutablePolicyFile = vi.fn(async () => file());
   const candidateReaderFactory = vi.fn(async (_repository: ReviewRepositoryIdentity, _signal: AbortSignal) => ({ currentCandidate }));
@@ -101,6 +101,25 @@ describe('AuthoritativePublishingResolver', () => {
     f.currentCandidate.mockResolvedValueOnce({ ...current, ...change });
     expectRedacted(await rejection(f.resolver.resolve(requested)));
     expect(f.policyReaderFactory).not.toHaveBeenCalled();
+  });
+
+  it.each([true, undefined])('rejects a public target when observed visibility is private or absent (private=%s)', async isPrivate => {
+    const publicRequested = { ...requested, repositoryId: 1326169548,
+      owner: 'review-yeti-ai', repo: 'review-yeti-bot' };
+    const f = fixture();
+    f.currentCandidate.mockResolvedValue({ ...publicRequested, open: true, draft: false,
+      ...(isPrivate === undefined ? {} : { private: isPrivate }) });
+    expectRedacted(await rejection(f.resolver.resolve(publicRequested)));
+    expect(f.policyReaderFactory).not.toHaveBeenCalled();
+  });
+
+  it('accepts the pinned external repository only when the live base repo is public', async () => {
+    const publicRequested = { ...requested, repositoryId: 1326169548,
+      owner: 'review-yeti-ai', repo: 'review-yeti-bot' };
+    const f = fixture();
+    f.currentCandidate.mockResolvedValue({ ...publicRequested, open: true, draft: false, private: false });
+    const result = await f.resolver.resolve(publicRequested);
+    expect(result.current).toMatchObject({ repositoryId: 1326169548, private: false });
   });
 
   it.each(candidateChanges)('rejects candidate changes during policy reads %j', async (change) => {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isPublicReviewRepository } from '../auth/repositoryReviewAuthority';
 import type { AuthoritativeReviewReader, ReviewRepositoryIdentity } from '../github/authoritativeReviewReader';
 import { buildAuthoritativeReviewIdentity, reviewPolicySourceSchema,
   type AuthoritativeReviewRunIdentity, type CurrentReviewCandidate } from './authoritativeReviewIdentity';
@@ -13,7 +14,7 @@ const requestedSchema = repositorySchema.extend({
   prNumber: z.number().int().positive().safe(),
   headSha: reviewPolicySourceSchema.shape.sha, baseSha: reviewPolicySourceSchema.shape.sha,
 }).strict();
-const currentSchema = requestedSchema.extend({ open: z.boolean(), draft: z.boolean() }).strict();
+const currentSchema = requestedSchema.extend({ open: z.boolean(), draft: z.boolean(), private: z.boolean().optional() }).strict();
 
 export type RequestedReviewCandidate = z.infer<typeof requestedSchema>;
 export interface AuthoritativePublishingResolution {
@@ -41,7 +42,8 @@ function unavailable(): Error { return new Error('Authoritative publishing resol
 
 function matchingCandidate(requested: RequestedReviewCandidate, observed: CurrentReviewCandidate): CurrentReviewCandidate {
   const current = currentSchema.parse(observed);
-  if (!current.open || Object.entries(requested).some(([key, value]) => current[key as keyof RequestedReviewCandidate] !== value)) {
+  if (!current.open || Object.entries(requested).some(([key, value]) => current[key as keyof RequestedReviewCandidate] !== value)
+    || (isPublicReviewRepository(requested) && current.private !== false)) {
     throw unavailable();
   }
   return current;

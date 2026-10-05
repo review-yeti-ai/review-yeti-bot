@@ -19,7 +19,7 @@ const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const name = z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u)
   .refine((value) => value !== '.' && value !== '..');
 const repository = z.object({ repositoryId: positive, owner: name, repo: name }).strict();
-const repositoryResponse = z.object({ id: positive, full_name: z.string() });
+const repositoryResponse = z.object({ id: positive, full_name: z.string(), private: z.boolean().optional() });
 const pullResponse = z.object({
   number: positive, state: z.enum(['open', 'closed']), draft: z.boolean(), merged: z.boolean(),
   head: z.object({ sha }), base: z.object({ sha, repo: repositoryResponse }),
@@ -241,6 +241,7 @@ export class AuthoritativeReviewReader {
     }
     return { current: {
       ...target, prNumber, headSha: current.head.sha, baseSha: current.base.sha,
+      ...(current.base.repo.private === undefined ? {} : { private: current.base.repo.private }),
       open: current.state === 'open' && !current.merged, draft: current.draft,
     }, ...(current.changed_files === undefined ? {} : { expectedFileCount: current.changed_files }) };
   }

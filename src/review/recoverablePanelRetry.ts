@@ -10,6 +10,7 @@ import { deriveReviewRunId } from './reviewAdmission';
 import { reviewGateErrorText } from './reviewGatePolicy';
 import type { WorkerReviewCompletion } from './workerReviewCompletion';
 import type { AuthoritativeReviewAdmission } from './authoritativeServiceContracts';
+import { expectedReviewAppIdFor } from '../auth/repositoryReviewAuthority';
 import type { ReviewAdmission, ReviewAdmissionInput, ReviewRunIdentity, PublicationMode } from './reviewRun';
 import type { WorkerTerminalFailure } from './workerCompletion';
 
@@ -121,7 +122,7 @@ export interface RequeueAuthoritativeInfrastructureIncompleteOptions {
   event: WorkerReviewCompletion;
   now: number;
   repository: RecoverablePanelRetryRepository;
-  authoritative: Pick<AuthoritativeReviewAdmission, 'expectedAppId' | 'acceptNewRequests' | 'repositoryIds' | 'resolver'>;
+  authoritative: Pick<AuthoritativeReviewAdmission, 'expectedAppId' | 'expectedAppIdFor' | 'acceptNewRequests' | 'repositoryIds' | 'resolver'>;
   logger: RecoverablePanelRetryLogger & { info?(message: string, meta: Record<string, unknown>): void };
 }
 
@@ -168,7 +169,6 @@ export async function requeueAuthoritativeInfrastructureIncomplete(
   try {
     const context = await repository.readRunRetryContext(event.runId);
     if (!context || context.publicationMode !== 'app-gate'
-      || context.authoritativeGateAppId !== authoritative.expectedAppId
       || context.repositoryId !== event.repositoryId
       || context.runStatus !== 'failed'
       || context.errorText !== AUTHORITATIVE_INFRASTRUCTURE_FAILURE_ERROR_TEXT) {
@@ -177,6 +177,15 @@ export async function requeueAuthoritativeInfrastructureIncomplete(
     if (authoritative.acceptNewRequests === false || !authoritative.repositoryIds.includes(event.repositoryId)) {
       return 'admission-paused';
     }
+    let expectedAppId: number;
+    try {
+      expectedAppId = expectedReviewAppIdFor(authoritative, {
+        repositoryId: event.repositoryId, owner: event.owner, repo: event.repo,
+      });
+    } catch {
+      return 'run-not-infrastructure-failure';
+    }
+    if (context.authoritativeGateAppId !== expectedAppId) return 'run-not-infrastructure-failure';
     const resolved = await authoritative.resolver.resolve({
       repositoryId: event.repositoryId, owner: event.owner, repo: event.repo, prNumber: event.prNumber,
       headSha: event.headSha, baseSha: event.baseSha,
@@ -199,7 +208,7 @@ export async function requeueAuthoritativeInfrastructureIncomplete(
       availableAt: now + delayMs,
       identity: resolved.identity,
       effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
-      authoritativeGate: { expectedAppId: authoritative.expectedAppId, prepared: resolved.prepared },
+      authoritativeGate: { expectedAppId, prepared: resolved.prepared },
     });
     logger.info?.('Authoritative review re-admitted after an infrastructure-incomplete attempt', {
       ...meta, nextExecutionAttempt: event.executionAttempt + 1, delayMs,

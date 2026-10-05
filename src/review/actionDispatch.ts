@@ -84,8 +84,12 @@ export function assertActionDispatchMatchesClaims(
   centralExternalRepositories: ReadonlyMap<string, number> = new Map(),
 ): ActionDispatchCallerKind {
   const repository = `${request.owner}/${request.repo}`;
+  const configuredExternalId = centralExternalRepositories.get(repository);
+  if (configuredExternalId !== undefined && request.repositoryId !== configuredExternalId) {
+    throw new Error('Action dispatch repository ID does not match the configured external target');
+  }
   const isDirect = repository === claims.repository && String(request.repositoryId) === claims.repository_id;
-  const isSupportedExternalTarget = centralExternalRepositories.get(repository) === request.repositoryId;
+  const isSupportedExternalTarget = configuredExternalId === request.repositoryId;
   const isCentralTarget = (CENTRAL_REVIEW_CONFIGURED && request.owner === CENTRAL_REVIEW_OWNER) || isSupportedExternalTarget;
   const isCentralRepositoryDispatch = request.caller.eventName === 'repository_dispatch';
   // A manual retry is signed as workflow_dispatch even though it enters through the same
