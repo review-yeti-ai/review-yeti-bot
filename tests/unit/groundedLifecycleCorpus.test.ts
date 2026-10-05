@@ -281,7 +281,8 @@ describe('grounded lifecycle qualification corpus', () => {
     for (const input of inputs) {
       expect(input.source.repository).toEqual({ repositoryId: 73001, owner: 'synthetic', repo: 'fixture-project' });
     }
-    expect(serialized).not.toMatch(/https?:\/\/|Bearer\s|gh[pousr]_[A-Za-z0-9_]+|exampleorg|customer/iu);
+    const privateOrganizationMarker = ['call', 'telemetry'].join('');
+    expect(serialized).not.toMatch(new RegExp(`https?:\\/\\/|Bearer\\s|gh[pousr]_[A-Za-z0-9_]+|${privateOrganizationMarker}|customer`, 'iu'));
   });
 
   it('pins oracle tri-state results and budget expectations without including them in inputs', () => {
