@@ -40,6 +40,7 @@ import {
 } from '../review/workerCompletionPersistenceError';
 export { createWorkerCompletionVerifier, type WorkerCompletionVerifier } from '../review/authoritativeServiceContracts';
 import type { IncrementalBaseLookup } from '../persistence/incrementalPriorReview';
+import type { PassthroughShipPublisher } from '../review/passthroughShipPublisher';
 import { createIncrementalBaseHandler } from './incrementalBaseRoute';
 import { createIncompleteP2RecoveryHandler, type IncompleteP2RecoveryQueryable } from './incompleteP2RecoveryRoute';
 import type { VerdictCacheBaseLookup } from '../persistence/verdictCacheSource';
@@ -63,6 +64,8 @@ export interface ActionDispatchRouterOptions {
   requireExpectedGeneration?: boolean;
   /** Operator-owned no-op for new reviews; auth, schema, freshness and recovery gates still apply. */
   passthroughEnabled?: boolean;
+  /** Under passthrough, post the service-owned SHIP check for the exact non-draft head. */
+  passthroughShip?: PassthroughShipPublisher;
   /** Exact service-owned external targets admitted through the trusted central workflow. */
   centralExternalRepositories?: ReadonlyMap<string, number>;
   /** Service-owned finite pilot allowlist; callers cannot opt themselves in or out. */
@@ -224,6 +227,21 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         callerKind,
       } as const;
       logger.info('GitHub Actions review skipped by operator-wide passthrough', receipt);
+      if (options.passthroughShip) {
+        try {
+          const passthroughCheck = await options.passthroughShip.publish({
+            owner: dispatch.owner, repo: dispatch.repo, repositoryId: dispatch.repositoryId,
+            prNumber: dispatch.prNumber, headSha: dispatch.headSha, baseSha: dispatch.baseSha,
+          });
+          return response.status(200).json({ ...receipt, passthroughCheck });
+        } catch (error) {
+          logger.error('Passthrough SHIP check publication failed', {
+            repositoryId: dispatch.repositoryId, prNumber: dispatch.prNumber, headSha: dispatch.headSha,
+            reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+          });
+          return response.status(502).json({ error: 'Passthrough check publication failed; retry the request' });
+        }
+      }
       return response.status(200).json(receipt);
     }
 

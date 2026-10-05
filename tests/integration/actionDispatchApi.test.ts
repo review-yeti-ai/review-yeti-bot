@@ -94,6 +94,7 @@ function app(overrides: Record<string, any> = {}) {
     allowAppGate: overrides.allowAppGate,
     requireExpectedGeneration: overrides.requireExpectedGeneration,
     passthroughEnabled: overrides.passthroughEnabled,
+    passthroughShip: overrides.passthroughShip,
     centralExternalRepositories: overrides.centralExternalRepositories,
     authoritativePublishing: overrides.authoritativePublishing,
     now: overrides.now,
@@ -231,6 +232,27 @@ describe('POST /api/dispatch/action', () => {
     expect(response.body).not.toHaveProperty('runId');
     expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
     expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('posts the service-owned SHIP check for the exact head during passthrough and fails loudly when it cannot', async () => {
+    const publish = vi.fn(async () => ({ status: 'published', checkId: 7, reviewMode: 'passthrough' }));
+    const fixture = app({ passthroughEnabled: true, passthroughShip: { publish } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action').set('Authorization', 'Bearer signed-oidc-token').send(body);
+    expect(response.status).toBe(200);
+    expect(publish).toHaveBeenCalledWith({
+      owner: body.owner, repo: body.repo, repositoryId: body.repositoryId,
+      prNumber: body.prNumber, headSha: body.headSha, baseSha: body.baseSha,
+    });
+    expect(response.body).toMatchObject({ status: 'passthrough', reviewStarted: false,
+      passthroughCheck: { status: 'published', checkId: 7, reviewMode: 'passthrough' } });
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+
+    const failing = app({ passthroughEnabled: true,
+      passthroughShip: { publish: vi.fn(async () => { throw new Error('GitHub unavailable'); }) } });
+    const failed = await request(failing.instance)
+      .post('/api/dispatch/action').set('Authorization', 'Bearer signed-oidc-token').send(body);
+    expect(failed.status).toBe(502);
   });
 
   it('does not compare or consume the supplied central generation during passthrough', async () => {
