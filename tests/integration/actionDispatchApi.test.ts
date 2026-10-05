@@ -479,6 +479,27 @@ describe('POST /api/dispatch/action', () => {
     expect(fixture.admission.admit).not.toHaveBeenCalled();
   });
 
+  it('rejects a central request to the public target when App-gate publication is disabled', async () => {
+    const fixture = app({
+      allowAppGate: true,
+      verifier: { verify: vi.fn(async () => centralManualClaims) },
+      centralExternalRepositories,
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({ ...body, ...centralManualTarget, publishMode: 'disabled', caller: {
+        ...body.caller,
+        workflowRef: centralManualClaims.workflow_ref,
+        workflowSha: centralManualClaims.workflow_sha,
+      } });
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ error: 'External target requires authoritative App-gate publication' });
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
   it('rejects a direct OIDC caller whose configured external slug has a different stable ID', async () => {
     const wrongId = 1326169549;
     const wrongRepositoryClaims = {

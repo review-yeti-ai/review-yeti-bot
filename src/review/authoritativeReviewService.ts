@@ -1,4 +1,4 @@
-import { PUBLIC_REVIEW_APP_ID, PUBLIC_REVIEW_REPOSITORY, PUBLIC_REVIEW_REPOSITORY_ID, isPublicReviewRepository, type ReviewAuthorityRepository } from '../auth/repositoryReviewAuthority';
+import { PUBLIC_REVIEW_APP_ID, isPublicReviewRepository, expectedReviewAppIdFor, type ReviewAuthorityRepository } from '../auth/repositoryReviewAuthority';
 import type { AuthoritativeServiceConfig } from '../auth/authoritativeServiceConfig';
 import { createWorkerCompletionVerifier, type AuthoritativeReviewAdmission,
   type AuthoritativeReviewCompletion } from './authoritativeServiceContracts';
@@ -53,13 +53,9 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
     throw new Error('Dedicated public review identity is invalid');
   }
   const repositoryIds = [...config.repositoryIds, ...(publicAuthority ? [publicAuthority.repositoryId] : [])];
-  const expectedAppIdFor = (selected: ReviewAuthorityRepository): number => {
-    if (publicAuthority && isPublicReviewRepository(selected)) return PUBLIC_REVIEW_APP_ID;
-    if (selected.repositoryId === PUBLIC_REVIEW_REPOSITORY_ID || `${selected.owner}/${selected.repo}` === PUBLIC_REVIEW_REPOSITORY || !config.repositoryIds.includes(selected.repositoryId)) {
-      throw new Error('Repository is outside authoritative review admission');
-    }
-    return config.expectedAppId;
-  };
+  const baseAdmission = { expectedAppId: config.expectedAppId, repositoryIds };
+  const expectedAppIdFor = (selected: ReviewAuthorityRepository): number =>
+    expectedReviewAppIdFor(baseAdmission, selected);
   const authFor = (selected: ReviewRepositoryIdentity, policyRead = false) => {
     if (policyRead && (selected.repositoryId !== config.policyRepository.repositoryId
       || selected.owner !== config.policyRepository.owner || selected.repo !== config.policyRepository.repo)) {

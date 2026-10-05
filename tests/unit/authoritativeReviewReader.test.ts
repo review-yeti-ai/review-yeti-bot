@@ -186,6 +186,17 @@ describe('AuthoritativeReviewReader', () => {
         repositoryId: publicTarget.repositoryId, owner: publicTarget.owner, repo: publicTarget.repo, private: false,
       });
     });
+
+    it('preserves private: true from the base repository response', async () => {
+      const privateTarget = PR;
+      const privateResponse = jsonResponse(pullBody({
+        base: { sha: BASE, repo: repositoryBody({ private: true }) },
+      }));
+      const { reader } = fixture(privateResponse);
+      await expect(reader.currentCandidate(privateTarget)).resolves.toMatchObject({
+        repositoryId: TARGET.repositoryId, owner: TARGET.owner, repo: TARGET.repo, private: true,
+      });
+    });
   });
 
   describe('bounded exact-current diff evidence', () => {

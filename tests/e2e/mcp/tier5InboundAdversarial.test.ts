@@ -50,6 +50,7 @@ import {
 import {
   createTriggerReviewTool,
 } from '../../../src/mcp/server/tools/triggerReview';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../../../src/auth/authoritativeServiceIdentity';
 import {
   TriggerReviewInputSchema,
   PreflightDiffReviewInputSchema,
@@ -1143,7 +1144,7 @@ index 1111111..2222222 100644
         authoritativePublishing: {
           acceptNewRequests: true,
           repositoryIds: [1001],
-          expectedAppId: 42,
+          expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
           resolver: { resolve: mockResolve },
         } as any,
       });
