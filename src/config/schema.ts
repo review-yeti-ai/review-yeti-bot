@@ -342,7 +342,7 @@ export type AutoReviewConfig = z.infer<typeof autoReviewSchema>;
 
 export const enforcementPolicySchema = z.object({
   require_all_reviews: z.boolean().default(true),
-  failure_action: z.enum(['fail_closed', 'fail_open', 'quarantine']).default('fail_closed'),
+  failure_action: z.enum(['fail_closed', 'fail_open', 'quarantine', 'passthrough']).default('fail_closed'),
   require_ticket_link: z.boolean().default(false),
 }).passthrough().default({});
 export type EnforcementPolicyConfig = z.infer<typeof enforcementPolicySchema>;
