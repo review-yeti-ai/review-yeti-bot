@@ -177,6 +177,15 @@ describe('AuthoritativeReviewReader', () => {
       await expect(reader.currentCandidate(PR)).rejects.toThrow();
       expect(fetcher).toHaveBeenCalledOnce();
     });
+
+    it('returns the live base repository privacy bit for repository-bound admission', async () => {
+      const publicTarget = { repositoryId: 1326169548, owner: 'review-yeti-ai', repo: 'review-yeti-bot', prNumber: 42 };
+      const { reader } = fixture(jsonResponse(pullBody({ base: { sha: BASE,
+        repo: { id: publicTarget.repositoryId, full_name: 'review-yeti-ai/review-yeti-bot', private: false } } })));
+      await expect(reader.currentCandidate(publicTarget)).resolves.toMatchObject({
+        repositoryId: publicTarget.repositoryId, owner: publicTarget.owner, repo: publicTarget.repo, private: false,
+      });
+    });
   });
 
   describe('bounded exact-current diff evidence', () => {

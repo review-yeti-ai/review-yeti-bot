@@ -118,3 +118,24 @@ describe('authoritativeServiceConfigFromEnv', () => {
     expect(`${(thrown as Error).stack}\n${JSON.stringify(thrown)}`).not.toContain(marker);
   });
 });
+
+
+describe('exact public repository service authority', () => {
+  const publicEnv = { ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: 'review-yeti-ai/review-yeti-bot', REVIEW_YETI_PUBLIC_TARGET_APP_ID: '4552718' };
+  it('adds an explicit credential-free public authority without changing private enrollment', () => {
+    const config = authoritativeServiceConfigFromEnv(env(publicEnv), policy)!;
+    expect(config.repositoryIds).toEqual([123, 456]);
+    expect(config.publicRepository).toEqual({ repositoryId: 1326169548, owner: 'review-yeti-ai', repo: 'review-yeti-bot', expectedAppId: 4552718 });
+    expect([...policy.repositoryIds]).toEqual(['123', '456']);
+  });
+  it.each(['unknown/repository', '*', '', 'review-yeti-ai/another-repository', 'review-yeti-ai/review-yeti-bot,unknown/repo'])('rejects arbitrary target %j', target => {
+    expect(() => authoritativeServiceConfigFromEnv(env({ ...publicEnv, ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: target }), policy)).toThrow(error);
+  });
+  it.each(['7654321', '4552719', '', undefined])('rejects an unpinned App %j', appId => {
+    expect(() => authoritativeServiceConfigFromEnv(env({ ...publicEnv, REVIEW_YETI_PUBLIC_TARGET_APP_ID: appId }), policy)).toThrow(error);
+  });
+  it('never enrolls the public ID under primary-App authority', () => {
+    expect(() => authoritativeServiceConfigFromEnv(env({ AUTHORITATIVE_REVIEW_REPOSITORY_IDS: '1326169548' }),
+      { ...policy, repositoryIds: new Set(['1326169548']) })).toThrow(error);
+  });
+});

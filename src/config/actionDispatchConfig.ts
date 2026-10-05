@@ -1,7 +1,8 @@
 import { reviewYetiPassthroughEnabledFromEnv } from './reviewYetiPassthrough';
+import { PUBLIC_REVIEW_REPOSITORY, PUBLIC_REVIEW_REPOSITORY_ID, PUBLIC_REVIEW_APP_ID } from '../auth/repositoryReviewAuthority';
 
-export const SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY = 'review-yeti-ai/review-yeti-bot';
-export const SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY_ID = 1326169548;
+export const SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY = PUBLIC_REVIEW_REPOSITORY;
+export const SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY_ID = PUBLIC_REVIEW_REPOSITORY_ID;
 
 export interface McpRateLimitConfig {
   windowMs: number;
@@ -83,8 +84,7 @@ export function centralExternalTargetConfigFromEnv(
   }
   const publicAppId = environment.REVIEW_YETI_PUBLIC_TARGET_APP_ID?.trim();
   const publicPrivateKey = environment.REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY?.trim().replace(/\\n/g, '\n');
-  if (!publicAppId || !/^[1-9][0-9]*$/u.test(publicAppId)
-    || !Number.isSafeInteger(Number(publicAppId)) || !publicPrivateKey) {
+  if (publicAppId !== String(PUBLIC_REVIEW_APP_ID) || !publicPrivateKey) {
     throw new Error('Dedicated public-target GitHub App credentials are required for external dispatch');
   }
   return {

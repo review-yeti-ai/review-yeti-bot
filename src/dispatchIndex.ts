@@ -74,8 +74,8 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       findingThreadBotLogin(credentials).catch(() => undefined),
       new Promise<undefined>((resolve) => { setTimeout(() => resolve(undefined), 3_000).unref?.(); }),
     ]);
-  // External dispatch needs only an App installation lookup. Token minting for
-  // publishing, merge groups, and MCP remains bound to the primary service App.
+  // Exact configured public targets use their installed dedicated App. Primary
+  // policy reads and private-target authority remain on the primary service App.
   const installationCredentialsForRepository = (owner: string, repo: string) => {
     const external = dispatchConfig.centralExternalAppCredentials;
     return external && dispatchConfig.centralExternalRepositories.has(`${owner}/${repo}`)
@@ -105,7 +105,8 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     : undefined;
   const authoritative = authoritativeConfig ? createAuthoritativeReviewService({
     config: authoritativeConfig, appId, privateKey, baseUrl,
-    findingThreadAuthor: () => boundedBotLogin({ appId, privateKey, baseUrl }),
+    ...(dispatchConfig.centralExternalAppCredentials ? { publicAppCredentials: dispatchConfig.centralExternalAppCredentials } : {}),
+    findingThreadAuthor: (selected) => boundedBotLogin(installationCredentialsForRepository(selected.owner, selected.repo)),
     repository: new PostgresReviewGateRepository(pool, { lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000,
       incrementalMaxAgeMs, verdictCacheMaxAgeMs,
       ...(ciConfig ? { onEligibleCompletion: async (client, gate, now) => {
@@ -129,7 +130,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
         throw new Error('Authoritative generation recovery identity is unavailable');
       }
       const minted = await getBoundedRepositoryToken({
-        appId, privateKey, owner: input.identity.owner, repo: input.identity.repo, baseUrl,
+        ...installationCredentialsForRepository(input.identity.owner, input.identity.repo),
       }, 'publish');
       return new GitHubInstallationClient({ token: minted.token, baseUrl }).readReviewGenerationRecovery({
         owner: input.identity.owner,
@@ -192,7 +193,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
         passthroughEnabled: dispatchConfig.passthroughEnabled,
         authoritativePublishing: authoritative?.admission,
         resolveGitHubPullRequest: async (owner: string, repo: string, pullNumber: number) => {
-          const credentials = { appId, privateKey, owner, repo, baseUrl };
+          const credentials = installationCredentialsForRepository(owner, repo);
           const [minted, installationId] = await Promise.all([
             getBoundedRepositoryToken(credentials, 'read'),
             getBoundedRepositoryInstallationId(credentials),
@@ -244,8 +245,8 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     findingThreads: {
       db: pool,
       transportFor: async (owner, repo) => {
-        // The primary service App publishes the raw check, so it also owns the finding threads.
-        const credentials = { appId, privateKey, owner, repo, baseUrl };
+        // Finding threads use the same repository-bound App as raw-check publication.
+        const credentials = installationCredentialsForRepository(owner, repo);
         const [minted, botLogin] = await Promise.all([
           getBoundedRepositoryToken(credentials, 'review-threads'),
           findingThreadBotLogin(credentials),

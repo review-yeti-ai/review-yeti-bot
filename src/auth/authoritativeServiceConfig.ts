@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { GitHubActionsOidcPolicy } from './githubActionsOidc';
 import { reviewPolicySourceSchema } from '../review/authoritativeReviewIdentity';
 import { AUTHORITATIVE_REVIEW_APP_ID } from './authoritativeServiceIdentity';
+import { PUBLIC_REVIEW_REPOSITORY, PUBLIC_REVIEW_REPOSITORY_ID, PUBLIC_REVIEW_APP_ID } from './repositoryReviewAuthority';
 export { AUTHORITATIVE_REVIEW_APP_ID } from './authoritativeServiceIdentity';
 
 const name = z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u)
@@ -17,6 +18,7 @@ export interface AuthoritativeServiceConfig {
   expectedAppId: number;
   admissionEnabled: boolean;
   repositoryIds: number[];
+  publicRepository?: { repositoryId: number; owner: string; repo: string; expectedAppId: number };
   policyRepository: { repositoryId: number; owner: string; repo: string };
   policyRef: string;
   policyPath: string;
@@ -51,6 +53,18 @@ export function authoritativeServiceConfigFromEnv(
     if (repositoryIds.length < 1 || repositoryIds.length > 100
       || new Set(repositoryIds).size !== repositoryIds.length
       || repositoryIds.some((id) => !oidcPolicy.repositoryIds.has(String(id)))) throw new Error();
+    // The primary allowlist cannot accidentally grant the public repository
+    // primary-App authority. Its existing dedicated App is an exact opt-in.
+    if (repositoryIds.includes(PUBLIC_REVIEW_REPOSITORY_ID)) throw new Error();
+    const external = env.ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES;
+    let publicRepository: AuthoritativeServiceConfig['publicRepository'];
+    if (external !== undefined) {
+      if (external !== PUBLIC_REVIEW_REPOSITORY
+        || env.REVIEW_YETI_PUBLIC_TARGET_APP_ID?.trim() !== String(PUBLIC_REVIEW_APP_ID)) throw new Error();
+      const [owner, repo] = PUBLIC_REVIEW_REPOSITORY.split('/');
+      publicRepository = { repositoryId: PUBLIC_REVIEW_REPOSITORY_ID, owner, repo, expectedAppId: PUBLIC_REVIEW_APP_ID };
+      if (repositoryIds.length >= 100) throw new Error();
+    }
     const sourceJson = env.AUTHORITATIVE_REVIEW_POLICY_SOURCE;
     if (typeof sourceJson !== 'string' || Buffer.byteLength(sourceJson, 'utf8') > 8_192) throw new Error();
     const source = sourceSchema.parse(JSON.parse(sourceJson));
@@ -66,6 +80,7 @@ export function authoritativeServiceConfigFromEnv(
     if (tickMs < 1_000 || tickMs > 60_000) throw new Error();
     return {
       expectedAppId, admissionEnabled: admit === 'true', repositoryIds,
+      ...(publicRepository ? { publicRepository } : {}),
       policyRepository: { repositoryId: source.repositoryId, owner: source.owner, repo: source.repo },
       policyRef: source.ref, policyPath: source.path, transport: { baseUrl, model }, tickMs,
     };
