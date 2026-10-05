@@ -1223,14 +1223,14 @@ describe('executeComposedReview', () => {
       expect(payload.responseFormat.json_schema.name).toBe('ct_review_task_result_v1');
       expect(payload.responseFormat.json_schema.strict).toBe(true);
       expect(payload.responseFormat.json_schema.schema.properties.findings.items.required).toEqual([
-        'severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion', 'replacementCode',
+        'severity', 'path', 'line', 'startLine', 'title', 'body', 'blockerEvidence', 'suggestion', 'replacementCode',
       ]);
       const correction = lastText(payload.messages);
       expect(correction).toContain('TASK_RESULT_CORRECTION');
       expect(correction).toContain('findings_contract');
-      expect(correction).toContain('Use exactly one declared severity value: P0, P1, or P2. Do not relabel or infer severity.');
+      expect(correction).toContain('Use exactly one declared severity value: P0, P1, P2, P3, or NIT. Do not relabel or infer severity.');
       expect(correction).toContain('Binding task-result schema:');
-      expect(correction).toContain('"enum":["P0","P1","P2"]');
+      expect(correction).toContain('"enum":["P0","P1","P2","P3","NIT"]');
       expect(correction).toContain('do not request another tool');
       return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'BLOCKED', findings: [] }));
     });

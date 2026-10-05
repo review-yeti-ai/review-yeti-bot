@@ -18,7 +18,7 @@ export const findingThreadsRequestSchema = z.object({
   headSha: z.string().regex(/^[a-f0-9]{40}$/u),
   publish: z.array(z.object({
     fingerprint,
-    severity: z.enum(['P0', 'P1', 'P2']),
+    severity: z.enum(['P0', 'P1', 'P2', 'P3', 'NIT']),
     path: z.string().min(1).max(4_000),
     line: z.number().int().positive().safe(),
     title: z.string().min(1).max(1_000),
@@ -41,7 +41,7 @@ export type FindingThreadsReadRequest = z.infer<typeof findingThreadsReadRequest
 const priorThreadSchema = z.object({
   threadId: z.string().max(200).optional(),
   fingerprint,
-  severity: z.enum(['P0', 'P1', 'P2']),
+  severity: z.enum(['P0', 'P1', 'P2', 'P3', 'NIT']),
   path: z.string().min(1).max(4_000),
   line: z.number().int().positive().safe().optional(),
   title: z.string().max(1_000),

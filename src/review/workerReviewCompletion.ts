@@ -5,6 +5,8 @@ import { DELETION_CLASSIFICATION_VERSION } from './deletionClassification';
 import { computeAppVerdict } from './reviewAdapters';
 import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane } from './reviewCore';
 import { canonicalJson, publishFinding, sha256, validateReviewFindings } from './reviewCore';
+import { createReviewDecisionV2, reviewDecisionV2Schema, REVIEW_SEVERITY_POLICY_V2,
+  type ReviewDecisionV2 } from './reviewDecision';
 import type { ReviewGateDecision, ReviewGateEvidence } from './reviewGatePolicy';
 import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCompletion';
 import { isNoReviewableContentFile } from './reviewableContent';
@@ -45,7 +47,7 @@ const boundedInteger = z.number().int().nonnegative().safe();
 const boundedText = (max = MAX_TEXT_CHARACTERS) => z.string().min(1).max(max);
 
 const findingSchema = z.object({
-  severity: z.enum(['P0', 'P1', 'P2']),
+  severity: z.enum(['P0', 'P1', 'P2', 'P3', 'NIT']),
   path: z.string().min(1).max(MAX_PATH_CHARACTERS),
   line: positiveInteger,
   startLine: positiveInteger.optional(),
@@ -54,6 +56,9 @@ const findingSchema = z.object({
   suggestion: z.string().max(MAX_TEXT_CHARACTERS).nullable().optional(),
   replacementCode: z.string().max(MAX_CODE_CHARACTERS).nullable().optional(),
   confidence: z.number().finite().min(0).max(100).optional(),
+  blockerEvidence: z.object({
+    trigger: boundedText(2_000), impact: boundedText(2_000), violatedContract: boundedText(2_000),
+  }).strict().nullable().optional(),
   recommendation: z.string().max(MAX_TEXT_CHARACTERS).optional(),
   fixOptions: z.array(z.object({
     rank: positiveInteger.optional(),
@@ -293,6 +298,8 @@ const resultSchema = z.object({
   verdict: z.enum(['SHIP', 'FIX_FIRST', 'BLOCK']).optional(),
   findingCount: boundedInteger.max(MAX_TOTAL_FINDINGS).optional(),
   blockingFindingCount: boundedInteger.max(MAX_TOTAL_FINDINGS).optional(),
+  /** Optional additive receipt. Required and recomputed by the trusted service only under v2 policy. */
+  reviewDecision: reviewDecisionV2Schema.optional(),
   /**
    * OPTIONAL, additive (Stage 0 / example-meta review-yeti telemetry work): the panel engine's own
    * wall-clock measurement of the whole run (`panelResult.panelWallClockMs` in `panelEngine.ts`),
@@ -381,6 +388,8 @@ export interface TrustedReviewCoverageContract {
   expectedPersonaIds: readonly string[];
   /** Service-owned engine and effective paths. Dynamic task IDs are admitted only for composed. */
   reviewEngine?: 'panel' | 'composed' | 'shadow';
+  /** Set only from the checked, service-prepared effective worker config. */
+  reviewDecisionPolicy?: typeof REVIEW_SEVERITY_POLICY_V2;
   composedChangedPaths?: readonly string[];
   composedMaxTasks?: number;
   /** Exact changed-file evidence already read by the service for the admitted head. */
@@ -540,6 +549,9 @@ function validateCoverageContract(contract: TrustedReviewCoverageContract): stri
   if (typeof contract.coverageComplete !== 'boolean' || typeof contract.quorumSatisfied !== 'boolean') {
     throw new WorkerReviewCompletionError('invalid-contract', 'trusted coverage contract booleans are required');
   }
+  if (contract.reviewDecisionPolicy !== undefined && contract.reviewDecisionPolicy !== REVIEW_SEVERITY_POLICY_V2) {
+    throw new WorkerReviewCompletionError('invalid-contract', 'trusted review decision policy is unsupported');
+  }
   validateChangedFiles(contract.changedFiles);
   return expected;
 }
@@ -639,6 +651,7 @@ function arbitrateLanes(
   coverageComplete: boolean,
   changedFiles: ReviewChangedFile[] | undefined,
   composed = false,
+  severityPolicyVersion?: typeof REVIEW_SEVERITY_POLICY_V2,
 ): { valid: true; canonical: CanonicalArbitration } | { valid: false; message: string } {
   const lanes: ReviewLane[] = [];
   for (const persona of personas) {
@@ -655,7 +668,7 @@ function arbitrateLanes(
     });
   }
   return { valid: true, canonical: computeAppVerdict({ lanes, expectedLanes, changedFiles, coverageComplete,
-    ...(composed ? { panelSize: 1 } : {}) }) };
+    ...(composed ? { panelSize: 1 } : {}), ...(severityPolicyVersion ? { severityPolicyVersion } : {}) }) };
 }
 
 /**
@@ -672,9 +685,12 @@ function arbitrateLanes(
  */
 export function deriveStoredCompletionVerdict(
   result: WorkerReviewResult,
-  trusted: { expectedLanes: number; coverageComplete: boolean; reviewEngine?: 'composed' },
+  trusted: { expectedLanes: number; coverageComplete: boolean; reviewEngine?: 'composed';
+    reviewDecisionPolicy?: typeof REVIEW_SEVERITY_POLICY_V2; policyDigest?: string },
 ): CanonicalArbitration | null {
   if (!Number.isSafeInteger(trusted.expectedLanes) || trusted.expectedLanes <= 0) return null;
+  if ((trusted.reviewDecisionPolicy === REVIEW_SEVERITY_POLICY_V2) !== (result.reviewDecision !== undefined)) return null;
+  if (result.reviewDecision && (trusted.reviewDecisionPolicy !== REVIEW_SEVERITY_POLICY_V2 || !trusted.policyDigest)) return null;
   const composed = trusted.reviewEngine === 'composed';
   if (composed) {
     if (!composedPlanLaneIds(result.taskPlan, result.personas, trusted.expectedLanes).valid) return null;
@@ -685,8 +701,27 @@ export function deriveStoredCompletionVerdict(
   const gating = result.personas.filter((persona) => persona.evidenceSource !== 'shadow');
   if (new Set(gating.map((persona) => persona.id)).size !== gating.length) return null;
   const arbitration = arbitrateLanes(gating, trusted.expectedLanes,
-    trusted.coverageComplete === true && result.coverageComplete, undefined, composed);
-  return arbitration.valid ? arbitration.canonical : null;
+    trusted.coverageComplete === true && result.coverageComplete, undefined, composed, trusted.reviewDecisionPolicy);
+  if (!arbitration.valid) return null;
+  if (result.reviewDecision) {
+    const expected = createReviewDecisionV2({
+      schemaVersion: result.reviewDecision.schemaVersion,
+      policyVersion: REVIEW_SEVERITY_POLICY_V2,
+      policyDigest: trusted.policyDigest!,
+      coverageComplete: trusted.coverageComplete === true && result.coverageComplete,
+      quorumSatisfied: arbitration.canonical.quorumSatisfied && result.quorumSatisfied,
+      infrastructureFailure: gating.some(hasInfrastructureFailure),
+      expectedLanes: trusted.expectedLanes,
+      completedLanes: arbitration.canonical.completedPersonas,
+      counts: {
+        p0Count: arbitration.canonical.metrics.p0Count, p1Count: arbitration.canonical.metrics.p1Count,
+        p2Count: arbitration.canonical.metrics.p2Count, p3Count: arbitration.canonical.metrics.p3Count,
+        nitCount: arbitration.canonical.metrics.nitCount,
+      },
+    });
+    if (canonicalJson(expected) !== canonicalJson(result.reviewDecision)) return null;
+  }
+  return arbitration.canonical;
 }
 
 /** Same plan-to-lane admission for live completions and stored prior rechecks. */
@@ -934,6 +969,9 @@ export function deriveCanonicalWorkerReviewEvidence(
     }
   }
   if (isDocumentationOnlyCompletion(completion.result)) {
+    if (completion.result.reviewDecision !== undefined) {
+      return invalidEvidence('no-reviewable-content exemption cannot carry a panel decision receipt');
+    }
     // REL-1139: a documentation-only exemption never ran a moderator to skip.
     if (completion.result.moderation !== undefined) {
       return invalidEvidence('documentation-only completion claims a skipped moderator');
@@ -1021,24 +1059,53 @@ export function deriveCanonicalWorkerReviewEvidence(
 
   const coverageComplete = contract.coverageComplete && completion.result.coverageComplete;
   const arbitration = arbitrateLanes(completion.result.personas, requiredIds.length, coverageComplete, changedFiles,
-    contract.reviewEngine === 'composed');
+    contract.reviewEngine === 'composed', contract.reviewDecisionPolicy);
   if (!arbitration.valid) return invalidEvidence(arbitration.message);
   const { canonical } = arbitration;
   const quorumSatisfied = contract.quorumSatisfied && completion.result.quorumSatisfied && canonical.quorumSatisfied;
+  const infrastructureFailure = completion.result.personas.some(hasInfrastructureFailure);
+  const expectedDecision = contract.reviewDecisionPolicy === REVIEW_SEVERITY_POLICY_V2
+    ? createReviewDecisionV2({
+      schemaVersion: 'review-yeti-decision.v2',
+      policyVersion: REVIEW_SEVERITY_POLICY_V2,
+      policyDigest: expectedCoordinates.policyDigest,
+      coverageComplete,
+      quorumSatisfied,
+      infrastructureFailure,
+      expectedLanes: requiredIds.length,
+      completedLanes: canonical.completedPersonas,
+      counts: {
+        p0Count: canonical.metrics.p0Count,
+        p1Count: canonical.metrics.p1Count,
+        p2Count: canonical.metrics.p2Count,
+        p3Count: canonical.metrics.p3Count,
+        nitCount: canonical.metrics.nitCount,
+      },
+    }) : undefined;
+  if (contract.reviewDecisionPolicy === REVIEW_SEVERITY_POLICY_V2) {
+    if (!completion.result.reviewDecision) return invalidEvidence('v2 review decision receipt is required by trusted policy');
+    if (canonicalJson(completion.result.reviewDecision) !== canonicalJson(expectedDecision)) {
+      return invalidEvidence('worker review decision receipt disagrees with trusted canonical evidence');
+    }
+  } else if (completion.result.reviewDecision !== undefined) {
+    return invalidEvidence('worker review decision receipt is not enabled by trusted policy');
+  }
   const evidence: ReviewGateEvidence = {
     verdict: canonical.verdict,
     ...(contract.reviewEngine === 'composed' ? { reviewEngine: 'composed' as const } : {}),
     completedAt: completion.result.completedAt,
     coverageComplete,
     quorumSatisfied,
-    infrastructureFailure: completion.result.personas.some(hasInfrastructureFailure),
+    infrastructureFailure,
     p0Count: canonical.metrics.p0Count,
     p1Count: canonical.metrics.p1Count,
     // ADR 0002: the same convergence the worker's raw check applies, on the service's own diff
     // and thread read. Only canonical findings count; a satisfied or out-of-diff P2 does not.
     p2Count: evaluateFindingConvergence({
       findings: canonical.findings, changedFiles, priorThreads: contract.findingThreads ?? [],
+      ...(contract.reviewDecisionPolicy ? { policyVersion: contract.reviewDecisionPolicy } : {}),
     }).counts.requiredP2,
+    ...(expectedDecision ? { reviewDecision: expectedDecision } : {}),
     expectedLanes: requiredIds.length,
     completedLanes: canonical.completedPersonas,
   };

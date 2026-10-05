@@ -247,7 +247,7 @@ export function findingCorrectionForCode(code: unknown): {
     case 'severity_invalid':
       return {
         rejectionCode: 'finding_severity_invalid',
-        hint: 'Use exactly one declared severity value: P0, P1, or P2. Do not relabel or infer severity.',
+        hint: 'Use exactly one declared severity value: P0, P1, P2, P3, or NIT. Do not relabel or infer severity.',
       };
     case 'contract_invalid':
       return {

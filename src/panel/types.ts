@@ -14,7 +14,7 @@ import type { VerdictCacheDisclosure } from '../types/verdictCache';
 import type { MapReduceDisclosure } from '../types/mapReduceReview';
 import type { TaskSourceReceipt } from '../types/taskSourceDelivery';
 
-export type FindingSeverity = 'P0' | 'P1' | 'P2';
+export type FindingSeverity = 'P0' | 'P1' | 'P2' | 'P3' | 'NIT';
 
 export interface FixOption {
   rank?: number;
@@ -33,6 +33,7 @@ export interface PanelFinding {
   suggestion?: string;
   replacementCode?: string;
   confidence?: number;
+  blockerEvidence?: { trigger: string; impact: string; violatedContract: string };
   recommendation?: string;
   fixOptions?: FixOption[];
   isArchitectural?: boolean;

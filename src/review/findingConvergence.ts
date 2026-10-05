@@ -1,11 +1,9 @@
 /**
- * Required-finding convergence (ADR 0002).
+ * Versioned finding convergence (ADR 0002).
  *
- * P0, P1 and P2 findings all block a merge. A blocking P2 policy on its own does not converge:
- * every new head is a fresh model run, the same nit comes back under a new title, and a nit about
- * the code that fixed the previous nit is raised as new. This module is the single decision that
- * keeps the policy finite. Both the worker's raw check and the service Gate call it, so the two
- * cannot disagree about which findings are still required.
+ * Legacy v1 requires P0/P1/P2 and uses thread state to converge P2s. The explicit v2 policy keeps
+ * P0/P1 blocking and P2/P3/NIT advisory. This module is the shared decision for the worker check
+ * and service evidence so publication and Gate cannot disagree about required findings.
  *
  * Rules, each pinned by a test in `tests/unit/findingConvergence.test.ts`:
  *
@@ -25,6 +23,7 @@
 import { createHash } from 'node:crypto';
 import { claimTokens, claimType, compareClaims } from './claimSimilarity';
 import { changedLineNumbers } from './reviewCore';
+import { REVIEW_SEVERITY_POLICY_V2 } from './reviewDecision';
 
 export const FINDING_FINGERPRINT_PREFIX = 'fp1_';
 export const FINDING_MARKER_PREFIX = '<!-- review-yeti:finding';
@@ -32,14 +31,12 @@ export const FINDING_MARKER_PREFIX = '<!-- review-yeti:finding';
 export const MIN_RESOLUTION_REASON_CHARS = 12;
 const MAX_MARKER_TITLE_CHARS = 300;
 
-export type FindingSeverity = 'P0' | 'P1' | 'P2';
+export type FindingSeverity = 'P0' | 'P1' | 'P2' | 'P3' | 'NIT';
 
 /**
  * The single statement of which severities a resolved thread can satisfy.
- * `evaluateFindingConvergence` enforces this predicate when deciding whether a
- * resolution can carry a finding, and `renderFindingThreadBody` derives the
- * guidance copy it publishes on every new thread from the same predicate, so
- * the enforcement and the published rule cannot disagree.
+ * `evaluateFindingConvergence` applies this predicate only to legacy v1 P2s. V2 advisories do not
+ * need a thread or resolution, and a P0/P1 resolution never clears a current blocker.
  */
 export function isResolutionSatisfiable(severity: FindingSeverity): boolean {
   return severity === 'P2';
@@ -85,14 +82,16 @@ export interface PriorFindingThread {
 }
 
 export type ConvergenceStatus =
-  /** Not seen before; blocks (any severity). */
+  /** Not seen before; blocks in v1, or for a v2 P0/P1. */
   | 'new'
-  /** Matches an open prior thread; blocks (any severity). */
+  /** Matches an open prior thread; blocks in v1, or for a v2 P0/P1. */
   | 'carried'
   /** P2 matching a thread the author resolved with a reason; does not block. */
   | 'satisfied'
   /** P2 not anchored to a line this head changes; does not block. */
-  | 'outside-diff';
+  | 'outside-diff'
+  /** A v2 P2/P3/NIT observation remains visible without blocking. */
+  | 'advisory';
 
 export interface ConvergenceEntry<F extends ConvergenceFinding = ConvergenceFinding> {
   finding: F;
@@ -106,10 +105,11 @@ export interface ConvergenceEntry<F extends ConvergenceFinding = ConvergenceFind
 }
 
 export interface ConvergenceResult<F extends ConvergenceFinding = ConvergenceFinding> {
+  policyVersion?: typeof REVIEW_SEVERITY_POLICY_V2;
   entries: ConvergenceEntry<F>[];
   /** Findings that block the merge, in input order. */
   required: F[];
-  /** Entries that do not block, with the reason (`satisfied` or `outside-diff`). */
+  /** Entries that do not block, with the reason (`satisfied`, `outside-diff`, or `advisory`). */
   nonBlocking: ConvergenceEntry<F>[];
   /** Prior threads no current finding matched: fixed (or no longer reported) on this head. */
   droppedPrior: PriorFindingThread[];
@@ -118,6 +118,9 @@ export interface ConvergenceResult<F extends ConvergenceFinding = ConvergenceFin
     requiredP0: number;
     requiredP1: number;
     requiredP2: number;
+    advisoryP2: number;
+    advisoryP3: number;
+    advisoryNit: number;
     satisfied: number;
     outsideDiff: number;
     droppedPrior: number;
@@ -125,20 +128,24 @@ export interface ConvergenceResult<F extends ConvergenceFinding = ConvergenceFin
 }
 
 /**
- * The one severity ladder (ADR 0002): any value normalizes to P0, P1 or P2, and all three are
- * required. Callers that render or count severities use these helpers instead of their own sets.
+ * The v1 ladder maps unknown values to required P2. V2 preserves all five explicit levels.
+ * Callers that render or count severities use this helper instead of their own sets.
  */
-export function normalizeFindingSeverity(finding: { severity?: unknown } | null | undefined): FindingSeverity {
+export function normalizeFindingSeverity(
+  finding: { severity?: unknown } | null | undefined,
+  policyVersion?: typeof REVIEW_SEVERITY_POLICY_V2,
+): FindingSeverity {
   const value = String(finding?.severity || 'P2').toUpperCase();
+  if (policyVersion === REVIEW_SEVERITY_POLICY_V2
+    && (value === 'P0' || value === 'P1' || value === 'P2' || value === 'P3' || value === 'NIT')) return value;
   return value === 'P0' || value === 'P1' ? value : 'P2';
 }
 
 /** P0/P1: the subset the historical summary wording and per-lane metric count. */
 export function isCriticalSeverity(finding: { severity?: unknown } | null | undefined): boolean {
-  return normalizeFindingSeverity(finding) !== 'P2';
+  const severity = normalizeFindingSeverity(finding);
+  return severity === 'P0' || severity === 'P1';
 }
-
-const severityOf = normalizeFindingSeverity;
 
 function normalizedPath(value: unknown): string {
   return typeof value === 'string' ? value.replace(/\\/g, '/').replace(/^\.\//, '').trim() : '';
@@ -173,7 +180,7 @@ export function renderFindingMarker(input: { fingerprint: string; severity: Find
  */
 export function parseFindingMarker(body: unknown): { fingerprint: string; severity: FindingSeverity; title: string } | null {
   if (typeof body !== 'string') return null;
-  const matches = [...body.matchAll(/<!-- review-yeti:finding v=1 fp=(fp1_[a-f0-9]{24}) sev=(P0|P1|P2) t=([A-Za-z0-9_-]*) -->/gu)];
+  const matches = [...body.matchAll(/<!-- review-yeti:finding v=1 fp=(fp1_[a-f0-9]{24}) sev=(P0|P1|P2|P3|NIT) t=([A-Za-z0-9_-]*) -->/gu)];
   const match = matches.at(-1);
   if (!match) return null;
   let title = '';
@@ -243,20 +250,24 @@ export function evaluateFindingConvergence<F extends ConvergenceFinding>(input: 
   findings: readonly F[];
   changedFiles: readonly ConvergenceChangedFile[];
   priorThreads?: readonly PriorFindingThread[];
+  policyVersion?: typeof REVIEW_SEVERITY_POLICY_V2;
 }): ConvergenceResult<F> {
   const threads = Array.isArray(input.priorThreads) ? input.priorThreads : [];
   const index = changedLineIndex(Array.isArray(input.changedFiles) ? input.changedFiles : []);
   const used = new Set<PriorFindingThread>();
   const entries: ConvergenceEntry<F>[] = [];
   for (const finding of Array.isArray(input.findings) ? input.findings : []) {
-    const severity = severityOf(finding);
+    const severity = normalizeFindingSeverity(finding, input.policyVersion);
     const own = findingFingerprint(finding);
     const matchedThread = matchThread(finding, own, threads, used);
     if (matchedThread) used.add(matchedThread);
     const fingerprint = matchedThread?.fingerprint ?? own;
     let status: ConvergenceStatus = matchedThread ? 'carried' : 'new';
     let resolution: FindingThreadResolution | undefined;
-    if (isResolutionSatisfiable(severity)) {
+    if (input.policyVersion === REVIEW_SEVERITY_POLICY_V2
+      && (severity === 'P2' || severity === 'P3' || severity === 'NIT')) {
+      status = 'advisory';
+    } else if (isResolutionSatisfiable(severity)) {
       if (matchedThread?.resolved === true && matchedThread.resolution
         && statedResolutionReason(matchedThread.resolution.reason) !== null) {
         status = 'satisfied';
@@ -265,7 +276,9 @@ export function evaluateFindingConvergence<F extends ConvergenceFinding>(input: 
         status = 'outside-diff';
       }
     }
-    const blocking = status === 'new' || status === 'carried';
+    const blocking = input.policyVersion === REVIEW_SEVERITY_POLICY_V2
+      ? (severity === 'P0' || severity === 'P1') && (status === 'new' || status === 'carried')
+      : status === 'new' || status === 'carried';
     entries.push({
       finding, severity, fingerprint, status, blocking,
       ...(matchedThread ? { matchedThread } : {}),
@@ -277,6 +290,7 @@ export function evaluateFindingConvergence<F extends ConvergenceFinding>(input: 
   const droppedPrior = threads.filter((thread) => !used.has(thread));
   const count = (predicate: (entry: ConvergenceEntry<F>) => boolean) => entries.filter(predicate).length;
   return {
+    ...(input.policyVersion ? { policyVersion: input.policyVersion } : {}),
     entries,
     required,
     nonBlocking,
@@ -286,6 +300,9 @@ export function evaluateFindingConvergence<F extends ConvergenceFinding>(input: 
       requiredP0: count((entry) => entry.blocking && entry.severity === 'P0'),
       requiredP1: count((entry) => entry.blocking && entry.severity === 'P1'),
       requiredP2: count((entry) => entry.blocking && entry.severity === 'P2'),
+      advisoryP2: count((entry) => !entry.blocking && entry.severity === 'P2'),
+      advisoryP3: count((entry) => !entry.blocking && entry.severity === 'P3'),
+      advisoryNit: count((entry) => !entry.blocking && entry.severity === 'NIT'),
       satisfied: count((entry) => entry.status === 'satisfied'),
       outsideDiff: count((entry) => entry.status === 'outside-diff'),
       droppedPrior: droppedPrior.length,
@@ -297,8 +314,15 @@ export function evaluateFindingConvergence<F extends ConvergenceFinding>(input: 
 export function renderConvergenceSummary(result: ConvergenceResult, options: { threadsRead: boolean }): string[] {
   const lines: string[] = [];
   const { counts } = result;
-  lines.push(`Required findings: ${counts.required} (P0: ${counts.requiredP0}, P1: ${counts.requiredP1}, P2: ${counts.requiredP2}). P0, P1 and P2 findings all block the merge.`);
-  if (counts.required > 0 && counts.requiredP2 > 0) {
+  if (result.policyVersion === REVIEW_SEVERITY_POLICY_V2) {
+    lines.push(`Blocking findings: ${counts.required} (P0: ${counts.requiredP0}, P1: ${counts.requiredP1}). P2, P3 and NIT findings are advisory.`);
+    if (counts.advisoryP2 + counts.advisoryP3 + counts.advisoryNit > 0) {
+      lines.push(`Advisory findings: P2 ${counts.advisoryP2}, P3 ${counts.advisoryP3}, NIT ${counts.advisoryNit}.`);
+    }
+  } else {
+    lines.push(`Required findings: ${counts.required} (P0: ${counts.requiredP0}, P1: ${counts.requiredP1}, P2: ${counts.requiredP2}). P0, P1 and P2 findings all block the merge.`);
+  }
+  if (result.policyVersion !== REVIEW_SEVERITY_POLICY_V2 && counts.required > 0 && counts.requiredP2 > 0) {
     lines.push('To clear a P2: fix it, or reply on its review thread with the reason it does not apply and resolve the thread. The next head records the resolution.');
   }
   const satisfied = result.nonBlocking.filter((entry) => entry.status === 'satisfied');
@@ -311,6 +335,8 @@ export function renderConvergenceSummary(result: ConvergenceResult, options: { t
   }
   if (counts.outsideDiff > 0) lines.push(`${counts.outsideDiff} P2 finding(s) outside this head's diff are advisory and do not block.`);
   if (counts.droppedPrior > 0) lines.push(`${counts.droppedPrior} previously raised finding(s) were not reported at this head and no longer block.`);
-  if (!options.threadsRead) lines.push('Review thread state could not be read, so no P2 was treated as resolved on this run.');
+  if (result.policyVersion !== REVIEW_SEVERITY_POLICY_V2 && !options.threadsRead) {
+    lines.push('Review thread state could not be read, so no P2 was treated as resolved on this run.');
+  }
   return lines;
 }

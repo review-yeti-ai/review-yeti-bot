@@ -71,6 +71,7 @@ import {
 } from '../github/qualificationReader';
 import { isReviewSuperseded, ReviewSupersededError } from '../review/reviewSupersession';
 import { canonicalJson, computeArbitration, sanitizeFinding, sha256 } from '../review/reviewCore';
+import { createReviewDecisionV2, REVIEW_SEVERITY_POLICY_V2 } from '../review/reviewDecision';
 import { disputedFindingTaskMatchesCheckpoint, remainingCheckpointTasksAfterRechecks, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import {
   INCOMPLETE_INFRASTRUCTURE_REASON,
@@ -228,6 +229,7 @@ export interface ReviewFinding {
   line?: number;
   title?: string;
   body?: string;
+  blockerEvidence?: { trigger: string; impact: string; violatedContract: string };
 }
 
 export interface CheckAnnotation {
@@ -433,10 +435,9 @@ export {
 };
 export type { OpenAITransportConfig };
 
-// ADR 0002: P0, P1 and P2 findings all block a merge. The severity ladder and which findings still
-// block on a head are defined once, in `../review/findingConvergence` (`normalizeFindingSeverity`,
-// `isCriticalSeverity`, `evaluateFindingConvergence`); this module only renders their result.
-// There is deliberately no environment switch: the policy is not a deployment option.
+// The severity ladder and which findings still block on a head are defined once in
+// `../review/findingConvergence`. The v2 contract activates only from the digest-verified worker
+// config; absent that field, legacy P2-required semantics remain in force.
 
 /**
  * Coverage the conclusion may independently verify. Structural: the caller
@@ -1052,13 +1053,25 @@ export interface PublishingReviewDeps {
  * file and line so a reader can navigate without the annotation view.
  */
 export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount: number,
-  notes?: ReadonlyMap<ReviewFinding, string>): string {
+  notes?: ReadonlyMap<ReviewFinding, string>, options: { advisoryLimit?: number } = {}): string {
   if (findings.length === 0) {
     return 'No findings survived canonical arbitration for this head.';
   }
-  const order = (severity: string): number => (severity === 'P0' ? 0 : severity === 'P1' ? 1 : 2);
-  const lines = [...findings]
-    .sort((a, b) => order(String(a?.severity || 'P2').toUpperCase()) - order(String(b?.severity || 'P2').toUpperCase()))
+  const order = (severity: string): number => ({ P0: 0, P1: 1, P2: 2, P3: 3, NIT: 4 }[severity] ?? 5);
+  const ordered = [...findings].sort((a, b) => {
+    const severity = order(String(a?.severity || 'P2').toUpperCase()) - order(String(b?.severity || 'P2').toUpperCase());
+    if (severity !== 0) return severity;
+    return String(a?.path || '').localeCompare(String(b?.path || ''))
+      || Number(a?.line || 0) - Number(b?.line || 0)
+      || String(a?.title || '').localeCompare(String(b?.title || ''));
+  });
+  const isBlocking = (finding: ReviewFinding) => finding.severity === 'P0' || finding.severity === 'P1';
+  const advisories = ordered.filter((finding) => !isBlocking(finding));
+  const advisoryLimit = Number.isSafeInteger(options.advisoryLimit) && (options.advisoryLimit as number) >= 0
+    ? options.advisoryLimit as number : Number.POSITIVE_INFINITY;
+  const displayed = [...ordered.filter(isBlocking), ...advisories.slice(0, advisoryLimit)];
+  const omittedAdvisories = Math.max(0, advisories.length - Math.min(advisories.length, advisoryLimit));
+  const lines = displayed
     .map((finding) => {
       const severity = String(finding?.severity || 'P2').toUpperCase();
       const where = finding?.path ? `\`${String(finding.path)}${finding?.line ? `:${finding.line}` : ''}\`` : '_no file_';
@@ -1085,10 +1098,17 @@ export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount:
       ].filter(Boolean);
       const note = notes?.get(finding);
       if (note) marks.push(note);
-      return `- **${severity}**${downgradeMarker} ${where} — ${title}${marks.length ? ` _(${marks.join('; ')})_` : ''}${body ? `\n  ${body.replace(/\n/gu, '\n  ')}` : ''}`;
+      const blockerEvidence = finding.blockerEvidence;
+      const evidenceText = blockerEvidence && (severity === 'P0' || severity === 'P1')
+        ? `\n  Verified trigger: ${blockerEvidence.trigger}\n  Consequence: ${blockerEvidence.impact}\n  Violated contract: ${blockerEvidence.violatedContract}` : '';
+      return `- **${severity}**${downgradeMarker} ${where} — ${title}${marks.length ? ` _(${marks.join('; ')})_` : ''}${body ? `\n  ${body.replace(/\n/gu, '\n  ')}` : ''}${evidenceText}`;
     });
+  const heading = Number.isFinite(advisoryLimit)
+    ? `${findings.length} finding(s), ${blockingCount} blocking (P0/P1), ${advisories.length} advisory; showing ${Math.min(advisories.length, advisoryLimit)} highest-priority advisories.`
+    : `${findings.length} finding(s), ${blockingCount} required (P0/P1/P2).`;
   return [
-    `${findings.length} finding(s), ${blockingCount} required (P0/P1/P2).`,
+    heading,
+    ...(omittedAdvisories > 0 ? [`${omittedAdvisories} lower-priority advisory finding(s) are omitted from this display; the full finding receipt retains them.`] : []),
     '',
     ...lines,
   ].join('\n');
@@ -1537,6 +1557,12 @@ export async function runPublishingReviewWorker(
       ? parsePreparedReviewExecution(value(env, 'REVIEW_PREPARED_CONFIG_JSON'), value(env, 'REVIEW_CONFIG_DIGEST'),
         { baseUrl: transport.baseUrl, model: transport.model }).config
       : resolveWorkerConfig(env, transport);
+    const configuredSeverityPolicy = (baseWorkerConfig as unknown as { severity_policy?: unknown }).severity_policy;
+    if (configuredSeverityPolicy !== undefined && configuredSeverityPolicy !== REVIEW_SEVERITY_POLICY_V2) {
+      throw new Error('Prepared severity policy is unsupported');
+    }
+    const reviewDecisionPolicy = configuredSeverityPolicy === REVIEW_SEVERITY_POLICY_V2
+      ? REVIEW_SEVERITY_POLICY_V2 : undefined;
     const p2RecoveryContext: IncompleteP2RecoveryContext | null = authoritative && identity.executionAttempt > 1
       && deps.incompleteP2Recovery ? await deps.incompleteP2Recovery.read(deps.signal) : null;
     if (p2RecoveryContext && (p2RecoveryContext.runId !== identity.runId
@@ -2350,13 +2376,18 @@ export async function runPublishingReviewWorker(
       // findings and quorum under the same P0/P1 policy as the service Gate.
       const canonical = computeArbitration(rawRoster.lanes, rawRoster.arbitrationExpectedCount, {
         changedFiles,
-        coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied && coverageGaps.length === 0,
+        coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied && coverageGaps.length === 0
+          && !gracefulPartial
+          // Fast-ship is a classifier bypass, not complete P0/P1 review evidence. Under an
+          // explicit v2 policy it cannot produce a merge-eligible receipt.
+          && !(reviewDecisionPolicy && isFastShip && !panelResult.documentationOnly),
         ...(coverageGaps.length > 0 ? { coverageGaps } : {}),
         // One composed context is one reviewer: `rawRoster.lanes` there is the planned TASK list,
         // not a count of independent reviewers, so the default `panelSize` derivation (lane count)
         // would let a longer task plan silently raise its own P1 blocking threshold (7 tasks moves
         // it from 3 to 4). See `reviewCore.js`'s `resolvePanelSize` doc comment.
         ...(reviewEngine === 'composed' ? { panelSize: 1 } : {}),
+        ...(reviewDecisionPolicy ? { severityPolicyVersion: reviewDecisionPolicy } : {}),
       });
       const coverage: PublishingCoverageProjection = {
         mode: rawRoster.mode,
@@ -2397,6 +2428,7 @@ export async function runPublishingReviewWorker(
       }
       const convergence: ConvergenceResult<ReviewFinding> = evaluateFindingConvergence({
         findings, changedFiles, priorThreads: priorFindingThreads,
+        ...(reviewDecisionPolicy ? { policyVersion: reviewDecisionPolicy } : {}),
       });
       const blocking = convergence.required;
       const requiredFindings = new Set<ReviewFinding>(blocking);
@@ -2406,6 +2438,22 @@ export async function runPublishingReviewWorker(
         if (entry.status === 'carried') return [[entry.finding, `raised before (${entry.fingerprint})`] as [ReviewFinding, string]];
         return [];
       }));
+      const reviewDecisionReceipt = reviewDecisionPolicy && !notApplicable && !panelResult.documentationOnly
+        ? createReviewDecisionV2({
+          schemaVersion: 'review-yeti-decision.v2',
+          policyVersion: reviewDecisionPolicy,
+          policyDigest: value(env, 'REVIEW_POLICY_DIGEST'),
+          coverageComplete: coverageGaps.length === 0 && !gracefulPartial,
+          quorumSatisfied: rawRoster.rosterValid && panelQuorumSatisfied && canonical.quorumSatisfied,
+          infrastructureFailure: rawRoster.failedLaneCount > 0,
+          expectedLanes: rawRoster.arbitrationExpectedCount,
+          completedLanes: canonical.completedPersonas,
+          counts: {
+            p0Count: canonical.metrics.p0Count, p1Count: canonical.metrics.p1Count,
+            p2Count: canonical.metrics.p2Count, p3Count: canonical.metrics.p3Count,
+            nitCount: canonical.metrics.nitCount,
+          },
+        }) : undefined;
       // A file whose header could not be read was never sent to the panel, so no
       // finding can exist for it and the verdict describes less than the diff. That
       // is the "absent capability, green check" shape: fail closed and name the
@@ -2553,6 +2601,7 @@ export async function runPublishingReviewWorker(
     const changedPaths = new Set(changedFiles.map((file) => file.path));
 
     const documentationOnly = fastShipApproved && Boolean(panelResult.documentationOnly);
+    const decisionIncomplete = reviewDecisionReceipt?.classification === 'INCOMPLETE_REVIEW';
     // REL-1139 (ADR 0687): the panel skipped the moderator call on an empty, fully covered run.
     // A full-panel run only; the verdict on such a run is SHIP because no lane found anything.
     const moderationSkipped = !fastShipApproved && !notApplicable
@@ -2572,6 +2621,8 @@ export async function runPublishingReviewWorker(
       ? 'Review Yeti: NO_REVIEW (not applicable)'
       : gracefulPartial
         ? 'Review Yeti: INCOMPLETE (partial evidence published)'
+      : decisionIncomplete
+        ? 'Review Yeti: INCOMPLETE (v2 decision receipt)'
       : unreportedNoVerdict
         ? 'Review Yeti: review did not complete'
         : documentationOnly
@@ -2617,6 +2668,8 @@ export async function runPublishingReviewWorker(
       : [
           gracefulPartial
             ? `Evidence collection reached its 20-minute cutoff at \`${identity.headSha}\`. The final closeout preserved and published ${findings.length} validated finding(s); ${panelResult.gracefulExit?.pendingTaskIds.length ?? 0} risk-ordered task(s) remain. This is fail-closed, not an approval. ${panelResult.gracefulExit?.checkpointPersistenceFailed ? 'Checkpoint persistence failed, so the rerun will safely revalidate work instead of trusting missing state.' : 'An exact-head rerun resumes the durable completed-task checkpoint.'}`
+            : decisionIncomplete
+            ? `Decision \`INCOMPLETE_REVIEW\` at \`${identity.headSha}\`: the v2 receipt marks coverage, quorum, lane completion, or infrastructure evidence incomplete.`
             : unreportedNoVerdict
             ? `No review verdict at \`${identity.headSha}\`: ${missingIds.size} configured task(s) ran without a valid result. This is not a finding about the diff; request an exact-head review after correcting the malformed output.`
             : requiredP2Only
@@ -2631,6 +2684,9 @@ export async function runPublishingReviewWorker(
             : `Findings: ${findings.length} (blocking P0/P1: ${criticalCount}; ${rawFindings.length} raw persona finding(s) before clustering).`,
           ...(notApplicable || (panelResult as any).zeroLaneNonEvidence
             ? [] : renderConvergenceSummary(convergence, { threadsRead: findingThreadsRead })),
+          ...(reviewDecisionReceipt ? [
+            `Policy decision: \`${reviewDecisionReceipt.classification}\` (${reviewDecisionReceipt.reason}); policy \`${reviewDecisionReceipt.policyVersion}\`, digest \`${reviewDecisionReceipt.policyDigest}\`. ${reviewDecisionReceipt.explanation}`,
+          ] : []),
           ...(discardedFindingCount > 0
             ? [`${discardedFindingCount} raw finding(s) were discarded as unanchorable and are not counted above.`]
             : []),
@@ -2668,7 +2724,8 @@ export async function runPublishingReviewWorker(
           `- Attempt ${source.executionAttempt}: ${source.rawFindingCount} raw P2 finding(s); [original App check](https://github.com/${identity.owner}/${identity.repoName}/pull/${identity.prNumber}/checks?check_run_id=${source.workerCheckId}); Gate \`${source.gateCheckId}\`; worker result \`${source.workerResultDigest}\`.`),
       ].join('\n'));
     }
-    const checkText = [renderFindingsMarkdown(findings, blocking.length, convergenceNotes),
+    const checkText = [renderFindingsMarkdown(findings, blocking.length, convergenceNotes,
+      reviewDecisionPolicy ? { advisoryLimit: 5 } : {}),
       ...(p2RecoveryContext ? ['### Retained P2 observations (original evidence)',
         'These original observations remain advisory and were supplied to the full review above. Their source records are immutable; this section does not attribute them to a new reviewer.',
         ...p2RecoveryContext.findings.map((entry) =>
@@ -2692,7 +2749,7 @@ export async function runPublishingReviewWorker(
     // terminal success carries it as evidence so the service can keep it.
     const gracefulOperationalTelemetry = gracefulPartial ? captureOperationalTelemetry('timeout') : undefined;
     const buildReviewResult = (options: { includeShadow?: boolean; includeRoster?: boolean } = {}) => {
-      const findingKeys = new Set(['severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion',
+      const findingKeys = new Set(['severity', 'path', 'line', 'startLine', 'title', 'body', 'blockerEvidence', 'suggestion',
         'replacementCode', 'confidence', 'recommendation', 'fixOptions', 'isArchitectural']);
       // Additive, OPTIONAL per-persona telemetry: the accumulated per-turn usage this lane's
       // `invoke()` loop actually made, not just its terminal turn. Only emitted when the panel
@@ -2819,6 +2876,7 @@ export async function runPublishingReviewWorker(
           // REL-1139: the moderator call was skipped. The trusted completion side re-evaluates the
           // shared decision on its own diff and refuses a claim it does not allow.
           ...(moderationSkipped ? { moderation: EMPTY_MODERATION_SKIPPED } : {}),
+          ...(reviewDecisionReceipt ? { reviewDecision: reviewDecisionReceipt } : {}),
           // REL-1084: the lane roster this verdict required, so a later non-authoritative run can
           // prove no lane was missing. Evidence path only (the authoritative gate owns its roster),
           // and only for a valid panel roster: a fast-ship, exemption or invalid roster omits it,
@@ -2990,7 +3048,14 @@ export async function runPublishingReviewWorker(
                 path: String(entry.finding.path),
                 line: Number(entry.finding.line),
                 title: String(entry.finding.title),
-                body: String(entry.finding.body).slice(0, 16_000),
+                body: [
+                  String(entry.finding.body).slice(0, 12_000),
+                  ...(entry.finding.blockerEvidence ? [
+                    `Verified trigger: ${entry.finding.blockerEvidence.trigger}`,
+                    `Consequence: ${entry.finding.blockerEvidence.impact}`,
+                    `Violated contract: ${entry.finding.blockerEvidence.violatedContract}`,
+                  ] : []),
+                ].join('\n\n').slice(0, 16_000),
               }));
             const reported = [...new Set(convergence.entries.map((entry) => entry.fingerprint))].slice(0, MAX_REPORTED_FINGERPRINTS);
             const published = await deps.findingThreads.publish({ headSha: identity.headSha, publish, reported }, deps.signal);
