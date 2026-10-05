@@ -98,6 +98,17 @@ const v2Contract: TrustedReviewCoverageContract = { ...contract, reviewDecisionP
 
 function withDecision(input: WorkerReviewCompletion, overrides: Record<string, unknown> = {}): WorkerReviewCompletion {
   const findings = input.result.personas.flatMap((persona) => persona.findings);
+  const candidatesByFingerprint = new Map<string, typeof findings[number]>();
+  const severityRank: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3, NIT: 4 };
+  for (const finding of findings) {
+    const fingerprint = findingFingerprint(finding);
+    const previous = candidatesByFingerprint.get(fingerprint);
+    if (!previous || (severityRank[finding.severity] ?? 5) < (severityRank[previous.severity] ?? 5)
+      || ((severityRank[finding.severity] ?? 5) === (severityRank[previous.severity] ?? 5)
+        && (finding.line ?? Number.MAX_SAFE_INTEGER) < (previous.line ?? Number.MAX_SAFE_INTEGER))) {
+      candidatesByFingerprint.set(fingerprint, finding);
+    }
+  }
   const counts = { p0Count: 0, p1Count: 0, p2Count: 0, p3Count: 0, nitCount: 0 };
   for (const finding of findings) {
     if (finding.severity === 'P0') counts.p0Count++;
@@ -117,7 +128,7 @@ function withDecision(input: WorkerReviewCompletion, overrides: Record<string, u
     counts, ...overrides,
   });
   const coverage = buildDeterministicCoverageManifest(changedFiles);
-  const outcomes = findings.map((finding) => {
+  const outcomes = [...candidatesByFingerprint.values()].map((finding) => {
     const claimType = findingClaimType(finding);
     const fingerprint = findingFingerprintForClaimType({ path: finding.path, title: finding.title }, claimType);
     const path = finding.path!;
@@ -856,7 +867,8 @@ describe('versioned v2 worker/Gate decision agreement', () => {
       }),
     } });
 
-    const result = derive(input, v2Contract);
+    const groundedReview = withDecision(input).result.groundedReview;
+    const result = derive({ ...input, result: { ...input.result, groundedReview } }, v2Contract);
     const fingerprint = findingFingerprint(verified);
     expect(result).toMatchObject({ valid: true, evidence: {
       verdict: 'FIX_FIRST', p1Count: 1, p2Count: 0, blockingFingerprints: [fingerprint],
