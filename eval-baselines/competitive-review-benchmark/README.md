@@ -18,7 +18,15 @@ The verifier-only lane proves only comment verification. It does not qualify per
 
 The production falsification adapter currently sees the PR diff, not independently retrieved full-file or repository context. A completed request in the File Level or Repo Level stratum is transport evidence only; the scorer reports those rows as not comparable and does not count them as correct or incorrect. The Diff Level stratum is the only context-aligned lane for this adapter. Any source omission makes a verifier case incomplete, including omissions that may be unrelated to its anchor; the omission codes stay in the result, and incomplete cases do not enter qualified metrics. Missing source, unavailable verifier output, and abstention remain incomplete or unknown, never a negative label.
 
-`run-discovery` currently accepts only `--purpose smoke`. It defaults to one pinned PR with a smoke ceiling of two tasks, four total turns, and one turn per task. This checks the production-selected entrypoint and credentialed transport, but deliberately does not qualify discovery quality or authorize a product-budget reduction. The CLI discovery scorer rejects smoke receipts. The composed engine's production configuration is separate: its source defines eight planned tasks, 100 total turns, a four-turn plan phase, 12 turns per single-path task, and up to 18 turns for multi-path tasks; the task ceiling scales by two turns per additional path and reserves up to three terminal turns for a bound result. Policy may narrow these ceilings. Run any baseline/revised comparison with the accepted effective configuration and the same model, policy, source coverage, and resource envelope; report each omitted or exhausted case as incomplete.
+`run-discovery --purpose smoke` remains a transport and lane check. It defaults to one pinned PR with a smoke ceiling of two tasks, four total turns, and one turn per task. It cannot produce a quality score or justify a product-budget reduction.
+
+The full-envelope modes are `baseline` for the pinned v1 runtime and `qualification` for an accepted revised runtime. Both require a clean exact runtime commit, a fixed explicit case-ID list, the `pr-reviewer` route alias, and one of the checked-in policy projections. V1 policy source is commit `216d33cd75605d97b0e0b8becb7457ce7e326ecd` (raw policy SHA-256 `fc8fca2983de662b9ae13269c4085dce07ba3ecf71e1375bc7ce8f9ffd0ee3f2`). The projection file hashes are recorded in each receipt and checked by the runner. They are local benchmark inputs, not authenticated service admission or proof of deployed settings.
+
+The composed runtime resolves its own budget: up to eight tasks, 100 total turns, a four-turn plan phase, 12 turns for a single-path task and up to 18 for multi-path tasks. Each additional path adds two turns, up to a six-turn increase; up to three task turns are reserved for finalization within that task ceiling. Task concurrency is capped at three. The independent grounded coverage manifest has a separate ceiling of 24 source assignments. The policy's separate `max_investigation_turns: 20` remains in the requested config receipt; the composed turn resolver does not use that field. Revised qualification reserves 12 investigation-turn units for independent verification, leaving up to 88 discovery-turn units. This is turn accounting, not a claim about physical provider-request count; token and request telemetry are reported separately. V1 baseline has no independent verifier. The output keeps both resource profile and effective configuration receipts so comparisons do not hide this difference. V1 policy requests `reviewer_effort: medium`, but the old composed provider request omits the transport-level reasoning effort; `native_omitted` records the request actually sent. A separate v1 run with `--effort-profile medium --effort-injection medium` is an adapter-controlled effort ablation, not native v1 behavior. Revised qualification uses the medium projection and requires the real WS3 verifier receipt.
+
+The public fixed panel currently has seven text-source-complete cases, one binary-only case suitable only for a separately labeled text-scope diagnostic, and two cases with unavailable pinned source. Use only the seven complete IDs below for a text-source discovery subset. Any full-panel run with incomplete or diagnostic cases is marked `ABSTAIN` and receives no quality score. Public AACR comment labels do not establish exhaustive discovery truth; even a complete seven-case run is only input to separate blind adjudication. The public adapter has no authenticated service-owned PR lifecycle history source, which is disclosed in each run receipt; these results do not qualify history behavior. Synthetic lifecycle fixtures are a separate deterministic feature-acceptance lane.
+
+Do not use a revised runtime candidate whose exact-head hosted checks have failed or remain pending. The benchmark runner requires a clean SHA, but source checks and independent review must also have accepted that exact revision before it is used.
 
 ## Commands
 
@@ -65,5 +73,37 @@ node scripts/competitive-review-benchmark.mjs run-discovery \
   --max-turns-per-task 1 \
   --out /tmp/review-yeti-aacr-discovery-smoke.json
 ```
+
+After the selected runtime head passes independent review and normal hosted checks, the same prepared input supports a bounded full-envelope comparison. The public panel IDs below select the seven complete-source cases; the other three are disclosed in the run receipt and excluded from this explicitly named subset.
+
+```sh
+CASE_IDS='aacr-c-12718,aacr-csharp-24910,aacr-cpp-20825,aacr-go-12185,aacr-php-15217,aacr-python-6044,aacr-rust-3414'
+
+# Actual v1 native-effort baseline. Replace the runtime path with a clean checkout at this exact SHA.
+node scripts/competitive-review-benchmark.mjs run-discovery \
+  --runtime-root /path/to/runtime-at-e70749fd4b14cb284b1497974306975cbce2d47a \
+  --expected-runtime-sha e70749fd4b14cb284b1497974306975cbce2d47a \
+  --cases /tmp/review-yeti-aacr-discovery-input.json \
+  --case-ids "$CASE_IDS" \
+  --purpose baseline \
+  --policy-file eval-baselines/competitive-review-benchmark/policy-projections/yeti-v1-native-omitted.json \
+  --effort-profile native_omitted \
+  --verifier-mode none \
+  --out /tmp/review-yeti-aacr-v1-native-baseline.json
+
+# Revised medium-effort qualification. Use only an accepted, clean, exact current runtime SHA.
+node scripts/competitive-review-benchmark.mjs run-discovery \
+  --runtime-root /path/to/accepted-revised-runtime \
+  --expected-runtime-sha <accepted-40-character-runtime-sha> \
+  --cases /tmp/review-yeti-aacr-discovery-input.json \
+  --case-ids "$CASE_IDS" \
+  --purpose qualification \
+  --policy-file eval-baselines/competitive-review-benchmark/policy-projections/yeti-v1-medium.json \
+  --effort-profile medium \
+  --verifier-mode production \
+  --out /tmp/review-yeti-aacr-revised-medium.json
+```
+
+For a controlled effort comparison, run the baseline again with the medium projection and `--effort-injection medium`; the receipt labels that request as benchmark-adapter-injected. Do not call the v1 native run and this controlled ablation equivalent. Revised qualification refuses smoke budget overrides, missing verifier receipts, altered policy projections, dirty or mismatched runtime trees, and prefix selection such as `--max-cases`.
 
 An absent credential, missing dataset/source, unselected route, provider failure, excessive diff, out-of-diff annotation, or abstention remains an incomplete/unknown result; it is never converted into a success or simulated score. Runtime artifacts record request and response-reported model names, whitelisted route hints, hashed request identifiers, HTTP status, fetch-to-response-header time, token usage, and requested effort. For streaming requests this timing ends when headers arrive, not when the model finishes generating; use the runtime's aggregate completion duration for the whole review. Artifacts never serialize gateway URLs, raw request identifiers, prompts, or completions. Response metadata remains unverified unless independently tied to an upstream route.

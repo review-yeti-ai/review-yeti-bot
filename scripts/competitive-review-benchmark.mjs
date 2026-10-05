@@ -42,6 +42,27 @@ const CONTEXT_ORDER = Object.freeze(['Diff Level', 'File Level', 'Repo Level']);
 const HASH_RE = /^[a-f0-9]{40}$/iu;
 const SHA256_RE = /^[a-f0-9]{64}$/iu;
 const SOURCE_SNAPSHOT_VERIFICATION = 'preparation_stage_only_not_reverified_at_run';
+export const V1_BASELINE_RUNTIME_SHA = 'e70749fd4b14cb284b1497974306975cbce2d47a';
+export const V1_POLICY_PROVENANCE = Object.freeze({
+  revision: '216d33cd75605d97b0e0b8becb7457ce7e326ecd',
+  sourceSha256: 'fc8fca2983de662b9ae13269c4085dce07ba3ecf71e1375bc7ce8f9ffd0ee3f2',
+  projectionSha256ByEffort: Object.freeze({
+    native_omitted: '398d49d717fab231b5bb355ba0b27ccad80ae0525b73a68af2f41e52985e9a0c',
+    medium: '403a9276715fece9b9c4c3cafb694ef2dd72f66c98f0164aa8adf3cb039f73d1',
+  }),
+});
+const COMPOSED_BENCHMARK_DEFAULTS = Object.freeze({
+  maxTasks: 8,
+  maxTurnsTotal: 100,
+  planTurns: 4,
+  baseTaskTurns: 12,
+  dynamicTaskTurnsMax: 18,
+  dynamicTaskTurnsPerAdditionalPath: 2,
+  dynamicTaskPathIncrementMax: 6,
+  taskFinalizationReserveTurns: 3,
+  coverageAssignmentCeiling: 24,
+  taskConcurrencyCeiling: 3,
+});
 const MAX_FALSIFICATION_DIFF_CHARS = 24_000;
 const MAX_GITHUB_JSON_BYTES = 12 * 1024 * 1024;
 const MAX_CHANGED_FILES_API = 600;
@@ -55,6 +76,267 @@ const FALSIFICATION_REASON_CODES = new Set([
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+/** Preserve a caller-supplied, provenance-tracked policy projection byte-for-byte by value. */
+export function buildDiscoveryPolicy(sourcePolicy, { purpose = 'smoke', effortProfile = 'medium' } = {}) {
+  if (!['smoke', 'baseline', 'qualification'].includes(purpose)) throw new Error('unsupported_discovery_purpose');
+  if (!sourcePolicy || typeof sourcePolicy !== 'object' || Array.isArray(sourcePolicy)) {
+    throw new Error('discovery_policy_must_be_object');
+  }
+  const policy = structuredClone(sourcePolicy);
+  const effective = policy.review_yeti && typeof policy.review_yeti === 'object' ? policy.review_yeti : policy;
+  if (purpose === 'baseline' || purpose === 'qualification') {
+    const isComposed = effective.review_engine === 'composed'
+      || (effective.review_engine === 'dsh' && effective.fallback_review_engine === 'composed');
+    if (!isComposed) throw new Error('qualification_policy_does_not_select_composed_engine');
+    if (effective.composed && Object.keys(effective.composed).length > 0) {
+      throw new Error('qualification_policy_must_preserve_composed_engine_defaults');
+    }
+    const transports = Array.isArray(effective.transports) ? effective.transports.filter((entry) =>
+      entry?.name === 'bifrost' && entry.enabled === true) : [];
+    const requestedMediumValid = effective.reviewer_effort === 'medium';
+    const mediumProfileValid = requestedMediumValid && effortProfile === 'medium' && transports.length === 1
+      && transports[0].reasoning_effort === 'medium';
+    const omittedProfileValid = requestedMediumValid && effortProfile === 'native_omitted' && transports.length === 0;
+    if (!mediumProfileValid && !omittedProfileValid) {
+      throw new Error('qualification_policy_effort_profile_mismatch');
+    }
+  }
+  return policy;
+}
+
+/** Project the source-owned composed defaults and the independent-verifier reserve. */
+export function discoveryResourceProfile(policy, { verificationReserveTurns = 0, env = {} } = {}) {
+  const effective = policy?.review_yeti && typeof policy.review_yeti === 'object' ? policy.review_yeti : policy;
+  const composed = effective?.composed || {};
+  const composedTurnOverride = Number(env.COMPOSED_ENGINE_MAX_TURNS);
+  const configuredTurns = Number.isSafeInteger(composedTurnOverride) && composedTurnOverride > 0
+    ? Math.min(composedTurnOverride, 200)
+    : Number.isSafeInteger(composed.max_turns_total) && composed.max_turns_total > 0
+      ? Math.min(composed.max_turns_total, COMPOSED_BENCHMARK_DEFAULTS.maxTurnsTotal)
+      : COMPOSED_BENCHMARK_DEFAULTS.maxTurnsTotal;
+  const taskOverride = Number.isSafeInteger(composed.max_tasks) && composed.max_tasks > 0
+    ? composed.max_tasks : COMPOSED_BENCHMARK_DEFAULTS.maxTasks;
+  const perTaskOverride = Number.isSafeInteger(composed.max_turns_per_task) && composed.max_turns_per_task > 0
+    ? composed.max_turns_per_task : null;
+  const configuredFindings = Number.isSafeInteger(composed.max_findings_total) && composed.max_findings_total > 0
+    ? composed.max_findings_total : null;
+  const findingsOverride = Number(env.COMPOSED_ENGINE_MAX_FINDINGS || env.REVIEW_YETI_MAX_FINDINGS);
+  const maxFindings = Number.isSafeInteger(findingsOverride) && findingsOverride > 0
+    ? Math.min(findingsOverride, 500)
+    : Math.min(configuredFindings || 25, 500);
+  const laneOverrideText = env.REVIEW_YETI_MAX_CONCURRENT_LANES;
+  const laneOverride = typeof laneOverrideText === 'string' && /^\d+$/u.test(laneOverrideText.trim())
+    ? Number(laneOverrideText.trim()) : 8;
+  const effectiveLanes = Number.isSafeInteger(laneOverride) && laneOverride >= 1 ? Math.min(laneOverride, 16) : 8;
+  const reserve = Number.isSafeInteger(verificationReserveTurns) && verificationReserveTurns > 0
+    ? Math.min(verificationReserveTurns, Math.max(0, configuredTurns - 1)) : 0;
+  return {
+    source: 'composed_engine_defaults',
+    policyMaxInvestigationTurns: Number.isSafeInteger(effective?.budget?.max_investigation_turns)
+      ? effective.budget.max_investigation_turns : null,
+    configuredMaxTasks: Number.isSafeInteger(composed.max_tasks) ? composed.max_tasks : null,
+    configuredMaxTurnsTotal: Number.isSafeInteger(composed.max_turns_total) ? composed.max_turns_total : null,
+    configuredMaxTurnsPerTask: perTaskOverride,
+    effectiveMaxTasks: Math.min(taskOverride, COMPOSED_BENCHMARK_DEFAULTS.maxTasks),
+    effectiveMaxTurnsTotal: configuredTurns,
+    planTurns: COMPOSED_BENCHMARK_DEFAULTS.planTurns,
+    baseTaskTurns: Math.min(perTaskOverride ?? COMPOSED_BENCHMARK_DEFAULTS.baseTaskTurns,
+      COMPOSED_BENCHMARK_DEFAULTS.baseTaskTurns),
+    dynamicTaskTurnsMax: Math.min(perTaskOverride ?? COMPOSED_BENCHMARK_DEFAULTS.dynamicTaskTurnsMax,
+      COMPOSED_BENCHMARK_DEFAULTS.dynamicTaskTurnsMax),
+    dynamicTaskTurnsPerAdditionalPath: COMPOSED_BENCHMARK_DEFAULTS.dynamicTaskTurnsPerAdditionalPath,
+    dynamicTaskPathIncrementMax: COMPOSED_BENCHMARK_DEFAULTS.dynamicTaskPathIncrementMax,
+    taskFinalizationReserveTurns: COMPOSED_BENCHMARK_DEFAULTS.taskFinalizationReserveTurns,
+    coverageAssignmentCeiling: COMPOSED_BENCHMARK_DEFAULTS.coverageAssignmentCeiling,
+    taskConcurrencyCeiling: Math.min(COMPOSED_BENCHMARK_DEFAULTS.taskConcurrencyCeiling, effectiveLanes),
+    configuredMaxFindingsTotal: configuredFindings,
+    effectiveMaxFindingsTotal: maxFindings,
+    verificationReserveTurns: reserve,
+    discoveryTurnsAvailable: configuredTurns - reserve,
+  };
+}
+
+/** Guard the reviewer-input side of a benchmark bundle against attached labels or oracle rows. */
+export function assertBlindDiscoveryInputCases(cases) {
+  if (!Array.isArray(cases)) throw new Error('discovery_input_cases_missing');
+  const forbidden = new Set([
+    'label', 'labels', 'expectedlabel', 'expectedlabels', 'expectedverdict', 'expectedfinding', 'expectedfindings',
+    'expectedcomment', 'expectedcomments', 'oracle', 'reference', 'groundtruth', 'adjudication', 'annotationid',
+  ]);
+  const visit = (value) => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) { for (const entry of value) visit(entry); return; }
+    for (const [key, child] of Object.entries(value)) {
+      if (forbidden.has(key.replace(/[^a-z]/giu, '').toLowerCase())) {
+        throw new Error('discovery_reviewer_input_contains_expected_label_or_oracle');
+      }
+      visit(child);
+    }
+  };
+  for (const entry of cases) visit(entry);
+  return true;
+}
+
+/** Reject operator overrides that would make the compared run narrower than the supported envelope. */
+export function assertFullEnvelopeQualificationProfile(policy, {
+  verificationReserveTurns = 12,
+  env = process.env,
+} = {}) {
+  const profile = discoveryResourceProfile(policy, { verificationReserveTurns, env });
+  if (profile.effectiveMaxTasks !== 8 || profile.effectiveMaxTurnsTotal !== 100
+    || profile.baseTaskTurns !== 12 || profile.dynamicTaskTurnsMax !== 18
+    || profile.taskConcurrencyCeiling !== 3 || profile.effectiveMaxFindingsTotal !== 25
+    || profile.discoveryTurnsAvailable !== 100 - verificationReserveTurns) {
+    throw new Error('qualification_resource_profile_differs_from_supported_production_envelope');
+  }
+  return profile;
+}
+
+/** @param {{expectedRuntimeSha?: string, runtimeIdentity?: {commit?: string, worktreeClean?: boolean}, transportEnv?: NodeJS.ProcessEnv}} input */
+export function assertQualificationRuntime({ expectedRuntimeSha, runtimeIdentity, transportEnv = process.env } = {}) {
+  if (!HASH_RE.test(expectedRuntimeSha || '') || runtimeIdentity?.commit !== expectedRuntimeSha
+    || runtimeIdentity?.worktreeClean !== true) {
+    throw new Error('qualification_runtime_identity_or_cleanliness_mismatch');
+  }
+  if (String(transportEnv.REVIEW_MODEL || 'pr-reviewer') !== 'pr-reviewer') {
+    throw new Error('qualification_route_alias_mismatch');
+  }
+  return true;
+}
+
+/** @param {{expectedRuntimeSha?: string, runtimeIdentity?: {commit?: string, worktreeClean?: boolean}, transportEnv?: NodeJS.ProcessEnv}} input */
+export function assertV1BaselineRuntime({ expectedRuntimeSha, runtimeIdentity, transportEnv = process.env } = {}) {
+  if (expectedRuntimeSha !== V1_BASELINE_RUNTIME_SHA) {
+    throw new Error('v1_baseline_runtime_sha_mismatch');
+  }
+  return assertQualificationRuntime({ expectedRuntimeSha, runtimeIdentity, transportEnv });
+}
+
+export function assertKnownPolicyProjection(effortProfile, projectionSha256) {
+  if (V1_POLICY_PROVENANCE.projectionSha256ByEffort[effortProfile] !== projectionSha256) {
+    throw new Error('qualification_policy_projection_provenance_mismatch');
+  }
+  return true;
+}
+
+/** @param {{purpose?: string, verdict?: string, coverage?: {rosterValid?: boolean, quorumSatisfied?: boolean, fullPanelComplete?: boolean}, selectedRunnerInvoked?: boolean, sourceReadOmissions?: string[], groundedReview?: any}} input */
+export function assertDiscoveryCaseQualification({
+  purpose, verdict, coverage, selectedRunnerInvoked, sourceReadOmissions = [], groundedReview,
+} = {}) {
+  if (verdict === 'INCOMPLETE' || coverage?.rosterValid !== true || coverage?.quorumSatisfied !== true
+    || coverage?.fullPanelComplete !== true || selectedRunnerInvoked !== true
+    || !Array.isArray(sourceReadOmissions) || sourceReadOmissions.length > 0) return false;
+  if (purpose === 'qualification') {
+    return groundedReview?.version === 'GroundedReviewReceipt.v1'
+      && groundedReview.coverage?.complete === true
+      && Number.isSafeInteger(groundedReview.coverage.regionCount) && groundedReview.coverage.regionCount > 0
+      && groundedReview.coverage.coveredRegionCount === groundedReview.coverage.regionCount
+      && Number.isSafeInteger(groundedReview.coverage.assignmentCount) && groundedReview.coverage.assignmentCount > 0
+      && groundedReview.coverage.assignmentCount <= COMPOSED_BENCHMARK_DEFAULTS.coverageAssignmentCeiling
+      && groundedReview.verification?.version === 'GroundedIndependentVerification.v1'
+      && groundedReview.verification.coverageComplete === true;
+  }
+  return purpose === 'baseline' || purpose === 'smoke';
+}
+
+export function discoveryQualificationDisposition({ purpose, completed, total } = {}) {
+  const allCompleted = Number.isSafeInteger(completed) && Number.isSafeInteger(total)
+    && total > 0 && completed === total;
+  if (!allCompleted) return { status: 'ABSTAIN', reason: 'incomplete_source_or_runtime_coverage_no_quality_score' };
+  if (purpose === 'qualification') {
+    return { status: 'READY_FOR_BLIND_ADJUDICATION', reason: 'selected_source_complete_subset_only' };
+  }
+  if (purpose === 'baseline') return { status: 'BASELINE_ONLY', reason: 'not_a_standalone_quality_claim' };
+  return { status: 'SMOKE_ONLY', reason: 'not_a_quality_run' };
+}
+
+export function sanitizePublishingCoverage(value) {
+  if (!value || typeof value !== 'object') return null;
+  const count = (input) => Number.isSafeInteger(input) && input >= 0 ? input : null;
+  const bool = (input) => typeof input === 'boolean' ? input : null;
+  return {
+    mode: ['panel', 'fast_ship', 'documentation_only'].includes(value.mode) ? value.mode : 'unknown',
+    expectedLaneCount: count(value.expectedLaneCount),
+    completedLaneCount: count(value.completedLaneCount),
+    failedLaneCount: count(value.failedLaneCount),
+    rosterValid: bool(value.rosterValid),
+    quorumSatisfied: bool(value.quorumSatisfied),
+    fullPanelComplete: bool(value.fullPanelComplete),
+    groundedReviewComplete: bool(value.groundedReviewComplete),
+  };
+}
+
+/** Remove all free-form source/model evidence while retaining verifiable WS3 receipt metadata. */
+export function sanitizeGroundedReviewReceipt(value) {
+  if (!value || typeof value !== 'object') return null;
+  const count = (input) => Number.isSafeInteger(input) && input >= 0 ? input : null;
+  const digest = (input) => typeof input === 'string' && SHA256_RE.test(input) ? input : null;
+  const coverage = value.coverage && typeof value.coverage === 'object' ? {
+    digest: digest(value.coverage.digest),
+    regionCount: count(value.coverage.regionCount),
+    assignmentCount: count(value.coverage.assignmentCount),
+    coveredRegionCount: count(value.coverage.coveredRegionCount),
+    complete: value.coverage.complete === true,
+    omissionCount: Array.isArray(value.coverage.omissions) ? value.coverage.omissions.length : 0,
+  } : null;
+  const historyValue = value.history && typeof value.history === 'object' ? value.history : {};
+  const history = {
+    status: ['complete', 'partial', 'unavailable'].includes(historyValue.status) ? historyValue.status : 'unknown',
+    snapshotId: typeof historyValue.snapshotId === 'string' && /^[0-9a-f-]{36}$/iu.test(historyValue.snapshotId)
+      ? historyValue.snapshotId : null,
+    contextDigest: digest(historyValue.contextDigest),
+    eventCount: count(historyValue.eventCount),
+    findingCount: count(historyValue.findingCount),
+    loadedEventCount: count(historyValue.loadedEventCount),
+    loadedFindingCount: count(historyValue.loadedFindingCount),
+    eventOmittedCount: count(historyValue.eventOmittedCount),
+    findingOmittedCount: count(historyValue.findingOmittedCount),
+    legacyOmittedCount: count(historyValue.legacyOmittedCount),
+    eventsDigest: digest(historyValue.eventsDigest),
+    findingsDigest: digest(historyValue.findingsDigest),
+    omissionCount: Array.isArray(historyValue.omissions) ? historyValue.omissions.length : 0,
+    memorySources: {
+      honho: historyValue.memorySources?.honho === 'unavailable' ? 'unavailable' : 'unknown',
+      mcp: historyValue.memorySources?.mcp === 'unavailable' ? 'unavailable' : 'unknown',
+    },
+    verificationWrites: {
+      attempted: count(historyValue.verificationWrites?.attempted),
+      recorded: count(historyValue.verificationWrites?.recorded),
+      failed: count(historyValue.verificationWrites?.failed),
+    },
+  };
+  const verificationValue = value.verification && typeof value.verification === 'object' ? value.verification : {};
+  const budget = verificationValue.budget && typeof verificationValue.budget === 'object'
+    ? Object.fromEntries(['totalCalls', 'callsPerTask', 'concurrency', 'callTimeoutMs', 'stageBudgetMs']
+      .map((key) => [key, count(verificationValue.budget[key])])) : null;
+  const outcomes = Array.isArray(verificationValue.outcomes) ? verificationValue.outcomes.map((entry) => ({
+    fingerprintDigest: typeof entry?.fingerprint === 'string' ? sha256(entry.fingerprint) : null,
+    status: ['confirmed', 'contradicted', 'insufficient', 'unverified'].includes(entry?.status) ? entry.status : 'unknown',
+    affectedContextDigest: digest(entry?.affectedContextDigest),
+    relatedDiffPaths: Array.isArray(entry?.relatedDiffPaths)
+      ? entry.relatedDiffPaths.filter((item) => typeof item === 'string').map((item) => safeRuntimeId(item, 512)) : [],
+    evidenceDigest: digest(entry?.evidenceDigest),
+  })) : [];
+  return {
+    version: value.version === 'GroundedReviewReceipt.v1' ? value.version : 'unknown',
+    coverage,
+    history,
+    verification: {
+      version: verificationValue.version === 'GroundedIndependentVerification.v1'
+        ? verificationValue.version : 'unknown',
+      candidates: count(verificationValue.candidates),
+      confirmed: count(verificationValue.confirmed),
+      contradicted: count(verificationValue.contradicted),
+      insufficient: count(verificationValue.insufficient),
+      unverifiedBlockerCount: count(verificationValue.unverifiedBlockerCount),
+      coverageComplete: verificationValue.coverageComplete === true,
+      calls: count(verificationValue.calls),
+      budget,
+      outcomes,
+    },
+  };
 }
 
 function safeRuntimeId(value, limit = 160) {
@@ -1027,14 +1309,16 @@ function arg(name, fallback = undefined, argv = process.argv) {
 function runtimeGitIdentity(runtimeRoot) {
   try {
     const commit = String(runGit(['rev-parse', 'HEAD'], runtimeRoot)).trim();
+    const tree = String(runGit(['rev-parse', 'HEAD^{tree}'], runtimeRoot)).trim();
+    const worktreeClean = String(runGit(['status', '--porcelain'], runtimeRoot)).trim().length === 0;
     const version = readJson(path.join(runtimeRoot, 'package.json')).version || null;
-    return { commit, version };
+    return { commit, tree, version, worktreeClean };
   } catch {
-    return { commit: 'unknown', version: null };
+    return { commit: 'unknown', tree: 'unknown', version: null, worktreeClean: false };
   }
 }
 
-function loadRuntime(runtimeRoot) {
+export function loadRuntime(runtimeRoot) {
   const runtimeRequire = createRequire(path.join(runtimeRoot, 'package.json'));
   runtimeRequire('ts-node/register/transpile-only');
   return {
@@ -1168,6 +1452,13 @@ export function sanitizePanelResult(panelResult) {
     }
     return result;
   };
+  const historySummary = summaryObject(history, [
+    'status', 'snapshotId', 'eventCount', 'findingCount', 'legacyOmittedCount', 'eventsDigest', 'findingsDigest',
+    'pagesRead', 'complete',
+  ]);
+  if (historySummary && Array.isArray(history?.omissions)) historySummary.omissionCount = history.omissions.length;
+  const verificationSummary = summaryObject(verification, ['candidates', 'confirmed', 'contradicted', 'insufficient', 'coverageComplete']);
+  if (verificationSummary && Array.isArray(verification?.omissions)) verificationSummary.omissionCount = verification.omissions.length;
   return {
     findings,
     taskPlan: Array.isArray(panelResult.taskPlan) ? panelResult.taskPlan.map((task) => ({
@@ -1180,14 +1471,14 @@ export function sanitizePanelResult(panelResult) {
     // Free-form decision/verifier reason strings can contain model or source text. Keep only
     // structured receipt fields in the public proof artifact.
     reviewDecision: summaryObject(panelResult.reviewDecision || grounded?.reviewDecision, ['schemaVersion', 'classification', 'blockingFindingCount', 'advisoryFindingCount', 'eligible']),
-    history: summaryObject(history, ['status', 'snapshotId', 'eventCount', 'findingCount', 'legacyOmittedCount', 'eventsDigest', 'findingsDigest', 'omissions', 'pagesRead', 'complete']),
-    verification: summaryObject(verification, ['candidates', 'confirmed', 'contradicted', 'insufficient', 'coverageComplete', 'omissions']),
+    history: historySummary,
+    verification: verificationSummary,
     verifierOutcomes: Array.isArray(grounded?.verifierOutcomes || panelResult.verifierOutcomes)
       ? (grounded?.verifierOutcomes || panelResult.verifierOutcomes).map((outcome) => ({
         verdict: safeRuntimeId(outcome?.verdict || 'unknown', 20),
       })) : [],
-    incompleteReasons: Array.isArray(grounded?.incompleteReasons || panelResult.incompleteReasons)
-      ? (grounded?.incompleteReasons || panelResult.incompleteReasons).map((reason) => safeRuntimeId(reason, 120)) : [],
+    incompleteReasonDigests: Array.isArray(grounded?.incompleteReasons || panelResult.incompleteReasons)
+      ? (grounded?.incompleteReasons || panelResult.incompleteReasons).map((reason) => sha256(String(reason))) : [],
     gracefulExit: panelResult.gracefulExit ? {
       reasonPresent: typeof panelResult.gracefulExit.reason === 'string',
       completedTaskIds: panelResult.gracefulExit.completedTaskIds,
@@ -1206,15 +1497,34 @@ export function sanitizePanelResult(panelResult) {
 /** Run one public PR through the real production-selected publishing entrypoint. */
 export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
   transportEnv = process.env,
+  purpose = 'smoke',
   maxTasks = 2,
   maxTurnsTotal = 4,
   maxTurnsPerTask = 1,
+  sourcePolicy = null,
+  sourcePolicySha256 = null,
+  effortProfile = 'medium',
+  effortInjection = null,
+  verificationReserveTurns = 12,
+  historySource = null,
+  fileProviderFactory = null,
 } = {}) {
   const sourceOmissions = snapshot.omissions || [];
   const requiredSourceOmissions = sourceOmissions.filter((entry) => entry !== 'binary_patch');
   if (requiredSourceOmissions.length || !Array.isArray(snapshot.changedFiles) || snapshot.changedFiles.length === 0) {
     return { status: 'incomplete', reason: requiredSourceOmissions[0] || sourceOmissions[0] || 'empty_diff', findings: [] };
   }
+  const reviewPolicy = purpose === 'qualification' || purpose === 'baseline'
+    ? buildDiscoveryPolicy(sourcePolicy, { purpose, effortProfile })
+    : null;
+  if ((purpose === 'qualification' || purpose === 'baseline')
+    && (maxTasks !== undefined || maxTurnsTotal !== undefined || maxTurnsPerTask !== undefined)) {
+    // The qualification profile is intentionally source-defaulted; task/turn knobs are accepted
+    // only by the explicitly non-qualifying smoke path below.
+    if (arguments[3]?.maxTasks !== undefined || arguments[3]?.maxTurnsTotal !== undefined
+      || arguments[3]?.maxTurnsPerTask !== undefined) throw new Error('qualification_resource_overrides_not_allowed');
+  }
+  if (purpose !== 'smoke' && purpose !== 'baseline' && purpose !== 'qualification') throw new Error('unsupported_discovery_purpose');
   const gatewayBaseUrl = transportEnv.REVIEW_YETI_GATEWAY_BASE_URL || '';
   const gatewayApiKey = transportEnv.REVIEW_YETI_BIFROST_API_KEY || '';
   if (!gatewayBaseUrl || !gatewayApiKey) throw new Error('actual_model_credentials_unavailable');
@@ -1224,7 +1534,8 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
     PATH: process.env.PATH,
     HOME: process.env.HOME,
     REVIEW_PUBLICATION_MODE: 'app-gate',
-    REVIEW_RUN_ID: `run_${sha256(`${prCase.repository}#${prCase.prNumber}|${prCase.headSha}`).slice(0, 32)}`,
+    REVIEW_RUN_ID: `run_${sha256(JSON.stringify({ repository: prCase.repository, prNumber: prCase.prNumber,
+      headSha: prCase.headSha, purpose, effortProfile, effortInjection, sourcePolicySha256, verificationReserveTurns })).slice(0, 32)}`,
     REVIEW_REPOSITORY_ID: String((Number.parseInt(sha256(prCase.repository).slice(0, 7), 16) % 2_000_000_000) + 1),
     REVIEW_REPO: prCase.repository,
     REVIEW_PR_NUMBER: String(prCase.prNumber),
@@ -1238,15 +1549,29 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
     // The local source provider is injected below. This marker is only the existing factory gate;
     // every dependency that could use this value is replaced by an exact public-source adapter.
     GH_TOKEN: 'benchmark-local-source-adapter',
-    REVIEW_POLICY_DIGEST: sha256(`benchmark-policy|${model}|${maxTasks}|${maxTurnsTotal}|${maxTurnsPerTask}`),
-    REVIEW_CONFIG_DIGEST: sha256(`benchmark-config|${prCase.repository}|${prCase.headSha}|${model}`),
-    REVIEW_YETI_POLICY_JSON: JSON.stringify({
-      review_engine: 'composed',
-      personas: ['security'],
-      budget: { max_investigation_turns: Math.max(1, maxTurnsTotal) },
-      composed: { max_tasks: maxTasks, max_turns_total: maxTurnsTotal, max_turns_per_task: maxTurnsPerTask },
-    }),
+    REVIEW_POLICY_DIGEST: reviewPolicy
+      ? sha256(JSON.stringify(reviewPolicy))
+      : sha256(`benchmark-policy|${model}|${maxTasks}|${maxTurnsTotal}|${maxTurnsPerTask}`),
+    REVIEW_CONFIG_DIGEST: sha256(JSON.stringify({
+      benchmarkPolicyDigest: reviewPolicy ? sha256(JSON.stringify(reviewPolicy)) : null,
+      repository: prCase.repository, prNumber: prCase.prNumber, baseSha: prCase.baseSha, headSha: prCase.headSha,
+      model, purpose, effortInjection,
+    })),
+    REVIEW_YETI_POLICY_JSON: reviewPolicy
+      ? JSON.stringify(reviewPolicy)
+      : JSON.stringify({
+        review_engine: 'composed',
+        personas: ['security'],
+        budget: { max_investigation_turns: Math.max(1, maxTurnsTotal) },
+        composed: { max_tasks: maxTasks, max_turns_total: maxTurnsTotal, max_turns_per_task: maxTurnsPerTask },
+      }),
   };
+  const resourceProfile = purpose === 'qualification' || purpose === 'baseline'
+    ? discoveryResourceProfile(reviewPolicy, { verificationReserveTurns, env: process.env }) : null;
+  if ((purpose === 'qualification' || purpose === 'baseline')) {
+    assertKnownPolicyProjection(effortProfile, sourcePolicySha256);
+    assertFullEnvelopeQualificationProfile(reviewPolicy, { verificationReserveTurns, env: process.env });
+  }
   const transport = runtime.publishing.openaiTransport(runtimeEnv);
   const effectiveConfig = runtime.publishing.resolveWorkerConfig(runtimeEnv, transport);
   const effectiveEngine = runtime.publishing.resolveReviewEngine(effectiveConfig);
@@ -1266,7 +1591,10 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
   const client = {
     async complete(request) {
       callCount += 1;
-      const response = await realClient.complete(request);
+      const outboundRequest = effortInjection
+        ? { ...request, reasoningEffort: effortInjection }
+        : request;
+      const response = await realClient.complete(outboundRequest);
       if (typeof response?.model === 'string' && response.model.trim()) {
         modelIdentity.responseModels.add(safeRuntimeId(response.model));
       }
@@ -1296,11 +1624,14 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
       return { state: 'open', headSha: prCase.headSha };
     },
     repoFileProviderFactory: () => {
-      activeFileProvider = snapshot.sourceAdapter === 'github_exact_commit_trees_and_raw_blobs'
-        ? createApiSnapshotFileProvider(snapshot, prCase, runtime.createPathMatcher)
-        : createGitSnapshotFileProvider(snapshot.sourceRepoDir, { ...prCase, changedFiles: snapshot.changedFiles }, runtime.createPathMatcher);
+      activeFileProvider = fileProviderFactory
+        ? fileProviderFactory(snapshot, prCase, runtime)
+        : snapshot.sourceAdapter === 'github_exact_commit_trees_and_raw_blobs'
+          ? createApiSnapshotFileProvider(snapshot, prCase, runtime.createPathMatcher)
+          : createGitSnapshotFileProvider(snapshot.sourceRepoDir, { ...prCase, changedFiles: snapshot.changedFiles }, runtime.createPathMatcher);
       return activeFileProvider;
     },
+    ...(historySource ? { prLifecycleHistory: historySource } : {}),
     zoektGrounding: async () => ({ reason: 'disabled_in_public_snapshot_adapter' }),
     composedReviewRunner: async (input) => {
       selection.engineRunnerInvoked = true;
@@ -1323,11 +1654,36 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
   }
   const sourceReadOmissions = activeFileProvider?.sourceReadOmissions?.() || [];
   const panel = sanitizePanelResult(selection.result);
+  const groundedReview = sanitizeGroundedReviewReceipt(receipt.groundedReview);
+  const binaryOnlySourceOmissions = sourceOmissions.length > 0 && sourceOmissions.every((entry) => entry === 'binary_patch');
+  const caseQualityComplete = assertDiscoveryCaseQualification({
+    purpose,
+    verdict: receipt.verdict,
+    coverage: receipt.coverage,
+    selectedRunnerInvoked: selection.engineRunnerInvoked,
+    sourceReadOmissions,
+    groundedReview: receipt.groundedReview,
+  });
+  const coverageQualified = caseQualityComplete;
+  const caseStatus = !coverageQualified || (sourceOmissions.length > 0 && !binaryOnlySourceOmissions)
+    ? 'incomplete' : binaryOnlySourceOmissions ? 'diagnostic_text_scope_only' : 'completed';
+  const safeReviewDecision = receipt.reviewDecision && typeof receipt.reviewDecision === 'object' ? {
+    ...(typeof receipt.reviewDecision.schemaVersion === 'string' ? { schemaVersion: receipt.reviewDecision.schemaVersion } : {}),
+    ...(typeof receipt.reviewDecision.classification === 'string' ? { classification: receipt.reviewDecision.classification } : {}),
+    ...(Number.isSafeInteger(receipt.reviewDecision.blockingFindingCount)
+      ? { blockingFindingCount: receipt.reviewDecision.blockingFindingCount } : {}),
+    ...(Number.isSafeInteger(receipt.reviewDecision.advisoryFindingCount)
+      ? { advisoryFindingCount: receipt.reviewDecision.advisoryFindingCount } : {}),
+    ...(typeof receipt.reviewDecision.eligible === 'boolean' ? { eligible: receipt.reviewDecision.eligible } : {}),
+  } : null;
   return {
-    status: receipt.verdict === 'INCOMPLETE' || receipt.coverage.quorumSatisfied !== true
-      || sourceOmissions.length > 0 || sourceReadOmissions.length > 0 ? 'incomplete' : 'completed',
+    status: caseStatus,
     runtimeEntryPoint: 'runPublishingReviewWorker',
     runtimeLane: 'production_selected_composed_discovery',
+    executionPurpose: purpose === 'qualification' ? 'full_production_envelope_quality_input'
+      : purpose === 'baseline' ? 'full_production_envelope_v1_baseline_input'
+        : 'production_entrypoint_runtime_smoke_only',
+    groundedVerification: groundedReview ? 'production_grounded_verifier_receipt_present' : 'runtime_has_no_grounded_verifier_receipt',
     engineSelection: {
       requestedByBenchmarkBasePolicy: 'composed',
       effectiveEngine,
@@ -1348,6 +1704,38 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
           ? [...new Set(effectiveConfig.reviewers.providers.map((provider) => safeRuntimeId(provider?.effort || 'unset', 16)))].sort()
           : [],
       },
+      policySourceRevision: reviewPolicy ? V1_POLICY_PROVENANCE.revision : null,
+      policySourceSha256: reviewPolicy ? V1_POLICY_PROVENANCE.sourceSha256 : null,
+      policyProjectionFileSha256: sourcePolicySha256 || null,
+      sourcePolicyDigest: sha256(JSON.stringify(reviewPolicy || {})),
+      effectiveConfigReceipt: effectiveConfig.review_configuration_receipt ? {
+        schema: effectiveConfig.review_configuration_receipt.schema,
+        requested: {
+          reviewEngine: effectiveConfig.review_configuration_receipt.requested.review_engine,
+          profile: effectiveConfig.review_configuration_receipt.requested.profile,
+          severityPolicy: effectiveConfig.review_configuration_receipt.requested.severity_policy || null,
+          personas: effectiveConfig.review_configuration_receipt.requested.personas,
+          maxInvestigationTurns: effectiveConfig.review_configuration_receipt.requested.max_investigation_turns,
+          requestedBifrostEffort: effectiveConfig.review_configuration_receipt.requested.bifrost_reasoning_effort || null,
+        },
+        effective: {
+          reviewEngine: effectiveConfig.review_configuration_receipt.effective.review_engine,
+          profile: effectiveConfig.review_configuration_receipt.effective.profile.value,
+          provider: {
+            id: effectiveConfig.review_configuration_receipt.effective.provider.id,
+            model: safeRuntimeId(effectiveConfig.review_configuration_receipt.effective.provider.model),
+            requestedEffort: effectiveConfig.review_configuration_receipt.effective.provider.requested_effort,
+            upstreamObservedModel: 'unknown',
+            upstreamObservedEffort: 'unknown',
+          },
+          personas: effectiveConfig.review_configuration_receipt.effective.personas.map(({ requested, id }) => ({
+            requested: safeRuntimeId(requested, 80), id: safeRuntimeId(id, 80),
+          })),
+          composedBudget: effectiveConfig.review_configuration_receipt.effective.composed_budget,
+          workerLimits: effectiveConfig.review_configuration_receipt.effective.worker_limits,
+        },
+      } : null,
+      resourceProfile,
       defaultEngineQualification: 'not_claimed',
     },
     source: {
@@ -1359,13 +1747,22 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
       changedPatchChars: diff.length,
       sourceOmissions,
       sourceReadOmissions,
-      adapters: { sourceLoader: snapshot.sourceAdapter || 'pinned_git_objects', repoFileProvider: snapshot.sourceAdapter || 'pinned_git_objects', checkClient: 'no_write_stub', currentHeadFence: 'pinned_snapshot' },
+      adapters: {
+        sourceLoader: snapshot.sourceAdapter || 'pinned_git_objects',
+        repoFileProvider: fileProviderFactory ? 'explicit_read_only_fixture' : snapshot.sourceAdapter || 'pinned_git_objects',
+        history: historySource ? 'explicit_injected_source' : 'no_authenticated_lifecycle_history_source',
+        checkClient: 'no_write_stub',
+        currentHeadFence: 'pinned_snapshot',
+      },
+      changedDiffSha256: sha256(diff),
+      preparedCaseSha256: snapshot.preparedCaseSha256 || null,
+      reviewableSourceScope: 'text_source_paths_only',
     },
     receipt: {
       version: receipt.version,
       verdict: receipt.verdict,
       conclusion: receipt.conclusion,
-      coverage: receipt.coverage,
+      coverage: sanitizePublishingCoverage(receipt.coverage),
       findingCount: receipt.findingCount,
       blockingFindingCount: receipt.blockingFindingCount,
       failureClass: receipt.failureClass,
@@ -1376,12 +1773,15 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
         totalTurns: receipt.metrics.totalTurns,
         totalDurationMs: receipt.metrics.totalDurationMs,
       } : null,
+      reviewDecision: safeReviewDecision,
+      groundedReview,
     },
     model: {
       transport: 'Bifrost',
       requestedAlias: model,
       ...identitySummary(modelIdentity),
       requestedEfforts: [...modelIdentity.requestProfiles.values()].map((entry) => entry.reasoningEffort),
+      effortInjection: effortInjection ? 'benchmark_adapter_explicit_request_profile' : 'runtime_native',
       requestProfiles: [...modelIdentity.requestProfiles.values()],
       servingIdentity: modelIdentity.responseModels.size > 0
         && [...modelIdentity.responseModels].some((responseModel) => !modelIdentity.requestedModels.has(responseModel))
@@ -1483,31 +1883,96 @@ export async function main(argv = process.argv) {
     const runtime = loadRuntime(runtimeRoot);
     const runtimeIdentity = runtimeGitIdentity(runtimeRoot);
     const results = [];
-    const maxCasesValue = Number(arg('--max-cases', '1'));
+    const executionPurpose = arg('--purpose', 'smoke', argv);
+    if (!['smoke', 'baseline', 'qualification'].includes(executionPurpose)) {
+      throw new Error('unsupported_discovery_purpose');
+    }
+    const maxCasesValue = Number(arg('--max-cases', executionPurpose === 'smoke' ? '1' : String(input.cases.length)));
     if (!Number.isSafeInteger(maxCasesValue) || maxCasesValue < 1 || maxCasesValue > input.cases.length) {
       throw new Error('max_cases_must_be_between_one_and_fixed_panel_size');
     }
-    const executionPurpose = arg('--purpose', 'smoke', argv);
-    if (executionPurpose !== 'smoke') {
-      throw new Error('discovery_evaluation_requires_accepted_history_verifier_and_adjudication_adapter');
+    let sourcePolicy = null;
+    let sourcePolicySha256 = null;
+    let effortProfile = 'medium';
+    let effortInjection = null;
+    let verificationReserveTurns = 12;
+    if (executionPurpose === 'qualification' || executionPurpose === 'baseline') {
+      const policyPath = arg('--policy-file', '', argv);
+      if (!policyPath) throw new Error('qualification_policy_file_required');
+      const policyInput = readPreparedInput(path.resolve(policyPath));
+      effortProfile = arg('--effort-profile', executionPurpose === 'baseline' ? 'native_omitted' : 'medium', argv);
+      sourcePolicy = buildDiscoveryPolicy(policyInput.value, { purpose: executionPurpose, effortProfile });
+      sourcePolicySha256 = policyInput.sha256;
+      effortInjection = arg('--effort-injection', '', argv) || null;
+      if (effortInjection && effortInjection !== 'medium') throw new Error('unsupported_effort_injection');
+      if (effortProfile === 'native_omitted' && effortInjection) throw new Error('native_effort_profile_cannot_inject_effort');
+      if (executionPurpose === 'baseline') {
+        if (arg('--verifier-mode', 'none', argv) !== 'none') throw new Error('v1_baseline_must_not_claim_grounded_verifier');
+        verificationReserveTurns = 0;
+      } else {
+        if (arg('--verifier-mode', 'production', argv) !== 'production') throw new Error('qualification_requires_production_grounded_verifier');
+        verificationReserveTurns = 12;
+      }
+      const forbiddenSmokeOverrides = ['--max-tasks', '--max-turns-total', '--max-turns-per-task'];
+      if (forbiddenSmokeOverrides.some((flag) => argv.includes(flag))) {
+        throw new Error('qualification_resource_overrides_not_allowed');
+      }
+      assertKnownPolicyProjection(effortProfile, sourcePolicySha256);
+      assertFullEnvelopeQualificationProfile(sourcePolicy, { verificationReserveTurns, env: process.env });
     }
     const exactCaseId = arg('--case-id', '', argv);
     let selectedCases;
-    if (exactCaseId) {
+    const caseIdsText = arg('--case-ids', '', argv);
+    if ((executionPurpose === 'qualification' || executionPurpose === 'baseline')
+      && !exactCaseId && !caseIdsText) {
+      throw new Error('full_envelope_run_requires_explicit_case_ids');
+    }
+    if ((executionPurpose === 'qualification' || executionPurpose === 'baseline') && argv.includes('--max-cases')) {
+      throw new Error('full_envelope_run_rejects_prefix_case_selection');
+    }
+    if (exactCaseId && caseIdsText) throw new Error('choose_one_case_selector');
+    if (caseIdsText) {
+      const requestedIds = caseIdsText.split(',').filter(Boolean);
+      if (new Set(requestedIds).size !== requestedIds.length) throw new Error('duplicate_case_id_selector');
+      selectedCases = requestedIds.map((caseId) => {
+        const candidate = input.cases.find((entry) => entry.caseId === caseId);
+        if (!candidate) throw new Error('requested_case_id_not_in_fixed_panel');
+        return candidate;
+      });
+    } else if (exactCaseId) {
       const candidate = input.cases.find((entry) => entry.caseId === exactCaseId);
       if (!candidate) throw new Error('requested_case_id_not_in_fixed_panel');
       selectedCases = [candidate];
     } else {
       selectedCases = input.cases.slice(0, maxCasesValue);
     }
-    const maxTasks = Number(arg('--max-tasks', '2'));
-    const maxTurnsTotal = Number(arg('--max-turns-total', '4'));
-    const maxTurnsPerTask = Number(arg('--max-turns-per-task', '1'));
-    if (!Number.isSafeInteger(maxTasks) || maxTasks < 1 || maxTasks > 2
+    const maxTasks = executionPurpose === 'smoke' ? Number(arg('--max-tasks', '2')) : undefined;
+    const maxTurnsTotal = executionPurpose === 'smoke' ? Number(arg('--max-turns-total', '4')) : undefined;
+    const maxTurnsPerTask = executionPurpose === 'smoke' ? Number(arg('--max-turns-per-task', '1')) : undefined;
+    if (executionPurpose === 'smoke' && (!Number.isSafeInteger(maxTasks) || maxTasks < 1 || maxTasks > 2
       || !Number.isSafeInteger(maxTurnsTotal) || maxTurnsTotal < 1 || maxTurnsTotal > 4
-      || !Number.isSafeInteger(maxTurnsPerTask) || maxTurnsPerTask !== 1) {
+      || !Number.isSafeInteger(maxTurnsPerTask) || maxTurnsPerTask !== 1)) {
       throw new Error('discovery_resource_limits_exceed_benchmark_ceiling');
     }
+    const expectedRuntimeSha = arg('--expected-runtime-sha', '', argv);
+    if (executionPurpose === 'qualification' || executionPurpose === 'baseline') {
+      if (executionPurpose === 'baseline') {
+        assertV1BaselineRuntime({ expectedRuntimeSha, runtimeIdentity, transportEnv: process.env });
+      } else {
+        if (expectedRuntimeSha === V1_BASELINE_RUNTIME_SHA) throw new Error('v1_baseline_cannot_be_qualified_as_revised');
+        assertQualificationRuntime({ expectedRuntimeSha, runtimeIdentity, transportEnv: process.env });
+      }
+      assertBlindDiscoveryInputCases(selectedCases);
+    }
+    const panelSourceCoverage = executionPurpose === 'qualification' || executionPurpose === 'baseline' ? {
+      fixedPanelCases: input.cases.length,
+      completeTextSourceCaseIds: input.cases.filter((entry) => (entry.sourceOmissions || []).length === 0)
+        .map((entry) => entry.caseId),
+      textScopeOnlyDiagnosticCaseIds: input.cases.filter((entry) => (entry.sourceOmissions || []).length > 0
+        && (entry.sourceOmissions || []).every((omission) => omission === 'binary_patch')).map((entry) => entry.caseId),
+      incompleteSourceCaseIds: input.cases.filter((entry) => (entry.sourceOmissions || []).some((omission) => omission !== 'binary_patch'))
+        .map((entry) => entry.caseId),
+    } : null;
     for (const inputCase of selectedCases) {
       const prCase = expectedCases.get(inputCase.caseId);
       if (inputCase.repository !== prCase.repository || inputCase.prNumber !== prCase.prNumber
@@ -1521,17 +1986,76 @@ export async function main(argv = process.argv) {
         headSha: inputCase.headSha,
         sourceRepoDir: publicRepoCacheDirectory(inputCase.repository, cacheRoot),
         omissions: inputCase.sourceOmissions || [],
+        preparedCaseSha256: sha256(JSON.stringify(inputCase)),
       };
       const result = await runActualDiscoveryCase(prCase, snapshot, runtime, {
-        maxTasks,
-        maxTurnsTotal,
-        maxTurnsPerTask,
+        ...(executionPurpose === 'smoke' ? { maxTasks, maxTurnsTotal, maxTurnsPerTask } : {
+          purpose: executionPurpose, sourcePolicy, sourcePolicySha256, effortProfile,
+          effortInjection, verificationReserveTurns,
+        }),
       });
       results.push({ caseId: inputCase.caseId, repository: inputCase.repository, prNumber: inputCase.prNumber,
         language: inputCase.language, ...result });
     }
     const completed = results.filter((entry) => entry.status === 'completed').length;
     const out = arg('--out', path.join(os.tmpdir(), 'review-yeti-aacr-discovery-run.json'));
+    if (executionPurpose === 'qualification' || executionPurpose === 'baseline') {
+      const sourceComplete = results.filter((entry) => entry.status === 'completed').length;
+      const diagnostics = results.filter((entry) => entry.status === 'diagnostic_text_scope_only').length;
+      const disposition = discoveryQualificationDisposition({
+        purpose: executionPurpose, completed: sourceComplete, total: selectedCases.length,
+      });
+      writeJson(out, {
+        schemaVersion: 'review-yeti-discovery-run-v1',
+        task: 'discovery',
+        benchmark: AACR_BENCHMARK.name,
+        datasetSha256: input.datasetSha256,
+        preparedInputSha256: preparedInput.sha256,
+        sourceSnapshotVerification: SOURCE_SNAPSHOT_VERIFICATION,
+        runtime: runtimeIdentity,
+        panelCaseIds: input.cases.map((entry) => entry.caseId),
+        selectedCaseIds: selectedCases.map((entry) => entry.caseId),
+        panelSize: input.cases.length,
+        panelSourceCoverage,
+        executionPurpose: executionPurpose === 'qualification' ? 'actual_production_entrypoint_qualification_input'
+          : 'actual_production_entrypoint_v1_baseline_input',
+        policy: {
+          sourcePolicySourceRevision: V1_POLICY_PROVENANCE.revision,
+          sourcePolicySourceSha256: V1_POLICY_PROVENANCE.sourceSha256,
+          policyProjectionFileSha256: sourcePolicySha256,
+          materialization: 'local_benchmark_policy_projection_not_authenticated_service_admission',
+          effortProfile,
+          effortInjection: effortInjection ? 'benchmark_adapter_injected' : 'runtime_native',
+          verifierMode: verificationReserveTurns === 12 ? 'production_independent_verifier_required'
+            : 'absent_in_selected_v1_baseline',
+        },
+        requestedResourceLimits: discoveryResourceProfile(sourcePolicy, { verificationReserveTurns, env: process.env }),
+        sourceCoverage: {
+          selectedSubsetSize: selectedCases.length,
+          fixedPanelCompleteTextSourceCases: panelSourceCoverage.completeTextSourceCaseIds.length,
+          fixedPanelTextScopeOnlyDiagnostics: panelSourceCoverage.textScopeOnlyDiagnosticCaseIds.length,
+          fixedPanelIncompleteSourceCases: panelSourceCoverage.incompleteSourceCaseIds.length,
+          completeTextSourceCases: sourceComplete,
+          textScopeOnlyDiagnostics: diagnostics,
+          incompleteCases: results.length - sourceComplete - diagnostics,
+          omittedCaseIds: results.filter((entry) => entry.status === 'incomplete').map((entry) => entry.caseId),
+        },
+        cases: results,
+        completion: {
+          completed: sourceComplete,
+          total: results.length,
+          allRuntimeReceiptsComplete: sourceComplete === results.length,
+        },
+        qualificationStatus: disposition.status,
+        qualification: disposition.reason,
+        qualityScore: null,
+        competitorComparison: 'not_performed',
+      });
+      process.stdout.write(JSON.stringify({ status: 'run_recorded', selectedCases: results.length,
+        completedTextSourceCases: sourceComplete, diagnosticTextOnlyCases: diagnostics,
+        incompleteCases: results.length - sourceComplete - diagnostics }) + '\n');
+      return 0;
+    }
     writeJson(out, {
       schemaVersion: 'review-yeti-discovery-run-v1',
       task: 'discovery',
