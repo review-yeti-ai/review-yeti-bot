@@ -10,6 +10,7 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { createAuthoritativeReviewService, type AuthoritativeReviewServiceOptions } from '../../src/review/authoritativeReviewService';
 import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
 import type { ReviewAdmissionInput } from '../../src/review/reviewRun';
+import type { OperatorPassthroughPublicationRepository, OperatorPassthroughReconcileAdmission } from '../../src/review/operatorPassthrough';
 
 const mocks = vi.hoisted(() => ({
   publisherConstructor: vi.fn(), resolverConstructor: vi.fn(),
@@ -310,6 +311,62 @@ describe('createAuthoritativeReviewService wiring', () => {
 });
 
 describe('authoritative reconciliation tick', () => {
+  it('pages paused-admission catch-up and gives the operator publisher one pass after each bounded page', async () => {
+    const f = fixture();
+    const admissions: OperatorPassthroughReconcileAdmission[] = Array.from({ length: 12 }, (_, index) => ({
+      runId: `run_${String(index + 1).padStart(32, '0')}`,
+      repositoryId: 123,
+      owner: 'example',
+      repo: 'candidate',
+      prNumber: index + 1,
+      headSha: candidate.headSha,
+      baseSha: candidate.baseSha,
+      admittedPolicyDigest: f.prepared.policy.effectivePolicyDigest,
+    }));
+    const recordedPullRequests: number[] = [];
+    const publisherPasses: number[] = [];
+    mocks.currentCandidate.mockImplementation(async (requested) => ({ ...candidate,
+      prNumber: requested.prNumber, open: requested.prNumber > 10 }));
+
+    const listPausedAdmissions = vi.fn(async (limit: number,
+      cursor?: { repositoryId: number; prNumber: number }) => admissions
+      .filter((entry) => !cursor || entry.repositoryId > cursor.repositoryId
+        || (entry.repositoryId === cursor.repositoryId && entry.prNumber > cursor.prNumber))
+      .slice(0, limit));
+    const operatorRepository = {
+      record: vi.fn(async (input: { candidate: { prNumber: number } }) => {
+        recordedPullRequests.push(input.candidate.prNumber);
+        return { status: 'accepted' as const, publicationId: String(input.candidate.prNumber).padStart(64, '0'),
+          auditDigest: 'f'.repeat(64), verdict: 'SHIP' as const, expectedLanes: 0 as const, completedLanes: 0 as const };
+      }),
+      getPublication: vi.fn(async (publicationId: string) => ({
+        publicationId, publicationSequence: 1, coordinates: {} as any, expectedAppId: APP_ID,
+        auditDigest: 'f'.repeat(64), reviewExternalId: 'review', gateExternalId: 'gate',
+        reviewCheckId: null, reviewCreationState: 'reserved' as const,
+        gateCheckId: null, gateCreationState: 'reserved' as const,
+        retirementRequestedAt: null, retirementReason: null, retiredAt: null,
+        reviewRetiredAt: null, gateRetiredAt: null, readyForShip: false,
+      })),
+      requestRetirement: vi.fn(), retireInTransaction: vi.fn(), requestAllRetirements: vi.fn(),
+      claimPublication: vi.fn(async () => { publisherPasses.push(recordedPullRequests.length); return null; }),
+      publishLocked: vi.fn(), retryPublication: vi.fn(),
+    } as unknown as OperatorPassthroughPublicationRepository;
+    const service = createAuthoritativeReviewService({ ...f.options,
+      operatorPassthroughRepository: operatorRepository, passthroughEnabled: true, listPausedAdmissions });
+
+    await service.runOnce();
+    expect(recordedPullRequests).toEqual([]);
+    expect(publisherPasses).toEqual([0]);
+    await service.runOnce();
+    expect(recordedPullRequests).toEqual([11, 12]);
+    expect(publisherPasses).toEqual([0, 2]);
+    expect(listPausedAdmissions.mock.calls).toEqual([
+      [10, undefined],
+      [10, { repositoryId: 123, prNumber: 10 }],
+    ]);
+    expect(mocks.publish).not.toHaveBeenCalled();
+  });
+
   it('awaits reaping, advancement and publication in order and shares one pending tick at every stage', async () => {
     const service = createAuthoritativeReviewService(fixture().options);
     const reaped = Promise.withResolvers<number>();

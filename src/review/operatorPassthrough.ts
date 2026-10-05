@@ -45,6 +45,11 @@ export interface OperatorPassthroughReconcileAdmission extends Omit<OperatorPass
   admittedPolicyDigest: string;
 }
 
+export interface OperatorPassthroughReconcileCursor {
+  repositoryId: number;
+  prNumber: number;
+}
+
 export interface OperatorPassthroughAdmissionReceipt {
   status: 'accepted' | 'duplicate';
   verdict: 'SHIP';

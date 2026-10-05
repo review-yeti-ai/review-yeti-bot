@@ -23,6 +23,8 @@ interface Queryable { query(sql: string, values?: unknown[]): Promise<{ rows: an
 interface Client extends Queryable { release(): void }
 interface Pool extends Queryable { connect(): Promise<Client> }
 
+const RETIREMENT_SWEEP_BATCH_SIZE = 25;
+
 const POSITIVE = (value: unknown): number => {
   const result = Number(value);
   if (!Number.isSafeInteger(result) || result <= 0) throw new Error('Invalid stored operator passthrough integer');
@@ -140,6 +142,8 @@ async function prLock(client: Queryable, repositoryId: number, prNumber: number)
  * POST it only reconciles that immutable external ID; it never creates again.
  */
 export class PostgresOperatorPassthroughRepository implements OperatorPassthroughPublicationRepository {
+  private retirementSweepCursor: { repositoryId: number; prNumber: number; headSha: string } | undefined;
+
   constructor(private readonly pool: Pool) {}
 
   private async transaction<T>(operation: (client: Client) => Promise<T>): Promise<T> {
@@ -358,14 +362,28 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
 
   async requestAllRetirements(reason: 'pause-disabled', now = Date.now()): Promise<number> {
     clock(now);
+    const after = this.retirementSweepCursor;
     const candidates = await this.pool.query(`SELECT DISTINCT repository_id,pr_number,head_sha
-      FROM review_operator_passthrough_publications WHERE retired_at IS NULL
-      ORDER BY repository_id,pr_number,head_sha LIMIT 500`);
+      FROM review_operator_passthrough_publications WHERE retired_at IS NULL AND retirement_requested_at IS NULL
+        AND ($1::bigint IS NULL OR (repository_id,pr_number,head_sha) > ($1::bigint,$2::integer,$3::text))
+      ORDER BY repository_id,pr_number,head_sha LIMIT $4`, [
+      after?.repositoryId ?? null,
+      after?.prNumber ?? null,
+      after?.headSha ?? null,
+      RETIREMENT_SWEEP_BATCH_SIZE,
+    ]);
+    if (candidates.rows.length === 0) {
+      this.retirementSweepCursor = undefined;
+      return 0;
+    }
     let requested = 0;
     for (const row of candidates.rows) {
-      requested += await this.requestRetirement({ repositoryId: POSITIVE(row.repository_id),
-        prNumber: POSITIVE(row.pr_number), headSha: row.head_sha }, reason, now);
+      const candidate = { repositoryId: POSITIVE(row.repository_id),
+        prNumber: POSITIVE(row.pr_number), headSha: String(row.head_sha) };
+      this.retirementSweepCursor = candidate;
+      requested += await this.requestRetirement(candidate, reason, now);
     }
+    if (candidates.rows.length < RETIREMENT_SWEEP_BATCH_SIZE) this.retirementSweepCursor = undefined;
     return requested;
   }
 
