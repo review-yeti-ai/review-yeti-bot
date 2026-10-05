@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { taskSourceReceiptSchema } from './taskSourceDelivery';
-import { evaluateFindingConvergence, type PriorFindingThread } from './findingConvergence';
+import { evaluateFindingConvergence, findingFingerprint, type PriorFindingThread } from './findingConvergence';
 import { DELETION_CLASSIFICATION_VERSION } from './deletionClassification';
 import { computeAppVerdict } from './reviewAdapters';
 import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane } from './reviewCore';
@@ -1106,6 +1106,19 @@ export function deriveCanonicalWorkerReviewEvidence(
       ...(contract.reviewDecisionPolicy ? { policyVersion: contract.reviewDecisionPolicy } : {}),
     }).counts.requiredP2,
     ...(expectedDecision ? { reviewDecision: expectedDecision } : {}),
+    ...(contract.reviewDecisionPolicy === REVIEW_SEVERITY_POLICY_V2 ? {
+      blockingFingerprints: [...new Set(canonical.findings
+        .filter((finding) => finding.severity === 'P0' || finding.severity === 'P1')
+        .map((finding) => findingFingerprint(finding)))].sort(),
+      blockingFindings: canonical.findings
+        .filter((finding) => (finding.severity === 'P0' || finding.severity === 'P1') && finding.blockerEvidence)
+        .map((finding) => ({
+          fingerprint: findingFingerprint(finding), severity: finding.severity as 'P0' | 'P1',
+          path: finding.path, line: finding.line, title: finding.title, body: finding.body,
+          blockerEvidence: finding.blockerEvidence!,
+        }))
+        .sort((a, b) => a.fingerprint.localeCompare(b.fingerprint)),
+    } : {}),
     expectedLanes: requiredIds.length,
     completedLanes: canonical.completedPersonas,
   };

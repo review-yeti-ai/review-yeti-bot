@@ -797,6 +797,9 @@ describe('versioned v2 worker/Gate decision agreement', () => {
       blockingFindingCount: 1, personas: [lane('security', { decision: 'FINDINGS', findings: [finding] }), lane('architecture')] } }));
     expect(derive(input, v2Contract)).toMatchObject({ valid: true, evidence: {
       verdict: 'FIX_FIRST', p1Count: 1, reviewDecision: { blocking: true, eligible: false },
+      blockingFingerprints: [findingFingerprint(finding)],
+      blockingFindings: [{ fingerprint: findingFingerprint(finding), severity: 'P1', path: finding.path,
+        line: finding.line, title: finding.title, body: finding.body, blockerEvidence: finding.blockerEvidence }],
     } });
     const receipt = input.result.reviewDecision!;
     const forged = { ...input, result: { ...input.result,

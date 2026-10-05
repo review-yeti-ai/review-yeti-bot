@@ -46,6 +46,19 @@ export interface PullRequestRef {
   prNumber: number;
 }
 
+/** Current-head fence used immediately before the service mutates PR review threads. */
+export async function readCurrentPullRequestHead(transport: FindingThreadTransport,
+  pr: PullRequestRef): Promise<string> {
+  const base = (transport.baseUrl ?? PUBLIC_GITHUB_API_BASE_URL).replace(/\/+$/u, '');
+  const url = `${base}/repos/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/pulls/${pr.prNumber}`;
+  const body = await request(transport, url, { method: 'GET' });
+  const head = body?.head?.sha;
+  if (typeof head !== 'string' || !/^[a-f0-9]{40}$/u.test(head)) {
+    throw new Error('GitHub pull request head is unavailable');
+  }
+  return head;
+}
+
 export interface PublishableFinding {
   fingerprint: string;
   severity: FindingSeverity;
@@ -221,14 +234,19 @@ export function renderFindingThreadBody(finding: PublishableFinding): string {
  * the line anchor. Returns how many threads were created and skipped.
  */
 export async function publishFindingThreads(transport: FindingThreadTransport, pr: PullRequestRef & { headSha: string },
-  findings: readonly PublishableFinding[], existing?: readonly PriorFindingThread[]): Promise<{ created: number; skipped: number }> {
-  const known = new Set((existing ?? await readFindingThreads(transport, pr)).map((thread) => thread.fingerprint));
+  findings: readonly PublishableFinding[], existing?: readonly PriorFindingThread[],
+  maxFindings = MAX_FINDING_THREADS_PUBLISHED_PER_RUN): Promise<{ created: number; skipped: number }> {
+  const known = new Map((existing ?? await readFindingThreads(transport, pr))
+    .map((thread) => [thread.fingerprint, thread] as const));
   const base = (transport.baseUrl ?? PUBLIC_GITHUB_API_BASE_URL).replace(/\/+$/u, '');
   const url = `${base}/repos/${encodeURIComponent(pr.owner)}/${encodeURIComponent(pr.repo)}/pulls/${pr.prNumber}/comments`;
   let created = 0;
   let skipped = 0;
-  for (const finding of findings.slice(0, MAX_FINDING_THREADS_PUBLISHED_PER_RUN)) {
-    if (known.has(finding.fingerprint)) { skipped += 1; continue; }
+  for (const finding of findings.slice(0, maxFindings)) {
+    const prior = known.get(finding.fingerprint);
+    // A fresh P0/P1 must reopen as a required conversation after someone resolved an older thread.
+    // A resolved P2 remains satisfied under the legacy v1 contract.
+    if (prior && (!prior.resolved || finding.severity === 'P2')) { skipped += 1; continue; }
     const body = renderFindingThreadBody(finding);
     try {
       await request(transport, url, { method: 'POST', body: JSON.stringify({
@@ -240,10 +258,10 @@ export async function publishFindingThreads(transport: FindingThreadTransport, p
         body, commit_id: pr.headSha, path: finding.path, subject_type: 'file',
       }) });
     }
-    known.add(finding.fingerprint);
+    known.set(finding.fingerprint, { ...finding, resolved: false, outdated: false });
     created += 1;
   }
-  return { created, skipped: skipped + Math.max(0, findings.length - MAX_FINDING_THREADS_PUBLISHED_PER_RUN) };
+  return { created, skipped: skipped + Math.max(0, findings.length - maxFindings) };
 }
 
 const RESOLVE_MUTATION = `mutation ResolveFindingThread($threadId: ID!) {
