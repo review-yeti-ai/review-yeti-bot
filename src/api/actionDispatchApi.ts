@@ -59,6 +59,8 @@ export interface ActionDispatchRouterOptions {
   allowAppGate?: boolean;
   /** Rollout fence: require the central App ledger's exact one-based generation. */
   requireExpectedGeneration?: boolean;
+  /** Operator-owned no-op for new reviews; auth, schema, freshness and recovery gates still apply. */
+  passthroughEnabled?: boolean;
   /** Exact service-owned external targets admitted through the trusted central workflow. */
   centralExternalRepositories?: ReadonlyMap<string, number>;
   /** Service-owned finite pilot allowlist; callers cannot opt themselves in or out. */
@@ -191,6 +193,26 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     if (!Number.isFinite(requestedAt) || Math.abs(receivedAt - requestedAt) > 10 * 60_000) {
       return response.status(400).json({ error: 'Action dispatch request timestamp is outside the accepted window' });
     }
+    if (options.passthroughEnabled === true) {
+      const receipt = {
+        version: 'ActionDispatchPassthrough.v1',
+        status: 'passthrough',
+        reason: 'operator_global_passthrough',
+        reviewStarted: false,
+        deliveryId: dispatch.deliveryId,
+        eventName: dispatch.caller.eventName,
+        repositoryId: dispatch.repositoryId,
+        owner: dispatch.owner,
+        repo: dispatch.repo,
+        prNumber: dispatch.prNumber,
+        headSha: dispatch.headSha,
+        baseSha: dispatch.baseSha,
+        callerKind,
+      } as const;
+      logger.info('GitHub Actions review skipped by operator-wide passthrough', receipt);
+      return response.status(200).json(receipt);
+    }
+
     if (authoritative?.acceptNewRequests === false && dispatch.publishMode === 'app-gate'
       && authoritativeRepositories.has(dispatch.repositoryId)) {
       return response.status(503).json({ error: 'Authoritative review admission is paused' });

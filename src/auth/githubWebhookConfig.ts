@@ -1,8 +1,11 @@
 import type { GitHubActionsOidcPolicy } from './githubActionsOidc';
+import { reviewYetiPassthroughEnabledFromEnv } from '../config/reviewYetiPassthrough';
 
 export interface GitHubWebhookConfig {
   secret: string;
   admissionEnabled: boolean;
+  /** Acknowledge eligible review webhooks without starting new review work. */
+  passthroughEnabled?: boolean;
   repositoryIds: ReadonlySet<string>;
   ownerIds: ReadonlySet<string>;
 }
@@ -33,6 +36,7 @@ export function githubWebhookConfigFromEnv(
 
   const secret = environment.GITHUB_WEBHOOK_SECRET || '';
   const admission = environment.GITHUB_APP_WEBHOOK_ADMISSION_ENABLED;
+  const passthroughEnabled = reviewYetiPassthroughEnabledFromEnv(environment);
   const repositoryIds = finiteIds(environment.GITHUB_APP_WEBHOOK_REPOSITORY_IDS,
     'GITHUB_APP_WEBHOOK_REPOSITORY_IDS', 100);
   const ownerIds = finiteIds(environment.GITHUB_APP_WEBHOOK_OWNER_IDS,
@@ -43,5 +47,11 @@ export function githubWebhookConfigFromEnv(
     || [...ownerIds].some((id) => !actionPolicy.ownerIds.has(id))) {
     throw new Error('GitHub App webhook configuration is invalid');
   }
-  return { secret, admissionEnabled: admission === 'true', repositoryIds, ownerIds };
+  return {
+    secret,
+    admissionEnabled: admission === 'true',
+    passthroughEnabled,
+    repositoryIds,
+    ownerIds,
+  };
 }

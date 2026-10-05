@@ -51,6 +51,8 @@ export const triggerReviewDefinition: ToolDefinition = {
 };
 
 export interface TriggerReviewDependencies {
+  /** Skip new durable review admission after exact caller, repository and candidate checks. */
+  passthroughEnabled?: boolean;
   admissionRepository?: Pick<ReviewDispatchRepository, 'admit'>;
   authoritativePublishing?: AuthoritativeReviewAdmission | {
     admission?: AuthoritativeReviewAdmission | ((candidate: any) => Promise<unknown>);
@@ -139,7 +141,7 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
           || !authoritative.repositoryIds?.includes(repositoryId))) {
         throw new Error('Incomplete P2 recovery requires an active authoritative repository admission');
       }
-      if (authoritative?.acceptNewRequests === false
+      if ((authoritative?.acceptNewRequests === false && deps.passthroughEnabled !== true)
         || (authoritative && !authoritative.repositoryIds?.includes(repositoryId))) {
         throw new Error('trigger_review repository is outside authoritative admission');
       }
@@ -148,7 +150,8 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
         ...requested,
         ...(review_engine ? { review_engine } : {}),
       };
-      if (typeof (deps.authoritativePublishing as any)?.admission === 'function') {
+      if (deps.passthroughEnabled !== true
+        && typeof (deps.authoritativePublishing as any)?.admission === 'function') {
         await (deps.authoritativePublishing as any).admission(resolveCandidate);
       }
       const resolved = resolver ? await resolver.resolve(requested) : undefined;
@@ -165,6 +168,21 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
 
       const resolvedIdentity = resolved?.identity || buildReviewRunIdentity(requested);
       const resolvedRunId = deriveReviewRunId(resolvedIdentity);
+
+      if (deps.passthroughEnabled === true) {
+        return buildToolResultJson({
+          dispatched: false,
+          job_crd_created: false,
+          status: 'passthrough',
+          reason: 'operator_global_passthrough',
+          review_started: false,
+          owner,
+          repo,
+          pull_number,
+          head_sha: headSha,
+          message: 'Review request acknowledged; operator passthrough is enabled, so no review was started.',
+        });
+      }
 
       // 2. Active Run Conflict Detection
       if (deps.queryableDatabase) {

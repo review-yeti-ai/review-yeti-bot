@@ -21,9 +21,21 @@ describe('GitHub App webhook configuration', () => {
       GITHUB_WEBHOOK_SECRET: 'a'.repeat(64),
     }, policy);
     expect(config).toEqual({
-      secret: 'a'.repeat(64), admissionEnabled: false,
+      secret: 'a'.repeat(64), admissionEnabled: false, passthroughEnabled: false,
       repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
     });
+  });
+
+  it('enables global passthrough only for the exact true value', () => {
+    const config = githubWebhookConfigFromEnv({
+      GITHUB_APP_WEBHOOK_ENABLED: 'true',
+      GITHUB_APP_WEBHOOK_ADMISSION_ENABLED: 'true',
+      GITHUB_APP_WEBHOOK_REPOSITORY_IDS: '614653796',
+      GITHUB_APP_WEBHOOK_OWNER_IDS: '57884877',
+      GITHUB_WEBHOOK_SECRET: 'a'.repeat(64),
+      REVIEW_YETI_PASSTHROUGH: 'true',
+    }, policy);
+    expect(config?.passthroughEnabled).toBe(true);
   });
 
   it.each([
@@ -40,7 +52,18 @@ describe('GitHub App webhook configuration', () => {
       GITHUB_APP_WEBHOOK_OWNER_IDS: '57884877',
       GITHUB_WEBHOOK_SECRET: 'a'.repeat(64),
       ...override,
-    }, policy)).toThrow('GitHub App webhook configuration is invalid');
+  }, policy)).toThrow('GitHub App webhook configuration is invalid');
+  });
+
+  it('rejects a malformed global passthrough value with the shared strict-config error', () => {
+    expect(() => githubWebhookConfigFromEnv({
+      GITHUB_APP_WEBHOOK_ENABLED: 'true',
+      GITHUB_APP_WEBHOOK_ADMISSION_ENABLED: 'false',
+      GITHUB_APP_WEBHOOK_REPOSITORY_IDS: '614653796',
+      GITHUB_APP_WEBHOOK_OWNER_IDS: '57884877',
+      GITHUB_WEBHOOK_SECRET: 'a'.repeat(64),
+      REVIEW_YETI_PASSTHROUGH: 'yes',
+    }, policy)).toThrow('REVIEW_YETI_PASSTHROUGH must be exactly true or false');
   });
 
   it('bounds the finite repository and owner enrollment lists', () => {

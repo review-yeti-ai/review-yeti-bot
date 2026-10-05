@@ -318,6 +318,68 @@ function validateReceipt(body) {
   return { version: body.version, status: body.status, runId: body.runId };
 }
 
+function parsePassthroughReceipt(body) {
+  const valid = body?.version === 'ActionDispatchPassthrough.v1'
+    && body.status === 'passthrough'
+    && body.reason === 'operator_global_passthrough'
+    && body.reviewStarted === false
+    && typeof body.deliveryId === 'string'
+    && typeof body.repositoryId === 'number'
+    && Number.isSafeInteger(body.repositoryId)
+    && body.repositoryId > 0
+    && typeof body.owner === 'string'
+    && typeof body.repo === 'string'
+    && typeof body.prNumber === 'number'
+    && Number.isSafeInteger(body.prNumber)
+    && body.prNumber > 0
+    && typeof body.headSha === 'string'
+    && SHA_PATTERN.test(body.headSha)
+    && typeof body.baseSha === 'string'
+    && SHA_PATTERN.test(body.baseSha)
+    && typeof body.eventName === 'string'
+    && typeof body.callerKind === 'string'
+    && (body.callerKind === 'direct' || body.callerKind === 'central');
+  if (!valid) throw new Error('DOKS dispatch returned an invalid passthrough receipt');
+  return {
+    version: body.version,
+    status: body.status,
+    reason: body.reason,
+    reviewStarted: body.reviewStarted,
+    deliveryId: body.deliveryId,
+    repositoryId: body.repositoryId,
+    owner: body.owner,
+    repo: body.repo,
+    prNumber: body.prNumber,
+    headSha: body.headSha,
+    baseSha: body.baseSha,
+    eventName: body.eventName,
+    callerKind: body.callerKind,
+  };
+}
+
+function validatePassthroughReceipt(body, request) {
+  const receipt = parsePassthroughReceipt(body);
+  // The delivery identifier binds the caller run id/attempt to repository, PR and head.
+  // The remaining receipt coordinates must match the exact request; eventName is the
+  // caller metadata the service can return without reflecting OIDC claims to the client.
+  const matchesRequest = receipt.deliveryId === request.deliveryId
+    && receipt.repositoryId === request.repositoryId
+    && receipt.owner === request.owner
+    && receipt.repo === request.repo
+    && receipt.prNumber === request.prNumber
+    && receipt.headSha === request.headSha
+    && receipt.baseSha === request.baseSha
+    && receipt.eventName === request.caller.eventName;
+  if (!matchesRequest) throw new Error('DOKS dispatch returned a passthrough receipt for a different Action request');
+  return receipt;
+}
+
+function validateDispatchOutputReceipt(body) {
+  if (body?.version === 'ActionDispatchAccepted.v1') return validateReceipt(body);
+  if (body?.version === 'ActionDispatchPassthrough.v1') return parsePassthroughReceipt(body);
+  throw new Error('DOKS dispatch returned an invalid dispatch receipt');
+}
+
 function sleep(milliseconds) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 }
@@ -366,6 +428,7 @@ export async function dispatchAction(environment = process.env, fetchImpl = fetc
     }
 
     if (response.status === 202) return validateReceipt(await json(response, 'DOKS dispatch'));
+    if (response.status === 200) return validatePassthroughReceipt(await json(response, 'DOKS passthrough'), request);
     if (attempt === attempts || !RETRYABLE_DISPATCH_STATUSES.has(response.status)) {
       throw new Error(`DOKS dispatch failed with HTTP ${response.status}${await failureDetail(response)}`);
     }
@@ -378,27 +441,44 @@ export async function dispatchAction(environment = process.env, fetchImpl = fetc
 }
 
 export function writeDispatchOutputs(outputPath, receipt) {
-  const valid = validateReceipt(receipt);
-  appendFileSync(outputPath, [
-    'verdict=NO_VERDICT',
-    'findings-count=0',
-    'review-status=DISPATCHED',
-    'gate-decision=PENDING',
-    'merge-eligible=false',
-    'total-findings=0',
-    'p0-count=0',
-    'p1-count=0',
-    'p2-count=0',
-    `rationale=Durably admitted as ${valid.runId} (${valid.status}); awaiting the Review Yeti App gate.`,
-    '',
-  ].join('\n'), { encoding: 'utf8' });
+  const valid = validateDispatchOutputReceipt(receipt);
+  const lines = valid.version === 'ActionDispatchPassthrough.v1'
+    ? [
+      'verdict=NO_VERDICT',
+      'findings-count=0',
+      'review-status=SKIPPED',
+      'gate-decision=SKIPPED',
+      'merge-eligible=false',
+      'total-findings=0',
+      'p0-count=0',
+      'p1-count=0',
+      'p2-count=0',
+      `rationale=Operator global passthrough skipped review for ${valid.deliveryId}; no verdict was produced.`,
+      '',
+    ]
+    : [
+      'verdict=NO_VERDICT',
+      'findings-count=0',
+      'review-status=DISPATCHED',
+      'gate-decision=PENDING',
+      'merge-eligible=false',
+      'total-findings=0',
+      'p0-count=0',
+      'p1-count=0',
+      'p2-count=0',
+      `rationale=Durably admitted as ${valid.runId} (${valid.status}); awaiting the Review Yeti App gate.`,
+      '',
+    ];
+  appendFileSync(outputPath, lines.join('\n'), { encoding: 'utf8' });
 }
 
 async function main() {
   try {
     const receipt = await dispatchAction(process.env, fetch);
     writeDispatchOutputs(required(process.env, 'GITHUB_OUTPUT'), receipt);
-    process.stdout.write(`DOKS dispatch ${receipt.status}: ${receipt.runId}\n`);
+    process.stdout.write(receipt.version === 'ActionDispatchPassthrough.v1'
+      ? `DOKS dispatch ${receipt.status}: no review started (${receipt.reason}).\n`
+      : `DOKS dispatch ${receipt.status}: ${receipt.runId}\n`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`::error::${message.replaceAll('\n', ' ')}\n`);
