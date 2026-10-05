@@ -206,6 +206,22 @@ describe('trigger_review governed admission', () => {
       passthrough_check: { status: 'published', checkId: 5, reviewMode: 'passthrough' } });
   });
 
+  it('surfaces a publisher failure from MCP passthrough instead of acknowledging', async () => {
+    const identity = { owner: 'exampleorg', repo: 'example-api', prNumber: 73, headSha: HEAD_SHA, baseSha: BASE_SHA };
+    const tool = createTriggerReviewTool({
+      passthroughEnabled: true,
+      passthroughShip: { publish: vi.fn(async () => { throw new Error('GitHub unavailable'); }) },
+      resolveGitHubPullRequest: vi.fn(async () => ({
+        headSha: HEAD_SHA, baseSha: BASE_SHA, repositoryId: 101, installationId: 22,
+      })),
+      authoritativePublishing: {
+        expectedAppId: 42, repositoryIds: [101], acceptNewRequests: false,
+        resolver: { resolve: vi.fn(async () => ({ identity, prepared: { policy: { effectivePolicyDigest: POLICY_DIGEST } } })) },
+      },
+    } as any);
+    await expect(tool.execute(request)).rejects.toThrow(/GitHub unavailable/);
+  });
+
   it('does not let MCP passthrough bypass incomplete-P2 recovery authorization', async () => {
     const admit = vi.fn();
     const tool = createTriggerReviewTool({

@@ -86,6 +86,21 @@ describe('passthrough service-owned SHIP check', () => {
     expect(fake.writes).toHaveLength(1);
   });
 
+  it('completes an in-progress passthrough check with a PATCH instead of creating a duplicate', async () => {
+    const fake = fakeGitHub({ existing: [{
+      id: 55, name: 'Review Yeti', app: APP, head_sha: HEAD, status: 'in_progress',
+      external_id: `review-yeti-passthrough:v1:${REPO_ID}:${HEAD}`,
+    }] });
+    const { publisher: p } = publisher(fake);
+    const result = await p.publish(REQUEST);
+    expect(result).toMatchObject({ status: 'published', checkId: 55 });
+    expect(fake.writes).toHaveLength(1);
+    expect(fake.writes[0].method).toBe('PATCH');
+    expect(fake.writes[0].path).toContain('/check-runs/55');
+    expect(fake.writes[0].body).toMatchObject({ status: 'completed', conclusion: 'success' });
+    expect(fake.runs.filter((run) => run.name === 'Review Yeti')).toHaveLength(1);
+  });
+
   it('never posts for a draft, closed or stale pull request', async () => {
     for (const [options, reason] of [
       [{ draft: true }, 'pull_request_draft'],
@@ -183,6 +198,14 @@ describe('passthrough webhook wiring', () => {
     const response = await deliver(instance, pullRequestBody(true), 'delivery-draft');
     expect(response.body).toMatchObject({ status: 'ignored' });
     expect(ship.publish).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a publisher failure instead of acknowledging the receipt', async () => {
+    const ship = { publish: vi.fn(async () => { throw new Error('GitHub unavailable'); }) };
+    const { instance } = webhookApp(true, ship);
+    const response = await deliver(instance, pullRequestBody(false), 'delivery-fail');
+    expect(response.status).toBeGreaterThanOrEqual(500);
+    expect(response.body).not.toHaveProperty('status', 'passthrough');
   });
 
   it('does not touch the publisher when passthrough is off', async () => {
