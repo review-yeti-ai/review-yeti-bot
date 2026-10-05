@@ -20,6 +20,7 @@ import { createGetReviewStatusTool } from '../../src/mcp/server/tools/getReviewS
 import { createGetReviewFindingsTool } from '../../src/mcp/server/tools/getReviewFindings';
 import { createGetModelMatrixTool } from '../../src/mcp/server/tools/getModelMatrix';
 import { createTriggerReviewTool } from '../../src/mcp/server/tools/triggerReview';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
 import { createCancelReviewTool } from '../../src/mcp/server/tools/cancelReview';
 import { createWatchReviewProgressTool } from '../../src/mcp/server/tools/watchReviewProgress';
 import { createPreflightDiffReviewTool, parseUnifiedDiff } from '../../src/mcp/server/tools/preflightDiffReview';
@@ -643,7 +644,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
           repositoryId: 1001, installationId: 2001,
         }),
         authoritativePublishing: {
-          expectedAppId: 42, repositoryIds: [1001],
+          expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [1001],
           resolver: { resolve: async (requested: any) => ({
             identity: requested,
             prepared: { policy: {
@@ -729,7 +730,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
           repositoryId: 1001, installationId: 2001,
         }),
         authoritativePublishing: {
-          expectedAppId: 42, repositoryIds: [1001],
+          expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [1001],
           resolver: { resolve: async (requested: any) => ({
             identity: requested,
             prepared: {

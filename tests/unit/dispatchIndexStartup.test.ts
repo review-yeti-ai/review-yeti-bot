@@ -5,6 +5,7 @@ import type { PostgresReviewGateRepository } from '../../src/persistence/reviewG
 import type { StoredReviewGate } from '../../src/review/reviewGateContracts';
 import { createReviewCiLanePlan } from '../../src/review/reviewCi';
 import { deriveReviewRunId } from '../../src/review/reviewAdmission';
+import { PUBLIC_REVIEW_APP_ID, PUBLIC_REVIEW_REPOSITORY_ID } from '../../src/auth/repositoryReviewAuthority';
 
 const mocks = vi.hoisted(() => {
   const pool = { query: vi.fn() };
@@ -220,13 +221,13 @@ describe('Action dispatch startup transport and admission wiring', () => {
 
   it('wires only the exact configured self-hosted central-dispatch target', async () => {
     vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-bot');
-    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', '7654321');
+    vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', String(PUBLIC_REVIEW_APP_ID));
     vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY', 'synthetic-public-target-private-key');
     await start();
 
     expect(mocks.error).not.toHaveBeenCalled();
     expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
-      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', 1326169548]]),
+      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-bot', PUBLIC_REVIEW_REPOSITORY_ID]]),
     }));
     const options = mocks.createApp.mock.calls[0][0] as unknown as {
       resolveInstallationId(owner: string, repo: string): Promise<number>;
@@ -234,7 +235,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     await expect(options.resolveInstallationId('review-yeti-ai', 'review-yeti-bot')).resolves.toBe(987);
     await expect(options.resolveInstallationId('exampleorg', 'example-meta')).resolves.toBe(987);
     expect(mocks.lookup).toHaveBeenNthCalledWith(1, {
-      appId: '7654321', privateKey: 'synthetic-public-target-private-key',
+      appId: String(PUBLIC_REVIEW_APP_ID), privateKey: 'synthetic-public-target-private-key',
       owner: 'review-yeti-ai', repo: 'review-yeti-bot', baseUrl: 'https://api.github.com',
     });
     expect(mocks.lookup).toHaveBeenNthCalledWith(2, {

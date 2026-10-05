@@ -14,7 +14,8 @@ export function isPublicReviewRepository(repository: ReviewAuthorityRepository):
 }
 
 /** The callback is control-plane configuration, never part of a review request. */
-export function expectedReviewAppIdFor(admission: AuthoritativeReviewAdmission,
+export function expectedReviewAppIdFor(admission: Pick<AuthoritativeReviewAdmission,
+  'expectedAppId' | 'expectedAppIdFor' | 'repositoryIds'>,
   repository: ReviewAuthorityRepository): number {
   if (!admission.repositoryIds.includes(repository.repositoryId)) {
     throw new Error('Repository is outside authoritative review admission');
@@ -22,10 +23,13 @@ export function expectedReviewAppIdFor(admission: AuthoritativeReviewAdmission,
   const publicId = repository.repositoryId === PUBLIC_REVIEW_REPOSITORY_ID;
   const publicName = `${repository.owner}/${repository.repo}` === PUBLIC_REVIEW_REPOSITORY;
   if (publicId !== publicName) throw new Error('Public review repository identity is invalid');
-  const appId = admission.expectedAppIdFor?.(repository) ?? admission.expectedAppId;
+  const appId = publicId ? PUBLIC_REVIEW_APP_ID : admission.expectedAppId;
   if (!Number.isSafeInteger(appId)
     || (publicId && appId !== PUBLIC_REVIEW_APP_ID)
     || (!publicId && appId !== AUTHORITATIVE_REVIEW_APP_ID)) {
+    throw new Error('Repository review App authority is invalid');
+  }
+  if (admission.expectedAppIdFor && admission.expectedAppIdFor(repository) !== appId) {
     throw new Error('Repository review App authority is invalid');
   }
   return appId;
