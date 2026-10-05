@@ -2286,6 +2286,7 @@ export async function runPublishingReviewWorker(
         findings: panelResult.personas.flatMap((persona) => persona.findings as unknown as Record<string, unknown>[]),
         changedFiles, provider: repoFileProvider, repository: identity.repo,
         client: deps.groundedVerifierClient ?? client, model: verifierModel, headSha: identity.headSha, baseSha: identity.baseSha,
+        ...(reviewDecisionPolicy ? { severityPolicyVersion: reviewDecisionPolicy } : {}),
         ...(reviewerEffort === 'low' || reviewerEffort === 'medium' || reviewerEffort === 'high'
           || reviewerEffort === 'xhigh' || reviewerEffort === 'max' ? { reasoningEffort: reviewerEffort } : {}),
         spentCalls: verificationStartedWithCalls,
@@ -2297,7 +2298,7 @@ export async function runPublishingReviewWorker(
         signal: panelDeadline.signal,
       });
       const filteredPanel = applyGroundedVerificationToPersonas<PanelFinding, PanelResult['personas'][number]>(
-        panelResult.personas, independentVerification, changedFiles);
+        panelResult.personas, independentVerification, changedFiles, reviewDecisionPolicy);
       panelResult = { ...panelResult, personas: filteredPanel.personas };
       const groundedReviewComplete = groundedCoverageManifest.complete && independentVerification.coverageComplete
         && filteredPanel.coverageComplete;

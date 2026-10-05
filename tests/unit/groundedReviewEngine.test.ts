@@ -5,6 +5,7 @@ import {
   runIndependentGroundedVerification,
 } from '../../src/review/groundedReviewEngine';
 import { findingFingerprint } from '../../src/review/findingConvergence';
+import { REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
 import type { ReviewModelClient } from '../../src/gateway/openRouterClient';
 import type { RepoFileProvider } from '../../src/panel/panelEngine';
 
@@ -51,6 +52,50 @@ describe('grounded review engine', () => {
     expect(result.personas[0].findings).toEqual([p1]);
     expect(result.coverageComplete).toBe(false);
     expect(result.unverifiedBlockerCount).toBe(1);
+  });
+
+  it('keeps a confirmed test-coverage gap advisory before verifier and blocker accounting', async () => {
+    const finding = { severity: 'P1', path: 'src/retry.ts', line: 1,
+      title: 'Missing unit tests for retry timeout handling',
+      body: 'No unit tests cover the timeout retry branch.' };
+    const changedFiles = [{ path: 'src/retry.ts', patch: '@@ -1 +1 @@\n-return oldValue;\n+return newValue;' }];
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (_path, side) => ({ content: side === 'head' ? 'return newValue;' : 'return oldValue;',
+        sha: side === 'head' ? head : base }),
+      readDiff: () => ({ patch: changedFiles[0].patch,
+        identity: { repository: 'example-org/sample-project', headSha: head, baseSha: base } }),
+    };
+    const complete = vi.fn(async (request: any) => {
+      const userMessage = request.messages[1].content;
+      const claim = JSON.parse(userMessage.match(/<claim>(.*?)<\/claim>/u)[1]);
+      expect(claim).toMatchObject({ severity: 'P2', claimType: 'missing-tests' });
+      return { model: 'test-verifier', content: JSON.stringify({ status: 'confirmed',
+        violatedInvariant: 'The retry contract requires timeout handling.',
+        failurePath: 'The changed branch returns a different timeout value.',
+        benignCheck: 'The branch contains no additional guard.',
+        changeConnection: 'The patch introduces the changed retry branch.',
+        citations: ['head:src/retry.ts', 'base:src/retry.ts', 'diff:src/retry.ts'] }), usage: null, costUSD: null };
+    });
+    const verification = await runIndependentGroundedVerification({ findings: [finding], changedFiles, provider,
+      repository: 'example-org/sample-project', headSha: head, baseSha: base, model: 'test-model',
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2, client: { complete } as unknown as ReviewModelClient });
+    expect(verification.outcomes[0]).toMatchObject({ severity: 'P2', status: 'confirmed' });
+    expect(verification.unverifiedBlockerCount).toBe(0);
+    expect(verification.coverageComplete).toBe(true);
+
+    const result = applyGroundedVerificationToPersonas([{ id: 'security', findings: [finding] }],
+      verification, changedFiles, REVIEW_SEVERITY_POLICY_V2);
+
+    expect(result.personas[0].findings).toMatchObject([{ severity: 'P2', title: finding.title }]);
+    expect(result.unverifiedBlockerCount).toBe(0);
+    expect(result.coverageComplete).toBe(true);
+
+    const legacy = applyGroundedVerificationToPersonas([{ id: 'security', findings: [finding] }], {
+      coverageComplete: true,
+      outcomes: [{ fingerprint: findingFingerprint(finding), severity: 'P1', status: 'confirmed' }],
+    });
+    expect(legacy.personas[0].findings).toMatchObject([{ severity: 'P1', title: finding.title }]);
   });
 
   it('keeps the strongest severity when lanes report one semantic finding at different severities', async () => {
@@ -106,7 +151,7 @@ describe('grounded review engine', () => {
       readDiff: (path) => files[path]?.diff ? { patch: files[path].diff!, identity: { repository: 'example-org/sample-project', headSha: head, baseSha: base } } : null,
     };
     const finding = { severity: 'P1', path: 'src/consumer.ts', line: 2, title: 'Contract mismatch',
-      body: 'The changed consumer violates the imported UserId contract.',
+      body: 'The changed consumer violates the imported UserId contract. Add a regression test for this mapping.',
       blockerEvidence: { trigger: 'request with numeric identifier', impact: 'route rejects request',
         violatedContract: 'Never inherit this hidden rationale' },
       suggestion: 'Use the expected contract.' };
@@ -130,11 +175,14 @@ describe('grounded review engine', () => {
       provider, client: { complete } as unknown as ReviewModelClient, model: 'test-model', headSha: head, baseSha: base,
       repository: 'example-org/sample-project',
       reasoningEffort: 'max',
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
     });
     expect(reads).toEqual(expect.arrayContaining(['head:src/consumer.ts', 'base:src/consumer.ts',
       'head:contracts/user.ts', 'base:contracts/user.ts']));
     expect(complete).toHaveBeenCalledTimes(1);
     expect(result.outcomes[0].status, JSON.stringify(result.outcomes[0])).toBe('confirmed');
+    expect(result.outcomes[0].claimType).toBe('generic');
+    expect(result.outcomes[0].severity, JSON.stringify(result.outcomes[0])).toBe('P1');
     expect(result.outcomes[0].evidence?.citations).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'diff:src/consumer.ts' }), expect.objectContaining({ id: 'head:contracts/user.ts' }),
       expect.objectContaining({ id: 'diff:contracts/user.ts' }),

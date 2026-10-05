@@ -129,7 +129,7 @@ function withDecision(input: WorkerReviewCompletion, overrides: Record<string, u
   });
   const coverage = buildDeterministicCoverageManifest(changedFiles);
   const outcomes = [...candidatesByFingerprint.values()].map((finding) => {
-    const claimType = findingClaimType(finding);
+    const claimType = findingClaimType({ path: finding.path, title: finding.title });
     const fingerprint = findingFingerprintForClaimType({ path: finding.path, title: finding.title }, claimType);
     const path = finding.path!;
     const currentAffectedContextDigest = groundedAffectedContextDigest(finding, changedFiles, [path]);
@@ -880,7 +880,7 @@ describe('versioned v2 worker/Gate decision agreement', () => {
 
   it('blocks one evidence-backed P1 and fails closed on a forged eligible receipt or count', () => {
     const finding = { severity: 'P1', path: 'src/example.ts', line: 1, title: 'Missing authorization check',
-      body: 'An anonymous caller can read another user record.', blockerEvidence: {
+      body: 'An anonymous caller can read another user record. Add a regression test for this authorization path.', blockerEvidence: {
         trigger: 'A request with no authenticated session reaches this handler.',
         impact: 'It returns another account holder private data to the caller.',
         violatedContract: 'Account data is readable only to its authenticated owner.',
@@ -902,6 +902,21 @@ describe('versioned v2 worker/Gate decision agreement', () => {
       reviewDecision: { ...receipt, counts: { ...receipt.counts, p2Count: 1 } },
     } } as WorkerReviewCompletion;
     expectInvalid(derive(changedCounts, v2Contract), /decision receipt disagrees/u);
+  });
+
+  it('rejects a forged standalone test-coverage P1 even with a confirmed grounded receipt', () => {
+    const finding = { severity: 'P1', path: 'src/example.ts', line: 1,
+      title: 'Missing unit tests for the retry timeout branch',
+      body: 'No unit tests cover the timeout retry path.', blockerEvidence: {
+        trigger: 'The changed retry branch is called with a timeout.',
+        impact: 'The timeout can be missed by a future regression.',
+        violatedContract: 'The retry timeout branch must behave correctly.',
+      } };
+    const input = withDecision(completion({ result: { ...completion().result, verdict: 'FIX_FIRST', findingCount: 1,
+      blockingFindingCount: 1, personas: [lane('security', { decision: 'FINDINGS', findings: [finding] }), lane('architecture')] } }));
+    input.result.groundedReview!.verification.outcomes[0].claimType = 'generic';
+
+    expectInvalid(derive(input, v2Contract), /test-coverage-only claim cannot be blocking/u);
   });
 
   it('requires the explicit trusted policy and a receipt; malformed activation fails closed', () => {
