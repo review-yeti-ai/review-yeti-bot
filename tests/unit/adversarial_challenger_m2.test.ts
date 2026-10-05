@@ -25,16 +25,17 @@ import { DEFAULT_TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline'
 
 const HEAD_SHA = '1111111111111111111111111111111111111111';
 const BASE_SHA = '2222222222222222222222222222222222222222';
-const REPO_ID = 190468701;
-const APP_ID = 4385771;
+const REPO_ID = 101;
+const APP_ID = 42;
 
-function makeSamplePolicyFile(reviewEngine?: 'composed' | 'panel') {
+function makeSamplePolicyFile(reviewEngine?: 'composed' | 'panel' | 'dsh') {
   const rawContent = JSON.stringify({
     schema: 'exampleorg.review-policy.v1',
     review_yeti: {
       personas: 'security,architecture,perf',
       budget: { max_investigation_turns: 5 },
       ...(reviewEngine ? { review_engine: reviewEngine } : {}),
+      ...(reviewEngine === 'dsh' ? { fallback_review_engine: 'composed' } : {}),
     },
   });
   const contentDigest = createHash('sha256').update(rawContent).digest('hex');
@@ -51,8 +52,8 @@ function makeSamplePolicyFile(reviewEngine?: 'composed' | 'panel') {
 }
 
 const sampleTransport = {
-  baseUrl: 'https://bifrost.internal.example.com',
-  model: 'deepseek/deepseek-v4-flash-0731',
+  baseUrl: 'https://gateway.example.invalid/v1',
+  model: 'fixture-model',
 };
 
 describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigger_review', () => {
@@ -144,7 +145,7 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
   // =========================================================================
   describe('SUITE 2: Authoritative admission re-fingerprinting and config coherence', () => {
     it('EMP-M2-CRYPTO-01: re-fingerprints prepared policy and matches verifyPreparedPublishingConfig', async () => {
-      const policyFile = makeSamplePolicyFile();
+      const policyFile = makeSamplePolicyFile('dsh');
       const preparedPolicy = preparePublishingPolicy(policyFile, sampleTransport);
 
       const candidate = {
@@ -303,79 +304,78 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
       expect(data.message).not.toContain('engine:');
     });
 
-    it('EMP-M2-RESOLVER-01: calling trigger_review with review_engine composed or panel against strict AuthoritativePublishingResolver succeeds with { dispatched: true }', async () => {
-      const policyFile = makeSamplePolicyFile();
-      const resolver = new AuthoritativePublishingResolver({
-        policyRepository: { repositoryId: REPO_ID, owner: 'exampleorg', repo: 'example-api' },
-        policyRef: 'refs/heads/service-policy',
-        policyPath: '.exampleorg/review-policy.json',
-        transport: sampleTransport,
-        candidateReaderFactory: async () => ({
-          currentCandidate: async () => ({
-            open: true,
-            draft: false,
-            repositoryId: REPO_ID,
-            owner: 'exampleorg',
-            repo: 'example-api',
-            prNumber: 502,
+    it('EMP-M2-RESOLVER-01: explicit engine requests must match the strict resolver policy', async () => {
+      const createTool = (reviewEngine?: 'composed' | 'panel' | 'dsh') => {
+        const policyFile = makeSamplePolicyFile(reviewEngine);
+        const resolver = new AuthoritativePublishingResolver({
+          policyRepository: { repositoryId: REPO_ID, owner: 'exampleorg', repo: 'example-api' },
+          policyRef: 'refs/heads/service-policy',
+          policyPath: '.exampleorg/review-policy.json',
+          transport: sampleTransport,
+          candidateReaderFactory: async () => ({
+            currentCandidate: async () => ({
+              open: true,
+              draft: false,
+              repositoryId: REPO_ID,
+              owner: 'exampleorg',
+              repo: 'example-api',
+              prNumber: 502,
+              headSha: HEAD_SHA,
+              baseSha: BASE_SHA,
+            }),
+          }),
+          policyReaderFactory: async () => ({
+            resolvePolicyRevision: async () => HEAD_SHA,
+            immutablePolicyFile: async () => policyFile,
+          }),
+        });
+        const admit = vi.fn(async () => ({ run: { runId: `run_${'a'.repeat(32)}` } }));
+        const tool = createTriggerReviewTool({
+          admissionRepository: { admit } as any,
+          resolveGitHubPullRequest: vi.fn(async () => ({
             headSha: HEAD_SHA,
             baseSha: BASE_SHA,
-          }),
-        }),
-        policyReaderFactory: async () => ({
-          resolvePolicyRevision: async () => HEAD_SHA,
-          immutablePolicyFile: async () => policyFile,
-        }),
-      });
+            repositoryId: REPO_ID,
+            installationId: 2001,
+          })),
+          authoritativePublishing: {
+            expectedAppId: APP_ID,
+            repositoryIds: [REPO_ID],
+            resolver,
+          } as any,
+        });
+        return { tool, admit };
+      };
 
-      const tool = createTriggerReviewTool({
-        admissionRepository: { admit: vi.fn(async () => ({ run: { runId: `run_${'a'.repeat(32)}` } })) } as any,
-        resolveGitHubPullRequest: vi.fn(async () => ({
-          headSha: HEAD_SHA,
-          baseSha: BASE_SHA,
-          repositoryId: REPO_ID,
-          installationId: 2001,
-        })),
-        authoritativePublishing: {
-          expectedAppId: APP_ID,
-          repositoryIds: [REPO_ID],
-          resolver,
-        } as any,
-      });
-
-      // When review_engine is omitted, tool execution with real resolver succeeds!
-      const resDefault = await tool.execute({
+      const request = (review_engine?: 'composed' | 'panel') => ({
         owner: 'exampleorg',
         repo: 'example-api',
         pull_number: 502,
         head_sha: HEAD_SHA,
+        ...(review_engine ? { review_engine } : {}),
       });
-      const dataDefault = JSON.parse((resDefault.content[0] as any).text);
-      expect(dataDefault).toMatchObject({ dispatched: true });
 
-      // When review_engine is 'composed', execution succeeds with { dispatched: true }
-      const resComposed = await tool.execute({
-        owner: 'exampleorg',
-        repo: 'example-api',
-        pull_number: 502,
-        head_sha: HEAD_SHA,
-        review_engine: 'composed',
-      });
-      const dataComposed = JSON.parse((resComposed.content[0] as any).text);
-      expect(dataComposed).toMatchObject({ dispatched: true });
-      expect(dataComposed.message).toContain('engine: composed');
+      const defaultTool = createTool();
+      const defaultResult = await defaultTool.tool.execute(request());
+      expect(JSON.parse((defaultResult.content[0] as any).text)).toMatchObject({ dispatched: true });
+      await expect(defaultTool.tool.execute(request('composed')))
+        .rejects.toThrow(/not permitted by the authoritative policy/);
+      expect(defaultTool.admit).toHaveBeenCalledOnce();
 
-      // When review_engine is 'panel', execution succeeds with { dispatched: true }
-      const resPanel = await tool.execute({
-        owner: 'exampleorg',
-        repo: 'example-api',
-        pull_number: 502,
-        head_sha: HEAD_SHA,
-        review_engine: 'panel',
-      });
-      const dataPanel = JSON.parse((resPanel.content[0] as any).text);
-      expect(dataPanel).toMatchObject({ dispatched: true });
-      expect(dataPanel.message).toContain('engine: panel');
+      // The resolver normalizes the legacy DSH intent to its permitted composed fallback.
+      const composedTool = createTool('dsh');
+      const composedResult = await composedTool.tool.execute(request('composed'));
+      expect(JSON.parse((composedResult.content[0] as any).text)).toMatchObject({ dispatched: true });
+      expect(JSON.parse((composedResult.content[0] as any).text).message).toContain('engine: composed');
+      await expect(composedTool.tool.execute(request('panel')))
+        .rejects.toThrow(/not permitted by the authoritative policy/);
+      expect(composedTool.admit).toHaveBeenCalledOnce();
+
+      const panelTool = createTool('panel');
+      const panelResult = await panelTool.tool.execute(request('panel'));
+      expect(JSON.parse((panelResult.content[0] as any).text)).toMatchObject({ dispatched: true });
+      expect(JSON.parse((panelResult.content[0] as any).text).message).toContain('engine: panel');
+      expect(panelTool.admit).toHaveBeenCalledOnce();
     });
   });
 
@@ -692,7 +692,7 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
               },
               prepared: {
                 policy: { effectivePolicyDigest: 'a'.repeat(64), effectiveConfigDigest: 'b'.repeat(64) },
-                config: {},
+                config: { review_engine: 'composed' },
               },
             }),
           },

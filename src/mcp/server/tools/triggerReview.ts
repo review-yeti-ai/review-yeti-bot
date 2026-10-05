@@ -14,11 +14,6 @@ import {
 } from './schemas';
 import { sha256 } from '../../../review/reviewCore';
 import { buildReviewRunIdentity, deriveReviewRunId } from '../../../review/reviewAdmission';
-import {
-  buildAuthoritativeReviewIdentity,
-  fingerprintEffectiveReviewConfig,
-  fingerprintTrustedReviewPolicy,
-} from '../../../review/authoritativeReviewIdentity';
 import type { AuthoritativePublishingResolver } from '../../../review/authoritativePublishingResolver';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
 import type { ReviewDispatchRepository } from '../../../persistence/reviewDispatchRepository';
@@ -163,43 +158,8 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
       }
 
       if (resolved && review_engine) {
-        if (!resolved.prepared.config) {
-          resolved.prepared.config = {} as any;
-        }
-        resolved.prepared.config.review_engine = review_engine;
-        if (resolved.prepared.policy && resolved.prepared.transport && resolved.prepared.policy.sources) {
-          const effectiveConfigDigest = fingerprintEffectiveReviewConfig({
-            config: resolved.prepared.config,
-            transport: resolved.prepared.transport,
-          });
-          resolved.prepared.policy = fingerprintTrustedReviewPolicy({
-            effectiveConfig: { config: resolved.prepared.config, transport: resolved.prepared.transport },
-            effectivePolicy: {
-              central: {
-                schema: 'review-yeti.review-policy.v1',
-                review_yeti: {
-                  personas: (resolved.prepared.expectedPersonaIds || []).join(','),
-                  budget: { max_investigation_turns: resolved.prepared.config?.default_max_turns || 15 },
-                  review_engine,
-                },
-              },
-              execution: { provider: 'bifrost', ...resolved.prepared.transport },
-            },
-            sources: resolved.prepared.policy.sources,
-          });
-          const candidate = {
-            repositoryId,
-            owner,
-            repo,
-            prNumber: pull_number,
-            headSha,
-            baseSha,
-          };
-          resolved.identity = buildAuthoritativeReviewIdentity({
-            requested: candidate,
-            current: resolved.current || { ...candidate, open: true, draft: false },
-            policy: resolved.prepared.policy,
-          });
+        if (resolved.prepared.config?.review_engine !== review_engine) {
+          throw new Error('Requested review_engine is not permitted by the authoritative policy');
         }
       }
 
