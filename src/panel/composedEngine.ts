@@ -80,6 +80,7 @@ import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
 import { resolveMaxConcurrentLanes } from './laneConcurrency';
 import {
   buildDiffSection,
+  buildScopedDiffSection,
   buildPanelResponseFormat,
   createPanelDeadlineSignal,
   PanelDeadlineExceededError,
@@ -109,6 +110,7 @@ import { dashboardStore } from '../persistence/dashboardStore';
 import type { WorkerFailureClass } from '../types/workerFailure';
 import { compactMessageWindow, PI_TOOL_RESULT_MARKER } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
+import { TaskSourceDelivery, validateTaskSourceReceipt, attachTaskSourceDelivery, type TaskSourceReceipt } from '../review/taskSourceDelivery';
 import { isNativeJsonObject, nativeJsonContent, parseNativeToolCallValue } from './nativeTurnProtocol';
 import { MAX_TASK_ID_LENGTH, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN } from '../reviewTaskContract';
 import {
@@ -150,7 +152,7 @@ import { canonicalJson, sha256 } from '../review/reviewCore';
 export interface ComposedCheckpointSnapshot {
   revision: number;
   plan: ReviewTask[];
-  completedTasks: Array<{ id: string; findings: PanelFinding[] }>;
+  completedTasks: Array<{ id: string; findings: PanelFinding[]; sourceDelivery?: TaskSourceReceipt }>;
   satisfiedFindingRecheckIds?: string[];
 }
 
@@ -1130,6 +1132,7 @@ function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: num
     `Rationale: ${task.rationale}`,
     ``,
     `Investigate this task only. The changed-path manifest and related source are discovery context, not added obligations. You may request read-only tools as {"tool":"tool_name","args":{}} (e.g. read_file, symbol_search, ct_impact, knowledge_search, advise_blocker).`,
+    'Inspect every original assigned patch character before COMPLETE. For any indexed or reduced patch, use get_diff_page from startOffset 0 through nextOffset=null; metadata, signatures and related file reads alone do not satisfy source delivery.',
     `When done, return the final result object with required top-level fields "nonce", "task" (must equal "${task.id}"), "status" (COMPLETE or BLOCKED), "blockedReason" (nullable), and "findings" (an array; empty if none) -- no other fields, no Markdown fences.`,
     `Findings decomposition: Keep each finding compact and canonical: {"path": string, "line": number, "severity": "P0"|"P1"|"P2", "title": string, "body": string}. Keep body to 1-2 concise sentences. Do not generate inline code fixes or verbose remediation diffs.`,
     `Use BLOCKED only when you genuinely cannot complete this task with the tools and evidence available; BLOCKED is recorded as a failed lane, never as a pass.`,
@@ -1394,7 +1397,7 @@ async function runPlanPhase(input: {
 // ---------------------------------------------------------------------------
 
 type TaskOutcome =
-  | { type: 'complete'; findings: PanelFinding[]; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; correctionAttempts: number; toolTurns: number; durationMs: number }
+  | { type: 'complete'; findings: PanelFinding[]; sourceDelivery: TaskSourceReceipt; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; correctionAttempts: number; toolTurns: number; durationMs: number }
   | { type: 'blocked'; blockedReason: ModelReportedBlockedReason; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; correctionAttempts: number; toolTurns: number; durationMs: number }
   | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics; durationMs: number; attempts?: number }
   /** Every attempt stalled on a provider timeout; recorded as a named failed lane, never fatal. */
@@ -1412,6 +1415,7 @@ async function runTaskWorkPhase(input: {
   baseMessages: OpenRouterMessage[];
   changedFilesForTools: Array<{ path: string; patch?: string; content?: string }>;
   originalFiles?: any[];
+  sourceDelivery: TaskSourceDelivery;
   timeoutMs: number;
   inactivityTimeoutMs: number;
   requestPolicy?: PanelRequestPolicy;
@@ -1491,6 +1495,9 @@ async function runTaskWorkPhase(input: {
       } } : {}),
     });
     turnUsages.push(turn.usage);
+    const sourceDelivery = input.sourceDelivery.acknowledgeRequest(activeMessages);
+    logger.info('[composed] source delivery receipt', { event:'composed_task_source_delivery',
+      taskId:input.task.id, headSha:sourceDelivery.headSha, sourceDelivery });
     finishReason = turn.finishReason;
     taskMessages = [...taskMessages, { role: 'assistant', content: turn.content }];
 
@@ -1510,9 +1517,11 @@ async function runTaskWorkPhase(input: {
       const toolOutput = input.requestCapBytes
         ? clipToolOutputToRequestCap(result.toolOutput, taskMessages, input.requestCapBytes)
         : result.toolOutput;
+      const toolMessage = `${PI_TOOL_RESULT_MARKER}\n${toolOutput}\n[SCOPE: ${result.toolScope} | EXHAUSTIVE: ${result.isExhaustive}]`;
+      if (parsed.tool === 'get_diff_page') input.sourceDelivery.stageDiffPage(result.toolOutput, toolOutput, toolMessage);
       taskMessages = [...taskMessages, {
         role: 'user',
-        content: `${PI_TOOL_RESULT_MARKER}\n${toolOutput}\n[SCOPE: ${result.toolScope} | EXHAUSTIVE: ${result.isExhaustive}]`,
+        content: toolMessage,
       }];
       continue;
     }
@@ -1591,7 +1600,12 @@ async function runTaskWorkPhase(input: {
       return { type: 'blocked', blockedReason: normalizeModelReportedBlockedReason(candidate.blockedReason),
         turnUsages, toolCalls: toolCallsLog, correctionAttempts, toolTurns, durationMs };
     }
-    return { type: 'complete', findings, turnUsages, toolCalls: toolCallsLog, correctionAttempts, toolTurns, durationMs };
+    if (!sourceDelivery.complete) {
+      if (isLastLocalTurn) return exhausted('source_not_delivered');
+      taskMessages = [...taskMessages, { role:'user', content:'Source delivery is incomplete. Use get_diff_page to inspect every remaining original assigned patch range before returning COMPLETE. Other tools and page metadata alone do not prove full original diff delivery.' }];
+      continue;
+    }
+    return { type: 'complete', findings, sourceDelivery, turnUsages, toolCalls: toolCallsLog, correctionAttempts, toolTurns, durationMs };
   }
 
   return exhausted('task_turn_budget_exhausted');
@@ -1788,6 +1802,11 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
   let reviewBudgetPlan: ReviewBudgetPlan | null = null;
   // REL-1083: the same map-reduce decision; this engine only discloses it.
   let mapReducePlan: MapReducePlan | null = null;
+  const sourceDeliveries = new Map<string, TaskSourceDelivery | TaskSourceReceipt>();
+  const sourceReceipt = (id:string):TaskSourceReceipt | undefined => {
+    const value = sourceDeliveries.get(id);
+    return value instanceof TaskSourceDelivery ? value.snapshot() : value;
+  };
   return runInSpan<PanelResult>('review_yeti_composed_panel', async (span) => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, repoFileProvider } = options;
     const retention = options.retention;
@@ -2028,7 +2047,14 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       for (const task of retainedCheckpointTasks) {
         if (!planIds.has(task.id)) continue;
         try {
+          const planned = planOutcome.tasks.find(value => value.id === task.id)!;
+          const receipt = validateTaskSourceReceipt(task.sourceDelivery, {taskId:task.id, paths:planned.paths,
+            files:changedFiles, headSha, baseSha:options.baseSha});
+          // Old checkpoints retain observations, but cannot prove original
+          // source delivery. Re-run their tasks within the existing budgets.
+          if (!receipt) continue;
           completedCheckpointTasks.set(task.id, validateFindings(task.findings, changedFiles));
+          sourceDeliveries.set(task.id, receipt);
         } catch {
           // A stale or invalid checkpoint never becomes review evidence.
         }
@@ -2067,7 +2093,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       const snapshot = {
         revision,
         plan: planOutcome.tasks,
-        completedTasks: [...completedCheckpointTasks].map(([id, findings]) => ({ id, findings })),
+        completedTasks: [...completedCheckpointTasks].map(([id, findings]) => ({ id, findings,
+          sourceDelivery:sourceReceipt(id) })),
         satisfiedFindingRecheckIds: [...satisfiedFindingRecheckIds],
       };
       // Capture locally before any I/O so the outer abort race can synthesize immediately. At
@@ -2129,6 +2156,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         turnUsages: [],
         aggregateUsage: sumAggregateUsage([]),
         toolCalls: [],
+        sourceDelivery:sourceReceipt(task.id),
       });
     }
 
@@ -2253,6 +2281,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         let outcome!: TaskOutcome;
         for (;;) {
           attempt += 1;
+          if (attempt > 1) (sourceDeliveries.get(task.id) as TaskSourceDelivery).beginAttempt();
           const attemptStartedAt = clock();
           let stalled = false;
           try {
@@ -2270,6 +2299,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
               baseMessages: taskBaseMessages,
               changedFilesForTools: toolFiles,
               originalFiles: changedFiles,
+              sourceDelivery:sourceDeliveries.get(reserved.task.id) as TaskSourceDelivery,
               ...(requestCapBytes ? { requestCapBytes } : {}),
               timeoutMs,
               inactivityTimeoutMs,
@@ -2355,6 +2385,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
               taskId: task.id,
               status: outcome.type === 'stalled' ? 'exhausted' : outcome.type,
               ...(outcome.type === 'complete' ? { findings: outcome.findings } : {}),
+              ...(outcome.type === 'complete' ? { sourceDelivery: outcome.sourceDelivery } : {}),
               ...(diagnostics ? { diagnostics } : {}),
               usage: summarizeComposedTaskUsage(
                 outcome.turnUsages, correctionAttempts, toolTurns, outcome.durationMs,
@@ -2412,6 +2443,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           turnUsages: turnUsagesForLane,
           aggregateUsage: sumAggregateUsage(turnUsagesForLane),
           toolCalls: outcome.toolCalls,
+          sourceDelivery:outcome.sourceDelivery,
         });
         persistentMessages = [
           ...persistentMessages,
@@ -2621,21 +2653,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       evidenceDeadlineExpired = true;
     };
 
-    const launchTask = (index: number, reservation: number) => {
-      const reserved: ReservedTask = { task: pendingTasks[index], index, reservedTurns: reservation };
-      const active: ActiveTask = {
-        reserved,
-        status: 'running',
-        settled: Promise.resolve(),
-        turnUsages: [],
-      };
-      activeTasks.set(index, active);
-      reservedTurns += reservation;
-      fundedTaskCount += 1;
-
+    const taskMessages = (task: ReviewTask, retainedHistory = false): OpenRouterMessage[] => {
       const taskScopedPrefixText = buildTaskScopedPrefix({
         deletionClassification,
-        task: reserved.task,
+        task: task,
         effectiveFiles: budgeted ? budgeted.promptFiles : effectiveFiles,
         originalFiles: changedFiles,
         ...(budgetPack ? { inlineTokenBudget: budgetPack.inlineTokenBudget } : {}),
@@ -2652,6 +2673,13 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         ],
         preCheckEvidence,
       });
+      const taskSection = buildScopedDiffSection(buildTaskScopedFiles(task, changedFiles), {
+        ...(budgetPack ? {tokenBudget:budgetPack.inlineTokenBudget} : {}),
+        domainLanes, baseSha:options.baseSha || '', headSha, canonicalShared:true, fileIndexScope:'task-assignment',
+      });
+      sourceDeliveries.set(task.id, new TaskSourceDelivery({taskId:task.id,
+        paths:task.paths, files:changedFiles, prefix:taskScopedPrefixText,
+        inlinedPaths:taskSection.inlinedPaths, headSha, baseSha:options.baseSha}));
 
       const priorSummaryNote = settledTaskSummaries.length > 0
         ? `\n\n=== SWARM CONTEXT: PRIOR SETTLED TASKS (${settledTaskSummaries.length} completed) ===\n${settledTaskSummaries.join('\n')}`
@@ -2667,7 +2695,22 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         },
       ];
 
-      active.settled = runReservedTask(reserved, taskScopedBaseMessages, taskAbort.signal, active.turnUsages).then(
+      return retainedHistory ? [...taskScopedBaseMessages, ...persistentMessages.slice(2)] : taskScopedBaseMessages;
+    };
+
+    const launchTask = (index: number, reservation: number) => {
+      const reserved: ReservedTask = { task: pendingTasks[index], index, reservedTurns: reservation };
+      const active: ActiveTask = {
+        reserved,
+        status: 'running',
+        settled: Promise.resolve(),
+        turnUsages: [],
+      };
+      activeTasks.set(index, active);
+      reservedTurns += reservation;
+      fundedTaskCount += 1;
+
+      active.settled = runReservedTask(reserved, taskMessages(reserved.task), taskAbort.signal, active.turnUsages).then(
         (result) => {
           active.status = 'fulfilled';
           active.result = result;
@@ -2721,7 +2764,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         // SettledTask the retention ACK records. Sharing one array across the
         // cohort would attribute every lane's turns to whichever task wrote last.
         const cohortPromises = cohort.map((reserved) =>
-          runReservedTask(reserved, [...persistentMessages], cohortAbort.signal, []));
+          runReservedTask(reserved, taskMessages(reserved.task, true), cohortAbort.signal, []));
         let settled: SettledTask[];
         try {
           settled = await Promise.all(cohortPromises);
@@ -2865,7 +2908,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         snapshot: {
           revision: checkpointRevision,
           plan: planOutcome.tasks,
-          completedTasks: [...completedCheckpointTasks].map(([id, findings]) => ({ id, findings })),
+          completedTasks: [...completedCheckpointTasks].map(([id, findings]) => ({ id, findings,
+            sourceDelivery:sourceReceipt(id) })),
           satisfiedFindingRecheckIds: [...satisfiedFindingRecheckIds],
         },
         headSha,
@@ -2908,6 +2952,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     .then((result) => attachReviewDepthDisclosure(result, depthDisclosure))
     .then((result) => attachReviewBudgetDisclosure(result, reviewBudgetPlan))
     .then((result) => attachMapReduceDisclosure(result, mapReducePlan, new Map()))
+    .then((result) => attachTaskSourceDelivery(result, [...sourceDeliveries.keys()].map(sourceReceipt).filter((value): value is TaskSourceReceipt => value !== undefined)))
     .then((result) => {
       options.progress?.emit({ task: 'panel', status: 'completed', durationMs: Date.now() - panelStartedAt });
       return result;

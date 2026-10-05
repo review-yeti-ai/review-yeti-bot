@@ -904,9 +904,14 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       const text = typeof last === 'string' ? last : (last ?? []).map((part: any) => part.text ?? '').join('\n');
       const task = text.match(/Task id: (task-\d+)/u)?.[1];
       const nonce = text.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/u)?.[1];
-      expect(task).toMatch(/^task-[78]$/u);
+      // Legacy checkpoint tasks have no original-source receipts. Every task
+      // must earn new delivery evidence rather than inheriting old completion.
+      expect(task).toMatch(/^task-[1-8]$/u);
       expect(nonce).toBeDefined();
-      return { model: 'local-fixture', content: JSON.stringify({ nonce, task, status: 'COMPLETE', findings: [] }),
+      expect(payload.messages.map((message: any) => typeof message.content === 'string' ? message.content :
+        (message.content ?? []).map((part: any) => part.text ?? '').join('\n')).join('\n')).toContain(addedLinesPatch);
+      const findings = seeded.checkpoint.completedTasks.find((completed) => completed.id === task)?.findings ?? [];
+      return { model: 'local-fixture', content: JSON.stringify({ nonce, task, status: 'COMPLETE', findings }),
         usage: { prompt: 10, completion: 10, total: 20 }, costUSD: 0, raw: {} };
     });
     const resumed = await executeComposedReview({
@@ -915,7 +920,9 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       changedFiles: seeded.checkpoint.plan.map((task) => ({ path: task.paths[0], patch: addedLinesPatch })),
       client: { complete }, checkpoint: { resumed: a2Checkpoint, save: async () => undefined },
     });
-    expect(complete).toHaveBeenCalledTimes(2);
+    expect(complete).toHaveBeenCalledTimes(8);
+    expect(resumed.sourceDelivery).toHaveLength(8);
+    expect(resumed.sourceDelivery?.every((receipt) => receipt.complete)).toBe(true);
     expect(resumed.personas.map((persona) => persona.id).sort()).toEqual(seeded.checkpoint.plan.map((task) => task.id).sort());
     for (const task of seeded.checkpoint.completedTasks) {
       expect(resumed.personas.find((persona) => persona.id === task.id)?.findings).toEqual(task.findings);

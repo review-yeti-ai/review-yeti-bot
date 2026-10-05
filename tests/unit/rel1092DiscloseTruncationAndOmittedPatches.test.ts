@@ -475,13 +475,15 @@ function approvingPanelClient(): ReviewModelClient {
 function composedClient(paths: string[]): ReviewModelClient {
   const complete = async (payload: { messages: unknown[] }) => {
     const text = lastText(payload.messages);
-    const nonce = nonceFrom(text);
+    const nonce = nonceFrom(textOf(payload.messages));
     if (text.includes('PLAN TURN')) {
       return fakeResponse(JSON.stringify({ nonce, tasks: [
         { id: 'task-sec', dimension: 'security', paths, question: 'Is it safe?', rationale: 'changed source' },
       ] }));
     }
-    if (text.includes('WORK TURN')) return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    if (textOf(payload.messages).includes('WORK TURN')) {
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    }
     throw new Error(`unexpected turn: ${text.slice(0, 80)}`);
   };
   return { complete } as unknown as ReviewModelClient;
