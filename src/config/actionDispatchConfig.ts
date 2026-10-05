@@ -88,7 +88,9 @@ export function centralExternalTargetConfigFromEnv(
   }
   const publicAppId = environment.REVIEW_YETI_PUBLIC_TARGET_APP_ID?.trim();
   const publicPrivateKey = environment.REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY?.trim().replace(/\\n/g, '\n');
-  if (publicAppId !== String(PUBLIC_REVIEW_APP_ID) || !publicPrivateKey) {
+  if (!publicAppId || !/^[1-9][0-9]*$/u.test(publicAppId)
+    || !Number.isSafeInteger(Number(publicAppId))
+    || publicAppId !== String(PUBLIC_REVIEW_APP_ID) || !publicPrivateKey) {
     throw new Error('Dedicated public-target GitHub App credentials are required for external dispatch');
   }
   return {

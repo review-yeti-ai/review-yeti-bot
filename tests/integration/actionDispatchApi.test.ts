@@ -303,6 +303,12 @@ describe('POST /api/dispatch/action', () => {
       allowAppGate: true,
       requireExpectedGeneration: true,
       centralExternalRepositories,
+      authoritativePublishing: {
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
+        expectedAppIdFor: () => 4552718,
+        repositoryIds: [1326169548],
+        resolver: { resolve: vi.fn() },
+      },
       verifier: { verify: vi.fn(async () => claims) },
     });
     const missingGeneration = await request(central.instance)
