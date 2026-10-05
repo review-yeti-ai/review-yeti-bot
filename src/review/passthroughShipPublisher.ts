@@ -28,8 +28,22 @@ export type PassthroughShipResult =
   | { status: 'skipped'; reason: 'pull_request_not_open' | 'pull_request_draft' | 'stale_head'
     | 'repository_mismatch' | 'existing_review_evidence' };
 
+export interface PassthroughMergeGroupRequest {
+  owner: string;
+  repo: string;
+  repositoryId: number;
+  /** The merge-queue commit the required check is read from. */
+  headSha: string;
+}
+
+export type PassthroughMergeGroupResult =
+  | { status: 'published' | 'already_published'; checkId: number; reviewMode: 'passthrough' }
+  | { status: 'skipped'; reason: 'existing_review_evidence' };
+
 export interface PassthroughShipPublisher {
   publish(request: PassthroughShipRequest): Promise<PassthroughShipResult>;
+  /** Merge-queue commit: the queue's required check must exist there too, or a passthrough PR stalls in the queue. */
+  publishMergeGroup(request: PassthroughMergeGroupRequest): Promise<PassthroughMergeGroupResult>;
 }
 
 export interface PassthroughShipPublisherOptions {
@@ -91,6 +105,49 @@ function outputFor(kind: 'raw' | 'gate', headSha: string) {
 export function createPassthroughShipPublisher(options: PassthroughShipPublisherOptions): PassthroughShipPublisher {
   const now = options.now ?? Date.now;
   return {
+    async publishMergeGroup(request: PassthroughMergeGroupRequest): Promise<PassthroughMergeGroupResult> {
+      const { owner, repo, repositoryId, headSha } = request;
+      const authoritative = options.authoritativePublishing;
+      const appId = authoritative?.repositoryIds.includes(repositoryId)
+        ? expectedReviewAppIdFor(authoritative, { repositoryId, owner, repo }) : options.appId;
+      const token = await options.tokenFor(owner, repo, 'publish');
+      const client = options.githubClientFor?.(token) ?? createBoundedGitHubJsonClient({
+        token, baseUrl: options.baseUrl, fetchImplementation: options.fetchImplementation,
+      });
+      // Same canonical identity the merge-group gate itself publishes, so the queue's reader accepts it.
+      const externalId = `review-yeti-merge-group:${repositoryId}:${headSha}`;
+      const runs = (await listHeadChecks(client, owner, repo, headSha))
+        .filter((run) => isOfficialCheck(run, AUTHORITATIVE_REVIEW_CHECK_NAME, appId) && run.head_sha === headSha);
+      if (runs.some((run) => run.external_id !== externalId)) {
+        return { status: 'skipped', reason: 'existing_review_evidence' };
+      }
+      const done = runs.find((run) => run.status === 'completed' && run.conclusion === 'success');
+      if (done) return { status: 'already_published', checkId: Number(done.id), reviewMode: 'passthrough' };
+      const body = {
+        status: 'completed', conclusion: 'success', completed_at: new Date(now()).toISOString(),
+        output: outputFor('raw', headSha),
+      };
+      const open = runs.find((run) => run.status !== 'completed');
+      if (open) {
+        await client.request(`/repos/${owner}/${repo}/check-runs/${Number(open.id)}`, {
+          method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+        });
+        return { status: 'published', checkId: Number(open.id), reviewMode: 'passthrough' };
+      }
+      const created = await client.request(`/repos/${owner}/${repo}/check-runs`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+          name: AUTHORITATIVE_REVIEW_CHECK_NAME, head_sha: headSha, external_id: externalId, ...body,
+        }),
+      });
+      if (!Number.isSafeInteger(Number(created?.id)) || Number(created.id) < 1) {
+        throw new Error('passthrough merge-group check creation returned no id');
+      }
+      logger.info('Review Yeti passthrough posted service-owned SHIP merge-group check', {
+        reviewMode: 'passthrough', repositoryId, headSha, checkId: Number(created.id),
+      });
+      return { status: 'published', checkId: Number(created.id), reviewMode: 'passthrough' };
+    },
+
     async publish(request: PassthroughShipRequest): Promise<PassthroughShipResult> {
       const { owner, repo, repositoryId, prNumber, headSha } = request;
       const clientFor = async (mode: 'read' | 'publish'): Promise<GitHubJsonClient> => {

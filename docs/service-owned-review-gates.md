@@ -261,7 +261,10 @@ finite Actions/OIDC repository and owner allowlists:
   `Review Yeti` or Gate check, so genuine review evidence is never superseded.
   A publication failure is surfaced (HTTP 502 for an Action dispatch, an error for
   the webhook and MCP paths) rather than silently acknowledged. Merge-group
-  deliveries still receive only the receipt. Revisit this behaviour when
+  deliveries get the same labelled SHIP check on the queue commit, with the
+  canonical `review-yeti-merge-group:<repositoryId>:<sha>` identity the queue
+  reader requires (otherwise a passthrough pull request stalls in the merge
+  queue); it is also skipped when a different official check is already there. Revisit this behaviour when
   passthrough is turned off and reviews are restored.
 
 - `GITHUB_APP_WEBHOOK_ENABLED=true` mounts the signed route. It requires a
