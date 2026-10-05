@@ -25,7 +25,7 @@ import { parseWorkerReviewCompletion, publishedFindingSeverity, workerReviewComp
 import { canonicalJson, sha256 } from '../../../review/reviewCore';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
 import { admitCompletedFindingRecheck, completedFindingRecheckCoordinates } from '../../../persistence/completedFindingRecheckAdmission';
-import { recordPrFindingRecheckRequest } from '../../../persistence/reviewPrLifecycleRepository';
+import { recordPrFindingRecheckRequest, reservePrFindingRecheckTarget } from '../../../persistence/reviewPrLifecycleRepository';
 import {
   disputedFindingRecheckDigest,
   MAX_DISPUTE_RECHECKS_PER_BATCH,
@@ -308,7 +308,8 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
              ORDER BY created_at DESC, run_id DESC
              LIMIT 1
           )
-          SELECT runs.*, outbox.execution_attempt AS outbox_execution_attempt, outbox.status AS outbox_status,
+          SELECT runs.*, outbox.delivery_id AS outbox_delivery_id,
+                 outbox.execution_attempt AS outbox_execution_attempt, outbox.status AS outbox_status,
                  completion.execution_attempt, completion.content_digest, completion.payload,
                  gate.attempt_id AS gate_attempt_id, gate.review_generation,
                  gate.worker_result_digest, gate.coordinates AS gate_coordinates,
@@ -473,6 +474,9 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
           counterArgumentDigest,
         };
         const requestDigest = disputedFindingRecheckDigest(unsigned);
+        const admittedAt = (deps.now ?? Date.now)();
+        const { executionAttempt: targetExecutionAttempt } = completedFindingRecheckCoordinates(
+          completion.executionAttempt, Number(row.review_generation));
         await client.query(
           `INSERT INTO review_finding_rechecks
              (request_id, run_id, source_execution_attempt, source_content_digest, source_plan_digest, source_gate_attempt_id,
@@ -489,13 +493,23 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         );
         await admitCompletedFindingRecheck(client, unsigned, {
           sourceGeneration: Number(row.review_generation), expectedAppId: authoritative.expectedAppId,
-          actorDigest: sha256(caller.callerId), now: (deps.now ?? Date.now)(),
+          actorDigest: sha256(caller.callerId), now: admittedAt,
         });
         await recordPrFindingRecheckRequest(client, {
           runId: completion.runId, sourceExecutionAttempt: completion.executionAttempt,
           requestId, findingId: canonicalFindingId, actorDigest: sha256(caller.callerId),
           sourceContentDigest: digest, sourceContextDigest: String(row.snapshot_digest), requestDigest,
-          at: (deps.now ?? Date.now)(),
+          at: admittedAt,
+        });
+        await reservePrFindingRecheckTarget(client, {
+          repositoryId: completion.repositoryId, owner: completion.owner, repo: completion.repo,
+          prNumber: completion.prNumber, runId: completion.runId,
+          deliveryId: String(row.delivery_id ?? row.outbox_delivery_id), sourceExecutionAttempt: completion.executionAttempt,
+          executionAttempt: targetExecutionAttempt, requestId, requestDigest,
+          sourceContentDigest: digest, sourceContextDigest: String(row.snapshot_digest),
+          headSha: completion.headSha, baseSha: completion.baseSha,
+          policyDigest: completion.policyDigest, configDigest: completion.configDigest,
+          candidateContextDigest: String(row.snapshot_digest), actorDigest: sha256(caller.callerId), at: admittedAt,
         });
         return { requestId, completion, finding: matched.finding, findingId: canonicalFindingId };
       });
