@@ -1143,7 +1143,7 @@ index 1111111..2222222 100644
         authoritativePublishing: {
           acceptNewRequests: true,
           repositoryIds: [1001],
-          expectedAppId: 4385771,
+          expectedAppId: 42,
           resolver: { resolve: mockResolve },
         } as any,
       });

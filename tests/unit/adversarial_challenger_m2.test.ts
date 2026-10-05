@@ -25,8 +25,8 @@ import { DEFAULT_TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline'
 
 const HEAD_SHA = '1111111111111111111111111111111111111111';
 const BASE_SHA = '2222222222222222222222222222222222222222';
-const REPO_ID = 190468701;
-const APP_ID = 4385771;
+const REPO_ID = 101;
+const APP_ID = 42;
 
 function makeSamplePolicyFile(reviewEngine?: 'composed' | 'panel' | 'dsh') {
   const rawContent = JSON.stringify({
@@ -52,8 +52,8 @@ function makeSamplePolicyFile(reviewEngine?: 'composed' | 'panel' | 'dsh') {
 }
 
 const sampleTransport = {
-  baseUrl: 'https://bifrost.internal.example.com',
-  model: 'deepseek/deepseek-v4-flash-0731',
+  baseUrl: 'https://gateway.example.invalid/v1',
+  model: 'fixture-model',
 };
 
 describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigger_review', () => {
