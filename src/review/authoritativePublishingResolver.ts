@@ -115,7 +115,10 @@ export class AuthoritativePublishingResolver {
       if (source.repositoryId !== this.policyRepository.repositoryId
         || source.repository !== `${this.policyRepository.owner}/${this.policyRepository.repo}`
         || source.sha !== revision || source.path !== this.policyPath) throw unavailable();
-      const prepared = preparePublishingPolicy(file, this.transport);
+      // Repository-scoped policy overrides use only the identity the service just read from
+      // GitHub and matched to the admitted target. PR text, caller policy JSON and mutable labels
+      // are never inputs to this selection.
+      const prepared = preparePublishingPolicy(file, this.transport, { owner: first.owner, repo: first.repo });
       const identity = buildAuthoritativeReviewIdentity({ requested: target, current: first, policy: prepared.policy });
       const current = matchingCandidate(target, await step(() => candidateReader.currentCandidate({ ...repository, prNumber: target.prNumber }, abort.signal)));
       checkDeadline();
