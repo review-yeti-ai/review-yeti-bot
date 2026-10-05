@@ -290,4 +290,57 @@ describe('composed source delivery boundary', () => {
     expect(result.sourceDelivery?.[0]).toMatchObject({complete:true,files:[{ranges:[[0,10]],inline:false}]});
     expect(snapshots.at(-1).completedTasks[0].sourceDelivery).toEqual(result.sourceDelivery?.[0]);
   });
+
+  it('restarts original-source delivery after a task retry caused by a provider stall', async () => {
+    const { OpenRouterTimeoutError } = await import('../../src/gateway/openRouterClient');
+    vi.stubEnv('MAX_FILE_DIFF_CHARS','8');
+    vi.useFakeTimers({ toFake: ['setTimeout','clearTimeout','Date'] });
+    const start=Date.now();
+    let releaseFirstTimeout!: () => void;
+    const firstTimeout=new Promise<void>(resolve => { releaseFirstTimeout=resolve; });
+    let taskCalls=0, sawIncompleteCorrection=false;
+    const complete=vi.fn(async ({messages}:any) => {
+      const prompt=text(messages),n=nonce(prompt);
+      if (prompt.includes('PLAN TURN')) return response({nonce:n,tasks:[task]});
+      taskCalls++;
+      if (taskCalls===1) return response({tool:'get_diff_page',args:{path:files[0].path,startOffset:0,maxChars:6}});
+      if (taskCalls===2) return response({tool:'get_diff_page',args:{path:files[0].path,startOffset:6,maxChars:6}});
+      if (taskCalls===3) {
+        expect(prompt).toContain('"content":"abcdef"');
+        expect(prompt).toContain('"content":"ghij"');
+        // A successful response after both pages proves they were delivered before the stall.
+        return response({tool:'get_diff_page',args:{path:files[0].path,startOffset:6,maxChars:6}});
+      }
+      if (taskCalls===4 || taskCalls===5) {
+        expect(prompt).toContain('"content":"abcdef"');
+        expect(prompt).toContain('"content":"ghij"');
+        if (taskCalls===4) releaseFirstTimeout();
+        throw new OpenRouterTimeoutError('Synthetic provider timeout');
+      }
+      if (taskCalls===6) {
+        // The fresh attempt starts from its original task context, not the page-bearing first attempt.
+        expect(prompt).not.toContain('"content":"abcdef"');
+        expect(prompt).not.toContain('"content":"ghij"');
+      } else if (prompt.includes('Source delivery is incomplete.')) {
+        sawIncompleteCorrection=true;
+      }
+      return response({nonce:n,task:task.id,status:'COMPLETE',findings:[]});
+    });
+    const run=executeComposedReview({config,changedFiles:files,repository:'exampleorg/project',headSha:HEAD,baseSha:BASE,
+      client:{complete} as any,deadlineBudget:{deadlineAtMs:start+180_000,timeoutMs:180_000,terminalBound:true},
+      deadlineNow:() => Date.now()});
+    try {
+      await firstTimeout;
+      await vi.advanceTimersByTimeAsync(1_001);
+      const result=await run;
+      expect(sawIncompleteCorrection).toBe(true);
+      expect(result.quorum.satisfied).toBe(false);
+      expect(result.personas).toEqual([]);
+      expect(result.unreportedLanes?.[0].error).toContain('source_not_delivered');
+      expect(result.sourceDelivery?.[0]).toMatchObject({complete:false,files:[{ranges:[]}]});
+      expect(taskCalls).toBeGreaterThanOrEqual(7);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
