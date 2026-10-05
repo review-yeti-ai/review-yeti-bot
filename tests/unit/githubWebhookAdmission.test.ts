@@ -78,11 +78,11 @@ function closedPayload(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function fixture(admissionEnabled = true) {
+function fixture(admissionEnabled = true, passthroughEnabled = false) {
   const admit = vi.fn(async () => ({ status: 'accepted', run: { runId: `run_${'1'.repeat(32)}` } }));
   const onEvent = createGitHubWebhookAdmissionHandler({
     config: {
-      secret: SECRET, admissionEnabled,
+      secret: SECRET, admissionEnabled, passthroughEnabled,
       repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
     },
     admission: { admit } as any,
@@ -125,11 +125,16 @@ function closedFixture(terminalizedRunIds: string[] = [`run_${'1'.repeat(32)}`],
   return { instance, admit, terminalizeRunsForClosedPullRequest };
 }
 
-async function postWebhook(instance: ReturnType<typeof closedFixture>['instance'], body: unknown, delivery: string) {
+async function postWebhook(
+  instance: ReturnType<typeof closedFixture>['instance'],
+  body: unknown,
+  delivery: string,
+  eventName = 'pull_request',
+) {
   const auth = signed(body, delivery);
   return request(instance).post('/api/webhooks/github')
     .set('Content-Type', 'application/json')
-    .set('X-GitHub-Event', 'pull_request')
+    .set('X-GitHub-Event', eventName)
     .set('X-GitHub-Delivery', auth.delivery)
     .set('X-Hub-Signature-256', auth.signature)
     .send(auth.raw);
@@ -154,6 +159,207 @@ describe('native GitHub App webhook admission', () => {
       publicationMode: 'app-gate', centralActionDispatch: false, receivedAt: NOW,
       identity: expect.objectContaining({ owner: 'exampleorg', repo: 'dashboard', prNumber: 42, headSha: HEAD, baseSha: BASE }),
     }));
+  });
+
+  it('returns a signed, exact-head passthrough receipt without admitting a new PR review', async () => {
+    const f = fixture(false, true);
+    const body = payload({ action: 'opened' });
+    const auth = signed(body, 'delivery-global-passthrough');
+    const response = await postWebhook(f.instance, body, auth.delivery);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      status: 'passthrough', reason: 'operator_global_passthrough', reviewStarted: false,
+      eventName: 'pull_request', deliveryId: auth.delivery, repositoryId: 614653796,
+      repository: 'exampleorg/dashboard', prNumber: 42, headSha: HEAD, baseSha: BASE,
+    });
+    expect(f.admit).not.toHaveBeenCalled();
+
+    const invalidSignature = await request(f.instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json')
+      .set('X-GitHub-Event', 'pull_request')
+      .set('X-GitHub-Delivery', 'delivery-invalid-signature')
+      .set('X-Hub-Signature-256', `sha256=${'0'.repeat(64)}`)
+      .send(auth.raw);
+    expect(invalidSignature.status).toBe(401);
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('passes through an authorized exact-head refresh without advancing its generation', async () => {
+    const f = fixture(true, true);
+    const body = refreshPayload();
+    const auth = signed(body, 'delivery-refresh-passthrough');
+    const response = await postWebhook(f.instance, body, auth.delivery, 'check_run');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      status: 'passthrough', reason: 'operator_global_passthrough', reviewStarted: false,
+      eventName: 'check_run', deliveryId: auth.delivery, repositoryId: 614653796,
+      repository: 'exampleorg/dashboard', prNumber: 42, headSha: HEAD, baseSha: BASE,
+    });
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges a headless /review comment without resolving or advancing a candidate', async () => {
+    const admit = vi.fn();
+    const advanceDebounceAvailableAt = vi.fn();
+    const resolveRepositoryConfig = vi.fn();
+    const resolveAuthoritative = vi.fn();
+    const handler = createGitHubWebhookAdmissionHandler({
+      config: {
+        secret: SECRET, admissionEnabled: true, passthroughEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
+      },
+      admission: { admit, advanceDebounceAvailableAt } as any,
+      resolveRepositoryConfig,
+      authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796],
+        resolver: { resolve: resolveAuthoritative } } as any,
+    });
+    const body = {
+      action: 'created', installation: { id: 456 },
+      repository: payload().repository,
+      issue: { number: 42, state: 'open', pull_request: { url: 'https://api.github.com/repos/exampleorg/dashboard/pulls/42' } },
+      comment: { body: '/review' },
+    };
+
+    await expect(handler({
+      eventName: 'issue_comment', deliveryId: 'delivery-headless-comment',
+      rawBody: Buffer.from(JSON.stringify(body)), body,
+    })).resolves.toEqual({
+      status: 'passthrough', reason: 'operator_global_passthrough', reviewStarted: false,
+      eventName: 'issue_comment', deliveryId: 'delivery-headless-comment',
+      repositoryId: 614653796, repository: 'exampleorg/dashboard', prNumber: 42,
+    });
+    expect(resolveRepositoryConfig).not.toHaveBeenCalled();
+    expect(resolveAuthoritative).not.toHaveBeenCalled();
+    expect(advanceDebounceAvailableAt).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['labeled', { name: 'review-yeti' }, ['tag']],
+    ['unlabeled', { name: 'wip' }, ['pr_synchronize']],
+  ] as const)('passes through %s review triggers before debounce or admission', async (action, label, triggers) => {
+    const admit = vi.fn();
+    const advanceDebounceAvailableAt = vi.fn(async () => ({ advanced: true, runId: 'run_existing' }));
+    const handler = createGitHubWebhookAdmissionHandler({
+      config: {
+        secret: SECRET, admissionEnabled: true, passthroughEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
+      },
+      admission: { admit, advanceDebounceAvailableAt } as any,
+      resolveRepositoryConfig: vi.fn(() => ({ auto_review: { enabled: true, triggers: [...triggers] } })),
+    });
+    const body = payload({ action, label, pull_request: { ...payload().pull_request, labels: [] } });
+
+    const result = await handler({
+      eventName: 'pull_request', deliveryId: `delivery-${action}-passthrough`,
+      rawBody: Buffer.from(JSON.stringify(body)), body,
+    });
+    expect(result).toMatchObject({
+      status: 'passthrough', reason: 'operator_global_passthrough', reviewStarted: false,
+      eventName: 'pull_request', repositoryId: 614653796, repository: 'exampleorg/dashboard',
+      prNumber: 42, headSha: HEAD, baseSha: BASE,
+    });
+    expect(advanceDebounceAvailableAt).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('keeps human opt-out cancellation active during global passthrough', async () => {
+    const cancelRunsForPullRequest = vi.fn(async () => ({ cancelledRunIds: ['run_active'] }));
+    const admit = vi.fn();
+    const handler = createGitHubWebhookAdmissionHandler({
+      config: {
+        secret: SECRET, admissionEnabled: true, passthroughEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
+      },
+      admission: { admit, cancelRunsForPullRequest } as any,
+      now: () => NOW,
+    });
+    const body = payload({ action: 'labeled', label: { name: 'wip' } });
+    const result = await handler({
+      eventName: 'pull_request', deliveryId: 'delivery-human-optout',
+      rawBody: Buffer.from(JSON.stringify(body)), body,
+    });
+    expect(result).toEqual({
+      status: 'ignored', reason: 'opt_out_label_present', deliveryId: 'delivery-human-optout', prNumber: 42,
+    });
+    expect(cancelRunsForPullRequest).toHaveBeenCalledExactlyOnceWith({
+      repositoryId: 614653796, prNumber: 42, cancelReason: 'opt_out_label',
+      gateReason: 'review-opted-out', now: NOW,
+    });
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('keeps draft cancellation active when webhook admission is paused for passthrough', async () => {
+    const cancelRunsForPullRequest = vi.fn(async () => ({ cancelledRunIds: ['run_active'] }));
+    const admit = vi.fn();
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: {
+        secret: SECRET, admissionEnabled: false, passthroughEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
+      },
+      admission: { admit, cancelRunsForPullRequest } as any,
+      now: () => NOW,
+    });
+    const body = {
+      action: 'converted_to_draft', number: 42,
+      installation: { id: 456 }, repository: payload().repository,
+      pull_request: { number: 42, base: { repo: { full_name: 'exampleorg/dashboard' } } },
+    };
+
+    await expect(onEvent({
+      eventName: 'pull_request', deliveryId: 'delivery-draft-cancel-passthrough',
+      rawBody: Buffer.from(JSON.stringify(body)), body,
+    })).resolves.toMatchObject({ status: 'accepted', reason: 'converted_to_draft', cancelled: 1 });
+    expect(cancelRunsForPullRequest).toHaveBeenCalledExactlyOnceWith({
+      repositoryId: 614653796, prNumber: 42, cancelReason: 'converted_to_draft',
+      gateReason: 'pull-request-draft', now: NOW,
+    });
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('returns an enrolled merge-group passthrough receipt without calling the queue gate', async () => {
+    const tokenFor = vi.fn();
+    const fetchImplementation = vi.fn();
+    const store = { claim: vi.fn(), complete: vi.fn(), release: vi.fn() };
+    const config = {
+      secret: SECRET, admissionEnabled: true, passthroughEnabled: true,
+      repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
+    };
+    const mergeGroupGate = createMergeGroupGate({
+      config, repository: store as any, tokenFor, fetchImplementation,
+    });
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config, admission: { admit: vi.fn() } as any, mergeGroupGate,
+    });
+    const instance = createActionDispatchApp({
+      verifier: { verify: vi.fn() } as any,
+      admission: { admit: vi.fn() } as any,
+      resolveInstallationId: vi.fn(), databaseReady: vi.fn(async () => true),
+      allowAppGate: true, githubWebhook: { secret: SECRET, onEvent },
+    });
+    const body = {
+      action: 'checks_requested', installation: { id: 456 }, repository: payload().repository,
+      merge_group: {
+        head_sha: 'd'.repeat(40), base_sha: BASE,
+        head_ref: 'refs/heads/gh-readonly-queue/main/pr-42-abcdef0', base_ref: 'refs/heads/main',
+      },
+    };
+    const auth = signed(body, 'delivery-merge-group-passthrough');
+    const response = await request(instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json').set('X-GitHub-Event', 'merge_group')
+      .set('X-GitHub-Delivery', auth.delivery).set('X-Hub-Signature-256', auth.signature).send(auth.raw);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      status: 'passthrough', reason: 'operator_global_passthrough', reviewStarted: false,
+      eventName: 'merge_group', deliveryId: auth.delivery, repositoryId: 614653796,
+      repository: 'exampleorg/dashboard', headSha: 'd'.repeat(40), baseSha: BASE,
+    });
+    expect(store.claim).not.toHaveBeenCalled();
+    expect(tokenFor).not.toHaveBeenCalled();
+    expect(fetchImplementation).not.toHaveBeenCalled();
   });
 
   it('marks only an authoritative composed ready_for_review webhook as continuation provenance', async () => {

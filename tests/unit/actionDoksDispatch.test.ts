@@ -28,6 +28,36 @@ function environment(overrides: Record<string, string> = {}) {
   };
 }
 
+type ActionDispatchRequest = {
+  deliveryId: string;
+  repositoryId: number;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  baseSha: string;
+  caller: { eventName: string };
+};
+
+function actionPassthroughReceipt(request: ActionDispatchRequest, overrides: Record<string, unknown> = {}) {
+  return {
+    version: 'ActionDispatchPassthrough.v1',
+    status: 'passthrough',
+    reason: 'operator_global_passthrough',
+    reviewStarted: false,
+    deliveryId: request.deliveryId,
+    repositoryId: request.repositoryId,
+    owner: request.owner,
+    repo: request.repo,
+    prNumber: request.prNumber,
+    headSha: request.headSha,
+    baseSha: request.baseSha,
+    eventName: request.caller.eventName,
+    callerKind: 'direct',
+    ...overrides,
+  };
+}
+
 afterEach(() => vi.restoreAllMocks());
 
 describe('DOKS Action dispatch client', () => {
@@ -239,6 +269,82 @@ describe('DOKS Action dispatch client', () => {
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer actions-runtime-token');
     expect(fetchMock.mock.calls[1][0]).toBe('https://review-bot.example.com/api/dispatch/action');
     expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe(`Bearer signed-github-oidc-${'x'.repeat(32)}`);
+  });
+
+  it('accepts an HTTP 200 passthrough receipt only when identity matches and writes honest skipped outputs', async () => {
+    const { buildDispatchRequest, dispatchAction, writeDispatchOutputs } = await import(modulePath);
+    const request = buildDispatchRequest(environment());
+    const passthrough = actionPassthroughReceipt(request);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(passthrough), { status: 200 }));
+
+    const result = await dispatchAction(environment(), fetchMock);
+
+    expect(result).toEqual(passthrough);
+    expect(result).not.toHaveProperty('runId');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const posted = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(posted.deliveryId).toBe(passthrough.deliveryId);
+    expect(posted.caller.eventName).toBe(passthrough.eventName);
+
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-doks-passthrough-'));
+    const outputPath = path.join(directory, 'output');
+    writeDispatchOutputs(outputPath, result);
+    const output = fs.readFileSync(outputPath, 'utf8');
+    expect(output).toContain('verdict=NO_VERDICT');
+    expect(output).toContain('review-status=SKIPPED');
+    expect(output).toContain('gate-decision=SKIPPED');
+    expect(output).toContain('merge-eligible=false');
+    expect(output).toContain(`rationale=Operator global passthrough skipped review for ${request.deliveryId}; no verdict was produced.`);
+    expect(output).not.toContain('PENDING');
+    expect(output).not.toContain('run_');
+  });
+
+  it.each([
+    ['delivery id', { deliveryId: 'actions:other-run:2:12345:42:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }],
+    ['repository id', { repositoryId: 54321 }],
+    ['owner', { owner: 'otherorg' }],
+    ['repository name', { repo: 'other-api' }],
+    ['pull request number', { prNumber: 43 }],
+    ['head SHA', { headSha: 'e'.repeat(40) }],
+    ['base SHA', { baseSha: 'f'.repeat(40) }],
+    ['caller event', { eventName: 'pull_request' }],
+    ['caller kind', { callerKind: 'unknown' }],
+    ['skip reason', { reason: 'not_authorized' }],
+    ['review state', { reviewStarted: true }],
+  ] as Array<[string, Record<string, unknown>]>)('rejects passthrough receipts with mismatched %s', async (_field, override) => {
+    const { buildDispatchRequest, dispatchAction } = await import(modulePath);
+    const request = buildDispatchRequest(environment());
+    const receipt = actionPassthroughReceipt(request, override);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(receipt), { status: 200 }));
+    const sleep = vi.fn(async () => {});
+
+    await expect(dispatchAction(environment(), fetchMock, { sleep }))
+      .rejects.toThrow(/invalid passthrough receipt|different Action request/u);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('accepts passthrough only at HTTP 200 and never treats it as admission', async () => {
+    const { buildDispatchRequest, dispatchAction } = await import(modulePath);
+    const request = buildDispatchRequest(environment());
+    const passthrough = actionPassthroughReceipt(request);
+    const accepted = {
+      version: 'ActionDispatchAccepted.v1',
+      status: 'accepted',
+      runId: `run_${'a'.repeat(32)}`,
+    };
+
+    for (const [status, body] of [[202, passthrough], [200, accepted]] as const) {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify(body), { status }));
+      await expect(dispatchAction(environment(), fetchMock)).rejects.toThrow(/receipt/u);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    }
   });
 
   it('retries transient dispatch transport failures with the identical idempotent delivery', async () => {

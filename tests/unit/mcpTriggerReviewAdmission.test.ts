@@ -135,6 +135,68 @@ describe('trigger_review governed admission', () => {
     });
   });
 
+  it('returns a distinct MCP passthrough result without querying or admitting a review', async () => {
+    const identity = {
+      owner: 'exampleorg', repo: 'example-api', prNumber: 73,
+      headSha: HEAD_SHA, baseSha: BASE_SHA,
+    };
+    const prepared = { policy: { effectivePolicyDigest: POLICY_DIGEST } };
+    const query = vi.fn(async () => ({ rows: [] }));
+    const admit = vi.fn(async () => { throw new Error('passthrough must not admit'); });
+    const resolvePullRequest = vi.fn(async () => ({
+      headSha: HEAD_SHA, baseSha: BASE_SHA, repositoryId: 101, installationId: 22,
+    }));
+    const resolvePolicy = vi.fn(async () => ({ identity, prepared }));
+    const tool = createTriggerReviewTool({
+      passthroughEnabled: true,
+      queryableDatabase: { query },
+      admissionRepository: { admit } as any,
+      resolveGitHubPullRequest: resolvePullRequest,
+      authoritativePublishing: {
+        expectedAppId: 42,
+        repositoryIds: [101],
+        acceptNewRequests: false,
+        resolver: { resolve: resolvePolicy },
+      },
+    } as any);
+
+    const result = await tool.execute(request);
+    const output = JSON.parse((result.content[0] as any).text);
+    expect(output).toEqual({
+      dispatched: false,
+      job_crd_created: false,
+      status: 'passthrough',
+      reason: 'operator_global_passthrough',
+      review_started: false,
+      owner: 'exampleorg',
+      repo: 'example-api',
+      pull_number: 73,
+      head_sha: HEAD_SHA,
+      message: 'Review request acknowledged; operator passthrough is enabled, so no review was started.',
+    });
+    expect(output).not.toHaveProperty('attempt_id');
+    expect(resolvePullRequest).toHaveBeenCalledOnce();
+    expect(resolvePolicy).toHaveBeenCalledOnce();
+    expect(query).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('does not let MCP passthrough bypass incomplete-P2 recovery authorization', async () => {
+    const admit = vi.fn();
+    const tool = createTriggerReviewTool({
+      passthroughEnabled: true,
+      admissionRepository: { admit } as any,
+      resolveGitHubPullRequest: vi.fn(),
+      authoritativePublishing: { expectedAppId: 42, repositoryIds: [101], acceptNewRequests: true,
+        resolver: { resolve: vi.fn() } },
+    } as any);
+
+    await expect(tool.execute({ ...request, incomplete_p2_recovery: true })).rejects.toThrow(
+      /requires verified static-token admin authentication and exact repository authorization/,
+    );
+    expect(admit).not.toHaveBeenCalled();
+  });
+
   it('does not pre-cancel an active same-identity review when force is requested', async () => {
     const identity = {
       owner: 'exampleorg', repo: 'example-api', prNumber: 73,

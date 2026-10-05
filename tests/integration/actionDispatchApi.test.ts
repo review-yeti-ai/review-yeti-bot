@@ -92,6 +92,7 @@ function app(overrides: Record<string, any> = {}) {
     verifier, admission, resolveInstallationId,
     allowAppGate: overrides.allowAppGate,
     requireExpectedGeneration: overrides.requireExpectedGeneration,
+    passthroughEnabled: overrides.passthroughEnabled,
     centralExternalRepositories: overrides.centralExternalRepositories,
     authoritativePublishing: overrides.authoritativePublishing,
     now: overrides.now,
@@ -191,6 +192,158 @@ const terminalSuccessResult = {
 } as const;
 
 describe('POST /api/dispatch/action', () => {
+  it('acknowledges an authenticated Action dispatch without resolving or admitting new work', async () => {
+    const resolveInstallationId = vi.fn(async () => 456);
+    const admission = { admit: vi.fn(async () => { throw new Error('must not admit'); }) };
+    const fixture = app({
+      passthroughEnabled: true,
+      resolveInstallationId,
+      admission,
+      authoritativePublishing: {
+        expectedAppId: 789,
+        repositoryIds: [123],
+        acceptNewRequests: false,
+        resolver: { resolve: vi.fn(async () => { throw new Error('must not resolve'); }) },
+      },
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({ ...body, expectedGeneration: 999 });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      version: 'ActionDispatchPassthrough.v1',
+      status: 'passthrough',
+      reason: 'operator_global_passthrough',
+      reviewStarted: false,
+      deliveryId: body.deliveryId,
+      eventName: body.caller.eventName,
+      repositoryId: body.repositoryId,
+      owner: body.owner,
+      repo: body.repo,
+      prNumber: body.prNumber,
+      headSha: body.headSha,
+      baseSha: body.baseSha,
+      callerKind: 'direct',
+    });
+    expect(response.body).not.toHaveProperty('runId');
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('does not compare or consume the supplied central generation during passthrough', async () => {
+    const claims = centralManualClaims;
+    const resolveInstallationId = vi.fn(async () => 456);
+    const resolve = vi.fn(async () => { throw new Error('must not resolve'); });
+    const admission = { admit: vi.fn(async () => { throw new Error('must not admit'); }) };
+    const fixture = app({
+      passthroughEnabled: true,
+      allowAppGate: true,
+      requireExpectedGeneration: true,
+      centralExternalRepositories,
+      verifier: { verify: vi.fn(async () => claims) },
+      resolveInstallationId,
+      admission,
+      authoritativePublishing: {
+        expectedAppId: 789,
+        repositoryIds: [1326169548],
+        acceptNewRequests: false,
+        resolver: { resolve },
+      },
+    });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        ...centralManualTarget,
+        expectedGeneration: 999,
+        caller: { ...body.caller, eventName: 'workflow_dispatch',
+          workflowRef: claims.workflow_ref, workflowSha: claims.workflow_sha },
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      version: 'ActionDispatchPassthrough.v1',
+      status: 'passthrough',
+      reason: 'operator_global_passthrough',
+      reviewStarted: false,
+      callerKind: 'central',
+      repositoryId: 1326169548,
+    });
+    expect(response.body).not.toHaveProperty('runId');
+    expect(response.body).not.toHaveProperty('expectedGeneration');
+    expect(resolveInstallationId).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('still enforces OIDC and expected-generation presence before passthrough', async () => {
+    const rejectedVerifier = app({
+      passthroughEnabled: true,
+      verifier: { verify: vi.fn(async () => { throw new Error('invalid token'); }) },
+    });
+    const unauthorized = await request(rejectedVerifier.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer bad-token')
+      .send(body);
+    expect(unauthorized.status).toBe(403);
+    expect(rejectedVerifier.admission.admit).not.toHaveBeenCalled();
+
+    const claims = {
+      ...centralManualClaims,
+      repository: 'exampleorg/example-review-actions',
+      repository_id: '99999',
+      event_name: 'workflow_dispatch',
+    };
+    const central = app({
+      passthroughEnabled: true,
+      allowAppGate: true,
+      requireExpectedGeneration: true,
+      centralExternalRepositories,
+      verifier: { verify: vi.fn(async () => claims) },
+    });
+    const missingGeneration = await request(central.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        ...centralManualTarget,
+        expectedGeneration: undefined,
+        caller: { ...body.caller, eventName: 'workflow_dispatch',
+          workflowRef: claims.workflow_ref, workflowSha: claims.workflow_sha },
+      });
+    expect(missingGeneration.status).toBe(400);
+    expect(missingGeneration.body).toEqual({
+      error: 'Invalid Action dispatch request', invalidFields: ['expectedGeneration'],
+    });
+    expect(central.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('does not let passthrough authorize an incomplete-P2 recovery request', async () => {
+    const fixture = app({ passthroughEnabled: true, authoritativePublishing: {
+      expectedAppId: 789,
+      repositoryIds: [123],
+      resolver: { resolve: vi.fn() },
+    } });
+    const response = await request(fixture.instance)
+      .post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({
+        ...body,
+        refreshRequested: true,
+        refreshExecutionAttempt: 1,
+        expectedGeneration: 2,
+        incompleteP2Recovery: true,
+      });
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ error: 'Incomplete P2 recovery requires authoritative central admission' });
+    expect(fixture.resolveInstallationId).not.toHaveBeenCalled();
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
   it('returns 202 only after the verified request is durably admitted', async () => {
     const fixture = app();
     const response = await request(fixture.instance)

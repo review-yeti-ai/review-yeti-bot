@@ -49,6 +49,14 @@ export interface MergeGroupGateOptions {
   githubClientFor?(token: string): GitHubJsonClient;
 }
 
+export interface MergeGroupPassthroughReceipt {
+  status: 'passthrough';
+  repositoryId: number;
+  repository: string;
+  headSha: string;
+  baseSha: string;
+}
+
 async function mapConcurrent<T, U>(items: readonly T[], concurrency: number, operation: (item: T) => Promise<U>): Promise<U[]> {
   const results = new Array<U>(items.length);
   let next = 0;
@@ -141,11 +149,17 @@ export class MergeGroupGateInProgressError extends Error {
 }
 
 export function createMergeGroupGate(options: MergeGroupGateOptions) {
-  return async (payload: unknown): Promise<MergeGroupGateState & { constituents: number }> => {
+  return async (payload: unknown): Promise<(MergeGroupGateState & { constituents: number }) | MergeGroupPassthroughReceipt> => {
     const identity = validatePayload(payload, options.config);
     const repositoryName = identity.repository.full_name;
     const repositoryId = identity.repository.id;
     const headSha = identity.merge_group.head_sha;
+    if (options.config.passthroughEnabled === true) {
+      return {
+        status: 'passthrough', repositoryId, repository: repositoryName,
+        headSha, baseSha: identity.merge_group.base_sha,
+      };
+    }
     const claimToken = randomUUID();
     const claim = await options.repository.claim(repositoryId, headSha, claimToken);
     if (claim.status === 'terminal') return { ...claim.result, constituents: 0 };
