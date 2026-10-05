@@ -1,0 +1,155 @@
+{
+  "schemaVersion": "review-yeti-competitive-benchmark-manifest-v1",
+  "benchmark": "AACR-Bench",
+  "source": "Alibaba-Aone/aacr-bench",
+  "sourceRevision": "47be1d6df1e7faf222cf531587772d92f79fe6b2",
+  "datasetSha256": "0804505f0a474765ce2840c832cfeaa6c4f0250dd6ccb169fe73c6758b245a86",
+  "split": {
+    "unit": "repository",
+    "algorithm": "sha256-ranked-30-percent-v1",
+    "salt": "review-yeti-ws5-v1|"
+  },
+  "sampleUnit": "pull_request",
+  "heldoutCaseCount": 10,
+  "cases": [
+    {
+      "id": "aacr-c-12718",
+      "repository": "libsdl-org/SDL",
+      "prNumber": 12718,
+      "baseSha": "ab34ea5a2684766e510de1daf8ae44c41b6af704",
+      "headSha": "96dfef35c4b0b89f2f8d9c2ecc4f5e3a25d3e7a0",
+      "language": "C",
+      "changedLineCount": 161,
+      "referenceContextLevels": [
+        "Diff Level",
+        "File Level",
+        "Repo Level"
+      ]
+    },
+    {
+      "id": "aacr-csharp-24910",
+      "repository": "PowerShell/PowerShell",
+      "prNumber": 24910,
+      "baseSha": "2259f56c0786574cbde8624d031e778028352372",
+      "headSha": "ec952ce3b70c87885ed756ffca2bec128f07c51b",
+      "language": "C#",
+      "changedLineCount": 23,
+      "referenceContextLevels": [
+        "Diff Level",
+        "File Level",
+        "Repo Level"
+      ]
+    },
+    {
+      "id": "aacr-cpp-20825",
+      "repository": "FreeCAD/FreeCAD",
+      "prNumber": 20825,
+      "baseSha": "01241245a1d92a8db69fab0db4c2053b5e1227c1",
+      "headSha": "870d7f5385af5d377994479ce6ad017465bdad3d",
+      "language": "C++",
+      "changedLineCount": 776,
+      "referenceContextLevels": [
+        "Diff Level",
+        "File Level",
+        "Repo Level"
+      ]
+    },
+    {
+      "id": "aacr-go-12185",
+      "repository": "ollama/ollama",
+      "prNumber": 12185,
+      "baseSha": "92b96d54efd6b49322b7cf046f9a0dc16b00cd0a",
+      "headSha": "b6002f6b6c69370f8c18a9e6c1cafa8463273a6b",
+      "language": "Go",
+      "changedLineCount": 64,
+      "referenceContextLevels": [
+        "Diff Level",
+        "File Level",
+        "Repo Level"
+      ]
+    },
+    {
+      "id": "aacr-java-36789",
+      "repository": "dbeaver/dbeaver",
+      "prNumber": 36789,
+      "baseSha": "469e4265a58af95a6d5f4069515e029fc2891374",
+      "headSha": "dc67ca7cf486ceaf45559318cdcbca193847188d",
+      "language": "Java",
+      "changedLineCount": 294,
+      "referenceContextLevels": [
+        "Diff Level",
+        "File Level",
+        "Repo Level"
+      ]
+    },
+    {
+      "id": "aacr-javascript-56185",
+      "repository": "nodejs/node",
+      "prNumber": 56185,
+      "baseSha": "6cd1805364f457b19ebecb38b8f909146f968354",
+      "headSha": "b2255442712cb6db83d112deb6ba61197d06a5f3",
+      "language": "JavaScript",
+      "changedLineCount": 62,
+      "referenceContextLevels": [
+        "Diff Level",
+        "File Level",
+        "Repo Level"
+      ]
+    },
+    {
+      "id": "aacr-php-15217",
+      "repository": "filamentphp/filament",
+      "prNumber": 15217,
+      "baseSha": "e4a7ecf0e65574522eb9fbe70b7339f41de0bbe2",
+      "headSha": "871ec75815e1f92da141e9aef80f287f7779dfe7",
+      "language": "PHP",
+      "changedLineCount": 11,
+      "referenceContextLevels": [
+        "Diff Level",
+        "File Level"
+      ]
+    },
+    {
+      "id": "aacr-python-6044",
+      "repository": "langflow-ai/langflow",
+      "prNumber": 6044,
+      "baseSha": "5bcf4d001f1174ed9e63b7115f10e5dbe1bcca9f",
+      "headSha": "bcfe6f9ded091cd360b3212b6e9f5a58cbcdac5e",
+      "language": "Python",
+      "changedLineCount": 882,
+      "referenceContextLevels": [
+        "Diff Level",
+        "File Level",
+        "Repo Level"
+      ]
+    },
+    {
+      "id": "aacr-rust-3414",
+      "repository": "unionlabs/union",
+      "prNumber": 3414,
+      "baseSha": "efab2bedc6beb4e1bb01906cba9e0dabd3072f13",
+      "headSha": "d840723278f1d4cecc02ac540385725a1c54ca84",
+      "language": "Rust",
+      "changedLineCount": 213,
+      "referenceContextLevels": [
+        "Diff Level",
+        "File Level",
+        "Repo Level"
+      ]
+    },
+    {
+      "id": "aacr-typescript-20210",
+      "repository": "n8n-io/n8n",
+      "prNumber": 20210,
+      "baseSha": "291a39c87eb2bc228816d02c55a1f6857822006f",
+      "headSha": "ebe680fbcacd9210aa219ab01d98012ac1d6faae",
+      "language": "TypeScript",
+      "changedLineCount": 761,
+      "referenceContextLevels": [
+        "Diff Level",
+        "File Level",
+        "Repo Level"
+      ]
+    }
+  ]
+}
