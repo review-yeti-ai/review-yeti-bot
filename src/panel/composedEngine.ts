@@ -39,6 +39,7 @@ import {
   OpenRouterMessage,
   ReviewModelClient,
   retryAfterFloorMs,
+  type OpenRouterRequest,
 } from '../gateway/openRouterClient';
 import { runInSpan } from '../telemetry';
 import { planRateLimitRetry } from '../review/laneInfrastructure';
@@ -557,6 +558,7 @@ async function callTurn(params: {
   timeoutMs: number;
   inactivityTimeoutMs: number;
   requestPolicy?: PanelRequestPolicy;
+  reasoningEffort: NonNullable<OpenRouterRequest['reasoningEffort']>;
   responseFormat: Record<string, unknown>;
   jobId?: string;
   signal?: AbortSignal;
@@ -594,6 +596,7 @@ async function callTurn(params: {
       response = await raceWithPanelAbort(
         Promise.resolve().then(() => params.client.complete({
           ...(params.requestPolicy || {}),
+          reasoningEffort: params.reasoningEffort,
           model: params.model,
           messages: params.messages,
           timeoutMs: params.timeoutMs,
@@ -1272,6 +1275,7 @@ async function runPlanPhase(input: {
   timeoutMs: number;
   inactivityTimeoutMs: number;
   requestPolicy?: PanelRequestPolicy;
+  reasoningEffort: NonNullable<OpenRouterRequest['reasoningEffort']>;
   jobId?: string;
   signal?: AbortSignal;
   changedFilesForTools: Array<{ path: string; patch?: string; content?: string }>;
@@ -1307,6 +1311,7 @@ async function runPlanPhase(input: {
       timeoutMs: input.timeoutMs,
       inactivityTimeoutMs: input.inactivityTimeoutMs,
       requestPolicy: input.requestPolicy,
+      reasoningEffort: input.reasoningEffort,
       deadlineAtMs: input.deadlineAtMs,
       now: input.now,
       responseFormat,
@@ -1433,6 +1438,7 @@ async function runTaskWorkPhase(input: {
   timeoutMs: number;
   inactivityTimeoutMs: number;
   requestPolicy?: PanelRequestPolicy;
+  reasoningEffort: NonNullable<OpenRouterRequest['reasoningEffort']>;
   jobId?: string;
   signal?: AbortSignal;
   repoFileProvider?: RepoFileProvider;
@@ -1497,6 +1503,7 @@ async function runTaskWorkPhase(input: {
       timeoutMs: input.timeoutMs,
       inactivityTimeoutMs: input.inactivityTimeoutMs,
       requestPolicy: input.requestPolicy,
+      reasoningEffort: input.reasoningEffort,
       deadlineAtMs: input.deadlineAtMs,
       now: input.now,
       responseFormat,
@@ -2005,6 +2012,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           maxTasks,
           timeoutMs,
           inactivityTimeoutMs,
+          reasoningEffort: spec.effort,
           requestPolicy,
           jobId,
           signal,
@@ -2318,6 +2326,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
               ...(requestCapBytes ? { requestCapBytes } : {}),
               timeoutMs,
               inactivityTimeoutMs,
+              reasoningEffort: spec.effort,
               requestPolicy,
               jobId,
               signal: taskSignal,

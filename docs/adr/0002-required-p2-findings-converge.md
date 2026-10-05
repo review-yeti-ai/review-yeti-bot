@@ -61,11 +61,13 @@ Mechanism:
   (and for the Gate) and keeps only those whose author is the App's bot login, resolved once from
   GitHub's authenticated `/app` endpoint. A thread whose author cannot be verified is still used for
   identity (carried or dropped) but never satisfies a required P2.
-- The worker never holds `pull_requests: write`. It sends new required findings to the dispatch
-  service (`POST /api/dispatch/finding-threads`, authenticated with the per-run worker bearer). The
-  service checks the execution, the head and that each fingerprint matches its content, mints a
-  token whose whole grant is `pull_requests: write`, publishes the threads, and resolves only the
-  bot's own threads that GitHub already marks outdated and that this head did not report.
+- The worker never holds `pull_requests: write`. It sends required findings to the dispatch service
+  (`POST /api/dispatch/finding-threads`, authenticated with the per-run worker bearer). The service
+  checks the execution, the head and that each fingerprint matches its content, then mints a token
+  whose whole grant is `pull_requests: write`. Under v1, it resolves only the bot's own threads that
+  GitHub already marks outdated and that this head did not report. Under v2, a complete trusted run
+  resolves the App's prior P2/P3/NIT advisory conversations; when one is reclassified as a P0/P1
+  blocker, the service publishes the current blocking conversation before resolving the old advisory.
 - Under v1, the canonical arbitration verdict is unchanged and stays the evidence the service re-derives.
   When the verdict is SHIP but a required P2 remains, the published title reads
   `Review Yeti: FIX_FIRST (N required P2)` and the summary says why, so the check never reads SHIP
