@@ -1,5 +1,9 @@
 import { reviewYetiPassthroughEnabledFromEnv } from './reviewYetiPassthrough';
-import { PUBLIC_REVIEW_REPOSITORY, PUBLIC_REVIEW_REPOSITORY_ID, PUBLIC_REVIEW_APP_ID } from '../auth/repositoryReviewAuthority';
+import {
+  PUBLIC_REVIEW_REPOSITORY,
+  PUBLIC_REVIEW_REPOSITORY_ID,
+  PUBLIC_REVIEW_APP_ID,
+} from './repositoryReviewAuthorityConstants';
 
 export const SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY = PUBLIC_REVIEW_REPOSITORY;
 export const SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY_ID = PUBLIC_REVIEW_REPOSITORY_ID;
