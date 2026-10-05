@@ -124,6 +124,27 @@ describe('passthrough service-owned SHIP check', () => {
     expect(fake.writes).toHaveLength(0);
   });
 
+  it('skips when the pull request belongs to a different repository id', async () => {
+    const fake = fakeGitHub();
+    const { publisher: p } = publisher(fake);
+    expect(await p.publish({ ...REQUEST, repositoryId: REPO_ID + 1 })).toEqual({ status: 'skipped', reason: 'repository_mismatch' });
+    expect(fake.writes).toHaveLength(0);
+  });
+
+  it('does not post the Gate or the raw check over a genuine Gate already on the head', async () => {
+    const fake = fakeGitHub({ existing: [{
+      id: 2, name: 'Review Yeti Gate', app: APP, head_sha: HEAD, status: 'completed', conclusion: 'failure',
+      external_id: `review-yeti-gate:v1:${'f'.repeat(64)}`,
+    }] });
+    const identity = buildReviewRunIdentity({ owner: 'exampleorg', repo: 'dashboard', prNumber: 42, headSha: HEAD, baseSha: BASE });
+    const { publisher: p } = publisher(fake, { authoritativePublishing: {
+      expectedAppId: APP.id, repositoryIds: [REPO_ID],
+      resolver: { resolve: vi.fn(async () => ({ current: {}, identity, prepared: { policy: { effectivePolicyDigest: 'a'.repeat(64) } } })) },
+    } });
+    expect(await p.publish(REQUEST)).toEqual({ status: 'skipped', reason: 'existing_review_evidence' });
+    expect(fake.writes).toHaveLength(0);
+  });
+
   it('posts the paired service-owned Gate for an authoritative repository', async () => {
     const fake = fakeGitHub();
     const identity = buildReviewRunIdentity({ owner: 'exampleorg', repo: 'dashboard', prNumber: 42, headSha: HEAD, baseSha: BASE });
