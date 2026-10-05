@@ -81,6 +81,28 @@ describe('source delivery receipts', () => {
     expect(receipt.files[0].ranges).toEqual([[0,10]]);
   });
 
+  it('recovers a full source patch beyond the 20,000-character inline cap', () => {
+    const patch='x'.repeat(20_749);
+    const source={path:files[0].path,patch};
+    const delivery=new TaskSourceDelivery({...binding,files:[source],prefix:patch.slice(0,20_000),inlinedPaths:binding.paths});
+    const pageFor=(startOffset:number,endOffset:number) => JSON.stringify({status:'ok',path:source.path,
+      digest:createHash('sha256').update(patch).digest('hex'),pageComplete:true,offsetUnit:'utf16-code-units',
+      totalChars:patch.length,startOffset,endOffset,nextOffset:endOffset < patch.length ? endOffset : null,
+      content:patch.slice(startOffset,endOffset)});
+    const first=pageFor(0,20_000),tail=pageFor(20_000,patch.length);
+    delivery.stageDiffPage(first,first,'original diff page 1');
+    delivery.stageDiffPage(tail,tail,'original diff page 2');
+    const receipt=delivery.acknowledgeRequest(messages('original diff page 1').concat(messages('original diff page 2')));
+    expect(receipt.complete).toBe(true);
+    expect(receipt.files[0]).toMatchObject({totalChars:20_749,ranges:[[0,20_749]]});
+    expect(validateTaskSourceReceipt(receipt,{...binding,files:[source]})).toEqual(receipt);
+    const restored=attachTaskSourceDelivery({taskPlan:[{id:binding.taskId,paths:binding.paths}],
+      truncatedFiles:[{path:source.path,originalChars:20_749,keptChars:20_000}],
+      diffShrink:{notSentInFull:[{path:source.path,why:'truncated'}]}},[receipt]);
+    expect(restored.truncatedFiles).toBeUndefined();
+    expect(restored.diffShrink?.notSentInFull).toEqual([]);
+  });
+
   it('requires original pages when inline sanitization removed source characters', () => {
     const original={path:files[0].path,patch:'abc\u001b[31mdef'};
     const delivery=new TaskSourceDelivery({...binding,files:[original],prefix:'abcdef',inlinedPaths:binding.paths});
