@@ -730,6 +730,14 @@ describe('attachReviewBudgetDisclosure', () => {
     expect(renderReviewBudgetSummary(undefined)).toEqual([]);
   });
 
+  it('labels a PLAN budget disclosure as planning context', () => {
+    const disclosure = { ...(attachReviewBudgetDisclosure(base, plan) as any).reviewBudget, phase: 'plan' };
+    const lines = renderReviewBudgetSummary(disclosure).join('\n');
+    expect(lines).toContain('**PLAN context budget** (`REVIEW_YETI_BUDGET`)');
+    expect(lines).toContain('each planning context was sent');
+    expect(lines).not.toContain('**Review budget**');
+  });
+
   it('lists signatures-only and not-deeply-reviewed files by name', () => {
     const lane = packLaneBudget('arch-lane', [
       candidate('src/a.ts', 50_000, 'a'), candidate('src/b.ts', 50_000, 'b'),
