@@ -452,11 +452,34 @@ export async function runIndependentGroundedVerification(input: {
       ? Number(input.budget?.stageBudgetMs) : GROUNDED_DEFAULT_BUDGET.stageBudgetMs));
   const budget = Object.freeze({ totalCalls, callsPerTask, concurrency, callTimeoutMs, stageBudgetMs });
   const changedPaths = new Set(input.changedFiles.map((file) => normalizedPath(file.path)));
-  const candidates = [...new Map(input.findings.map(claimOf)
-    .filter((candidate): candidate is GroundedFindingCandidate => candidate !== null && changedPaths.has(candidate.path))
-    .map((candidate) => [candidate.fingerprint, candidate])).values()]
-    .sort((left, right) => severityOrder(left.severity) - severityOrder(right.severity)
-      || left.path.localeCompare(right.path) || left.line - right.line || left.fingerprint.localeCompare(right.fingerprint));
+  const changedFilesByPath = changedPathMap(input.changedFiles);
+  const candidateByFingerprint = new Map<string, GroundedFindingCandidate>();
+  for (const finding of input.findings) {
+    const candidate = claimOf(finding);
+    if (!candidate || !changedPaths.has(candidate.path)) continue;
+    const previous = candidateByFingerprint.get(candidate.fingerprint);
+    if (!previous) {
+      candidateByFingerprint.set(candidate.fingerprint, candidate);
+      continue;
+    }
+    const candidateSeverity = severityOrder(candidate.severity);
+    const previousSeverity = severityOrder(previous.severity);
+    if (candidateSeverity < previousSeverity) {
+      candidateByFingerprint.set(candidate.fingerprint, candidate);
+      continue;
+    }
+    if (candidateSeverity > previousSeverity) continue;
+    const changedLines = changedLineNumbers(changedFilesByPath.get(candidate.path)?.patch);
+    const candidateLineChanged = changedLines?.has(candidate.line) ?? false;
+    const previousLineChanged = changedLines?.has(previous.line) ?? false;
+    if (candidateLineChanged !== previousLineChanged ? candidateLineChanged
+      : candidate.line !== previous.line ? candidate.line < previous.line
+        : candidate.title.localeCompare(previous.title) < 0) {
+      candidateByFingerprint.set(candidate.fingerprint, candidate);
+    }
+  }
+  const candidates = [...candidateByFingerprint.values()].sort((left, right) => severityOrder(left.severity) - severityOrder(right.severity)
+    || left.path.localeCompare(right.path) || left.line - right.line || left.fingerprint.localeCompare(right.fingerprint));
   const manifest = buildDeterministicCoverageManifest(input.changedFiles);
   const assignmentByPath = new Map<string, string>();
   for (const region of manifest.regions) assignmentByPath.set(region.path, region.assignmentId);

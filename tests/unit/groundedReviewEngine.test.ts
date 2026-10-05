@@ -53,6 +53,31 @@ describe('grounded review engine', () => {
     expect(result.unverifiedBlockerCount).toBe(1);
   });
 
+  it('keeps the strongest severity when lanes report one semantic finding at different severities', async () => {
+    const sourceDiff = '@@ -1,2 +1,2 @@\n-before()\n-old()\n+before()\n+new()';
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (_path, side) => ({ content: 'function changed() { return newValue; }', sha: side === 'head' ? head : base }),
+      readDiff: () => ({ patch: sourceDiff,
+        identity: { repository: 'example-org/sample-project', headSha: head, baseSha: base } }),
+    };
+    const complete = vi.fn(async () => ({ model: 'test', content: JSON.stringify({ status: 'confirmed',
+      violatedInvariant: 'The changed value must be authorized.', failurePath: 'The handler returns it to any caller.',
+      benignCheck: 'No authorization check exists.', changeConnection: 'The current patch adds the unguarded return.',
+      citations: ['head:src/handler.ts', 'base:src/handler.ts', 'diff:src/handler.ts'] }), usage: null, costUSD: null }));
+    const result = await runIndependentGroundedVerification({
+      findings: [
+        { severity: 'P1', path: 'src/handler.ts', line: 2, title: 'Missing authorization check' },
+        { severity: 'P2', path: 'src/handler.ts', line: 2, title: 'Missing authorization check' },
+      ],
+      changedFiles: [{ path: 'src/handler.ts', patch: sourceDiff }], provider,
+      repository: 'example-org/sample-project', headSha: head, baseSha: base,
+      client: { complete } as unknown as ReviewModelClient, model: 'test-model',
+    });
+    expect(result.outcomes).toHaveLength(1);
+    expect(result.outcomes[0], JSON.stringify(result.outcomes[0])).toMatchObject({ severity: 'P1', status: 'confirmed' });
+  });
+
   it('does not turn an unanchored or unrelated raw blocker into a coverage failure', () => {
     const current = { severity: 'P1', path: 'src/current.ts', line: 4, title: 'Current changed claim' };
     const unrelated = { severity: 'P1', path: 'src/unchanged.ts', line: 2, title: 'Unchanged pre-existing claim' };
