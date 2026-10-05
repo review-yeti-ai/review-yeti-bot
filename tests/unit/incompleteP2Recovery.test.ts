@@ -303,6 +303,122 @@ function queryableForIncompletePrior() {
   };
 }
 
+function sourceDeliveryFixture(taskId: string, path: string, index: number) {
+  return {
+    version: 'TaskSourceDelivery.v1' as const,
+    taskId,
+    headSha,
+    baseSha,
+    contextDigests: ['1'.repeat(64)],
+    files: [{ path, patchDigest: String(index).padStart(64, '0'), totalChars: 10,
+      ranges: [[0, 10] as [number, number]], inline: false }],
+    complete: true,
+  };
+}
+
+function gracefulWorkerSummary() {
+  return [
+    `Evidence collection reached its 20-minute cutoff at \`${headSha}\`. The final closeout preserved and published 3 validated finding(s); 4 risk-ordered task(s) remain. This is fail-closed, not an approval. An exact-head rerun resumes the durable completed-task checkpoint.`,
+    '',
+    'Findings: 3 (blocking P0/P1: 0; 3 raw persona finding(s) before clustering).',
+    '',
+    'Coverage: engine=composed; planned tasks=7; expected tasks=7; completed tasks=3; failed tasks=0; roster valid=false; quorum satisfied=false; task coverage complete=false.',
+  ].join('\n');
+}
+
+function queryableForGracefulComposedPrior() {
+  const fixture = queryableForIncompletePrior() as any;
+  const row = fixture.sourceRows[0];
+  const completion = row.payload;
+  const plan = Array.from({ length: 7 }, (_, index) => ({
+    id: `reviewer-${index + 1}`,
+    dimension: index < 3 ? 'security' : 'testing',
+    paths: [`src/risk-${index + 1}.ts`],
+    question: 'Review the assigned change.',
+    rationale: 'Confirm the original source remains bound to this lane.',
+  }));
+  completion.result.taskPlan = plan;
+  completion.result.coverageComplete = false;
+  completion.result.quorumSatisfied = false;
+  completion.result.failureDiagnostics = {
+    reason: 'review_evidence_deadline',
+    logTail: 'The evidence window ended.',
+    recoverableIncompletePanel: false,
+  };
+  completion.result.personas = plan.slice(0, 3).map((task: any, index: number) => ({
+    id: task.id,
+    decision: 'FINDINGS',
+    findings: [{ severity: 'P2', path: task.paths[0], line: 1,
+      title: `Advisory ${index + 1}`, body: `Source-bound advisory ${index + 1}.` }],
+    sourceDelivery: sourceDeliveryFixture(task.id, task.paths[0], index + 1),
+  }));
+  completion.result.findingCount = 3;
+  completion.result.blockingFindingCount = 0;
+  fixture.resultDigest = resealCompletion(fixture);
+
+  const checkpoint = {
+    version: 'ReviewExecutionCheckpoint.v1',
+    runId,
+    repositoryId,
+    owner,
+    repo,
+    prNumber,
+    headSha,
+    baseSha,
+    policyDigest,
+    configDigest,
+    executionAttempt: 1,
+    revision: 7,
+    plan,
+    completedTasks: completion.result.personas.map((persona: any) => ({
+      id: persona.id,
+      findings: structuredClone(persona.findings),
+      sourceDelivery: structuredClone(persona.sourceDelivery),
+    })),
+  };
+  Object.assign(row, {
+    checkpoint_execution_attempt: 1,
+    checkpoint_revision: checkpoint.revision,
+    checkpoint_head_sha: headSha,
+    checkpoint_config_digest: configDigest,
+    checkpoint_payload: checkpoint,
+    checkpoint_byte_length: Buffer.byteLength(JSON.stringify(checkpoint), 'utf8'),
+  });
+  row.gate_evidence.coverageComplete = false;
+  row.gate_evidence.reviewEngine = 'composed';
+  fixture.runRow.artifacts = { review_engine: 'composed' };
+
+  const gate = gateCheckFixture(1, row.gate_external_id, '2026-09-29T12:00:02Z');
+  fixture.gracefulEvidence = [{
+    generation: 1,
+    checkId: 10,
+    externalId: `${runId}:a1`,
+    conclusion: 'failure',
+    title: 'Review Yeti: INCOMPLETE (partial evidence published)',
+    legacyIncompleteRoster: {
+      workerSummary: gracefulWorkerSummary(),
+      workerStartedAt: '2026-09-29T11:59:58Z',
+      workerCompletedAt: '2026-09-29T12:00:01Z',
+      gracefulComposedPartial: true,
+      gateChecks: [gate],
+    },
+  } satisfies ReviewGenerationRecoveryEvidence];
+  fixture.query = async (sql: string) => {
+    if (sql.includes('FROM review_generation_recoveries')) {
+      return { rows: fixture.gracefulEvidence.map((proof: ReviewGenerationRecoveryEvidence) => ({
+        recovered_generation: proof.generation,
+        worker_check_id: proof.checkId,
+        external_id: proof.externalId,
+        conclusion: proof.conclusion,
+        title: proof.title,
+        evidence: proof,
+      })) };
+    }
+    return { rows: sql.includes('JOIN review_worker_completions') ? fixture.sourceRows : [fixture.runRow] };
+  };
+  return fixture;
+}
+
 function loadFixture(fixture: ReturnType<typeof queryableForIncompletePrior>, overrides: Record<string, unknown> = {}) {
   return loadIncompleteP2RecoveryContext(fixture, {
     runId,
@@ -313,6 +429,20 @@ function loadFixture(fixture: ReturnType<typeof queryableForIncompletePrior>, ov
     expectedAppId: appId,
     incompleteP2Recovery: true,
     recoveryEvidence: recoveryEvidence(fixture.externalId),
+    ...overrides,
+  } as Parameters<typeof loadIncompleteP2RecoveryContext>[1]);
+}
+
+function loadGracefulFixture(fixture: any, overrides: Record<string, unknown> = {}) {
+  return loadIncompleteP2RecoveryContext(fixture, {
+    runId,
+    executionAttempt: 2,
+    repositoryId,
+    identity: { owner, repo, prNumber, headSha, baseSha, configDigest },
+    policyDigest,
+    expectedAppId: appId,
+    gracefulComposedContinuation: true,
+    recoveryEvidence: fixture.gracefulEvidence,
     ...overrides,
   } as Parameters<typeof loadIncompleteP2RecoveryContext>[1]);
 }
@@ -435,6 +565,74 @@ describe('incomplete P2 recovery context', () => {
       rawFindingCount: 3,
       canonicalFindingCount: 3,
     }]);
+  });
+
+  it('preserves graceful-closeout source receipts when the current checkpoint advances', async () => {
+    const fixture = queryableForGracefulComposedPrior();
+    const admitted = await loadGracefulFixture(fixture);
+    if (!admitted) throw new Error('expected graceful composed recovery context');
+    const receipt = fixture.sourceRows[0].payload.result.personas[0].sourceDelivery;
+    expect(fixture.sourceRows[0].checkpoint_payload.completedTasks[0].sourceDelivery).toEqual(receipt);
+    expect(fixture.gracefulEvidence[0].legacyIncompleteRoster.gracefulCheckpointReceipt)
+      .toMatchObject({ revision: 7, digest: expect.stringMatching(/^[a-f0-9]{64}$/u) });
+    expect(admitted.gracefulComposedContinuation).toBe(true);
+    expect(admitted.sources[0].gracefulCheckpointReceipt)
+      .toEqual(fixture.gracefulEvidence[0].legacyIncompleteRoster.gracefulCheckpointReceipt);
+
+    fixture.runRow.artifacts = {
+      ...fixture.runRow.artifacts,
+      graceful_composed_p2_recovery_digest: admitted.contextDigest,
+    };
+    const latestCheckpoint = {
+      ...fixture.sourceRows[0].checkpoint_payload,
+      executionAttempt: 2,
+      revision: 1,
+      completedTasks: [],
+    };
+    Object.assign(fixture.sourceRows[0], {
+      checkpoint_execution_attempt: 2,
+      checkpoint_revision: 1,
+      checkpoint_payload: latestCheckpoint,
+      checkpoint_byte_length: Buffer.byteLength(JSON.stringify(latestCheckpoint), 'utf8'),
+    });
+    const resumed = await loadGracefulFixture(fixture, {
+      expectedContextDigest: admitted.contextDigest,
+      gracefulComposedContinuation: undefined,
+      recoveryEvidence: undefined,
+    });
+    expect(resumed).toEqual(admitted);
+  });
+
+  it.each(['missing completion receipt', 'tampered durable checkpoint receipt'])
+    ('fails closed when graceful recovery has a %s', async (corruption) => {
+      const fixture = queryableForGracefulComposedPrior();
+      if (corruption === 'missing completion receipt') {
+        delete fixture.sourceRows[0].payload.result.personas[0].sourceDelivery;
+        fixture.resultDigest = resealCompletion(fixture);
+      } else {
+        const completion = fixture.sourceRows[0].payload;
+        const intactCompletionDigest = workerReviewCompletionDigest(completion);
+        const completionReceipt = completion.result.personas[0].sourceDelivery;
+        const checkpointReceipt = fixture.sourceRows[0].checkpoint_payload.completedTasks[0].sourceDelivery;
+        expect(checkpointReceipt).not.toBe(completionReceipt);
+        fixture.sourceRows[0].checkpoint_payload.completedTasks[0].sourceDelivery.files[0].patchDigest = '9'.repeat(64);
+        expect(workerReviewCompletionDigest(completion)).toBe(intactCompletionDigest);
+        expect(fixture.sourceRows[0].content_digest).toBe(intactCompletionDigest);
+        expect(fixture.sourceRows[0].gate_worker_result_digest).toBe(intactCompletionDigest);
+      }
+      await expect(loadGracefulFixture(fixture)).rejects.toThrow();
+    });
+
+  it('keeps old graceful archives receipt-free rather than fabricating source provenance', async () => {
+    const fixture = queryableForGracefulComposedPrior();
+    for (const persona of fixture.sourceRows[0].payload.result.personas) delete persona.sourceDelivery;
+    for (const task of fixture.sourceRows[0].checkpoint_payload.completedTasks) delete task.sourceDelivery;
+    fixture.resultDigest = resealCompletion(fixture);
+
+    const context = await loadGracefulFixture(fixture);
+    expect(context?.gracefulComposedContinuation).toBe(true);
+    expect(fixture.sourceRows[0].payload.result.personas.every((persona: any) => !('sourceDelivery' in persona))).toBe(true);
+    expect(fixture.sourceRows[0].checkpoint_payload.completedTasks.every((task: any) => !('sourceDelivery' in task))).toBe(true);
   });
 
   it('reads historical P2-inclusive counts without rewriting original evidence', async () => {
