@@ -927,6 +927,55 @@ describe('versioned v2 worker/Gate decision agreement', () => {
     })).toThrow(/policy is unsupported/u);
   });
 
+  it('allows only optional legacy mismatches that explicitly remain incomplete', () => {
+    const workerCoverage = buildDeterministicCoverageManifest([{ path: 'src/example.ts' }]);
+    const incomplete = withDecision(completion({ result: { ...completion().result,
+      coverageComplete: false, quorumSatisfied: false, verdict: 'BLOCK' } }));
+    const receipt = incomplete.result.groundedReview!;
+    receipt.coverage = { digest: workerCoverage.digest, regionCount: workerCoverage.regions.length,
+      assignmentCount: workerCoverage.assignments.length, coveredRegionCount: workerCoverage.coveredRegionIds.length,
+      complete: workerCoverage.complete, omissions: workerCoverage.omissions };
+    receipt.verification.coverageComplete = false;
+
+    const legacy = structuredClone(incomplete);
+    delete legacy.result.reviewDecision;
+    expect(derive(legacy, { ...contract, changedFiles })).toMatchObject({
+      valid: true, evidence: { verdict: 'BLOCK', coverageComplete: false },
+    });
+
+    const completeLegacy = structuredClone(legacy);
+    completeLegacy.result.coverageComplete = true;
+    expectInvalid(derive(completeLegacy, { ...contract, changedFiles }), /coverage receipt does not match/u);
+
+    const forgedCompleteReceipt = structuredClone(legacy);
+    forgedCompleteReceipt.result.groundedReview!.coverage.complete = true;
+    forgedCompleteReceipt.result.groundedReview!.verification.coverageComplete = true;
+    expectInvalid(derive(forgedCompleteReceipt, { ...contract, changedFiles }), /coverage receipt does not match/u);
+
+    const finding = { severity: 'P1', path: 'src/example.ts', line: 1,
+      title: 'Changed handler skips the access check', body: 'The changed handler returns a private record without authorization.' };
+    const partialBlock = withDecision(completion({ result: { ...completion().result,
+      coverageComplete: false, quorumSatisfied: false, verdict: 'BLOCK', findingCount: 1, blockingFindingCount: 1,
+      personas: [lane('security', { decision: 'FINDINGS', findings: [finding] }), lane('architecture')],
+    } }));
+    partialBlock.result.groundedReview!.coverage = { digest: workerCoverage.digest,
+      regionCount: workerCoverage.regions.length, assignmentCount: workerCoverage.assignments.length,
+      coveredRegionCount: workerCoverage.coveredRegionIds.length, complete: workerCoverage.complete,
+      omissions: workerCoverage.omissions };
+    partialBlock.result.groundedReview!.verification.coverageComplete = false;
+    const partialBlockLegacy = structuredClone(partialBlock);
+    delete partialBlockLegacy.result.reviewDecision;
+    expect(derive(partialBlockLegacy, { ...contract, changedFiles })).toMatchObject({
+      valid: true, evidence: { verdict: 'BLOCK', p1Count: 1, coverageComplete: false },
+    });
+
+    const staleOutcomeContext = structuredClone(partialBlockLegacy);
+    staleOutcomeContext.result.groundedReview!.verification.outcomes[0]!.affectedContextDigest = 'f'.repeat(64);
+    expectInvalid(derive(staleOutcomeContext, { ...contract, changedFiles }), /outcome context does not match/u);
+
+    expectInvalid(derive(incomplete, { ...v2Contract, changedFiles }), /coverage receipt does not match/u);
+  });
+
   it('keeps a zero-finding review with incomplete coverage ineligible', () => {
     const input = completion({ result: { ...completion().result, coverageComplete: false, quorumSatisfied: false,
       verdict: undefined, findingCount: undefined, blockingFindingCount: undefined } });

@@ -998,11 +998,18 @@ function groundedReviewReceiptError(
   const receipt = result.groundedReview;
   if (!receipt) return required ? 'v2 review requires an independent grounded-review receipt' : null;
   const expectedManifest = buildDeterministicCoverageManifest(changedFiles);
-  if (receipt.coverage.digest !== expectedManifest.digest || receipt.coverage.regionCount !== expectedManifest.regions.length
-    || receipt.coverage.assignmentCount !== expectedManifest.assignments.length
-    || receipt.coverage.coveredRegionCount !== expectedManifest.coveredRegionIds.length
-    || receipt.coverage.complete !== expectedManifest.complete
-    || canonicalJson(receipt.coverage.omissions) !== canonicalJson(expectedManifest.omissions)) {
+  const manifestMatches = receipt.coverage.digest === expectedManifest.digest
+    && receipt.coverage.regionCount === expectedManifest.regions.length
+    && receipt.coverage.assignmentCount === expectedManifest.assignments.length
+    && receipt.coverage.coveredRegionCount === expectedManifest.coveredRegionIds.length
+    && receipt.coverage.complete === expectedManifest.complete
+    && canonicalJson(receipt.coverage.omissions) === canonicalJson(expectedManifest.omissions);
+  // An optional v1 receipt can only add verification evidence; it cannot complete a worker-side
+  // source manifest. Preserve an explicit incomplete BLOCK when the worker had only a partial
+  // diff, while refusing every mismatch that could claim or imply approval.
+  const explicitlyIncompleteOptionalLegacyReceipt = !required && result.coverageComplete === false
+    && receipt.coverage.complete === false && receipt.verification.coverageComplete === false;
+  if (!manifestMatches && !explicitlyIncompleteOptionalLegacyReceipt) {
     return 'grounded coverage receipt does not match the trusted changed-source manifest';
   }
   if (receipt.verification.coverageComplete !== (receipt.coverage.complete && receipt.verification.unverifiedBlockerCount === 0)) {
