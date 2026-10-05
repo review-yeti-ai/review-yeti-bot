@@ -40,6 +40,7 @@ import {
 import { disputedFindingRecheckDigest } from '../../src/review/disputedFindingRecheck';
 import { createFindingThreadsHandler } from '../../src/api/findingThreadsRoute';
 import { HttpFindingThreadsPublisher } from '../../src/review/findingThreadsHttp';
+import { completeEmptyLifecycleHistory, groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -90,12 +91,15 @@ function fixture(options: { reviewEngine?: 'panel' | 'composed' | 'shadow'; seve
 };
   const sourceLoader = vi.fn<NonNullable<PublishingReviewDeps['sourceLoader']>>().mockResolvedValue(source);
   const panelRunner = vi.fn<NonNullable<PublishingReviewDeps['panelRunner']>>().mockResolvedValue(panel);
+  const repoFileProviderFactory = vi.fn((input: Parameters<NonNullable<PublishingReviewDeps['repoFileProviderFactory']>>[0]) =>
+    groundedFixtureProvider(input));
   const client = { complete: vi.fn().mockRejectedValue(new Error('A test must never invoke a provider')) };
   const reportReviewResult = vi.fn<WorkerReviewCompletionAdapter['reportReviewResult']>().mockResolvedValue(undefined);
   const legacyFailure = vi.fn<WorkerCompletionAdapter['reportTerminalFailure']>(async () => undefined);
   const now = vi.fn().mockReturnValueOnce(START).mockReturnValue(START + 1_000);
   const deps: PublishingReviewDeps = { checkClient, sourceLoader, panelRunner, client, now,
     currentPullRequestVerifier: vi.fn(async () => undefined),
+    repoFileProviderFactory, groundedVerifierClient: groundedFixtureClient as never,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const), reviewCompletion: { reportReviewResult } };
   const errorLog = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
   vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
@@ -123,6 +127,24 @@ function cleanResult(): WorkerReviewResult {
     personas: ['sec-lane', 'qual-lane'].map((id) => ({ id, decision: 'APPROVE', status: 'COMPLETE', findings: [],
       telemetry: { model: transport.model, durationMs: 25 } })),
     coverageComplete: true, quorumSatisfied: true };
+}
+
+function expectCompletionPayload(f: ReturnType<typeof fixture>, payload: unknown, expectedResult: WorkerReviewResult) {
+  const actual = parseWorkerReviewCompletion(payload);
+  const { groundedReview, ...legacyResult } = actual.result;
+  expect({ ...actual, result: legacyResult }).toEqual(expectedEvent(f, expectedResult));
+  expect(groundedReview).toMatchObject({
+    version: 'GroundedReviewReceipt.v1',
+    history: { status: f.deps.prLifecycleHistory ? 'complete' : 'unavailable',
+      memorySources: { honcho: 'unavailable', mcp: 'unavailable' } },
+    verification: { version: 'GroundedIndependentVerification.v1', outcomes: expect.any(Array), budget: expect.any(Object) },
+  });
+  return actual;
+}
+
+function expectReportedCompletion(f: ReturnType<typeof fixture>, expectedResult: WorkerReviewResult) {
+  expect(f.reportReviewResult).toHaveBeenCalledOnce();
+  return expectCompletionPayload(f, f.reportReviewResult.mock.calls[0]?.[0], expectedResult);
 }
 
 /** Synthetic DB/GitHub I/O only: the worker uses the real HTTP adapter, route,
@@ -408,6 +430,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     vi.setSystemTime(START);
     const f = fixture({ reviewEngine: 'composed' });
     f.deps.now = Date.now;
+    f.deps.prLifecycleHistory = completeEmptyLifecycleHistory() as never;
     f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 360_000).toISOString();
     const write = vi.fn(async () => 2);
     f.deps.reviewCheckpoint = { read: vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] })), write };
@@ -426,17 +449,19 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
       await started;
       await vi.advanceTimersByTimeAsync(60_000);
       const receipt = await pending;
-      expect(receipt).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 1,
-        blockingFindingCount: 1, failureClass: 'timeout' });
+      expect(receipt).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 0,
+        blockingFindingCount: 0, failureClass: 'timeout' });
       expect(write).toHaveBeenCalledOnce();
       const event = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]);
       expect(event.result).toMatchObject({ coverageComplete: false, quorumSatisfied: false,
-        personas: [expect.objectContaining({ id: 'security-auth', status: 'COMPLETE', findings: [
-          expect.objectContaining({ title: 'Preserved checkpoint finding' }),
-        ] })] });
+        personas: [expect.objectContaining({ id: 'security-auth', status: 'COMPLETE', findings: [] })],
+        groundedReview: { verification: { candidates: 1, calls: 0, insufficient: 1,
+          unverifiedBlockerCount: 1, coverageComplete: false, outcomes: [expect.objectContaining({
+            status: 'insufficient', severity: 'P1', path: 'src/a.ts', title: 'Preserved checkpoint finding',
+          })] } } });
       expect(f.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({
         conclusion: 'failure', title: 'Review Yeti: INCOMPLETE (partial evidence published)',
-        text: expect.stringContaining('Preserved checkpoint finding'),
+        summary: expect.stringContaining('fail-closed'),
       }));
     } finally {
       vi.useRealTimers();
@@ -743,6 +768,7 @@ describe('REL-1198 retained P2 worker boundary', () => {
 
   it('forces full uncached task evidence for a durable disputed-finding recheck while reusing unrelated checkpoint tasks', async () => {
     const f = fixture({ reviewEngine: 'composed' });
+    f.deps.prLifecycleHistory = completeEmptyLifecycleHistory() as never;
     const targetTaskId = f.prepared.expectedPersonaIds[0]!;
     const plan = f.prepared.expectedPersonaIds.map((id, index) => ({
       id,
@@ -833,6 +859,7 @@ describe('REL-1198 retained P2 worker boundary', () => {
 
   it('continues evaluating configured incremental and cache reuse when no dispute is pending', async () => {
     const f = fixture({ reviewEngine: 'composed' });
+    f.deps.prLifecycleHistory = completeEmptyLifecycleHistory() as never;
     f.env.REVIEW_YETI_INCREMENTAL = 'example/project';
     f.env.REVIEW_YETI_VERDICT_CACHE = 'example/project';
     const incrementalRead = vi.fn(async () => ({ prior: null, maxAgeMs: 60_000 }));
@@ -858,6 +885,33 @@ describe('REL-1198 retained P2 worker boundary', () => {
     const options = composedReviewRunner.mock.calls[0]![0];
     expect(options.verdictCache).toMatchObject({ source: null, permitted: [] });
     expect(options.disputedFindingRechecks).toBeUndefined();
+  });
+
+  it('does not reuse checkpoints, incremental plans, or cached verdicts without complete lifecycle history', async () => {
+    const f = fixture({ reviewEngine: 'composed' });
+    f.env.REVIEW_YETI_INCREMENTAL = 'example/project';
+    f.env.REVIEW_YETI_VERDICT_CACHE = 'example/project';
+    const checkpointRead = vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] }));
+    const incrementalRead = vi.fn(async () => ({ prior: null, maxAgeMs: 60_000 }));
+    const cacheRead = vi.fn(async () => ({ source: null, maxAgeMs: 60_000 }));
+    const composedRunner = vi.fn(async (options: any) => {
+      expect(options.checkpoint?.resumed?.completedTasks ?? []).toEqual([]);
+      return f.panel;
+    });
+    f.deps.reviewCheckpoint = { read: checkpointRead, write: vi.fn(async () => 1) } as never;
+    f.deps.incrementalBase = { read: incrementalRead };
+    f.deps.verdictCacheBase = { read: cacheRead };
+    f.deps.composedReviewRunner = composedRunner;
+
+    await runPublishingReviewWorker(f.env, f.deps);
+
+    expect(checkpointRead).not.toHaveBeenCalled();
+    expect(incrementalRead).not.toHaveBeenCalled();
+    expect(cacheRead).not.toHaveBeenCalled();
+    expect(composedRunner).toHaveBeenCalledOnce();
+    expect(f.reportReviewResult.mock.calls[0]?.[0].result.groundedReview?.history).toMatchObject({
+      status: 'unavailable', omissions: ['no authenticated lifecycle history source'],
+    });
   });
 
   it('publishes a valid retained P2 context below the complete Checks text bound without truncation', async () => {
@@ -1359,11 +1413,9 @@ describe('authoritative prepared publishing worker', () => {
         terminalBound: expect.any(Boolean),
       }),
       deadlineNow: expect.any(Function),
-      // This fixture's GH_TOKEN is a real `ghs_`-shaped read token and no
-      // repoFileProviderFactory is injected, so the worker wires the default
-      // full-repository grounding provider (REL- full-repo grounding): a
-      // find_files/read_file/treeTruncated seam built from that token, never a
-      // reason the exact-call assertion below should drift on its own.
+      // The fixture injects an in-memory exact-revision provider with the same
+      // capabilities as the production provider. This keeps the test offline
+      // while pinning the provider seam passed to the panel.
       repoFileProvider: {
         findFiles: expect.any(Function), readFile: expect.any(Function), treeTruncated: expect.any(Function),
         readFileAt: expect.any(Function), readDiff: expect.any(Function),
@@ -1381,8 +1433,7 @@ describe('authoritative prepared publishing worker', () => {
       expectedBaseSha: BASE, expectedHeadSha: HEAD, token: TOKEN }, undefined,
     // REL-1103: plus the deadline-bounded GitHub retry policy (empty: no terminal deadline forwarded).
     { gitDiffSource: expect.any(Function), onLargeDiffSource: expect.any(Function), retry: {} });
-    expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, cleanResult()));
-    expect(parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0])).toEqual(expectedEvent(f, cleanResult()));
+    expectReportedCompletion(f, cleanResult());
     expect(receipt).toMatchObject({ conclusion: 'success', verdict: 'SHIP', transport: 'bifrost', model: transport.model });
     expect(f.fetch).not.toHaveBeenCalled();
     // REL-1132: the metered client delegates to the admitted client. The publishing boundary adds
@@ -1419,7 +1470,7 @@ describe('authoritative prepared publishing worker', () => {
     expect(created.name).not.toBe('Review Yeti Gate');
     expect(completed).toMatchObject({ status: 'completed', conclusion: 'success', output: { title: 'Review Yeti: SHIP' } });
     expect(completed).not.toHaveProperty('name');
-    expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, cleanResult()));
+    expectReportedCompletion(f, cleanResult());
     expectEvidenceOnlyCallback(f.reportReviewResult.mock.calls[0][0]);
     expect(f.fetch).not.toHaveBeenCalled();
   });
@@ -1439,7 +1490,7 @@ describe('authoritative prepared publishing worker', () => {
     };
     await runPublishingReviewWorker(f.env, f.deps);
     expect(order).toEqual(['completion', 'raw-check']);
-    expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, cleanResult()));
+    expectReportedCompletion(f, cleanResult());
   });
 
   it('preserves failure when a configured lane never returned (silently missing)', async () => {
@@ -1537,7 +1588,7 @@ describe('authoritative prepared publishing worker', () => {
     // same lanes are reported, now marked for the shared infrastructure-incomplete decision.
     expected.failureDiagnostics = { reason: 'lane_infrastructure_incomplete', logTail: 'lanes did not complete: qual-lane=rate_limit',
       recoverableIncompletePanel: true };
-    expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, expected));
+    expectReportedCompletion(f, expected);
     expect(receipt).toMatchObject({ conclusion: 'failure', verdict: 'INCOMPLETE', failureClass: 'rate_limit' });
     expect(f.checkClient.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       conclusion: 'failure', title: 'Review Yeti: INCOMPLETE — infrastructure (automatic retry NOT CONFIRMED; lane qual-lane failed: rate_limit)',
@@ -1839,7 +1890,7 @@ describe('authoritative prepared publishing worker', () => {
     // `{ tool: 'read', args: { token: TOKEN } }` record above must still be fully absent below.
     expected.personas[0] = { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [finding],
       telemetry: { model: transport.model, durationMs: 25, toolCalls: 1 } };
-    expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, expected));
+    expectReportedCompletion(f, expected);
     expect(f.reportReviewResult.mock.calls[0][0].result.personas[0].findings[0]).not.toHaveProperty('suggestion');
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(PRIVATE_DETAIL);
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(TOKEN);
@@ -1889,7 +1940,7 @@ describe('authoritative prepared publishing worker', () => {
     // `qual-lane` was never given `turnUsages`/`aggregateUsage`/`toolTurns`/`correctionTurns` on the
     // panel fixture -- only the base `model`/`durationMs` every completed lane always carries.
     // `cleanResult()`'s default telemetry already reflects exactly that, unmodified.
-    expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, expected));
+    expectReportedCompletion(f, expected);
     expect(f.reportReviewResult.mock.calls[0][0].result.personas[1].telemetry).toEqual({
       model: transport.model, durationMs: 25,
     });
@@ -1993,9 +2044,7 @@ describe('authoritative prepared publishing worker', () => {
     f.source.diff += 'diff --git unreadable-header\n';
     const receipt = await runPublishingReviewWorker(f.env, f.deps);
     expect(receipt.conclusion).toBe('failure');
-    expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, {
-      ...cleanResult(), coverageComplete: false,
-    }));
+    expectReportedCompletion(f, { ...cleanResult(), coverageComplete: false });
   });
 
   it('cannot turn an empty diff into clean completion evidence', async () => {
@@ -2017,7 +2066,8 @@ describe('authoritative prepared publishing worker', () => {
       throw lostAck;
     });
     await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toBe(lostAck);
-    expect(accepted).toEqual([expectedEvent(f, cleanResult())]);
+    expect(accepted).toHaveLength(1);
+    expectCompletionPayload(f, accepted[0], cleanResult());
     expect(f.reportReviewResult).toHaveBeenCalledTimes(1);
     expect(f.panelRunner).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(f.errorLog.mock.calls)).not.toContain(PRIVATE_DETAIL);
@@ -2081,6 +2131,15 @@ describe('authoritative prepared publishing worker', () => {
         return new Response(JSON.stringify({ version: 'IncompleteP2RecoveryResponse.v1',
           runId: f.env.REVIEW_RUN_ID, executionAttempt: Number(f.env.REVIEW_EXECUTION_ATTEMPT), context: null }), { status: 200 });
       }
+      if (String(input) === ENDPOINT.replace(/\/completion$/u, '/pr-lifecycle-history') && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({ version: 'PrLifecycleHistorySnapshotRequest.v1',
+          runId: f.env.REVIEW_RUN_ID, executionAttempt: Number(f.env.REVIEW_EXECUTION_ATTEMPT) });
+        return new Response('fixture history unavailable', { status: 503 });
+      }
+      if (String(input).startsWith('https://api.github.com/repos/example/project/contents/src/a.ts?ref=')) {
+        expect(String(input)).toMatch(new RegExp(`\\?ref=(?:${HEAD}|${BASE})$`, 'u'));
+        return new Response('{}', { status: 404 });
+      }
       if (String(input) === 'https://api.github.com/repos/example/project/pulls/42' && init?.method === 'GET') {
         return new Response(JSON.stringify({ state: 'open', draft: false, head: { sha: HEAD } }),
           { status: 200, headers: { 'content-type': 'application/json' } });
@@ -2137,7 +2196,14 @@ describe('authoritative prepared publishing worker', () => {
     expect(legacy).not.toHaveBeenCalled();
     const retry = delivery === '503 then recorded' || delivery === 'lost acknowledgement then duplicate';
     expect(derivations).toHaveLength(retry ? 2 : 1);
-    expect(f.fetch).toHaveBeenCalledTimes(retry ? 8 : 7);
+    expect(f.fetch).toHaveBeenCalledTimes(retry ? 11 : 10);
+    const groundedSourceReads = f.fetch.mock.calls
+      .filter(([url]) => String(url).includes('/contents/src/a.ts?ref='))
+      .map(([url]) => String(url));
+    expect(groundedSourceReads).toEqual([
+      `https://api.github.com/repos/example/project/contents/src/a.ts?ref=${HEAD}`,
+      `https://api.github.com/repos/example/project/contents/src/a.ts?ref=${BASE}`,
+    ]);
     const rawCalls = f.fetch.mock.calls.filter(([url]) => String(url).startsWith(rawEndpoint));
     expect(rawCalls.map(([url, init]) => [String(url), init?.method])).toEqual([
       [rawEndpoint, 'POST'], [`${rawEndpoint}/4242`, 'PATCH'],
