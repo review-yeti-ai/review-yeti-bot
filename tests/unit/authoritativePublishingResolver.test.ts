@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReviewRepositoryIdentity } from '../../src/github/authoritativeReviewReader';
-import { AuthoritativePublishingResolver, type AuthoritativePublishingResolverOptions } from '../../src/review/authoritativePublishingResolver';
+import { AuthoritativeCandidateChangedError, AuthoritativePublishingResolver, type AuthoritativePublishingResolverOptions } from '../../src/review/authoritativePublishingResolver';
 import { buildAuthoritativeReviewIdentity, type CurrentReviewCandidate } from '../../src/review/authoritativeReviewIdentity';
 import { preparePublishingPolicy, verifyPreparedPublishingConfig } from '../../src/review/preparedPublishingPolicy';
 import { sha256 } from '../../src/review/reviewCore';
@@ -51,6 +51,13 @@ function expectRedacted(error: Error) {
   expect(error.cause).toBeUndefined();
 }
 
+function expectCandidateChanged(error: Error) {
+  expect(error).toBeInstanceOf(AuthoritativeCandidateChangedError);
+  expect(error.message).toBe('Authoritative publishing candidate changed');
+  expect(`${error.stack}\n${JSON.stringify(error)}`).not.toContain(secret);
+  expect(error.cause).toBeUndefined();
+}
+
 const candidateChanges = [
   { repositoryId: 999 }, { owner: 'different' }, { repo: 'different' }, { prNumber: 43 },
   { headSha: 'd'.repeat(40) }, { baseSha: 'e'.repeat(40) }, { open: false },
@@ -62,12 +69,11 @@ describe('AuthoritativePublishingResolver', () => {
     try { expect(vi.getTimerCount()).toBe(0); } finally { vi.useRealTimers(); }
   });
 
-  it.each([false, true])('prepares the exact current candidate without promoting draft=%s', async (draft) => {
+  it('prepares the exact current non-draft candidate', async () => {
     const f = fixture();
-    f.currentCandidate.mockResolvedValue({ ...current, draft });
     const result = await f.resolver.resolve(requested);
     const prepared = preparePublishingPolicy(file(), transport);
-    expect(result).toEqual({ current: { ...current, draft }, prepared,
+    expect(result).toEqual({ current, prepared,
       identity: buildAuthoritativeReviewIdentity({ requested, current, policy: prepared.policy }) });
     expect(result.prepared.expectedPersonaIds).toEqual(['sec-lane', 'qual-lane']);
     expect(verifyPreparedPublishingConfig(result.prepared.config, result.identity.configDigest, transport)).toEqual(prepared.config);
@@ -88,18 +94,25 @@ describe('AuthoritativePublishingResolver', () => {
     expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
-  it('returns readiness from the final read while leaving immutable identity unchanged', async () => {
+  it('rejects a draft candidate before resolving central policy', async () => {
     const f = fixture();
-    f.currentCandidate.mockResolvedValueOnce(current).mockResolvedValueOnce({ ...current, draft: true });
+    f.currentCandidate.mockResolvedValue({ ...current, draft: true });
+    expectCandidateChanged(await rejection(f.resolver.resolve(requested)));
+    expect(f.policyReaderFactory).not.toHaveBeenCalled();
+  });
+
+  it('returns final visibility evidence while leaving immutable identity unchanged', async () => {
+    const f = fixture();
+    f.currentCandidate.mockResolvedValueOnce(current).mockResolvedValueOnce({ ...current, private: true });
     const result = await f.resolver.resolve(requested);
-    expect(result.current.draft).toBe(true);
+    expect(result.current.private).toBe(true);
     expect(result.identity).toEqual(buildAuthoritativeReviewIdentity({ requested, current, policy: result.prepared.policy }));
   });
 
   it.each(candidateChanges)('rejects initially wrong/closed candidate %j before central reads', async (change) => {
     const f = fixture();
     f.currentCandidate.mockResolvedValueOnce({ ...current, ...change });
-    expectRedacted(await rejection(f.resolver.resolve(requested)));
+    expectCandidateChanged(await rejection(f.resolver.resolve(requested)));
     expect(f.policyReaderFactory).not.toHaveBeenCalled();
   });
 
@@ -109,7 +122,7 @@ describe('AuthoritativePublishingResolver', () => {
     const f = fixture();
     f.currentCandidate.mockResolvedValue({ ...publicRequested, open: true, draft: false,
       ...(isPrivate === undefined ? {} : { private: isPrivate }) });
-    expectRedacted(await rejection(f.resolver.resolve(publicRequested)));
+    expectCandidateChanged(await rejection(f.resolver.resolve(publicRequested)));
     expect(f.policyReaderFactory).not.toHaveBeenCalled();
   });
 
@@ -125,7 +138,7 @@ describe('AuthoritativePublishingResolver', () => {
   it.each(candidateChanges)('rejects candidate changes during policy reads %j', async (change) => {
     const f = fixture();
     f.currentCandidate.mockResolvedValueOnce(current).mockResolvedValueOnce({ ...current, ...change });
-    expectRedacted(await rejection(f.resolver.resolve(requested)));
+    expectCandidateChanged(await rejection(f.resolver.resolve(requested)));
     expect(f.immutablePolicyFile).toHaveBeenCalledOnce();
     expect(f.currentCandidate).toHaveBeenCalledTimes(2);
   });

@@ -404,9 +404,15 @@ describe('Action dispatch startup transport and admission wiring', () => {
       workerId: 'authoritative-review-startup-test',
       // ADR 0002: resolves the review App's bot login for finding-thread author verification.
       findingThreadAuthor: expect.any(Function),
+      operatorPassthroughRepository: { pool: mocks.pool },
+      passthroughEnabled: false,
+      listPausedAdmissions: expect.any(Function),
     });
     const options = mocks.authoritative.mock.calls[0][0];
     expect(options.repository).toBe(mocks.gateStorage);
+    expect(options.operatorPassthroughRepository).toMatchObject({ pool: mocks.pool });
+    expect(options.passthroughEnabled).toBe(false);
+    expect(options.listPausedAdmissions).toEqual(expect.any(Function));
     expect(mocks.getPrepared).not.toHaveBeenCalled();
     const digest = 'a'.repeat(64);
     await expect(options.getStoredPrepared(digest, new AbortController().signal)).resolves.toBeNull();
@@ -416,6 +422,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.repository).toHaveBeenCalledExactlyOnceWith(mocks.pool, undefined, {
       lifecycleEvents: 'enabled',
       resolveGenerationRecovery: expect.any(Function),
+      retireOperatorPassthroughInTransaction: expect.any(Function),
       validateAuthoritativeAdmission: mocks.validateAdmission,
       requireExpectedGeneration: false,
     });
