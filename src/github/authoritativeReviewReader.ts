@@ -247,14 +247,16 @@ export class AuthoritativeReviewReader {
 
   /** ADR 0002: the bot's finding review threads on this pull request (`pull_requests: read`). */
   async findingThreads(input: ReviewRepositoryIdentity & { prNumber: number }, signal?: AbortSignal): Promise<PriorFindingThread[]> {
-    const { target } = this.route(input);
+    const { prNumber, ...identity } = input;
+    parse(positive, prNumber);
+    const { target } = this.route(identity);
     const botLogin = this.options.findingThreadAuthor
       ? await this.options.findingThreadAuthor().catch(() => undefined) : undefined;
     return readFindingThreads({
       token: this.options.token, baseUrl: this.api, fetchImplementation: this.fetcher, timeoutMs: this.timeoutMs,
       ...(botLogin ? { botLogin } : {}),
       ...(signal ? { signal } : {}),
-    }, { owner: target.owner, repo: target.repo, prNumber: input.prNumber });
+    }, { owner: target.owner, repo: target.repo, prNumber });
   }
 
   async currentCandidate(input: ReviewRepositoryIdentity & { prNumber: number }, signal?: AbortSignal): Promise<CurrentReviewCandidate> {
