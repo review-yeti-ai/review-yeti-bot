@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
+import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
 
 /**
  * Mutation target 1 (composed-engine PR): "Remove `panelSize: 1` -> a threshold-invariance test
@@ -100,6 +101,8 @@ function deps(over: Record<string, unknown> = {}) {
     sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     composedReviewRunner: vi.fn(async () => sevenTaskComposedResult()) as never,
+    repoFileProviderFactory: (input: any) => groundedFixtureProvider(input),
+    groundedVerifierClient: groundedFixtureClient as never,
     client: {} as never,
     ...over,
   };

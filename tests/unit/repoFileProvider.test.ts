@@ -94,6 +94,18 @@ describe('GitHubInstallationClient.getFileTree', () => {
 
 
 describe('pinned source identities', () => {
+  it('reads the admitted base revision directly without substituting the Git merge base', async () => {
+    const getMergeBase = vi.fn(async () => 'd'.repeat(40));
+    const getFileContent = vi.fn(async () => 'admitted base source');
+    const baseSha = 'c'.repeat(40);
+    const provider = createRepoFileProvider({ getMergeBase, getFileContent } as unknown as GitHubInstallationClient,
+      'o', 'r', 'a'.repeat(40), { baseSha, changedFiles: [] });
+
+    expect(await provider.readFileAt!('src/a.ts', 'base')).toEqual({ sha: baseSha, content: 'admitted base source' });
+    expect(getFileContent).toHaveBeenCalledExactlyOnceWith('o', 'r', 'src/a.ts', baseSha, { notFoundIsEmpty: true });
+    expect(getMergeBase).not.toHaveBeenCalled();
+  });
+
   it('retries failed merge-base and source lookups instead of caching rejected promises', async () => {
     const getMergeBase = vi.fn().mockRejectedValueOnce(new Error('compare 503')).mockResolvedValue('b'.repeat(40));
     const getFileContent = vi.fn().mockResolvedValue('verified old source');

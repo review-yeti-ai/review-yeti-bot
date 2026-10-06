@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import * as benchmark from '../../scripts/competitive-review-benchmark.mjs';
+import { resolveComposedEngineMaxTurns } from '../../src/panel/composedEngine';
 
 const manifest = {
   schemaVersion: 'review-yeti-competitive-benchmark-manifest-v1',
@@ -35,6 +36,234 @@ function referenceRows() {
 }
 
 describe('competitive review benchmark input boundaries', () => {
+  it('rejects a modified manifest that retains the pinned AACR dataset hash', () => {
+    const canonicalBytes = fs.readFileSync(path.join(process.cwd(),
+      'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json'));
+    const binding = benchmark.assertCanonicalHeldoutManifestBytes(canonicalBytes);
+    expect(binding).toMatchObject({
+      sha256: benchmark.AACR_HELDOUT_MANIFEST_SHA256,
+      manifest: { datasetSha256: benchmark.AACR_BENCHMARK.sha256 },
+    });
+    const ids = binding.manifest.cases.map((entry: { id: string }) => entry.id);
+    expect(benchmark.assertExactCaseIdSet(ids, ids)).toBe(true);
+    expect(() => benchmark.assertExactCaseIdSet([...ids.slice(0, -1), ids[0]], ids))
+      .toThrow('discovery_input_case_ids_do_not_match_fixed_panel');
+
+    const modified = JSON.parse(canonicalBytes.toString('utf8'));
+    modified.cases[0].repository = 'attacker/repo';
+    expect(() => benchmark.assertCanonicalHeldoutManifestBytes(Buffer.from(JSON.stringify(modified))))
+      .toThrow('heldout_manifest_digest_mismatch');
+  });
+
+  it('rejects discovery bundles that expose labels or oracle rows to the reviewer', () => {
+    expect(benchmark.assertBlindDiscoveryInputCases([{ caseId: 'opaque', diff: 'public source' }])).toBe(true);
+    expect(() => benchmark.assertBlindDiscoveryInputCases([{ caseId: 'opaque', expectedLabel: 1 }]))
+      .toThrow('discovery_reviewer_input_contains_expected_label_or_oracle');
+    expect(() => benchmark.assertBlindDiscoveryInputCases([{ caseId: 'opaque', expectedFindings: [] }]))
+      .toThrow('discovery_reviewer_input_contains_expected_label_or_oracle');
+    expect(() => benchmark.assertBlindDiscoveryInputCases([{ caseId: 'opaque', groundTruth: { defects: [] } }]))
+      .toThrow('discovery_reviewer_input_contains_expected_label_or_oracle');
+    expect(() => benchmark.assertBlindDiscoveryInputCases([{ caseId: 'opaque', oracle: { valid: true } }]))
+      .toThrow('discovery_reviewer_input_contains_expected_label_or_oracle');
+  });
+
+  it('builds an unmodified full-production policy without smoke-only task ceilings', () => {
+    const sourcePolicy = {
+      review_engine: 'dsh',
+      fallback_review_engine: 'composed',
+      personas: ['architecture', 'security', 'documentation'],
+      reviewer_effort: 'medium',
+      budget: { max_investigation_turns: 20 },
+      transports: [{ name: 'bifrost', enabled: true, reasoning_effort: 'medium' }],
+    };
+    const policy = benchmark.buildDiscoveryPolicy(sourcePolicy, { purpose: 'qualification' });
+
+    expect(policy).toEqual(sourcePolicy);
+    expect(policy.composed).toBeUndefined();
+    expect(benchmark.discoveryResourceProfile(policy, { verificationReserveTurns: 12 })).toEqual({
+      source: 'composed_engine_defaults',
+      policyMaxInvestigationTurns: 20,
+      configuredMaxTasks: null,
+      configuredMaxTurnsTotal: null,
+      configuredMaxTurnsPerTask: null,
+      effectiveMaxTasks: 8,
+      effectiveMaxTurnsTotal: 100,
+      planTurns: 4,
+      baseTaskTurns: 12,
+      dynamicTaskTurnsMax: 18,
+      dynamicTaskTurnsPerAdditionalPath: 2,
+      dynamicTaskPathIncrementMax: 6,
+      taskFinalizationReserveTurns: 3,
+      coverageAssignmentCeiling: 24,
+      taskConcurrencyCeiling: 3,
+      configuredMaxFindingsTotal: null,
+      effectiveMaxFindingsTotal: 25,
+      verificationReserveTurns: 12,
+      discoveryTurnsAvailable: 88,
+    });
+  });
+
+  it('forces the smoke turn ceiling over an inherited process override and restores the caller environment', async () => {
+    const prior = process.env.COMPOSED_ENGINE_MAX_TURNS;
+    process.env.COMPOSED_ENGINE_MAX_TURNS = '100';
+    try {
+      expect(resolveComposedEngineMaxTurns(process.env)).toBe(100);
+      await expect(benchmark.withScopedComposedEngineTurnLimit(4, async () => {
+        expect(process.env.COMPOSED_ENGINE_MAX_TURNS).toBe('4');
+        return resolveComposedEngineMaxTurns(process.env);
+      })).resolves.toBe(4);
+      expect(process.env.COMPOSED_ENGINE_MAX_TURNS).toBe('100');
+
+      await expect(benchmark.withScopedComposedEngineTurnLimit(2, async () => {
+        throw new Error('smoke_runner_failed');
+      })).rejects.toThrow('smoke_runner_failed');
+      expect(process.env.COMPOSED_ENGINE_MAX_TURNS).toBe('100');
+
+      delete process.env.COMPOSED_ENGINE_MAX_TURNS;
+      await expect(benchmark.withScopedComposedEngineTurnLimit(3, async () =>
+        resolveComposedEngineMaxTurns(process.env))).resolves.toBe(3);
+      expect(process.env.COMPOSED_ENGINE_MAX_TURNS).toBeUndefined();
+    } finally {
+      if (prior === undefined) delete process.env.COMPOSED_ENGINE_MAX_TURNS;
+      else process.env.COMPOSED_ENGINE_MAX_TURNS = prior;
+    }
+  });
+
+  it('rejects qualification policies that narrow the full production envelope or mismatch effort', () => {
+    const sourcePolicy = {
+      review_engine: 'dsh',
+      fallback_review_engine: 'composed',
+      personas: ['architecture', 'security', 'documentation'],
+      transports: [{ name: 'bifrost', enabled: true, reasoning_effort: 'medium' }],
+    };
+    expect(() => benchmark.buildDiscoveryPolicy({ ...sourcePolicy, composed: { max_turns_total: 20 } }, {
+      purpose: 'qualification',
+    })).toThrow('qualification_policy_must_preserve_composed_engine_defaults');
+    expect(() => benchmark.buildDiscoveryPolicy({ ...sourcePolicy, transports: [] }, {
+      purpose: 'qualification', effortProfile: 'medium',
+    })).toThrow('qualification_policy_effort_profile_mismatch');
+    expect(() => benchmark.assertFullEnvelopeQualificationProfile(sourcePolicy, {
+      verificationReserveTurns: 12,
+      env: { NODE_ENV: 'test', COMPOSED_ENGINE_MAX_TURNS: '20' },
+    })).toThrow('qualification_resource_profile_differs_from_supported_production_envelope');
+    expect(benchmark.assertFullEnvelopeQualificationProfile(sourcePolicy, {
+      verificationReserveTurns: 12, env: { NODE_ENV: 'test' },
+    }).discoveryTurnsAvailable).toBe(88);
+    expect(benchmark.assertKnownPolicyProjection('medium',
+      benchmark.V1_POLICY_PROVENANCE.projectionSha256ByEffort.medium)).toBe(true);
+    expect(() => benchmark.assertKnownPolicyProjection('medium', 'a'.repeat(64)))
+      .toThrow('qualification_policy_projection_provenance_mismatch');
+  });
+
+  it('requires the WS3 receipt for revised qualification and a clean exact runtime alias', () => {
+    expect(benchmark.assertDiscoveryCaseQualification({
+      purpose: 'qualification', verdict: 'APPROVE', selectedRunnerInvoked: true,
+      coverage: { rosterValid: true, quorumSatisfied: true, fullPanelComplete: true },
+      sourceReadOmissions: [], groundedReview: null,
+    })).toBe(false);
+    const qualificationInput = {
+      purpose: 'qualification', verdict: 'APPROVE', selectedRunnerInvoked: true,
+      coverage: { rosterValid: true, quorumSatisfied: true, fullPanelComplete: true },
+      sourceReadOmissions: [], groundedReview: {
+        version: 'GroundedReviewReceipt.v1',
+        coverage: { complete: true, regionCount: 4, coveredRegionCount: 4, assignmentCount: 4 },
+        verification: { version: 'GroundedIndependentVerification.v1', coverageComplete: true,
+          calls: 12, budget: { totalCalls: 12, callsPerTask: 12 } },
+      },
+    };
+    expect(benchmark.assertDiscoveryCaseQualification(qualificationInput)).toBe(true);
+    expect(benchmark.assertDiscoveryCaseQualification({ ...qualificationInput,
+      groundedReview: { ...qualificationInput.groundedReview,
+        verification: { ...qualificationInput.groundedReview.verification, calls: 13 } } })).toBe(false);
+    expect(benchmark.assertDiscoveryCaseQualification({ ...qualificationInput,
+      groundedReview: { ...qualificationInput.groundedReview,
+        verification: { ...qualificationInput.groundedReview.verification,
+          budget: { totalCalls: 100, callsPerTask: 12 } } } })).toBe(false);
+    expect(benchmark.assertDiscoveryCaseQualification({ ...qualificationInput,
+      groundedReview: { ...qualificationInput.groundedReview,
+        verification: { ...qualificationInput.groundedReview.verification,
+          budget: { totalCalls: 12, callsPerTask: 13 } } } })).toBe(false);
+    expect(benchmark.assertDiscoveryCaseQualification({ ...qualificationInput,
+      groundedReview: { ...qualificationInput.groundedReview,
+        verification: { ...qualificationInput.groundedReview.verification, budget: undefined } } })).toBe(false);
+    expect(benchmark.assertDiscoveryCaseQualification({
+      purpose: 'baseline', verdict: 'APPROVE', selectedRunnerInvoked: true,
+      coverage: { rosterValid: true, quorumSatisfied: true, fullPanelComplete: true },
+      sourceReadOmissions: [], groundedReview: null,
+    })).toBe(true);
+    expect(() => benchmark.assertQualificationRuntime({
+      expectedRuntimeSha: 'a'.repeat(40), runtimeIdentity: { commit: 'b'.repeat(40), worktreeClean: true },
+      transportEnv: { NODE_ENV: 'test', REVIEW_MODEL: 'other-route' },
+    })).toThrow('qualification_runtime_identity_or_cleanliness_mismatch');
+    expect(() => benchmark.assertQualificationRuntime({
+      expectedRuntimeSha: 'a'.repeat(40), runtimeIdentity: { commit: 'a'.repeat(40), worktreeClean: true },
+      transportEnv: { NODE_ENV: 'test', REVIEW_MODEL: 'other-route' },
+    })).toThrow('qualification_route_alias_mismatch');
+    expect(benchmark.assertV1BaselineRuntime({
+      expectedRuntimeSha: benchmark.V1_BASELINE_RUNTIME_SHA,
+      runtimeIdentity: { commit: benchmark.V1_BASELINE_RUNTIME_SHA, worktreeClean: true },
+      transportEnv: { NODE_ENV: 'test', REVIEW_MODEL: 'pr-reviewer' },
+    })).toBe(true);
+    expect(() => benchmark.assertV1BaselineRuntime({
+      expectedRuntimeSha: 'a'.repeat(40), runtimeIdentity: { commit: 'a'.repeat(40), worktreeClean: true },
+      transportEnv: { NODE_ENV: 'test', REVIEW_MODEL: 'pr-reviewer' },
+    })).toThrow('v1_baseline_runtime_sha_mismatch');
+  });
+
+  it('abstains on any incomplete full-panel run and keeps a complete v1 run baseline-only', () => {
+    expect(benchmark.discoveryQualificationDisposition({ purpose: 'qualification', completed: 7, total: 10 }))
+      .toEqual({ status: 'ABSTAIN', reason: 'incomplete_source_or_runtime_coverage_no_quality_score' });
+    expect(benchmark.discoveryQualificationDisposition({ purpose: 'qualification', completed: 7, total: 7 }))
+      .toEqual({ status: 'READY_FOR_BLIND_ADJUDICATION', reason: 'selected_source_complete_subset_only' });
+    expect(benchmark.discoveryQualificationDisposition({ purpose: 'baseline', completed: 7, total: 7 }))
+      .toEqual({ status: 'BASELINE_ONLY', reason: 'not_a_standalone_quality_claim' });
+  });
+
+  it('retains only structured grounded receipt metadata and drops verifier evidence text', () => {
+    const summary = benchmark.sanitizeGroundedReviewReceipt({
+      version: 'GroundedReviewReceipt.v1',
+      coverage: { digest: 'a'.repeat(64), regionCount: 4, assignmentCount: 4,
+        coveredRegionCount: 4, complete: true, omissions: [] },
+      history: { status: 'unavailable', eventCount: 0, findingCount: 0, loadedEventCount: 0,
+        loadedFindingCount: 0, eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+        omissions: ['service-owned lifecycle history could not be loaded completely'],
+        memorySources: { honho: 'unavailable', mcp: 'unavailable' },
+        verificationWrites: { attempted: 0, recorded: 0, failed: 0 } },
+      verification: { candidates: 1, confirmed: 1, contradicted: 0, insufficient: 0,
+        unverifiedBlockerCount: 0, coverageComplete: true, calls: 1,
+        budget: { totalCalls: 12, callsPerTask: 12, concurrency: 18 },
+        outcomes: [{ fingerprint: 'raw-fingerprint', status: 'confirmed', affectedContextDigest: 'b'.repeat(64),
+          relatedDiffPaths: ['src/a.ts'], evidenceDigest: 'c'.repeat(64), evidence: 'private prompt text' }] },
+    });
+    if (!summary) throw new Error('expected_grounded_receipt_summary');
+
+    expect(summary.coverage).toMatchObject({ regionCount: 4, coveredRegionCount: 4, complete: true });
+    expect(summary.history).toMatchObject({ status: 'unavailable', eventCount: 0 });
+    expect(summary.verification).toMatchObject({ candidates: 1, confirmed: 1, calls: 1 });
+    const serialized = JSON.stringify(summary);
+    expect(serialized).not.toContain('private prompt text');
+    expect(serialized).not.toContain('raw-fingerprint');
+    const panel = benchmark.sanitizePanelResult({ history: { status: 'partial', omissions: ['private free-form reason'] },
+      verification: { coverageComplete: false, omissions: ['raw verifier response'] } });
+    if (!panel) throw new Error('expected_sanitized_panel_summary');
+    expect(JSON.stringify(panel)).not.toContain('private free-form reason');
+    expect(JSON.stringify(panel)).not.toContain('raw verifier response');
+    expect(panel.history).toMatchObject({ status: 'partial', omissionCount: 1 });
+    expect(panel.verification).toMatchObject({ coverageComplete: false, omissionCount: 1 });
+  });
+
+  it('reduces publishing coverage to the closed structured projection', () => {
+    const coverage = benchmark.sanitizePublishingCoverage({
+      mode: 'panel', expectedLaneCount: 3, completedLaneCount: 3, failedLaneCount: 0,
+      rosterValid: true, quorumSatisfied: true, fullPanelComplete: true,
+      groundedReviewComplete: true, internalReason: 'untrusted model/source text',
+    });
+    expect(coverage).toEqual({ mode: 'panel', expectedLaneCount: 3, completedLaneCount: 3,
+      failedLaneCount: 0, rosterValid: true, quorumSatisfied: true, fullPanelComplete: true,
+      groundedReviewComplete: true });
+    expect(JSON.stringify(coverage)).not.toContain('untrusted model/source text');
+  });
+
   it('hashes the exact prepared input bytes consumed by a run', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-prepared-input-'));
     try {
@@ -49,6 +278,14 @@ describe('competitive review benchmark input boundaries', () => {
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it('pins the checked-in local policy projection bytes to the v1 source record', () => {
+    const projectionDirectory = path.join(process.cwd(), 'eval-baselines/competitive-review-benchmark/policy-projections');
+    expect(benchmark.readPreparedInput(path.join(projectionDirectory, 'yeti-v1-native-omitted.json')).sha256)
+      .toBe(benchmark.V1_POLICY_PROVENANCE.projectionSha256ByEffort.native_omitted);
+    expect(benchmark.readPreparedInput(path.join(projectionDirectory, 'yeti-v1-medium.json')).sha256)
+      .toBe(benchmark.V1_POLICY_PROVENANCE.projectionSha256ByEffort.medium);
   });
 
   it('creates an opaque, context-stratified verification panel without labels in reviewer input', () => {

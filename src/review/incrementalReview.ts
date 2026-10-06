@@ -5,8 +5,8 @@
  *
  * W1 measured about 9M of 88.7M weekly review tokens (upper bound 26M) spent
  * re-reviewing files that had not changed since the previous reviewed head.
- * When a pull request gets a new head and its latest completed review is a
- * SHIP-complete review of an ANCESTOR head with the same policy and config,
+ * When a pull request gets a new head and its latest review has complete
+ * verified coverage of an ANCESTOR head with the same policy and config,
  * the lanes see only what changed since that head, plus every unchanged file
  * that still carries a finding from it. Every other unchanged file is carried
  * forward: it stays listed to its lanes with a one-line note, and the previous
@@ -32,7 +32,7 @@
  *   is not an ancestor (force-push or rebase), the merge base moved in a way
  *   that touches a reviewed file, policy or config digests changed, the prior
  *   review is older than the configured age, the prior review is not
- *   SHIP-complete, a comparison is incomplete, nothing left to carry, and any
+ *   verified coverage is incomplete, a comparison is incomplete, nothing left to carry, and any
  *   error. Each is the review that runs today.
  * - Open findings. Any file with a finding from the prior review, of any
  *   severity and from any lane, is always re-reviewed in full.
@@ -134,6 +134,8 @@ export const priorReviewRecordSchema = z.object({
   completionDigest: digest,
   /** Service clock: current run admission minus the prior record's storage time. */
   ageMs: z.number().int().nonnegative().safe(),
+  /** Full source coverage may be reused as repair context even when approval failed. */
+  coverageComplete: z.boolean().optional(),
   shipComplete: z.boolean(),
   /** REL-1084: when not SHIP-complete, the check that refused it (disclosure and logs only). */
   shipIncompleteReason: z.enum(STORED_PRIOR_REFUSALS).optional(),
@@ -178,6 +180,49 @@ function timeOf(value: unknown): number {
   if (value instanceof Date) return value.getTime();
   if (typeof value === 'string' || typeof value === 'number') return new Date(value).getTime();
   return Number.NaN;
+}
+
+function storedJson(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return undefined; }
+}
+
+/**
+ * Approval and usable source coverage are separate facts. This accepts a complete failed review
+ * as repair context, while still requiring the exact trusted gate projection (for authoritative
+ * runs), completed quorum/roster, no infrastructure lane, and a grounded v2 receipt when one was
+ * requested. Finding severity and the final SHIP decision do not waive or grant coverage.
+ */
+function storedCoverageComplete(result: WorkerReviewResult, options: {
+  authoritative: boolean; gate?: StoredGateRecord | null; completionDigest?: string;
+}): boolean {
+  if (result.coverageComplete !== true || result.quorumSatisfied !== true
+    || result.personas.length === 1 && result.personas[0].id === 'documentation-only') return false;
+  if (result.reviewDecision !== undefined
+    && (!result.groundedReview?.coverage.complete || !result.groundedReview.verification.coverageComplete)) return false;
+  if (result.groundedReview
+    && (!result.groundedReview.coverage.complete || !result.groundedReview.verification.coverageComplete)) return false;
+  const gating = result.personas.filter((persona) => persona.evidenceSource !== 'shadow');
+  if (gating.some((persona) => persona.decision === 'ERROR' || persona.status === 'ERROR')) return false;
+  if (!options.authoritative) {
+    const roster = result.roster;
+    if (!roster || roster.length === 0) return false;
+    const rosterIds = new Set(roster);
+    const seen = new Set<string>();
+    for (const lane of gating) {
+      if (!rosterIds.has(lane.id) || seen.has(lane.id)) return false;
+      seen.add(lane.id);
+    }
+    return roster.every((id) => seen.has(id));
+  }
+  const gate = options.gate;
+  if (!gate || String(gate.worker_result_digest ?? '') !== options.completionDigest) return false;
+  const evidence = storedJson(gate.evidence) as Record<string, unknown> | undefined;
+  if (!evidence || evidence.coverageComplete !== true || evidence.quorumSatisfied !== true
+    || evidence.infrastructureFailure !== false || typeof evidence.expectedLanes !== 'number'
+    || !Number.isSafeInteger(evidence.expectedLanes) || evidence.expectedLanes <= 0
+    || evidence.completedLanes !== evidence.expectedLanes || gating.length !== evidence.expectedLanes) return false;
+  return new Set(gating.map((persona) => persona.id)).size === gating.length;
 }
 
 /**
@@ -231,6 +276,7 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
       : !isNonAuthoritativeRun(rows.run.authoritative_gate_app_id) ? 'evidence-prior-run-authoritative'
       : storedEvidenceShipCompleteReason(result, conclusion);
     const findingPaths = [...new Set(result.personas.flatMap((persona) => persona.findings.map((finding) => finding.path)))].sort();
+    const coverageComplete = storedCoverageComplete(result, { authoritative, gate: rows.gate, completionDigest: storedDigest });
     return priorReviewRecordSchema.parse({
       runId: coordinates.runId,
       executionAttempt,
@@ -242,6 +288,7 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
       configDigest: coordinates.configDigest,
       completionDigest: storedDigest,
       ageMs: Math.max(0, Math.floor(receivedAt - recordedAt)),
+      coverageComplete,
       ...(shipIncompleteReason === null ? { shipComplete: true } : { shipComplete: false, shipIncompleteReason }),
       findingPaths,
     });
@@ -311,7 +358,7 @@ export type IncrementalFallbackReason =
   | 'retry-attempt'
   | 'same-head'
   | 'prior-identity-mismatch'
-  | 'prior-not-ship-complete'
+  | 'prior-coverage-incomplete'
   | 'policy-or-config-changed'
   | 'prior-too-old'
   | 'not-ancestor'
@@ -361,8 +408,8 @@ export function incrementalPrecheck(input: {
     return full('prior-identity-mismatch');
   }
   if (prior.headSha === current.headSha) return full('same-head');
-  if (!prior.shipComplete) {
-    return { mode: 'full', reason: 'prior-not-ship-complete',
+  if (prior.coverageComplete !== true) {
+    return { mode: 'full', reason: 'prior-coverage-incomplete',
       ...(prior.shipIncompleteReason ? { priorRefusal: prior.shipIncompleteReason } : {}) };
   }
   if (prior.policyDigest !== current.policyDigest || prior.configDigest !== current.configDigest) {
@@ -660,7 +707,7 @@ const FALLBACK_TEXT: Record<IncrementalFallbackReason, string> = {
   'retry-attempt': 'this is a retry attempt',
   'same-head': 'the previous review was of this same head',
   'prior-identity-mismatch': 'the previous review record did not match this pull request',
-  'prior-not-ship-complete': 'the previous review was not a complete SHIP',
+  'prior-coverage-incomplete': 'the previous review did not complete full current-source coverage',
   'policy-or-config-changed': 'the review policy or persona configuration changed',
   'prior-too-old': 'the previous review is older than the configured age',
   'not-ancestor': 'the previously reviewed head is not an ancestor of this head (force-push or rebase)',

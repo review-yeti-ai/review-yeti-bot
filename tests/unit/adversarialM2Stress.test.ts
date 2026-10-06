@@ -14,6 +14,7 @@ import { Context7Adapter } from '../../src/mcp/context7Adapter';
 import { PRMemoryStore } from '../../src/memory/prMemoryStore';
 import { SQLiteMemoryAdapter } from '../../src/memory/adapters/sqliteAdapter';
 import { findingFingerprint } from '../../src/review/findingConvergence';
+import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
 
 // This suite keeps the default process policy intact: P2 can leave the raw
 // arbiter at SHIP while the publisher's independent strict conclusion fails.
@@ -80,6 +81,8 @@ function mockDeps(overrides: Record<string, unknown> = {}) {
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
       })),
+      repoFileProviderFactory: (input: any) => groundedFixtureProvider(input),
+      groundedVerifierClient: groundedFixtureClient as never,
       client: {} as any,
       ...overrides,
     },
