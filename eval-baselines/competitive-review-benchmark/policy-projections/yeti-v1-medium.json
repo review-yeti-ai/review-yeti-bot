@@ -1,0 +1,11 @@
+{
+  "schema": "benchmark.review-policy.v1",
+  "review_yeti": {
+    "review_engine": "dsh",
+    "fallback_review_engine": "composed",
+    "personas": ["architecture", "security", "documentation"],
+    "reviewer_effort": "medium",
+    "budget": { "max_investigation_turns": 20 },
+    "transports": [{ "name": "bifrost", "enabled": true, "reasoning_effort": "medium" }]
+  }
+}
