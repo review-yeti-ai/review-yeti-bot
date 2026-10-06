@@ -168,6 +168,9 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     // a code change.
     limit: config.abandonedReaperLimit,
     delegatedFailureReader,
+    // Use the same startup snapshot as the ordinary dispatch pause so legacy
+    // abandoned attempts cannot publish a blocking failure during maintenance.
+    passthroughEnabled,
     checkClientFor: async (run, signal) => {
       const credentials = credentialsForRepository(run.owner, run.repo);
       const minted = await getGitHubAppRepositoryPublishToken({
