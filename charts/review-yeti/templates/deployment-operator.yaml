@@ -80,6 +80,10 @@ spec:
             - name: REVIEW_YETI_INCREMENTAL
               value: {{ .Values.publishing.incremental | quote }}
             {{- end }}
+            {{- if .Values.publishing.incrementalDelta }}
+            - name: REVIEW_YETI_INCREMENTAL_DELTA
+              value: {{ .Values.publishing.incrementalDelta | quote }}
+            {{- end }}
             {{- if .Values.publishing.reviewBudget }}
             - name: REVIEW_YETI_BUDGET
               value: {{ .Values.publishing.reviewBudget | quote }}

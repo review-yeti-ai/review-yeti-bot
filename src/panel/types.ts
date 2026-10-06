@@ -8,7 +8,7 @@ import { RepositoryVisibility } from '../review/repositoryVisibility';
 // boundary module for a plain value type. See `../types/workerFailure` for the full rationale.
 import type { WorkerFailureClass } from '../types/workerFailure';
 import type { DiffShrinkDisclosure } from '../types/diffShrink';
-import type { IncrementalReviewDisclosure } from '../types/incrementalReview';
+import type { IncrementalLedgerDisclosure, IncrementalReviewDisclosure } from '../types/incrementalReview';
 import type { ReviewBudgetDisclosure } from '../types/reviewBudget';
 import type { VerdictCacheDisclosure } from '../types/verdictCache';
 import type { MapReduceDisclosure } from '../types/mapReduceReview';
@@ -192,6 +192,8 @@ export interface PanelResult {
    * the check summary and the completion claim are built from exactly this.
    */
   incremental?: IncrementalReviewDisclosure;
+  /** ADR 0770: the delta re-review's per-task item outcomes. Set only for a delta-scoped review. */
+  incrementalLedger?: IncrementalLedgerDisclosure;
   /**
    * REL-1082: what the risk-ordered review budget sent each lane that ran (full, signatures,
    * not deeply reviewed). Set only when `REVIEW_YETI_BUDGET` applied; the check summary

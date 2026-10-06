@@ -13,9 +13,14 @@ W1 measured about 9M of 88.7M weekly review tokens (upper bound 26M) spent re-re
 | `REVIEW_YETI_INCREMENTAL` unset, empty, `0`, `false`, `off` | worker | Off. Every review is full. |
 | `REVIEW_YETI_INCREMENTAL` `1`, `true`, `on`, `all` | worker | On for every repository. |
 | `REVIEW_YETI_INCREMENTAL` `owner/repo,owner/other` | worker | On only for the listed repositories (case-insensitive). |
+| `REVIEW_YETI_INCREMENTAL_DELTA` unset, empty, `0`, `false`, `off` | worker | Off. Touched files are re-reviewed whole (the behaviour above). |
+| `REVIEW_YETI_INCREMENTAL_DELTA` `1`, `true`, `on`, `all`, or `owner/repo,...` | worker | Delta scope on. Same grammar as `REVIEW_YETI_INCREMENTAL`; has no effect unless that flag is also on for the repository. See [Delta scope](#delta-scope). |
+| `REVIEW_YETI_INCREMENTAL_MAX_CHAIN` | dispatch service | Most consecutive delta re-reviews before a full one is forced, 1 to 20. Default 4. Applies only when the delta scope is on. |
 | `REVIEW_YETI_INCREMENTAL_MAX_AGE_HOURS` | dispatch service | Oldest prior review a carry-forward may rest on, 1 to 720 hours. Default 72. |
 
 In Kubernetes, set `REVIEW_YETI_INCREMENTAL` on the operator Deployment (Helm: `publishing.incremental`, empty by default). The operator forwards a non-empty value verbatim to app-gate worker Jobs only. A value with a line break refuses app-gate Jobs. To revert, set it back to empty and let the operator roll. The age limit is read by the dispatch service; both the worker's planning read and the trusted verification use that one value.
+
+The delta flag is forwarded the same way (Helm: `publishing.incrementalDelta`, empty by default). The chain cap is dispatch-service config and is not forwarded to workers.
 
 ## What happens
 
@@ -31,6 +36,17 @@ A changed file is carried forward only when all of these hold:
 
 Carried-forward files stay listed to every lane with a one-line note in place of their patch. Every other file is sent in full. A file with an open finding is always re-reviewed in full, not just the hunk that carries the finding.
 
+## Delta scope
+
+Whole-file carry saves little when every push touches the files the previous review already read. A real 5-head pull request (the replay fixture, `tests/fixtures/incremental/`) re-sent 95 to 129 KB of patch text per head while each push changed 3 to 30 KB. With `REVIEW_YETI_INCREMENTAL_DELTA` on, a file that was in the prior diff, was touched since the previous head, has no open finding, and was not renamed is **delta-scoped**: its lane patch is the pull request's own file header, a note, and only the hunks of the change since the previous head. Files with an open finding, renamed paths, gitlinks, symlinks and files new to the pull request are never narrowed.
+
+- **Verification.** The claim carries `deltaPaths`. The service re-derives them from its own prior record and its own detailed compare (status `modified`, complete patch). Delta paths may not overlap carried paths; a claim must carry or delta at least one file. `delta-patch-unavailable` is the refusal when a patch is missing.
+- **Bounded calls.** The planner is capped at `min(maxTasks, previous task count, 3)` tasks. The review makes one plan call plus one call per planned task, however many hunks changed: hunks are grouped into those tasks, never reviewed one call per hunk (pinned by `incrementalDeltaEngine.test.ts` at 1, 10, 100 and 300 hunks).
+- **Ledger.** Every open prior finding and every delta hunk gets a stable id and is routed to exactly one task. Each task returns an outcome for every id it was assigned (`resolved`, `still-open` or `unclear` for a prior finding; `clean` or `finding` for a hunk), validated by the engine; a missing, duplicate or unknown id is a contract failure. `unclear` counts as open. The check summary lists the totals and any prior finding left unresolved.
+- **Convergence.** A P2 on a delta-scoped file that is outside the delta lines (plus 20 lines of context) is classified `outside-diff` advisory, as ADR 0002 does for lines outside the diff. P0 and P1 are never narrowed, and severity is unchanged.
+- **Chain cap.** Every delta re-review records its depth. When the prior depth reaches `REVIEW_YETI_INCREMENTAL_MAX_CHAIN`, the review is full (`chain-cap-reached`), so a carry never rests on an unbounded chain of narrowed reviews.
+- **Composed engine limit.** In the composed engine, the delta narrows the plan turn's view, the tool file list, the domain lanes and the precheck evidence. The task work turns still deliver every original patch character of their assigned paths, because the trusted task ledger requires a source-delivery receipt against the original patch digests. So today the delta bounds the number of calls and the verdict scope, and saves plan-turn tokens; it does not yet shrink work-turn source. That needs a trusted-ledger amendment and is tracked separately.
+
 ## Full-review fallbacks
 
 Each of these is the review that runs today:
@@ -45,6 +61,7 @@ Each of these is the review that runs today:
 | `prior-too-old` | The prior record is older than the configured age, measured from this run's admission time. |
 | `not-ancestor` | The previous head is not an ancestor of the new head (force-push or rebase). |
 | `base-rewritten`, `base-moved-reviewed-files` | The merge base moved backwards or sideways, or moved and touched a current or previously reviewed file. |
+| `chain-cap-reached` | Delta scope on, and the prior review was already the configured number of consecutive delta re-reviews deep. |
 | `comparison-incomplete` | A comparison lists 300 files, GitHub's cap, so it may be cut. |
 | `nothing-carried-forward`, `no-new-reviewable-change` | Nothing to carry, or nothing new to review. |
 | `error` | Any read or planning failure, or a 15-second planning deadline. |
@@ -74,7 +91,9 @@ When the flag is on, the check summary gets an **Incremental re-review** block. 
 
 ## Follow-ups
 
-- Finding-hunk granularity. An open-finding file is re-reviewed whole, not only the hunk that carries the finding. That is a superset of the plan's rule and costs more tokens.
+- Finding-hunk granularity. An open-finding file is re-reviewed whole, not only the hunk that carries the finding. That is a superset of the plan's rule and costs more tokens. The delta scope does not change this.
+- Work-turn source delivery under the delta scope (see [Delta scope](#delta-scope), composed engine limit). Needs the trusted task ledger to accept the scoped patch digest.
+- The checkpoint/resume path does not retain ledger entries, so a resumed task shows as unrecorded in the ledger summary. That fails closed (disclosed, never resolved).
 - Classifier input. On the non-deterministic roster, the pre-flight classifier sees the carry-forward notes, so a small delta on top of a SHIP-complete review can fast-ship. The authoritative roster never classifies.
 - `review_runs` has no `(repository_id, pr_number)` index. The selection query filters on it. Add one if the table grows large.
 

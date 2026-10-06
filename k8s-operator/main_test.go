@@ -273,3 +273,15 @@ func TestPublishingConfigFromEnvReadsWorkerMetricsEndpoint(t *testing.T) {
 		t.Fatalf("worker metrics endpoint not read: %+v", config)
 	}
 }
+
+// Delta-scoped incremental re-review has no default -- unset forwards nothing.
+func TestPublishingConfigFromEnvReadsIncrementalDelta(t *testing.T) {
+	t.Setenv("REVIEW_YETI_INCREMENTAL_DELTA", "")
+	if config := publishingConfigFromEnv(); config.IncrementalDelta != "" {
+		t.Fatalf("unset incremental delta flag must stay empty: %+v", config)
+	}
+	t.Setenv("REVIEW_YETI_INCREMENTAL_DELTA", " exampleorg/example-meta ")
+	if config := publishingConfigFromEnv(); config.IncrementalDelta != "exampleorg/example-meta" {
+		t.Fatalf("incremental delta flag not read: %+v", config)
+	}
+}

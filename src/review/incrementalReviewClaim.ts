@@ -25,10 +25,30 @@ export const incrementalReviewClaimSchema = z.object({
   previousHeadSha: z.string().regex(/^[a-f0-9]{40}$/u),
   previousBaseSha: z.string().regex(/^[a-f0-9]{40}$/u),
   previousCompletionDigest: z.string().regex(/^[a-f0-9]{64}$/u),
-  carriedForwardPaths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).min(1).max(MAX_CHANGED_FILES),
+  /** Empty only when `deltaPaths` is not (a delta-only incremental review carries no whole file). */
+  carriedForwardPaths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).max(MAX_CHANGED_FILES),
+  /**
+   * Delta scope (ADR 0770): touched files whose lanes saw only the change since `previousHeadSha`.
+   * Absent unless the worker ran with `REVIEW_YETI_INCREMENTAL_DELTA`. The trusted side re-derives
+   * the permitted set and refuses a path outside it.
+   */
+  deltaPaths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).min(1).max(MAX_CHANGED_FILES).optional(),
+  /** Consecutive incremental reviews this one extends, 1 for the first after a full review. */
+  chainDepth: z.number().int().min(1).max(1000).optional(),
 }).strict().superRefine((claim, context) => {
   if (new Set(claim.carriedForwardPaths).size !== claim.carriedForwardPaths.length) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['carriedForwardPaths'], message: 'carried-forward paths must be unique' });
+  }
+  if (claim.deltaPaths) {
+    if (new Set(claim.deltaPaths).size !== claim.deltaPaths.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['deltaPaths'], message: 'delta paths must be unique' });
+    }
+    const carried = new Set(claim.carriedForwardPaths);
+    if (claim.deltaPaths.some((path) => carried.has(path))) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['deltaPaths'], message: 'a path cannot be both carried forward and delta-scoped' });
+    }
+  } else if (claim.carriedForwardPaths.length === 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['carriedForwardPaths'], message: 'a claim must carry forward or delta-scope at least one path' });
   }
 });
 

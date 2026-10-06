@@ -53,9 +53,19 @@ import {
 } from '../review/diffShrink';
 import {
   attachIncrementalDisclosure,
+  type IncrementalLedgerDisclosure,
   type IncrementalReviewDisclosure,
   type IncrementalReviewScope,
 } from '../review/incrementalReview';
+import {
+  buildLedgerItems,
+  deltaMaxTasks,
+  renderLedgerDirective,
+  routeLedgerItems,
+  validateLedgerEntries,
+  type LedgerEntry,
+  type LedgerItem,
+} from '../review/incrementalDelta';
 import {
   budgetCategoryRank,
   classifyBudgetCategory,
@@ -468,8 +478,8 @@ function normalizeModelReportedBlockedReason(value: unknown): ModelReportedBlock
  * cross-engine surface for no caller outside this file. `findings` reuses the exact same item
  * shape `buildPanelResponseFormat` already emits so the two stay visually consistent; the
  * authoritative validator for both is the same `validateFindings` either way. */
-function buildTaskResultResponseFormat() {
-  return {
+function buildTaskResultResponseFormat(withLedger = false) {
+  const base = {
     type: 'json_schema',
     json_schema: {
       name: 'ct_review_task_result_v1',
@@ -515,12 +525,44 @@ function buildTaskResultResponseFormat() {
       },
     },
   };
+  if (!withLedger) return base;
+  // ADR 0770: a delta re-review's tasks also report an explicit outcome per assigned ledger item.
+  return {
+    type: base.type,
+    json_schema: {
+      name: 'ct_review_task_result_v2',
+      strict: true,
+      schema: {
+        ...base.json_schema.schema,
+        properties: {
+          ...base.json_schema.schema.properties,
+          ledger: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                item: { type: 'string' },
+                outcome: { type: 'string', enum: ['resolved', 'still-open', 'unclear', 'clean', 'finding'] },
+                note: { type: 'string', maxLength: 300 },
+              },
+              required: ['item', 'outcome', 'note'],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: [...base.json_schema.schema.required, 'ledger'],
+      },
+    },
+  };
 }
 
 // Admit only fields declared by the same schema sent to the provider. Compute this once,
 // rather than maintaining a second literal contract or rebuilding the set on every turn.
 const TASK_RESULT_FIELDS: ReadonlySet<string> = new Set(
   Object.keys(buildTaskResultResponseFormat().json_schema.schema.properties),
+);
+const TASK_RESULT_FIELDS_WITH_LEDGER: ReadonlySet<string> = new Set(
+  Object.keys(buildTaskResultResponseFormat(true).json_schema.schema.properties),
 );
 
 /** Loose native turn envelope: either a read-only tool request or a role-shaped final object. */
@@ -1065,6 +1107,7 @@ export function buildPlanDirective(
   expectedNonce: string,
   securityAuthPaths: string[] = [],
   enabledPersonas: Array<{ id: string; charter: string }> = [],
+  deltaRereview = false,
 ): string {
   const personaCharterLines = enabledPersonas.length > 0
     ? [
@@ -1088,6 +1131,9 @@ export function buildPlanDirective(
     `Use a short lowercase slug naming what each task examines, for example "security-auth", "perf-hot-path" or "contract-api-shape".`,
     ...buildPlanTaskContractGuidance(expectedNonce, changedFilePaths, securityAuthPaths),
     `Use at most ${maxTasks} tasks. Every non-documentation, non-binary changed file must be covered by at least one task.`,
+    ...(deltaRereview ? [
+      `INCREMENTAL RE-REVIEW: some files above show only the change since the previously reviewed head (a delta patch), and carried-forward files show a one-line note. Group files that change together into the same task and use as few tasks as the change needs; never split one file across tasks to review its hunks separately. Each task will be given an itemized ledger of open prior findings and delta hunks that it must answer.`,
+    ] : []),
     // The security floor is enforced against `classifyPathByHeuristic`, a
     // deterministic model-independent classification of the real changed
     // paths, and a miss fails the whole plan closed with NO corrective turn
@@ -1147,7 +1193,8 @@ function buildPlanTaskContractGuidance(
 function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: number, expectedNonce: string,
   disputedFindingRechecks: readonly DisputedFindingRecheck[] = [],
   profile: CtReviewConfigV3['profile'] = 'balanced',
-  severityPolicyVersion?: CtReviewConfigV3['severity_policy']): string {
+  severityPolicyVersion?: CtReviewConfigV3['severity_policy'],
+  ledgerItems: readonly LedgerItem[] = []): string {
   const disputeEvidence = disputedFindingRechecks.length === 0 ? [] : [
     '',
     '=== UNTRUSTED DISPUTED-FINDING EVIDENCE ===',
@@ -1183,13 +1230,14 @@ function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: num
     ...advisoryProfileGuidance,
     `Use BLOCKED only when you genuinely cannot complete this task with the tools and evidence available; BLOCKED is recorded as a failed lane, never as a pass.`,
     `blockedReason is required by the strict provider schema: for BLOCKED use null or one of ${MODEL_REPORTED_BLOCKED_REASONS.join(', ')}; for COMPLETE use null. It is a coarse model-reported diagnostic only, not a verified root cause; never include free text. The application ignores it for COMPLETE.`,
+    ...(ledgerItems.length > 0 ? ['', renderLedgerDirective(ledgerItems), ''] : []),
     `CT_REVIEW_NONCE:${expectedNonce}`,
     ...disputeEvidence,
   ].join('\n');
 }
 
 type TaskContractFailure = 'response_shape' | 'tool_after_finalization' | 'result_fields'
-  | 'task_mismatch' | 'nonce_mismatch' | 'status_enum' | 'findings_contract';
+  | 'task_mismatch' | 'nonce_mismatch' | 'status_enum' | 'findings_contract' | 'ledger_contract';
 
 const TASK_CONTRACT_DIAGNOSTIC_REASONS: Record<TaskContractFailure, ComposedTaskFailureDiagnostics['reason']> = {
   response_shape: 'non_json_task_result',
@@ -1199,6 +1247,9 @@ const TASK_CONTRACT_DIAGNOSTIC_REASONS: Record<TaskContractFailure, ComposedTask
   nonce_mismatch: 'nonce_mismatch',
   status_enum: 'invalid_status',
   findings_contract: 'invalid_findings',
+  // A ledger is part of the structured result contract; it reuses the coded reason rather than
+  // widening the persisted diagnostics vocabulary.
+  ledger_contract: 'invalid_findings',
 };
 
 function composedTaskRejectionCode(reason: ComposedTaskFailureDiagnostics['reason']): 'budget_exhausted' | 'malformed_output' | 'findings_contract_invalid' | 'invalid_task_output' {
@@ -1232,7 +1283,8 @@ function composedTaskDiagnosticLane(taskIndex: number): string {
 function buildTaskFinalizationDirective(
   task: ReviewTask,
   expectedNonce: string,
-  recovery?: { kind: 'correction' | 'fresh'; reason: TaskContractFailure; findingCorrectionCode?: string },
+  recovery?: { kind: 'correction' | 'fresh'; reason: TaskContractFailure; findingCorrectionCode?: string; ledgerError?: string },
+  ledgerItems: readonly LedgerItem[] = [],
 ): string {
   const findingCorrection = recovery?.findingCorrectionCode
     ? findingCorrectionForCode(recovery.findingCorrectionCode)
@@ -1241,13 +1293,15 @@ function buildTaskFinalizationDirective(
     'TASK_FINALIZATION',
     ...(recovery ? [recovery.kind === 'fresh' ? 'TASK_RESULT_FRESH_RECOVERY' : 'TASK_RESULT_CORRECTION',
       `The previous task result failed the ${recovery.reason} contract.`,
-      ...(findingCorrection ? [`Controller-owned correction guidance: ${findingCorrection.hint}`] : [])] : []),
+      ...(findingCorrection ? [`Controller-owned correction guidance: ${findingCorrection.hint}`] : []),
+      ...(recovery.ledgerError ? [`Controller-owned correction guidance: the ledger was rejected (${recovery.ledgerError}). Return one entry for every assigned item, exactly once.`] : [])] : []),
     'The read-only investigation phase has ended. Return the complete task result now; do not request another tool.',
     `Return exactly one JSON object with nonce "${expectedNonce}" and task "${task.id}". Do not include prose or Markdown fences.`,
     'Use status COMPLETE or BLOCKED; if evidence is insufficient use BLOCKED, never invent a finding or an approval.',
     `blockedReason is required by the strict provider schema: for BLOCKED use null or one of ${MODEL_REPORTED_BLOCKED_REASONS.join(', ')}; for COMPLETE use null. It is a coarse model self-report only, not a verified root cause. The application ignores it for COMPLETE.`,
     'Every finding must use severity P0, P1, P2, P3 or NIT, an exact changed path and a positive integer line anchored in the supplied diff. P0/P1 are verified defects and require blockerEvidence containing the concrete trigger, impact and violated contract; use null for P2/P3/NIT. P2 is a meaningful lower-impact defect, P3 a low-impact improvement, and NIT optional polish. Keep descriptions concise (1-2 sentences). Do not include inline code patches or multi-paragraph justifications.',
-    `Binding task-result schema: ${JSON.stringify(buildTaskResultResponseFormat().json_schema)}`,
+    ...(ledgerItems.length > 0 ? [renderLedgerDirective(ledgerItems)] : []),
+    `Binding task-result schema: ${JSON.stringify(buildTaskResultResponseFormat(ledgerItems.length > 0).json_schema)}`,
     `CT_REVIEW_NONCE:${expectedNonce}`,
   ].join('\n');
 }
@@ -1445,7 +1499,7 @@ async function runPlanPhase(input: {
 // ---------------------------------------------------------------------------
 
 type TaskOutcome =
-  | { type: 'complete'; findings: PanelFinding[]; sourceDelivery: TaskSourceReceipt; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; correctionAttempts: number; toolTurns: number; durationMs: number }
+  | { type: 'complete'; findings: PanelFinding[]; ledger?: LedgerEntry[]; sourceDelivery: TaskSourceReceipt; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; correctionAttempts: number; toolTurns: number; durationMs: number }
   | { type: 'blocked'; blockedReason: ModelReportedBlockedReason; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; correctionAttempts: number; toolTurns: number; durationMs: number }
   | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics; durationMs: number; attempts?: number }
   /** Every attempt stalled on a provider timeout; recorded as a named failed lane, never fatal. */
@@ -1457,6 +1511,8 @@ async function runTaskWorkPhase(input: {
   taskIndex: number;
   totalTasks: number;
   disputedFindingRechecks?: readonly DisputedFindingRecheck[];
+  /** ADR 0770: this task's share of the delta re-review ledger; every item needs an explicit outcome. */
+  ledgerItems?: readonly LedgerItem[];
   client: ReviewModelClient;
   model: string;
   providerId: ProviderId;
@@ -1494,8 +1550,10 @@ async function runTaskWorkPhase(input: {
   const initialTaskMessages: OpenRouterMessage[] = [
     ...input.baseMessages,
     { role: 'user', content: buildTaskDirective(input.task, input.taskIndex, input.totalTasks, expectedNonce,
-      input.disputedFindingRechecks, input.profile, input.severityPolicyVersion) },
+      input.disputedFindingRechecks, input.profile, input.severityPolicyVersion, input.ledgerItems) },
   ];
+  const ledgerItems = input.ledgerItems ?? [];
+  let ledgerError: string | undefined;
   let taskMessages = [...initialTaskMessages];
   const turnUsages = input.progressState?.turnUsages ?? [];
   // A task-level retry reuses the shared usage array so every attempt's spend stays accounted;
@@ -1519,9 +1577,9 @@ async function runTaskWorkPhase(input: {
     const isLastLocalTurn = iter === localMaxTurns - 1;
     const finalizing = correctionAttempts > 0 || iter >= localMaxTurns - finalizationTurns;
     if (correctionAttempts === 0 && iter === localMaxTurns - finalizationTurns) {
-      taskMessages = [...taskMessages, { role: 'user', content: buildTaskFinalizationDirective(input.task, expectedNonce) }];
+      taskMessages = [...taskMessages, { role: 'user', content: buildTaskFinalizationDirective(input.task, expectedNonce, undefined, ledgerItems) }];
     }
-    const responseFormat = finalizing ? buildTaskResultResponseFormat() : NATIVE_TURN_RESPONSE_FORMAT;
+    const responseFormat = finalizing ? buildTaskResultResponseFormat(ledgerItems.length > 0) : NATIVE_TURN_RESPONSE_FORMAT;
     const activeMessages = compactMessageWindow(taskMessages, {
       activeTurns: TASK_COMPACTION_ACTIVE_TURNS,
       retainSmallToolResults: true,
@@ -1584,7 +1642,7 @@ async function runTaskWorkPhase(input: {
     if (!candidate) {
       contractFailure = parsed?.isToolCall ? 'tool_after_finalization' : 'response_shape';
       if (parsed?.isToolCall) lastToolOutcome = 'requested_after_finalization';
-    } else if (Object.keys(candidate).some((key) => !TASK_RESULT_FIELDS.has(key))) {
+    } else if (Object.keys(candidate).some((key) => !(ledgerItems.length > 0 ? TASK_RESULT_FIELDS_WITH_LEDGER : TASK_RESULT_FIELDS).has(key))) {
       contractFailure = 'result_fields';
     } else if (candidate.task !== input.task.id) {
       contractFailure = 'task_mismatch';
@@ -1606,6 +1664,17 @@ async function runTaskWorkPhase(input: {
         findingFailureCode = err.findingFailureCode;
         contractFailure = 'findings_contract';
       }
+    }
+
+    // ADR 0770: a COMPLETE delta re-review task must account for every assigned item. A BLOCKED task is
+    // already a failed lane, so it needs no ledger. A missing or inconsistent ledger is a contract
+    // failure and goes through the same single correction and fresh-recovery path as a bad finding.
+    let ledger: LedgerEntry[] | undefined;
+    ledgerError = undefined;
+    if (!contractFailure && candidate.status === 'COMPLETE' && ledgerItems.length > 0) {
+      const checked = validateLedgerEntries(ledgerItems, candidate.ledger, findings);
+      if (checked.valid) ledger = checked.entries;
+      else { contractFailure = 'ledger_contract'; ledgerError = checked.error; }
     }
 
     if (contractFailure) {
@@ -1643,7 +1712,8 @@ async function runTaskWorkPhase(input: {
         content: buildTaskFinalizationDirective(input.task, expectedNonce, {
           kind: freshRecoveryUsed ? 'fresh' : 'correction', reason: contractFailure,
           ...(findingFailureCode ? { findingCorrectionCode: findingFailureCode } : {}),
-        }),
+          ...(ledgerError ? { ledgerError } : {}),
+        }, ledgerItems),
       }];
       continue;
     }
@@ -1658,7 +1728,7 @@ async function runTaskWorkPhase(input: {
       taskMessages = [...taskMessages, { role:'user', content:'Source delivery is incomplete. Use get_diff_page to inspect every remaining original assigned patch range before returning COMPLETE. Other tools and page metadata alone do not prove full original diff delivery.' }];
       continue;
     }
-    return { type: 'complete', findings, sourceDelivery, turnUsages, toolCalls: toolCallsLog, correctionAttempts, toolTurns, durationMs };
+    return { type: 'complete', findings, ...(ledger ? { ledger } : {}), sourceDelivery, turnUsages, toolCalls: toolCallsLog, correctionAttempts, toolTurns, durationMs };
   }
 
   return exhausted('task_turn_budget_exhausted');
@@ -1848,6 +1918,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
   let diffShrinkDisclosure: DiffShrinkDisclosure | null = null;
   // REL-1084: what the incremental scope actually carried forward, from the same call.
   let incrementalDisclosure: IncrementalReviewDisclosure | null = null;
+  // ADR 0770: builds the delta re-review's ledger disclosure from this run's settled tasks, or null.
+  const ledgerHolder: { build: (() => IncrementalLedgerDisclosure) | null } = { build: null };
   // REL-1085: what the verdict cache actually served, from the same call.
   let verdictCacheDisclosure: VerdictCacheDisclosure | null = null;
   // REL-1092: truncated and unavailable patches, from the same decision.
@@ -1971,7 +2043,19 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
 
     // Policy may only narrow this, never widen it past the shared task hard cap -- `config.composed` is
     // base-policy-projected (see `resolveWorkerConfig` in `../config/publishingWorkerConfig.ts`).
-    const maxTasks = resolveComposedMaxTasks(config.composed?.max_tasks);
+    // ADR 0770: a delta-scoped re-review plans no more tasks than the full review did (and at most
+    // `DELTA_DEFAULT_MAX_TASKS`). Hunks never become tasks or model calls: they are ledger items
+    // routed into these tasks, so the call count is bounded by this number, not by the diff.
+    const deltaScopedPaths = new Set(incrementalDisclosure?.deltaPaths ?? []);
+    const ledgerItems: LedgerItem[] = deltaScopedPaths.size > 0
+      ? buildLedgerItems({
+        deltaFiles: (options.incremental?.deltaFiles ?? []).filter((file) => deltaScopedPaths.has(file.path)),
+        openFindings: options.incremental?.openFindings ?? [],
+      }) : [];
+    const configuredMaxTasks = resolveComposedMaxTasks(config.composed?.max_tasks);
+    const maxTasks = ledgerItems.length > 0
+      ? deltaMaxTasks(configuredMaxTasks, options.incremental?.previousTaskCount) : configuredMaxTasks;
+    span.setAttribute('review_yeti.composed.delta_ledger_items', ledgerItems.length);
     const effectiveFilePaths = effectiveFiles.map((f) => f.path);
 
     // Mint the plan nonce ONCE and keep it, so the returned object can be bound back to this
@@ -1993,6 +2077,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
               planNonce,
               effectiveFilePaths.filter((path) => domainLanes[path] === 'security_auth'),
               enabledPersonas,
+              ledgerItems.length > 0,
             ),
           },
         ],
@@ -2244,6 +2329,32 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     let blockerFindingDetected = false;
     let totalFindingsCollected = [...completedCheckpointTasks.values()].reduce((sum, f) => sum + f.length, 0);
     const settledTaskSummaries: string[] = [];
+    // ADR 0770: routed lazily, once, after the plan is fixed. Pure and path-based: no model call.
+    let ledgerRouting: ReturnType<typeof routeLedgerItems> | null = null;
+    const ledgerItemsFor = (taskId: string): LedgerItem[] => {
+      if (ledgerItems.length === 0) return [];
+      ledgerRouting ??= routeLedgerItems(planOutcome.tasks, ledgerItems);
+      return ledgerRouting.byTask.get(taskId) ?? [];
+    };
+    const settledLedgers = new Map<string, LedgerEntry[]>();
+    if (ledgerItems.length > 0) {
+      ledgerHolder.build = () => {
+        const routing = ledgerRouting ?? routeLedgerItems(planOutcome.tasks, ledgerItems);
+        return {
+          maxTasks,
+          plannedTasks: planOutcome.tasks.length,
+          tasks: planOutcome.tasks.flatMap((task) => {
+            const entries = settledLedgers.get(task.id);
+            return entries ? [{ taskId: task.id, dimension: task.dimension, entries }] : [];
+          }),
+          unrecordedTaskIds: planOutcome.tasks
+            .filter((task) => (routing.byTask.get(task.id)?.length ?? 0) > 0 && !settledLedgers.has(task.id))
+            .map((task) => task.id),
+          fallbackRoutedItems: routing.fallbackRouted,
+          itemCount: ledgerItems.length,
+        };
+      };
+    }
     for (const [id, findings] of completedCheckpointTasks) {
       settledTaskSummaries.push(`- Task ${id} (resumed-checkpoint): ${findings.length} finding(s)`);
     }
@@ -2351,6 +2462,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
               taskIndex: index,
               totalTasks: planOutcome.tasks.length,
               disputedFindingRechecks: rechecksByTask.get(task.id),
+              ledgerItems: ledgerItemsFor(task.id),
               client,
               model,
               providerId,
@@ -2489,6 +2601,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       if (!planUsageFolded && (outcome.type === 'complete' || outcome.type === 'blocked')) planUsageFolded = true;
 
       if (outcome.type === 'complete') {
+        if (outcome.ledger) settledLedgers.set(task.id, outcome.ledger);
         personas.push({
           id: task.id,
           required: true,
@@ -3009,6 +3122,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     };
   }).then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure))
     .then((result) => attachIncrementalDisclosure(result, incrementalDisclosure))
+    .then((result) => (ledgerHolder.build ? { ...result, incrementalLedger: ledgerHolder.build() } : result))
     .then((result) => attachVerdictCacheDisclosure(result, verdictCacheDisclosure))
     .then((result) => attachReviewDepthDisclosure(result, depthDisclosure))
     .then((result) => attachReviewBudgetDisclosure(result, reviewBudgetPlan))
