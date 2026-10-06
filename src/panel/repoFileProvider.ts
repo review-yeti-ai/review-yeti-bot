@@ -39,7 +39,8 @@ export function createRepoFileProvider(github: GitHubInstallationClient, owner: 
   const originals = new Map(evidence?.changedFiles.map((file) => [file.path, file]) ?? []);
   // Cache only bounded page sources. The exact commit is part of every key;
   // eviction costs another read, never a different revision or missing evidence.
-  const sourceCache = new Map<string, { promise: Promise<string | null>; bytes: number }>();
+  type PinnedRead = { content: string | null; presence: 'present' | 'absent' | 'unavailable' };
+  const sourceCache = new Map<string, { promise: Promise<PinnedRead>; bytes: number }>();
   let sourceBytes = 0;
   return {
     async readFileAt(path, side) {
@@ -49,12 +50,19 @@ export function createRepoFileProvider(github: GitHubInstallationClient, owner: 
       const key = `${sha}:${path}`;
       let entry = sourceCache.get(key);
       if (!entry) {
-        entry = { bytes: 0, promise: github.getFileContent(owner, repo, path, sha, { notFoundIsEmpty: true }) };
+        const lookup: Promise<PinnedRead> = typeof github.getFileContentEvidence === 'function'
+          ? github.getFileContentEvidence(owner, repo, path, sha)
+          : github.getFileContent(owner, repo, path, sha, { notFoundIsEmpty: true }).then<PinnedRead>((content) => ({
+            content: typeof content === 'string' ? content : null,
+            // Legacy clients cannot prove whether null means absent or unavailable.
+            presence: typeof content === 'string' ? 'present' as const : 'unavailable' as const,
+          }));
+        entry = { bytes: 0, promise: lookup };
         sourceCache.set(key, entry);
         const current = entry;
-        current.promise = current.promise.then((content) => {
+        current.promise = current.promise.then<PinnedRead>((result) => {
           if (sourceCache.get(key) === current) {
-            current.bytes = Buffer.byteLength(content ?? '', 'utf8');
+            current.bytes = Buffer.byteLength(result.content ?? '', 'utf8');
             sourceBytes += current.bytes;
             while (sourceBytes > MAX_SOURCE_CACHE_BYTES || sourceCache.size > MAX_SOURCE_CACHE_ENTRIES) {
               const oldest = sourceCache.keys().next().value;
@@ -63,10 +71,15 @@ export function createRepoFileProvider(github: GitHubInstallationClient, owner: 
               sourceCache.delete(oldest);
             }
           }
-          return Buffer.byteLength(content ?? '', 'utf8') <= MAX_PINNED_SOURCE_BYTES ? content : null;
+          if (result.presence !== 'present' || typeof result.content !== 'string'
+            || Buffer.byteLength(result.content, 'utf8') > MAX_PINNED_SOURCE_BYTES) {
+            return { content: null, presence: result.presence === 'absent' ? 'absent' : 'unavailable' };
+          }
+          return result;
         }).catch((error) => { if (sourceCache.get(key) === current) sourceCache.delete(key); throw error; });
       }
-      return { sha, content: await entry.promise };
+      const result = await entry.promise;
+      return { sha, ...result, source: { repository: `${owner}/${repo}`, path, side } };
     },
     readDiff(path) {
       const file = originals.get(path);

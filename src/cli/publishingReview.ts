@@ -1655,7 +1655,9 @@ export async function runPublishingReviewWorker(
       throw error;
     }
 
-    const { files: changedFiles, unreadable } = parseChangedFiles(String(source.diff));
+    const { files: changedFiles, unreadable } = parseChangedFiles(String(source.diff), {
+      repository: identity.repo, baseSha: identity.baseSha, headSha: identity.headSha,
+    });
     // An empty changed-file set must not be read as "nothing to review, ship".
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
     // Build current-source coverage before optional historical context. History can reprioritize
