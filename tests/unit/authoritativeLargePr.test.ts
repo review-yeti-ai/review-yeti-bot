@@ -17,6 +17,17 @@ const target = { repositoryId: 321, owner: 'example', repo: 'candidate', prNumbe
 const mergeBaseSha = 'd'.repeat(40);
 const token = 'ghs_large-pr.header.signature';
 const patch = '@@ -1 +1 @@\n-old\n+new';
+const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
+const absentSideEvidence = (path: string, absentSide: 'base' | 'head', patchText: string) => ({
+  version: 'ReviewSourcePresence.v1' as const,
+  repository: 'example/candidate',
+  path,
+  baseSha: target.baseSha,
+  headSha: target.headSha,
+  absentSide,
+  evidence: 'comparison-status' as const,
+  patchDigest: sha256(patchText),
+});
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 const pull = (count = 130, overrides = {}) => json({ number: target.prNumber, state: 'open', merged: false,
   draft: false, head: { sha: target.headSha }, base: { sha: target.baseSha,
@@ -403,7 +414,17 @@ describe('authoritative oversized PR fallback', () => {
       base === undefined ? json({}, 404) : json(contentBody(oldPath, base)),
       head === undefined ? json({}, 404) : json(contentBody(path, head)));
     const result = await run(f);
-    expect(result.changedFiles).toEqual([{ path, patch: expect.stringMatching(/^@@ /u) }]);
+    if (status === 'added') {
+      const reconstructedPatch = '@@ -0,0 +1,1 @@\n+new\n';
+      expect(result.changedFiles).toEqual([{ path, patch: reconstructedPatch,
+        sourcePresence: absentSideEvidence(path, 'base', reconstructedPatch) }]);
+    } else if (status === 'removed') {
+      const reconstructedPatch = '@@ -1,1 +0,0 @@\n-old\n';
+      expect(result.changedFiles).toEqual([{ path, patch: reconstructedPatch,
+        sourcePresence: absentSideEvidence(path, 'head', reconstructedPatch) }]);
+    } else {
+      expect(result.changedFiles).toEqual([{ path, patch: expect.stringMatching(/^@@ /u) }]);
+    }
     expect(f.fetcher.mock.calls.slice(3, 5).map(([url]) => url)).toEqual([
       `https://api.github.com/repos/example/candidate/contents/${oldPath}?ref=${target.baseSha}`,
       `https://api.github.com/repos/example/candidate/contents/${path}?ref=${target.headSha}`,
@@ -522,7 +543,10 @@ describe('authoritative oversized PR fallback', () => {
   ])('retains complete supported file evidence %j', async (override) => {
     const file = { ...files(1)[0], ...override };
     const f = fixture([pull(1), oversized(), immutableComparison([file]), pull(1)]);
-    expect((await run(f)).changedFiles).toEqual([{ path: file.filename, patch: file.patch }]);
+    const sourcePresence = file.status === 'added' ? absentSideEvidence(file.filename, 'base', file.patch)
+      : file.status === 'removed' ? absentSideEvidence(file.filename, 'head', file.patch) : undefined;
+    expect((await run(f)).changedFiles).toEqual([{ path: file.filename, patch: file.patch,
+      ...(sourcePresence ? { sourcePresence } : {}) }]);
   });
 
   it.each([
