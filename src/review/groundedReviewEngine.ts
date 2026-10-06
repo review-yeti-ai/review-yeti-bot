@@ -517,8 +517,8 @@ export async function runIndependentGroundedVerification(input: {
   const outcomes = new Array<GroundedVerificationOutcome | undefined>(candidates.length);
   let calls = 0;
   let cursor = 0;
-  async function verifierWorker(): Promise<void> {
-    while (cursor < candidates.length) {
+  async function verifierWorker(tierEnd: number): Promise<void> {
+    while (cursor < tierEnd) {
       const index = cursor++;
       const candidate = candidates[index];
       const taskId = assignmentByPath.get(candidate.path) ?? `source_partition_unknown`;
@@ -577,7 +577,16 @@ export async function runIndependentGroundedVerification(input: {
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(candidates.length, 1)) }, verifierWorker));
+  // Drain each severity tier before starting the next so slow blocker evidence retrieval
+  // cannot let faster advisory work spend the shared call budget first.
+  let tierStart = 0;
+  while (tierStart < candidates.length) {
+    let tierEnd = tierStart + 1;
+    while (tierEnd < candidates.length && candidates[tierEnd].severity === candidates[tierStart].severity) tierEnd += 1;
+    cursor = tierStart;
+    await Promise.all(Array.from({ length: Math.min(concurrency, tierEnd - tierStart) }, () => verifierWorker(tierEnd)));
+    tierStart = tierEnd;
+  }
   const completed = outcomes.filter((row): row is GroundedVerificationOutcome => row !== undefined);
   const unverifiedBlockerCount = completed.filter((row) => (row.severity === 'P0' || row.severity === 'P1') && row.status === 'insufficient').length;
   const coverageComplete = manifest.complete && completed.length === candidates.length && unverifiedBlockerCount === 0;
