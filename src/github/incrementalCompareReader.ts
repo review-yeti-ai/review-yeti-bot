@@ -22,7 +22,10 @@ export function createIncrementalCompareReader(input: {
       ...(input.fetchImplementation ? { fetchImplementation: input.fetchImplementation } : {}),
     });
     const repository = { repositoryId: input.repositoryId, owner: input.owner, repo: input.repo };
-    return { compare: (baseSha, headSha, signal) => reader.commitComparison(repository, baseSha, headSha, signal) };
+    return {
+      compare: (baseSha, headSha, signal) => reader.commitComparison(repository, baseSha, headSha, signal),
+      compareDetailed: (baseSha, headSha, signal) => reader.commitComparisonDetailed(repository, baseSha, headSha, signal),
+    };
   } catch {
     return undefined;
   }

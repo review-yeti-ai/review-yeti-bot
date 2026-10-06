@@ -1604,6 +1604,71 @@ func TestBuildWorkerJobForwardsIncrementalOnlyWhenSet(t *testing.T) {
 	}
 }
 
+// Delta-scoped incremental re-review: REVIEW_YETI_INCREMENTAL_DELTA reaches the app-gate worker
+// verbatim when configured, stays absent when not, and never reaches the receipt-only lane.
+func TestBuildWorkerJobForwardsIncrementalDeltaOnlyWhenSet(t *testing.T) {
+	now := time.Date(2026, 9, 24, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+
+	if job.IncrementalDeltaEnv != "REVIEW_YETI_INCREMENTAL_DELTA" {
+		t.Fatalf("delta env drifted from the worker's INCREMENTAL_DELTA_FLAG: %s", job.IncrementalDeltaEnv)
+	}
+	baseline, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build baseline app-gate job: %v", err)
+	}
+	if hasEnv(baseline.Spec.Template.Spec.Containers[0], job.IncrementalDeltaEnv) {
+		t.Fatalf("unset operator config must not reach the worker as %s", job.IncrementalDeltaEnv)
+	}
+
+	pilots := "review-yeti-ai/review-yeti-bot,exampleorg/example-meta"
+	input.Publishing.IncrementalDelta = pilots
+	forwarded, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build app-gate job with incremental delta: %v", err)
+	}
+	container := forwarded.Spec.Template.Spec.Containers[0]
+	if envValue(container, job.IncrementalDeltaEnv) != pilots {
+		t.Fatalf("operator must forward the %s allowlist verbatim, got %q", job.IncrementalDeltaEnv, envValue(container, job.IncrementalDeltaEnv))
+	}
+	count := 0
+	for _, env := range container.Env {
+		if env.Name == job.IncrementalDeltaEnv {
+			count++
+			if env.ValueFrom != nil {
+				t.Fatalf("%s must be a literal value, not a reference", job.IncrementalDeltaEnv)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("%s projected %d times, want exactly once", job.IncrementalDeltaEnv, count)
+	}
+
+	input.Review.Spec.PublicationMode = "disabled"
+	receipt, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build receipt-only job: %v", err)
+	}
+	if hasEnv(receipt.Spec.Template.Spec.Containers[0], job.IncrementalDeltaEnv) {
+		t.Fatalf("disabled lane must not receive %s", job.IncrementalDeltaEnv)
+	}
+}
+
+func TestBuildWorkerJobRefusesIncrementalDeltaWithLineBreak(t *testing.T) {
+	now := time.Date(2026, 9, 24, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	input.Publishing.IncrementalDelta = "all\nREVIEW_YETI_PASSTHROUGH=false"
+	if _, err := job.BuildWorkerJob(input); err == nil {
+		t.Fatal("a line break in the incremental delta flag must refuse the job")
+	}
+}
+
 func TestBuildWorkerJobRefusesIncrementalWithLineBreak(t *testing.T) {
 	now := time.Date(2026, 9, 24, 20, 0, 0, 0, time.UTC)
 	review := reviewFixture(now)

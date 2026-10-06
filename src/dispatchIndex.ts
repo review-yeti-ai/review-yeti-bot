@@ -33,6 +33,7 @@ import { initTelemetry } from './telemetry';
 import { deriveReviewRunId } from './review/reviewAdmission';
 import { PostgresIncrementalBaseLookup } from './persistence/incrementalPriorReview';
 import { incrementalMaxAgeMsFrom } from './review/incrementalReview';
+import { incrementalMaxChainFrom } from './review/incrementalDelta';
 import { PostgresVerdictCacheBaseLookup } from './persistence/verdictCacheSource';
 import { verdictCacheMaxAgeMsFrom } from './review/verdictCache';
 import { PROVIDER_CONCURRENCY_ENV, providerLeaseServiceConfigFromEnv } from './config/providerConcurrency';
@@ -95,6 +96,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     : [];
   // REL-1084: one configured age for both the worker's planning read and trusted verification.
   const incrementalMaxAgeMs = incrementalMaxAgeMsFrom(environment);
+  const incrementalMaxChain = incrementalMaxChainFrom(environment);
   // REL-1085: likewise one configured age for the verdict cache's planning read and verification.
   const verdictCacheMaxAgeMs = verdictCacheMaxAgeMsFrom(environment);
   const webhookConfig = githubWebhookConfigFromEnv(environment, policy);
@@ -119,7 +121,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     ...(dispatchConfig.centralExternalAppCredentials ? { publicAppCredentials: dispatchConfig.centralExternalAppCredentials } : {}),
     findingThreadAuthor: (selected) => boundedBotLogin(installationCredentialsForRepository(selected.owner, selected.repo)),
     repository: new PostgresReviewGateRepository(pool, { lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000,
-      incrementalMaxAgeMs, verdictCacheMaxAgeMs,
+      incrementalMaxAgeMs, incrementalMaxChain, verdictCacheMaxAgeMs,
       ...(ciConfig ? { onEligibleCompletion: async (client, gate, now) => {
         if (findReviewCiEnrollment(ciConfig,
           { expectedAppId: gate.expectedAppId, repository: gate.coordinates })) {
