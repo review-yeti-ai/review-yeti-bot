@@ -1,4 +1,5 @@
-import { PUBLIC_REVIEW_APP_ID, isPublicReviewRepository, expectedReviewAppIdFor, type ReviewAuthorityRepository } from '../auth/repositoryReviewAuthority';
+import { PUBLIC_REVIEW_APP_ID, isPublicReviewRepository, expectedReviewAppIdFor,
+  matchesConfiguredReviewRepositoryIdentity, type ReviewAuthorityRepository } from '../auth/repositoryReviewAuthority';
 import type { AuthoritativeServiceConfig } from '../auth/authoritativeServiceConfig';
 import { createWorkerCompletionVerifier, type AuthoritativeReviewAdmission,
   type AuthoritativeReviewCompletion } from './authoritativeServiceContracts';
@@ -83,11 +84,13 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
   const publicCredentials = options.publicAppCredentials;
   if (publicAuthority && (!isPublicReviewRepository(publicAuthority)
     || publicAuthority.expectedAppId !== PUBLIC_REVIEW_APP_ID
-    || publicCredentials?.appId !== String(PUBLIC_REVIEW_APP_ID) || !publicCredentials.privateKey)) {
+    || !publicCredentials || publicCredentials.appId !== String(PUBLIC_REVIEW_APP_ID)
+    || (!publicCredentials.privateKey && options.passthroughEnabled !== true))) {
     throw new Error('Dedicated public review identity is invalid');
   }
   const repositoryIds = [...config.repositoryIds, ...(publicAuthority ? [publicAuthority.repositoryId] : [])];
-  const baseAdmission = { expectedAppId: config.expectedAppId, repositoryIds };
+  const baseAdmission = { expectedAppId: config.expectedAppId, repositoryIds,
+    ...(config.repositoryIdentities ? { repositoryIdentities: config.repositoryIdentities } : {}) };
   const expectedAppIdFor = (selected: ReviewAuthorityRepository): number =>
     expectedReviewAppIdFor(baseAdmission, selected);
   const authFor = (selected: ReviewRepositoryIdentity, policyRead = false) => {
@@ -155,7 +158,8 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
     ? async (input: OperatorPassthroughUnavailableRequest): Promise<OperatorPassthroughAdmissionReceipt> => {
       const identity = { repositoryId: input.repositoryId, owner: input.owner, repo: input.repo };
       if (!repositoryIds.includes(input.repositoryId) || !Number.isSafeInteger(input.prNumber) || input.prNumber <= 0
-        || !/^[A-Za-z0-9_.-]{1,100}$/u.test(input.owner) || !/^[A-Za-z0-9_.-]{1,100}$/u.test(input.repo)) {
+        || !/^[A-Za-z0-9_.-]{1,100}$/u.test(input.owner) || !/^[A-Za-z0-9_.-]{1,100}$/u.test(input.repo)
+        || !matchesConfiguredReviewRepositoryIdentity(baseAdmission, identity)) {
         throw new Error('Operator passthrough source identity is outside authoritative admission');
       }
       expectedAppIdFor(identity);
@@ -182,6 +186,9 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
         baseSha: input.requested.baseSha,
       };
       if (!repositoryIds.includes(requested.repositoryId)) {
+        throw new Error('Operator passthrough candidate is outside authoritative admission');
+      }
+      if (!matchesConfiguredReviewRepositoryIdentity(baseAdmission, requested)) {
         throw new Error('Operator passthrough candidate is outside authoritative admission');
       }
       validateOperatorPassthroughEvent(input.event);

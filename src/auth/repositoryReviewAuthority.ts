@@ -44,6 +44,26 @@ export function expectedReviewAppIdFor(admission: ReviewAuthorityAdmission,
   return appId;
 }
 
+/**
+ * Validate an authenticated repository claim against any optional local
+ * name/ID binding. Repositories with no configured binding retain the
+ * numeric-claim compatibility path; a partial or ambiguous binding is a
+ * conflict and must be rejected before dependency reads.
+ */
+export function matchesConfiguredReviewRepositoryIdentity(admission: ReviewAuthorityAdmission,
+  repository: ReviewAuthorityRepository): boolean {
+  try { expectedReviewAppIdFor(admission, repository); } catch { return false; }
+  const configured = admission.repositoryIdentities || [];
+  const name = `${repository.owner}/${repository.repo}`.toLowerCase();
+  const byId = configured.filter((entry) => entry.repositoryId === repository.repositoryId);
+  const byName = configured.filter((entry) => `${entry.owner}/${entry.repo}`.toLowerCase() === name);
+  if (byId.length === 0 && byName.length === 0) return true;
+  return byId.length === 1 && byName.length === 1
+    && byId[0].repositoryId === byName[0].repositoryId
+    && `${byId[0].owner}/${byId[0].repo}`.toLowerCase()
+      === `${byName[0].owner}/${byName[0].repo}`.toLowerCase();
+}
+
 /** Resolve only an already-enrolled locally configured repository name. */
 export function authoritativeRepositoryForName(admission: ReviewAuthorityAdmission,
   owner: string, repo: string): ReviewAuthorityRepository | undefined {

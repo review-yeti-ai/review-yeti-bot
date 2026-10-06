@@ -14,6 +14,8 @@ import {
 const mocks = vi.hoisted(() => {
   const pool = { query: vi.fn() };
   const initialize = vi.fn(async () => undefined);
+  const getPool = vi.fn(() => pool);
+  const closeStore = vi.fn(async () => undefined);
   const serverClose = vi.fn();
   const listen = vi.fn(() => ({ close: serverClose }));
   const createApp = vi.fn((_options: unknown) => ({ listen }));
@@ -42,10 +44,11 @@ const mocks = vi.hoisted(() => {
   const botLogin = vi.fn(async () => 'synthetic-review-bot[bot]');
   const remoteMcpRouter = vi.fn((_options: unknown) => ({ tag: 'mcp-router' }));
   const error = vi.fn();
+  const warn = vi.fn();
   const legacyReaper = vi.fn();
-  return { pool, initialize, listen, serverClose, createApp, repository, gateStorage, gateRepository, getPrepared,
+  return { pool, initialize, getPool, closeStore, listen, serverClose, createApp, repository, gateStorage, gateRepository, getPrepared,
     validateAdmission, authoritative, serviceConfig, lookup, token, installationClient, readGenerationRecovery,
-    error, legacyReaper, resolver, enqueueCi, ciRunOnce, ciRoutes, ciRuntime, getPullRequest, botLogin, remoteMcpRouter };
+    error, warn, legacyReaper, resolver, enqueueCi, ciRunOnce, ciRoutes, ciRuntime, getPullRequest, botLogin, remoteMcpRouter };
 });
 
 vi.mock('../../src/auth/githubActionsOidc', () => ({
@@ -56,7 +59,7 @@ vi.mock('../../src/dispatchServer', () => ({ createActionDispatchApp: mocks.crea
 vi.mock('../../src/telemetry', () => ({ initTelemetry: vi.fn() }));
 vi.mock('../../src/api/actionDispatchApi', () => ({ createWorkerCompletionVerifier: vi.fn() }));
 vi.mock('../../src/persistence/postgresStore', () => ({
-  PostgresStore: class { initialize = mocks.initialize; getPool = () => mocks.pool; close = vi.fn(); },
+  PostgresStore: class { initialize = mocks.initialize; getPool = mocks.getPool; close = mocks.closeStore; },
 }));
 vi.mock('../../src/persistence/reviewDispatchRepository', () => ({ PostgresReviewDispatchRepository: mocks.repository }));
 vi.mock('../../src/persistence/reviewGateRepository', () => ({ PostgresReviewGateRepository: mocks.gateRepository }));
@@ -83,7 +86,7 @@ vi.mock('../../src/auth/authoritativeServiceConfig', async (importOriginal) => (
   authoritativeServiceConfigFromEnv: mocks.serviceConfig,
 }));
 vi.mock('../../src/review/authoritativeReviewService', () => ({ createAuthoritativeReviewService: mocks.authoritative }));
-vi.mock('../../src/utils/logger', () => ({ logger: { error: mocks.error, info: vi.fn() } }));
+vi.mock('../../src/utils/logger', () => ({ logger: { error: mocks.error, info: vi.fn(), warn: mocks.warn } }));
 vi.mock('../../src/github/boundedAppToken', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/github/boundedAppToken')>(),
   getBoundedRepositoryInstallationId: mocks.lookup,
@@ -126,6 +129,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     exitCode = process.exitCode;
     vi.resetModules();
     vi.clearAllMocks();
+    mocks.pool.query.mockReset().mockResolvedValue({ rows: [{ ready: 1 }] });
     mocks.serviceConfig.mockReturnValue(undefined);
     mocks.enqueueCi.mockReset().mockResolvedValue(undefined);
     mocks.ciRunOnce.mockReset().mockResolvedValue(undefined);
@@ -467,6 +471,187 @@ describe('Action dispatch startup transport and admission wiring', () => {
       operatorPassthroughRepository: { pool: mocks.pool },
       listPausedAdmissions: expect.any(Function),
     });
+  });
+
+  it('opens under a valid operator pause when the outbound primary App signing key is unavailable', async () => {
+    mocks.serviceConfig.mockReturnValue(authoritativeConfig());
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+    vi.stubEnv('GITHUB_APP_PRIVATE_KEY', undefined);
+
+    await start();
+
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(mocks.listen).toHaveBeenCalledOnce();
+    expect(mocks.authoritative.mock.calls[0][0]).toMatchObject({
+      appId: String(AUTHORITATIVE_REVIEW_APP_ID), privateKey: '', passthroughEnabled: true,
+    });
+  });
+
+  it('keeps a missing outbound App signing key fatal outside operator pause', async () => {
+    vi.stubEnv('GITHUB_APP_PRIVATE_KEY', undefined);
+
+    await start();
+
+    expect(mocks.createApp).not.toHaveBeenCalled();
+    expect(mocks.listen).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    expect(mocks.error).toHaveBeenCalledWith('Action dispatch service failed to start', {
+      error: 'GITHUB_APP_PRIVATE_KEY is required for the Action dispatch service',
+    });
+  });
+
+  it('opens a pause-safe listener after DB bootstrap fails, retries single-flight, and keeps CI and sweeps off until storage is ready', async () => {
+    const { repository } = enableCi();
+    mocks.initialize.mockRejectedValueOnce(new Error('synthetic database unavailable'));
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+
+    await start();
+
+    expect(mocks.getPool).toHaveBeenCalledOnce();
+    expect(mocks.getPool.mock.invocationCallOrder[0]).toBeLessThan(mocks.initialize.mock.invocationCallOrder[0]);
+    expect(mocks.listen).toHaveBeenCalledOnce();
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(mocks.ciRuntime).not.toHaveBeenCalled();
+    const appOptions = mocks.createApp.mock.calls[0][0] as any;
+    expect(appOptions).toMatchObject({ passthroughEnabled: true, operatorPauseReadinessEnabled: true,
+      storageInitialized: expect.any(Function) });
+    expect(appOptions.storageInitialized()).toBe(false);
+    expect(appOptions.ci).toBeUndefined();
+    expect(mocks.gateRepository.mock.calls[0][1]).not.toHaveProperty('onEligibleCompletion');
+    expect(vi.getTimerCount()).toBe(1); // One bounded storage retry; no review/publisher sweep yet.
+    expect(mocks.authoritative.mock.results[0].value.runOnce).not.toHaveBeenCalled();
+    expect(mocks.ciRunOnce).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mocks.initialize).toHaveBeenCalledTimes(2);
+    expect(appOptions.storageInitialized()).toBe(true);
+    expect(mocks.ciRuntime).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mocks.authoritative.mock.results[0].value.runOnce).toHaveBeenCalledOnce();
+    expect(mocks.ciRunOnce).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(2); // Publisher reconciliation and background health probe start after recovery.
+    expect(mocks.repository).toHaveBeenCalledExactlyOnceWith(mocks.pool, undefined, expect.any(Object));
+    expect(repository.repositoryId).toBe(123);
+  });
+
+  it('opens pause startup while a post-bootstrap health probe remains pending', async () => {
+    mocks.serviceConfig.mockReturnValue(authoritativeConfig());
+    const probe = Promise.withResolvers<{ rows: Array<{ ready: number }> }>();
+    mocks.pool.query.mockReturnValueOnce(probe.promise);
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+
+    await start();
+
+    expect(mocks.listen).toHaveBeenCalledOnce();
+    expect(mocks.pool.query).toHaveBeenCalledExactlyOnceWith({ text: 'SELECT 1 AS ready', query_timeout: 1_500 });
+    const appOptions = mocks.createApp.mock.calls[0][0] as any;
+    expect(appOptions.pauseDatabaseProbe()).toMatchObject({
+      status: 'unknown', databaseReady: null, inProgress: true, checkedAt: null,
+    });
+    expect(appOptions.databaseReady).toEqual(expect.any(Function));
+
+    probe.resolve({ rows: [{ ready: 1 }] });
+    await probe.promise;
+    await Promise.resolve();
+    expect(appOptions.pauseDatabaseProbe()).toMatchObject({ status: 'ready', databaseReady: true, inProgress: false });
+  });
+
+  it('waits for the tracked pause health probe before closing its pool on shutdown', async () => {
+    mocks.serviceConfig.mockReturnValue(authoritativeConfig());
+    const probe = Promise.withResolvers<{ rows: Array<{ ready: number }> }>();
+    mocks.pool.query.mockReturnValueOnce(probe.promise);
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+
+    await start();
+    mocks.serverClose.mockImplementationOnce((callback: () => void) => callback());
+    vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const stop = vi.mocked(process.once).mock.calls.find(([event]) => event === 'SIGTERM')?.[1];
+    expect(stop).toEqual(expect.any(Function));
+    stop!();
+    await Promise.resolve();
+    expect(mocks.closeStore).not.toHaveBeenCalled();
+
+    probe.resolve({ rows: [{ ready: 1 }] });
+    await probe.promise;
+    await vi.waitFor(() => expect(mocks.closeStore).toHaveBeenCalledOnce());
+  });
+
+  it('opens the pause-safe listener while the first storage initialization remains in flight', async () => {
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+    mocks.serviceConfig.mockReturnValue(authoritativeConfig());
+    const initialization = Promise.withResolvers<undefined>();
+    mocks.initialize.mockReturnValueOnce(initialization.promise);
+
+    await start();
+
+    expect(mocks.initialize).toHaveBeenCalledOnce();
+    expect(mocks.listen).toHaveBeenCalledOnce();
+    const appOptions = mocks.createApp.mock.calls[0][0] as any;
+    expect(appOptions.operatorPauseReadinessEnabled).toBe(true);
+    expect(appOptions.storageInitialized()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0); // Do not retry or run sweeps while one DDL attempt is still active.
+
+    initialization.resolve(undefined);
+    await initialization.promise;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(appOptions.storageInitialized()).toBe(true);
+  });
+
+  it('keeps pause startup fail-closed for static database TLS configuration errors', async () => {
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+    mocks.serviceConfig.mockReturnValue(authoritativeConfig());
+    mocks.getPool.mockImplementationOnce(() => { throw new Error('DATABASE_CA_CERT must be trusted'); });
+
+    await start();
+
+    expect(mocks.getPool).toHaveBeenCalledOnce();
+    expect(mocks.initialize).not.toHaveBeenCalled();
+    expect(mocks.createApp).not.toHaveBeenCalled();
+    expect(mocks.listen).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('rejects operator pause before storage startup when authoritative enrollment is not configured', async () => {
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+
+    await start();
+
+    expect(mocks.getPool).not.toHaveBeenCalled();
+    expect(mocks.initialize).not.toHaveBeenCalled();
+    expect(mocks.listen).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    expect(mocks.error).toHaveBeenCalledWith('Action dispatch service failed to start', {
+      error: 'Operator pause requires valid authoritative review configuration',
+    });
+  });
+
+  it('keeps static CI enrollment validation active during pause while omitting CI runtime', async () => {
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+    mocks.serviceConfig.mockReturnValue(authoritativeConfig());
+    vi.stubEnv('REVIEW_CI_ENABLED', 'true');
+    vi.stubEnv('REVIEW_CI_REPOSITORIES', '{"invalid":"enrollment"}');
+
+    await start();
+
+    expect(mocks.initialize).not.toHaveBeenCalled();
+    expect(mocks.listen).not.toHaveBeenCalled();
+    expect(mocks.ciRuntime).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    expect(mocks.error).toHaveBeenCalledWith('Action dispatch service failed to start', {
+      error: 'Review CI service configuration is invalid',
+    });
+  });
+
+  it('preserves ordinary startup failure when storage initialization fails outside pause mode', async () => {
+    mocks.initialize.mockRejectedValueOnce(new Error('synthetic database unavailable'));
+
+    await start();
+
+    expect(mocks.listen).not.toHaveBeenCalled();
+    expect(mocks.createApp).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(process.exitCode).toBe(1);
   });
 
   it('wires exact immutable identity into the production generation-recovery reader', async () => {

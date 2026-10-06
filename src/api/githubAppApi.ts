@@ -12,6 +12,7 @@ import {
   listGitHubAppInstallations,
 } from '../github/installationClient';
 import { LiveStreamBus } from '../live/liveStreamBus';
+import { authoritativeRepositoryForName, type ReviewAuthorityAdmission } from '../auth/repositoryReviewAuthority';
 
 function hashCode(str: string): number {
   let hash = 0;
@@ -22,7 +23,12 @@ function hashCode(str: string): number {
   return Math.abs(hash);
 }
 
-export function createGitHubAppApiRouter(): Router {
+export interface GitHubAppApiRouterOptions {
+  operatorPauseEnabled?: boolean;
+  operatorPauseAuthority?: ReviewAuthorityAdmission;
+}
+
+export function createGitHubAppApiRouter(options: GitHubAppApiRouterOptions = {}): Router {
   const router = Router();
 
   /**
@@ -760,6 +766,17 @@ export function createGitHubAppApiRouter(): Router {
         });
       }
 
+      const pausedIdentity = options.operatorPauseEnabled && options.operatorPauseAuthority
+        ? authoritativeRepositoryForName(options.operatorPauseAuthority, trimmedOwner, trimmedRepo)
+        : undefined;
+      if (options.operatorPauseEnabled && !pausedIdentity) {
+        return res.status(403).json({
+          success: false,
+          reason: 'not_enrolled',
+          error: 'Repository is not statically enrolled for operator-pause review status.',
+        });
+      }
+
       try {
         const repoFullName = `${trimmedOwner}/${trimmedRepo}`;
         const repository = dashboardStore.getRepository(trimmedOwner, trimmedRepo);
@@ -771,7 +788,8 @@ export function createGitHubAppApiRouter(): Router {
           });
         }
 
-        if (repository && !repository.automationEnabled && req.body?.force !== true) {
+        if (repository && !repository.automationEnabled
+          && (options.operatorPauseEnabled === true || req.body?.force !== true)) {
           return res.status(400).json({
             success: false,
             error: 'Repository review automation is disabled',
@@ -783,8 +801,35 @@ export function createGitHubAppApiRouter(): Router {
             (l.repo === repoFullName || l.repo === trimmedRepo) &&
             l.prNumber === prNumber
         );
-        if (recentLog && ((recentLog as any).state === 'closed' || (recentLog as any).prState === 'closed') && req.body?.force !== true) {
+        if (recentLog && ((recentLog as any).state === 'closed' || (recentLog as any).prState === 'closed')
+          && (options.operatorPauseEnabled === true || req.body?.force !== true)) {
           return res.status(409).json({ success: false, error: 'Cannot dispatch review for closed pull request' });
+        }
+
+        if (options.operatorPauseEnabled === true && pausedIdentity) {
+          return res.status(200).json({
+            success: true,
+            status: 'unavailable',
+            reason: 'operator_global_passthrough',
+            reviewStarted: false,
+            candidateState: 'unavailable',
+            repositoryId: pausedIdentity.repositoryId,
+            repository: `${pausedIdentity.owner}/${pausedIdentity.repo}`,
+            prNumber,
+            headSha: null,
+            baseSha: null,
+            verdict: 'SHIP',
+            expectedLanes: 0,
+            completedLanes: 0,
+            publicationId: null,
+            auditDigest: null,
+            publicationState: 'unavailable',
+            publicationReceiptAvailable: null,
+            reviewCheckId: null,
+            gateCheckId: null,
+            mergeEligible: false,
+            message: 'Operator pause returns logical SHIP with zero review lanes. No current candidate, durable publication receipt, or protected merge eligibility is asserted.',
+          });
         }
 
         const body = req.body || {};

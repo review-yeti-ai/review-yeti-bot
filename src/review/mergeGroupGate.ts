@@ -104,6 +104,15 @@ function validatePayload(value: unknown, config: GitHubWebhookConfig) {
   return { ...parsed, owner, repo, branch, currentNumber: Number(match[1]) };
 }
 
+/** Pure shape and local-enrollment check for pause responses before storage bootstrap. */
+export function parseEnrolledMergeGroupWebhookIdentity(value: unknown, config: GitHubWebhookConfig): {
+  repositoryId: number; owner: string; repo: string; prNumber: number;
+} {
+  const identity = validatePayload(value, config);
+  return { repositoryId: identity.repository.id, owner: identity.owner, repo: identity.repo,
+    prNumber: identity.currentNumber };
+}
+
 function selectEntries(response: any, identity: ReturnType<typeof validatePayload>): QueueEvidence {
   if (Array.isArray(response?.errors) && response.errors.length > 0) throw new Error('Merge queue lookup returned errors');
   const queue = response?.data?.repository?.mergeQueue;

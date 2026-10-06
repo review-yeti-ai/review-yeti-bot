@@ -115,6 +115,8 @@ export interface RemoteMcpRouterOptions {
   db?: any;
   /** Read-only status projection for a service-owned global-pause exemption. */
   passthroughEnabled?: boolean;
+  /** False until the dispatcher has completed its storage schema bootstrap. */
+  storageInitialized?: () => boolean;
   admissionRepository?: any;
   authenticator?: McpAuthenticator | {
     authenticate(req: Request | string): Promise<McpAuthenticatedCaller | { authenticated: boolean; identity?: string; error?: string }>;
@@ -157,6 +159,7 @@ interface ResolvedMcpCaller {
 export function createDefaultToolRegistry(options?: {
   db?: any;
   passthroughEnabled?: boolean;
+  storageInitialized?: () => boolean;
   admissionRepository?: any;
   matrixBuilder?: any;
   modelClient?: ReviewModelClient;
@@ -178,6 +181,7 @@ export function createDefaultToolRegistry(options?: {
 
   registry.registerTool(createGetReviewStatusTool(db, {
     passthroughEnabled: options?.passthroughEnabled,
+    storageInitialized: options?.storageInitialized,
     authoritativePublishing: options?.triggerDeps?.authoritativePublishing,
     resolveGitHubPullRequest: options?.triggerDeps?.resolveGitHubPullRequest,
   }));
@@ -187,6 +191,7 @@ export function createDefaultToolRegistry(options?: {
     queryableDatabase: db,
     admissionRepository: options?.admissionRepository ?? options?.triggerDeps?.admissionRepository,
     ...options?.triggerDeps,
+    ...(options?.storageInitialized ? { storageInitialized: options.storageInitialized } : {}),
   }));
   registry.registerTool(createCancelReviewTool({
     cancellationRepository: options?.admissionRepository ?? options?.triggerDeps?.admissionRepository,
@@ -618,6 +623,15 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
           toolArgs = parseResult.data;
         }
 
+        if (options.passthroughEnabled === true && options.storageInitialized?.() === false
+          && name !== 'trigger_review' && name !== 'get_review_status') {
+          return {
+            statusCode: 503,
+            responseBody: buildJsonRpcError(id ?? null, JSONRPC_ERRORS.INTERNAL_ERROR,
+              'Review storage is not initialized'),
+          };
+        }
+
         try {
           const context: McpExecutionContext = {
             sessionId: explicitSession?.id,
@@ -688,6 +702,14 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
           return {
             statusCode: 403,
             responseBody: formatRbacErrorResponse(new McpRbacError(parsed.owner, parsed.repo)),
+          };
+        }
+
+        if (options.passthroughEnabled === true && options.storageInitialized?.() === false) {
+          return {
+            statusCode: 503,
+            responseBody: buildJsonRpcError(id ?? null, JSONRPC_ERRORS.INTERNAL_ERROR,
+              'Review storage is not initialized'),
           };
         }
 

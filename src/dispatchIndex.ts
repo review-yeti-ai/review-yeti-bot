@@ -1,4 +1,5 @@
 import { GitHubActionsOidcVerifier, githubActionsOidcPolicyFromEnv } from './auth/githubActionsOidc';
+import type { QueryConfig } from 'pg';
 import { PostgresWorkerCompletionStore } from './persistence/workerCompletionStore';
 import { createActionDispatchApp } from './dispatchServer';
 import { McpAuthenticator } from './mcp/server/mcpAuthenticator';
@@ -18,6 +19,7 @@ import { PostgresOperatorPassthroughRepository } from './persistence/operatorPas
 import { enqueueReviewCiCompletionInTransaction } from './persistence/reviewCiRepository';
 import { getPreparedPublishingPolicy } from './persistence/preparedReviewRepository';
 import { PostgresStore } from './persistence/postgresStore';
+import { RetryingStorageInitializer } from './persistence/retryingStorageInitializer';
 import { logger } from './utils/logger';
 import { authoritativeServiceConfigFromEnv } from './auth/authoritativeServiceConfig';
 import { createAuthoritativeReviewService } from './review/authoritativeReviewService';
@@ -39,6 +41,7 @@ import { verdictCacheMaxAgeMsFrom } from './review/verdictCache';
 import { PROVIDER_CONCURRENCY_ENV, providerLeaseServiceConfigFromEnv } from './config/providerConcurrency';
 import { PostgresProviderLeaseStore } from './persistence/providerConcurrencyLeaseRepository';
 import { canonicalJson, sha256 } from './review/reviewCore';
+import type { PauseDatabaseProbeSnapshot } from './health/readinessContract';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
@@ -57,7 +60,9 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const dispatchConfig = actionDispatchConfigFromEnv(environment);
   const policy = githubActionsOidcPolicyFromEnv(environment);
   const appId = required(environment, 'GITHUB_APP_ID');
-  const privateKey = required(environment, 'GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
+  const privateKey = dispatchConfig.passthroughEnabled === true
+    ? (environment.GITHUB_APP_PRIVATE_KEY?.trim().replace(/\\n/g, '\n') ?? '')
+    : required(environment, 'GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
   const baseUrl = validateGitHubAppApiBaseUrl(environment.GITHUB_API_BASE_URL);
   // ADR 0002: the review App's bot login, read once per App from GitHub's authenticated /app
   // endpoint, so only the App's own finding threads are trusted.
@@ -100,10 +105,51 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   // REL-1085: likewise one configured age for the verdict cache's planning read and verification.
   const verdictCacheMaxAgeMs = verdictCacheMaxAgeMsFrom(environment);
   const webhookConfig = githubWebhookConfigFromEnv(environment, policy);
-  const ciConfig = reviewCiConfigFromEnv(environment, authoritativeConfig);
+  // Validate any configured CI enrollment/workflow identity even when pause
+  // prevents creating its runtime, routes, completion hook, or reconciliation timer.
+  const configuredCiConfig = reviewCiConfigFromEnv(environment, authoritativeConfig);
+  if (dispatchConfig.passthroughEnabled === true && !authoritativeConfig) {
+    throw new Error('Operator pause requires valid authoritative review configuration');
+  }
+  const ciConfig = dispatchConfig.passthroughEnabled === true ? undefined : configuredCiConfig;
+  const port = Number(environment.PORT || 3000);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) throw new Error('PORT must be a valid TCP port');
+  const host = environment.HOST || '0.0.0.0';
   const store = new PostgresStore();
-  await store.initialize();
   const pool = store.getPool();
+  let storageInitialized = false;
+  let onStorageInitialized: () => void = () => {};
+  let pauseDatabaseProbe: PauseDatabaseProbeSnapshot = {
+    status: 'not_initialized', databaseReady: false, checkedAt: null, inProgress: false,
+  };
+  let pauseDatabaseProbeTimer: NodeJS.Timeout | undefined;
+  let pauseDatabaseProbeInFlight: Promise<void> | undefined;
+  let storageInitializer: RetryingStorageInitializer | undefined;
+  if (dispatchConfig.passthroughEnabled === true) {
+    storageInitializer = new RetryingStorageInitializer(() => store.initialize(), {
+      retryInitialMs: 1_000,
+      retryMaxMs: 60_000,
+      onInitialized: () => {
+        storageInitialized = true;
+        pauseDatabaseProbe = { status: 'unknown', databaseReady: null, checkedAt: null, inProgress: false };
+        onStorageInitialized();
+      },
+      onFailure: () => logger.warn('Review storage initialization is unavailable during operator pause', {
+        code: 'review_storage_initialization_unavailable',
+      }),
+      onCallbackError: () => logger.error('Review storage initialization lifecycle callback failed', {
+        code: 'review_storage_initializer_callback_failed',
+      }),
+    });
+    // Listen for authenticated pause responses while the tracked schema attempt
+    // runs in the background; no DDL attempt is abandoned or raced.
+    void storageInitializer.initializeOnce();
+  } else {
+    await store.initialize();
+    storageInitialized = true;
+    pauseDatabaseProbe = { status: 'unknown', databaseReady: null, checkedAt: null, inProgress: false };
+  }
+  const storageIsInitialized = () => storageInitialized;
   const operatorPassthroughRepository = new PostgresOperatorPassthroughRepository(pool);
   // Cross-review provider concurrency. Off unless configured; a malformed value leaves the route
   // unmounted (workers fail open to their local cap) instead of stopping this service.
@@ -113,7 +159,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       variable: PROVIDER_CONCURRENCY_ENV, reason: providerLeaseConfig.reason,
     });
   }
-  const providerLease = providerLeaseConfig.status === 'enabled'
+  const providerLease = providerLeaseConfig.status === 'enabled' && dispatchConfig.passthroughEnabled !== true
     ? new PostgresProviderLeaseStore(pool, providerLeaseConfig.config)
     : undefined;
   const authoritative = authoritativeConfig ? createAuthoritativeReviewService({
@@ -181,6 +227,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       ...(authoritative ? { currentPullRequestForPassthrough: async ({ repositoryId, owner, repo, prNumber }) =>
         authoritative.resolver.readCurrentCandidate({ repositoryId, owner, repo, prNumber }) } : {}),
       ...(authoritative ? { authoritativePublishing: authoritative.admission } : {}),
+      storageInitialized: storageIsInitialized,
       mergeGroupGate: createMergeGroupGate({
         config: webhookConfig,
         repository: new PostgresMergeGroupGateRepository(pool),
@@ -226,15 +273,19 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       maxRequests: dispatchConfig.mcp.rateLimitMax,
     });
 
-    const modelClient = resolveModelClientFromEnv(environment);
+    const modelClient = dispatchConfig.passthroughEnabled === true
+      ? undefined
+      : resolveModelClientFromEnv(environment);
 
     mcpRouter = createRemoteMcpRouter({
       db: pool,
       passthroughEnabled: dispatchConfig.passthroughEnabled,
+      storageInitialized: storageIsInitialized,
       admissionRepository: repository,
       modelClient,
       triggerDeps: {
         passthroughEnabled: dispatchConfig.passthroughEnabled,
+        storageInitialized: storageIsInitialized,
         authoritativePublishing: authoritative?.admission,
         resolveGitHubPullRequest: async (owner: string, repo: string, pullNumber: number) => {
           const credentials = installationCredentialsForRepository(owner, repo);
@@ -269,6 +320,9 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     admission: repository,
     allowAppGate: policy.allowAppGate,
     passthroughEnabled: dispatchConfig.passthroughEnabled,
+    storageInitialized: storageIsInitialized,
+    operatorPauseReadinessEnabled: dispatchConfig.passthroughEnabled === true,
+    pauseDatabaseProbe: () => pauseDatabaseProbe,
     requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
     centralExternalRepositories: dispatchConfig.centralExternalRepositories,
     mcpConfig: dispatchConfig.mcp,
@@ -310,27 +364,75 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   // Admission credentials may belong to a different App. Only the worker-token
   // dispatcher reconciles legacy raw checks. The separately opted-in service
   // controller validates its authoritative App identity before it is constructed.
-  const authoritativeTimer = authoritative && authoritativeConfig ? setInterval(() => {
-    void authoritative.runOnce().catch(() => logger.error('Authoritative review reconciliation unavailable'));
-  }, authoritativeConfig.tickMs) : undefined;
-  authoritativeTimer?.unref();
-  const ciTimer = ci && ciConfig ? setInterval(() => {
-    void ci.runOnce().catch(() => logger.error('Review CI reconciliation unavailable'));
-  }, ciConfig.tickMs) : undefined;
-  ciTimer?.unref();
+  let shuttingDown = false;
+  let storageWorkStarted = false;
+  let authoritativeTimer: NodeJS.Timeout | undefined;
+  let ciTimer: NodeJS.Timeout | undefined;
+  const probePauseDatabase = (): Promise<void> => {
+    if (dispatchConfig.passthroughEnabled !== true || !storageInitialized || shuttingDown) return Promise.resolve();
+    if (pauseDatabaseProbeInFlight) return pauseDatabaseProbeInFlight;
+    pauseDatabaseProbe = { ...pauseDatabaseProbe, inProgress: true };
+    let tracked: Promise<void>;
+    const query = { text: 'SELECT 1 AS ready', query_timeout: 1_500 } as QueryConfig & { query_timeout: number };
+    tracked = pool.query<{ ready: number }>(query).then((result) => {
+      const ready = result.rows[0]?.ready === 1;
+      pauseDatabaseProbe = { status: ready ? 'ready' : 'unavailable', databaseReady: ready,
+        checkedAt: new Date().toISOString(), inProgress: false };
+    }).catch(() => {
+      pauseDatabaseProbe = { status: 'unavailable', databaseReady: false,
+        checkedAt: new Date().toISOString(), inProgress: false };
+    }).finally(() => {
+      if (pauseDatabaseProbeInFlight === tracked) pauseDatabaseProbeInFlight = undefined;
+    });
+    pauseDatabaseProbeInFlight = tracked;
+    return tracked;
+  };
+  const startPauseDatabaseProbe = () => {
+    if (dispatchConfig.passthroughEnabled !== true || !storageInitialized || shuttingDown || pauseDatabaseProbeTimer) return;
+    void probePauseDatabase();
+    pauseDatabaseProbeTimer = setInterval(() => { void probePauseDatabase(); }, 10_000);
+    pauseDatabaseProbeTimer.unref?.();
+  };
+  const startStorageDependentWork = () => {
+    if (!storageInitialized || shuttingDown || storageWorkStarted) return;
+    storageWorkStarted = true;
+    authoritativeTimer = authoritative && authoritativeConfig ? setInterval(() => {
+      void authoritative.runOnce().catch(() => logger.error('Authoritative review reconciliation unavailable'));
+    }, authoritativeConfig.tickMs) : undefined;
+    authoritativeTimer?.unref();
+    ciTimer = ci && ciConfig ? setInterval(() => {
+      void ci.runOnce().catch(() => logger.error('Review CI reconciliation unavailable'));
+    }, ciConfig.tickMs) : undefined;
+    ciTimer?.unref();
+  };
+  onStorageInitialized = () => {
+    startStorageDependentWork();
+    startPauseDatabaseProbe();
+  };
+  // If pause-mode storage finished while the route graph was constructed, start
+  // its publisher/reconciliation only now. In ordinary mode this is immediate.
+  startStorageDependentWork();
+  startPauseDatabaseProbe();
 
-  const port = Number(environment.PORT || 3000);
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) throw new Error('PORT must be a valid TCP port');
-  const host = environment.HOST || '0.0.0.0';
   const server = app.listen(port, host, () => logger.info('Review Yeti Action dispatch service listening', { host, port }));
 
   const shutdown = (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info('Stopping Review Yeti Action dispatch service', { signal });
     if (authoritativeTimer) clearInterval(authoritativeTimer);
     if (ciTimer) clearInterval(ciTimer);
+    if (pauseDatabaseProbeTimer) clearInterval(pauseDatabaseProbeTimer);
     if (mcpRateLimiter) mcpRateLimiter.close();
     if (mcpRouter) mcpRouter.destroy();
-    server.close(() => void store.close().finally(() => process.exit(0)));
+    server.close(() => {
+      void (async () => {
+        await storageInitializer?.stop();
+        await pauseDatabaseProbeInFlight;
+        await store.close();
+        process.exit(0);
+      })();
+    });
     setTimeout(() => process.exit(1), 10_000).unref();
   };
   process.once('SIGTERM', () => shutdown('SIGTERM'));

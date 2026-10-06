@@ -158,6 +158,14 @@ describe('exact public repository service authority', () => {
     expect(config.publicRepository).toEqual({ repositoryId: 1326169548, owner: 'review-yeti-ai', repo: 'review-yeti-bot', expectedAppId: 4552718 });
     expect([...policy.repositoryIds]).toEqual(['123', '456']);
   });
+  it('retains the exact public authority under pause when its outbound signing key is unavailable', () => {
+    const config = authoritativeServiceConfigFromEnv(env({ ...publicEnv,
+      REVIEW_YETI_PASSTHROUGH: 'true',
+      REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY: undefined,
+    }), policy)!;
+    expect(config.repositoryIds).toEqual([123, 456]);
+    expect(config.publicRepository).toEqual({ repositoryId: 1326169548, owner: 'review-yeti-ai', repo: 'review-yeti-bot', expectedAppId: 4552718 });
+  });
   it.each(['unknown/repository', '*', '', 'review-yeti-ai/another-repository', 'review-yeti-ai/review-yeti-bot,unknown/repo'])('rejects arbitrary target %j', target => {
     expect(() => actionDispatchConfigFromEnv(
       env({ ...publicEnv, ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: target }) as unknown as NodeJS.ProcessEnv,
