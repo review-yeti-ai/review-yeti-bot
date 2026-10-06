@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReviewJobDispatchEngineOptions } from '../../src/k8s/reviewJobDispatchEngine';
+import type { AbandonedRunReaperOptions } from '../../src/review/abandonedRunReaper';
 import type { ReviewDispatchClaim } from '../../src/review/reviewRun';
 import { preparePublishingPolicy, parsePreparedReviewExecution } from '../../src/review/preparedPublishingPolicy';
 import { sha256 } from '../../src/review/reviewCore';
@@ -13,7 +14,8 @@ const mocks = vi.hoisted(() => ({
   initTelemetry: vi.fn(), metricsConfig: vi.fn(() => ({ host: '0.0.0.0', port: 9090 })),
   metricsServer: {}, createMetricsServer: vi.fn(), listenMetricsServer: vi.fn(), closeMetricsServer: vi.fn(),
   loopHealth: vi.fn(), markCycle: vi.fn(), markStopping: vi.fn(), warn: vi.fn(),
-  sweep: vi.fn(), dispatch: vi.fn(),
+  sweep: vi.fn(), dispatch: vi.fn(), reaperOptions: vi.fn(),
+  appIdentity: vi.fn(async () => ({ id: 4385771 })),
 }));
 vi.mock('@kubernetes/client-node', () => ({
   KubeConfig: class { loadFromCluster = mocks.loadFromCluster; makeApiClient = () => ({}); },
@@ -36,6 +38,13 @@ vi.mock('../../src/k8s/reviewJobDispatchEngine', () => ({
     this.runOnce = mocks.dispatch;
   }),
 }));
+vi.mock('../../src/review/abandonedRunReaper', () => ({ AbandonedRunReaper: class {
+  constructor(options: AbandonedRunReaperOptions) { mocks.reaperOptions(options); }
+  runOnce = vi.fn();
+} }));
+vi.mock('../../src/github/appAuth', () => ({ getGitHubAppIdentity: mocks.appIdentity,
+  getGitHubAppRepositoryPublishToken: vi.fn(), getGitHubAppRepositoryReadToken: vi.fn(),
+  getGitHubAppRepositoryDispatchToken: vi.fn() }));
 vi.mock('../../src/k8s/reviewJobDispatcherRuntime', () => ({
   reviewJobDispatcherConfigFromEnv: () => ({ workerId: 'dispatcher-test', namespace: 'ct-review-system',
     workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'a'.repeat(64)}`, runnerMode: 'prebaked',
@@ -136,6 +145,19 @@ describe('dispatcher preparedReviewFor entrypoint wiring', () => {
     const options = mocks.engine.mock.calls[0][0] as ReviewJobDispatchEngineOptions;
     expect(options.isDispatchPaused).toEqual(expect.any(Function));
     expect(options.isDispatchPaused?.()).toBe(true);
+  });
+
+  it.each([
+    ['paused', 'true', false],
+    ['unpaused', undefined, true],
+  ] as const)('wires %s to the reaper check-creation boundary', async (_label, passthrough, allowCreate) => {
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', passthrough);
+    vi.stubEnv('GITHUB_APP_ID', '4385771');
+    vi.stubEnv('GITHUB_APP_PRIVATE_KEY', 'synthetic-dispatcher-key');
+    await callback();
+    expect(mocks.reaperOptions).toHaveBeenCalledOnce();
+    const options = mocks.reaperOptions.mock.calls[0][0] as { allowCheckCreation?: () => boolean };
+    expect(options.allowCheckCreation?.()).toBe(allowCreate);
   });
 
   it('reads by policy digest and returns the exact config/transport envelope verified against config digest', async () => {

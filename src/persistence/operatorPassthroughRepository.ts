@@ -11,6 +11,8 @@ import {
   type OperatorPassthroughPublicationNotStarted,
   type OperatorPassthroughPublicationRepository,
   type OperatorPassthroughPublicationSnapshot,
+  type OperatorPassthroughReconcileAdmission,
+  type OperatorPassthroughReconcileCursor,
   type OperatorPassthroughReconcilePending,
   type OperatorPassthroughRetireRequired,
   type OperatorPassthroughRecordInput,
@@ -110,7 +112,8 @@ function isRetiredStage(publication: StoredOperatorPassthroughPublication & { re
   return stage === 'review' ? publication.reviewRetiredAt !== null : publication.gateRetiredAt !== null;
 }
 
-function retirementComplete(publication: StoredOperatorPassthroughPublication & { reviewRetiredAt: number | null; gateRetiredAt: number | null }): boolean {
+function retirementComplete(publication: Pick<StoredOperatorPassthroughPublication, 'reviewCreationState' | 'gateCreationState'>
+  & { reviewRetiredAt: number | null; gateRetiredAt: number | null }): boolean {
   return (publication.reviewCreationState === 'not-created' || publication.reviewRetiredAt !== null)
     && (publication.gateCreationState === 'not-created' || publication.gateRetiredAt !== null);
 }
@@ -325,6 +328,43 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
     return { ...stored, readyForShip: operatorPassthroughReadyForShip(stored) };
   }
 
+  /** Select the bounded, authenticated existing-admission catch-up page from the owning persistence layer. */
+  async listPausedAdmissions(repositoryIds: readonly number[], appIds: readonly number[], limit: number,
+    after?: OperatorPassthroughReconcileCursor): Promise<OperatorPassthroughReconcileAdmission[]> {
+    const boundedRepositoryIds = [...new Set(repositoryIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
+    const boundedAppIds = [...new Set(appIds.filter((id) => Number.isSafeInteger(id) && id > 0))];
+    if (!Number.isSafeInteger(limit) || limit < 1
+      || (after && (!Number.isSafeInteger(after.repositoryId) || after.repositoryId <= 0
+        || !Number.isSafeInteger(after.prNumber) || after.prNumber <= 0))) {
+      throw new Error('Operator passthrough reconciliation query is invalid');
+    }
+    if (boundedRepositoryIds.length === 0 || boundedAppIds.length === 0) return [];
+    const { rows } = await this.pool.query(`
+      SELECT DISTINCT ON (runs.repository_id,runs.pr_number)
+        runs.run_id,runs.repository_id,runs.owner,runs.repo,runs.pr_number,runs.head_sha,runs.base_sha,
+        runs.effective_policy_digest AS admitted_policy_digest
+      FROM review_runs runs
+      WHERE runs.repository_id = ANY($1::bigint[])
+        AND runs.authoritative_gate_app_id = ANY($2::bigint[])
+        AND runs.publication_mode = 'app-gate'
+        AND ($3::bigint IS NULL OR (runs.repository_id,runs.pr_number) > ($3::bigint,$4::integer))
+        AND NOT EXISTS (
+          SELECT 1 FROM review_operator_passthrough_publications publication
+           WHERE publication.repository_id = runs.repository_id AND publication.pr_number = runs.pr_number
+             AND publication.head_sha = runs.head_sha AND publication.base_sha = runs.base_sha
+             AND publication.policy_digest = runs.effective_policy_digest
+             AND publication.expected_app_id = runs.authoritative_gate_app_id
+             AND publication.retirement_requested_at IS NULL AND publication.retired_at IS NULL
+        )
+      ORDER BY runs.repository_id,runs.pr_number,runs.created_at DESC
+      LIMIT $5`, [boundedRepositoryIds, boundedAppIds, after?.repositoryId ?? null,
+      after?.prNumber ?? null, Math.max(1, Math.min(10, limit))]);
+    return rows.map((row: any) => ({ runId: String(row.run_id), repositoryId: Number(row.repository_id),
+      owner: String(row.owner), repo: String(row.repo), prNumber: Number(row.pr_number),
+      headSha: String(row.head_sha), baseSha: String(row.base_sha),
+      admittedPolicyDigest: String(row.admitted_policy_digest) }));
+  }
+
   async requestRetirement(candidate: Pick<OperatorPassthroughCandidate, 'repositoryId' | 'prNumber' | 'headSha'>,
     reason: 'pause-disabled' | 'normal-review-admitted' | 'candidate-changed', now = Date.now()): Promise<number> {
     clock(now);
@@ -351,8 +391,12 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
       RETURNING publication_id,review_creation_state,review_retired_at,gate_creation_state,gate_retired_at`,
     [candidate.repositoryId, candidate.prNumber, candidate.headSha, now, reason]);
     for (const row of updated.rows) {
-      if ((row.review_creation_state === 'not-created' || row.review_retired_at !== null)
-        && (row.gate_creation_state === 'not-created' || row.gate_retired_at !== null)) {
+      if (retirementComplete({
+        reviewCreationState: row.review_creation_state,
+        gateCreationState: row.gate_creation_state,
+        reviewRetiredAt: timestamp(row.review_retired_at),
+        gateRetiredAt: timestamp(row.gate_retired_at),
+      })) {
         await client.query(`UPDATE review_operator_passthrough_publications SET retired_at=to_timestamp($2/1000.0)
           WHERE publication_id=$1 AND retired_at IS NULL`, [row.publication_id, now]);
       }

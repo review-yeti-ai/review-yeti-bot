@@ -178,7 +178,7 @@ export function deriveOperatorPassthroughExternalId(
 }
 
 /** Identify the operator-owned namespace without copying its wire prefix into consumers. */
-export function isOperatorPassthroughExternalId(value: unknown): value is string {
+export function isOperatorPassthroughReviewExternalId(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith(OPERATOR_REVIEW_EXTERNAL_ID_PREFIX);
 }
 

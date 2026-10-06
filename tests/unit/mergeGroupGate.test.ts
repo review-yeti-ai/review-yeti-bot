@@ -236,6 +236,40 @@ describe('native merge-group Review Yeti gate', () => {
     expect(JSON.parse(String(completion[1].body)).output.summary).toContain(`PR #42: ${reason}`);
     });
 
+  it('does not accept a successful old operator worker and Gate pair when passthrough is disabled', async () => {
+    const normalConfig = { ...config, passthroughEnabled: false };
+    const runs = [
+      { id: 8150, name: 'Review Yeti', head_sha: PR_HEAD, external_id: oldOperatorReviewId,
+        status: 'completed', conclusion: 'success', app: officialApp,
+        output: { title: 'Review Yeti: SHIP (passthrough: no review performed)',
+          summary: 'review-mode=passthrough Zero review lanes ran.' } },
+      { id: 8151, name: 'Review Yeti Gate', head_sha: PR_HEAD, external_id: oldOperatorGateId,
+        status: 'completed', conclusion: 'success', app: officialApp,
+        output: { title: 'Review Yeti Gate: SHIP (operator passthrough SHIP)',
+          summary: 'review-mode=passthrough Zero review lanes ran.' } },
+    ];
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes(`/commits/${GROUP_HEAD}/check-runs`)) return response({ total_count: 0, check_runs: [] });
+      if (url.endsWith('/check-runs') && init?.method === 'POST') return groupCheckResponse(9050, init);
+      if (url === 'https://api.github.com/graphql') return response(queue());
+      if (url.includes(`/commits/${PR_HEAD}/check-runs`)) return response({ total_count: runs.length, check_runs: runs });
+      if (url.endsWith('/check-runs/9050') && init?.method === 'PATCH') return groupCheckResponse(9050, init);
+      return response({}, 500);
+    }) as typeof fetch;
+    const ensureOperatorPassthrough = vi.fn(async () => currentOperatorReceipt);
+    const gate = createMergeGroupGate({ config: normalConfig, repository: repository() as any,
+      tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation, ensureOperatorPassthrough });
+
+    await expect(gate(payload())).resolves.toEqual({ checkId: 9050, conclusion: 'failure',
+      snapshotDigest: queueSnapshotDigest(false), constituents: 1 });
+    expect(ensureOperatorPassthrough).not.toHaveBeenCalled();
+    const completion = (fetchImplementation as any).mock.calls.find(([url, init]: [unknown, RequestInit]) =>
+      String(url).endsWith('/check-runs/9050') && init?.method === 'PATCH');
+    expect(JSON.parse(String(completion[1].body)).output.summary)
+      .toContain('latest exact-head Review Yeti check is not the current operator-passthrough SHIP');
+  });
+
   it.each([
     ['paired latest operator SHIP', [
       { id: 8100, name: 'Review Yeti', head_sha: PR_HEAD, external_id: currentOperatorReviewId,

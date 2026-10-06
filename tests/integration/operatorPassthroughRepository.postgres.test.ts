@@ -5,9 +5,11 @@ import {
   PostgresOperatorPassthroughRepository,
 } from '../../src/persistence/operatorPassthroughRepository';
 import { OPERATOR_PASSTHROUGH_SCHEMA_SQL } from '../../src/persistence/operatorPassthroughSchema';
+import { reviewDispatchPrLockKey } from '../../src/persistence/reviewCiPersistence';
 import type {
   OperatorPassthroughCandidate,
   OperatorPassthroughPublicationClaim,
+  OperatorPassthroughReconcileCursor,
   OperatorPassthroughRecordInput,
 } from '../../src/review/operatorPassthrough';
 import type { ReviewGateCheck } from '../../src/review/reviewCheckIdentity';
@@ -80,6 +82,19 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
       options: `-c search_path=${schemaName},public`,
       application_name: schemaName,
     });
+    await pool.query(`CREATE TABLE review_runs (
+      run_id TEXT NOT NULL,
+      repository_id BIGINT NOT NULL,
+      owner TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      head_sha TEXT NOT NULL,
+      base_sha TEXT NOT NULL,
+      effective_policy_digest TEXT NOT NULL,
+      authoritative_gate_app_id BIGINT NOT NULL,
+      publication_mode TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL
+    )`);
     repository = new PostgresOperatorPassthroughRepository(pool);
   });
 
@@ -89,6 +104,7 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
 
   afterEach(async () => {
     await pool!.query('TRUNCATE TABLE review_operator_passthrough_events, review_operator_passthrough_publications');
+    await pool!.query('TRUNCATE TABLE review_runs');
   });
 
   afterAll(async () => {
@@ -121,6 +137,49 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
       .toMatch(/USING btree \(owner, repo, pr_number, publication_sequence DESC, created_at DESC\)/u);
     expect(statusIndex.rows[0].indexdef).toContain('retirement_requested_at IS NULL');
     expect(statusIndex.rows[0].indexdef).toContain('retired_at IS NULL');
+  });
+
+  it('lists only configured app-gate admissions and advances by repository/PR keyset', async () => {
+    const repositoryId = 1_345_678_901;
+    const otherRepositoryId = repositoryId + 1;
+    const appId = EXPECTED_APP_ID;
+    const policyDigest = 'c'.repeat(64);
+    const baseSha = 'b'.repeat(40);
+    const headFor = (prNumber: number) => prNumber.toString(16).padStart(40, '0');
+    const addRun = async (runId: string, prNumber: number, options: {
+      repositoryId?: number; appId?: number; publicationMode?: string; headSha?: string;
+      policyDigest?: string; createdAt?: string;
+    } = {}) => pool!.query(`INSERT INTO review_runs(
+      run_id,repository_id,owner,repo,pr_number,head_sha,base_sha,effective_policy_digest,
+      authoritative_gate_app_id,publication_mode,created_at)
+      VALUES($1,$2,'review-yeti-ai','review-yeti-bot',$3,$4,$5,$6,$7,$8,$9)`, [
+      runId, options.repositoryId ?? repositoryId, prNumber, options.headSha ?? headFor(prNumber), baseSha,
+      options.policyDigest ?? policyDigest, options.appId ?? appId, options.publicationMode ?? 'app-gate',
+      options.createdAt ?? `2026-10-05T12:${String(prNumber).padStart(2, '0')}:00.000Z`,
+    ]);
+
+    await addRun('run-old', 1, { createdAt: '2026-10-05T12:01:00.000Z' });
+    await addRun('run-new', 1, { headSha: 'f'.repeat(40), createdAt: '2026-10-05T12:02:00.000Z' });
+    await addRun('run-active', 2);
+    await addRun('run-wrong-app', 3, { appId: EXPECTED_APP_ID + 1 });
+    await addRun('run-wrong-mode', 4, { publicationMode: 'legacy' });
+    await addRun('run-wrong-repository', 5, { repositoryId: otherRepositoryId });
+
+    const active = inputFor({ repositoryId, prNumber: 2, headSha: headFor(2), baseSha, policyDigest });
+    await repository.record(active, NOW);
+
+    const firstPage = await repository.listPausedAdmissions([repositoryId], [appId], 10);
+    expect(firstPage).toEqual([{
+      runId: 'run-new', repositoryId, owner: 'review-yeti-ai', repo: 'review-yeti-bot', prNumber: 1,
+      headSha: 'f'.repeat(40), baseSha, admittedPolicyDigest: policyDigest,
+    }]);
+
+    const after: OperatorPassthroughReconcileCursor = { repositoryId, prNumber: 2 };
+    await addRun('run-after-cursor', 6);
+    await expect(repository.listPausedAdmissions([repositoryId], [appId], 10, after)).resolves.toEqual([{
+      runId: 'run-after-cursor', repositoryId, owner: 'review-yeti-ai', repo: 'review-yeti-bot', prNumber: 6,
+      headSha: headFor(6), baseSha, admittedPolicyDigest: policyDigest,
+    }]);
   });
 
   it('keeps canonical candidate coordinates and rejects persisted identity tampering', async () => {
@@ -251,6 +310,68 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
       { stage: 'review', mayCreate: true, externalId: firstClaim!.reviewExternalId },
       { stage: 'review', mayCreate: false, externalId: firstClaim!.reviewExternalId },
     ]);
+  });
+
+  it('reclaims only a proven not-started create and rejects that result after an uncertain create', async () => {
+    const knownNotStarted = await repository.record(inputFor(), NOW);
+    const knownClaim = await repository.claimPublication('publisher-not-started', NOW, 10_000,
+      knownNotStarted.publicationId);
+    expect(knownClaim).toMatchObject({ stage: 'review', mayCreate: true, reviewCreationState: 'creating' });
+    await expect(repository.publishLocked(knownClaim!, async () => ({ kind: 'not-started', retryDelayMs: 5_000 }),
+      () => NOW + 1)).resolves.toBe('retry');
+    await expect(repository.getPublication(knownNotStarted.publicationId)).resolves.toMatchObject({
+      reviewCreationState: 'reserved', reviewCheckId: null, readyForShip: false,
+    });
+    await expect(repository.claimPublication('publisher-too-early', NOW + 4_999, 10_000,
+      knownNotStarted.publicationId)).resolves.toBeNull();
+    const reclaimed = await repository.claimPublication('publisher-reclaimed', NOW + 5_001, 10_000,
+      knownNotStarted.publicationId);
+    expect(reclaimed).toMatchObject({ stage: 'review', mayCreate: true, reviewCreationState: 'creating' });
+
+    const uncertain = await repository.record(inputFor({ repositoryId: 1_876_543_210 }), NOW);
+    const uncertainClaim = await repository.claimPublication('publisher-uncertain', NOW, 10_000,
+      uncertain.publicationId);
+    await expect(repository.publishLocked(uncertainClaim!, async () => ({ kind: 'reconcile-pending', retryDelayMs: 1_000 }),
+      () => NOW + 1)).resolves.toBe('retry');
+    const reconcileOnly = await repository.claimPublication('publisher-uncertain-reconcile', NOW + 1_002, 10_000,
+      uncertain.publicationId);
+    expect(reconcileOnly).toMatchObject({ stage: 'review', mayCreate: false, reviewCreationState: 'creating' });
+    await expect(repository.publishLocked(reconcileOnly!, async () => ({ kind: 'not-started', retryDelayMs: 5_000 }),
+      () => NOW + 1_003)).rejects.toThrow('Operator passthrough check publication failed');
+    await expect(repository.getPublication(uncertain.publicationId)).resolves.toMatchObject({
+      reviewCreationState: 'creating', reviewCheckId: null, readyForShip: false,
+    });
+    const errorClass = await pool!.query(`SELECT last_error_class FROM review_operator_passthrough_publications
+      WHERE publication_id=$1`, [uncertain.publicationId]);
+    expect(errorClass.rows[0].last_error_class).toBe('unknown-create');
+  });
+
+  it('respects the shared PR advisory lock for competing same-head policy publications', async () => {
+    const repositoryId = 1_765_432_109;
+    const first = await repository.record(inputFor({ repositoryId, prNumber: 88 }), NOW);
+    const second = await repository.record(inputFor({ repositoryId, prNumber: 88,
+      policyDigest: 'f'.repeat(64) }, randomUUID(), 'e'.repeat(64)), NOW + 1);
+    const owner = await pool!.connect();
+    try {
+      await owner.query('BEGIN');
+      await owner.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',
+        [reviewDispatchPrLockKey(repositoryId, 88)]);
+      await expect(repository.claimPublication('publisher-contended-one', NOW + 2, 10_000, first.publicationId))
+        .resolves.toBeNull();
+      await expect(repository.claimPublication('publisher-contended-two', NOW + 2, 10_000, second.publicationId))
+        .resolves.toBeNull();
+      await owner.query('COMMIT');
+    } finally {
+      await owner.query('ROLLBACK').catch(() => undefined);
+      owner.release();
+    }
+
+    const firstClaim = await repository.claimPublication('publisher-after-release-one', NOW + 3, 10_000,
+      first.publicationId);
+    const secondClaim = await repository.claimPublication('publisher-after-release-two', NOW + 3, 10_000,
+      second.publicationId);
+    expect(firstClaim).toMatchObject({ publicationId: first.publicationId, mayCreate: true });
+    expect(secondClaim).toMatchObject({ publicationId: second.publicationId, mayCreate: true });
   });
 
   it('becomes SHIP-ready only after both exact official checks bind successfully', async () => {

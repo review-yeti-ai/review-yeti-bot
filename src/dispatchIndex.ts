@@ -37,7 +37,6 @@ import { PostgresVerdictCacheBaseLookup } from './persistence/verdictCacheSource
 import { verdictCacheMaxAgeMsFrom } from './review/verdictCache';
 import { PROVIDER_CONCURRENCY_ENV, providerLeaseServiceConfigFromEnv } from './config/providerConcurrency';
 import { PostgresProviderLeaseStore } from './persistence/providerConcurrencyLeaseRepository';
-import type { OperatorPassthroughReconcileAdmission, OperatorPassthroughReconcileCursor } from './review/operatorPassthrough';
 import { canonicalJson, sha256 } from './review/reviewCore';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
@@ -130,37 +129,8 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     }),
     operatorPassthroughRepository,
     passthroughEnabled: dispatchConfig.passthroughEnabled,
-    listPausedAdmissions: async (limit, after?: OperatorPassthroughReconcileCursor): Promise<OperatorPassthroughReconcileAdmission[]> => {
-      const { rows } = await pool.query(`
-        SELECT DISTINCT ON (runs.repository_id,runs.pr_number)
-          runs.run_id,runs.repository_id,runs.owner,runs.repo,runs.pr_number,runs.head_sha,runs.base_sha,
-          runs.effective_policy_digest AS admitted_policy_digest
-        FROM review_runs runs
-        WHERE runs.repository_id = ANY($1::bigint[])
-          AND runs.authoritative_gate_app_id = ANY($2::bigint[])
-          AND runs.publication_mode = 'app-gate'
-          AND ($3::bigint IS NULL OR (runs.repository_id,runs.pr_number) > ($3::bigint,$4::integer))
-          AND NOT EXISTS (
-            SELECT 1 FROM review_operator_passthrough_publications publication
-             WHERE publication.repository_id = runs.repository_id AND publication.pr_number = runs.pr_number
-               AND publication.head_sha = runs.head_sha AND publication.base_sha = runs.base_sha
-               AND publication.policy_digest = runs.effective_policy_digest
-               AND publication.expected_app_id = runs.authoritative_gate_app_id
-               AND publication.retirement_requested_at IS NULL AND publication.retired_at IS NULL
-          )
-        ORDER BY runs.repository_id,runs.pr_number,runs.created_at DESC
-        LIMIT $5`, [
-        configuredAuthoritativeRepositoryIds,
-        configuredAuthoritativeAppIds,
-        after?.repositoryId ?? null,
-        after?.prNumber ?? null,
-        Math.max(1, Math.min(10, limit)),
-      ]);
-      return rows.map((row: any) => ({ runId: String(row.run_id), repositoryId: Number(row.repository_id),
-        owner: String(row.owner), repo: String(row.repo), prNumber: Number(row.pr_number),
-        headSha: String(row.head_sha), baseSha: String(row.base_sha),
-        admittedPolicyDigest: String(row.admitted_policy_digest) }));
-    },
+    listPausedAdmissions: (limit, after) => operatorPassthroughRepository.listPausedAdmissions(
+      configuredAuthoritativeRepositoryIds, configuredAuthoritativeAppIds, limit, after),
     getStoredPrepared: (policyDigest) => getPreparedPublishingPolicy(pool, policyDigest),
     workerId: `authoritative-review-${environment.HOSTNAME || 'local'}`,
   }) : undefined;

@@ -164,6 +164,23 @@ describeWithPostgres('PostgresMergeGroupGateRepository durable publication lifec
     await repository.release(candidate.repositoryId, candidate.headSha, candidate.snapshotDigest, retryOwner);
   });
 
+  it('reports a live same-head publication claim as busy across different queue snapshots', async () => {
+    const current = identity();
+    const next = { ...current, snapshotDigest: randomBytes(32).toString('hex') };
+    const firstOwner = claimToken();
+    const secondOwner = claimToken();
+
+    await expect(repository.claim(current.repositoryId, current.headSha, current.snapshotDigest, firstOwner))
+      .resolves.toEqual({ status: 'acquired' });
+    await expect(repository.claim(next.repositoryId, next.headSha, next.snapshotDigest, secondOwner))
+      .resolves.toEqual({ status: 'busy' });
+
+    await repository.release(current.repositoryId, current.headSha, current.snapshotDigest, firstOwner);
+    await expect(repository.claim(next.repositoryId, next.headSha, next.snapshotDigest, secondOwner))
+      .resolves.toEqual({ status: 'acquired' });
+    await repository.release(next.repositoryId, next.headSha, next.snapshotDigest, secondOwner);
+  });
+
   it('binds one exact reconciled check and requalifies a cached terminal result', async () => {
     const candidate = identity();
     const firstOwner = claimToken();
