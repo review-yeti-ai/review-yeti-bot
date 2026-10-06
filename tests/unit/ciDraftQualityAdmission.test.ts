@@ -10,7 +10,7 @@ type Job = { name?: string; if?: string; needs?: string | string[]; permissions?
 type Workflow = { on: Record<string, { branches?: string[]; types?: string[] } | null | unknown[]>;
   concurrency?: { group?: string; 'cancel-in-progress'?: string | boolean };
   permissions?: Record<string, string>; jobs: Record<string, Job> };
-type Event = { name: string; action?: string; base?: string; baseRef?: string; defaultBranch?: string; ref?: string; draft?: boolean; state?: string; subject?: string };
+type Event = { name: string; action?: string; base?: string; baseRef?: string; defaultBranch?: string; ref?: string; draft?: boolean; state?: string; subject?: string; controllerMode?: string; startResult?: string; checkRunId?: string; reviewResult?: string };
 type Need = { result: string; outputs: Record<string, string> };
 const root = path.resolve(__dirname, '../..');
 const ci = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/ci-cd.yaml'), 'utf8')) as Workflow;
@@ -21,8 +21,9 @@ const actions = ['opened', 'synchronize', 'reopened', 'ready_for_review'];
 const draft: Event = { name: 'pull_request', action: 'opened', base: 'main', ref: 'refs/pull/42/merge', state: 'open', draft: true };
 const paidDraft: Event = { name: 'pull_request_target', action: 'opened', baseRef: 'main', defaultBranch: 'main', state: 'open', draft: true };
 function needs(): Record<string, Need> {
-  return Object.fromEntries([...quality, ...publication].map(id => [id, { result: 'success', outputs: {
+  return Object.fromEntries([...quality, ...publication, 'start-self-review', 'review'].map(id => [id, { result: 'success', outputs: {
     'shard-count': '4', 'postgres-tests': '["tests/integration/example.postgres.test.ts"]',
+    ...(id === 'start-self-review' ? { mode: 'review', 'check-run-id': '9001' } : {}),
   } }]));
 }
 
@@ -61,10 +62,18 @@ function admitted(id: string, event: Event, workflow = ci, dependencies = needs(
   if (!eventRegistered(event, workflow)) return false;
   const job = workflow.jobs[id];
   if (!job) throw new Error('Missing workflow job');
+  const effectiveDependencies = workflow === paid ? {
+    ...dependencies,
+    'start-self-review': {
+      result: event.startResult ?? (event.name === 'repository_dispatch' ? 'skipped' : 'success'),
+      outputs: { mode: event.controllerMode ?? 'review', 'check-run-id': event.checkRunId ?? '9001' },
+    },
+    review: { result: event.reviewResult ?? (event.controllerMode === 'operator-waiver' ? 'skipped' : 'success'), outputs: {} },
+  } : dependencies;
   const prerequisites = typeof job.needs === 'string' ? [job.needs] : job.needs ?? [];
   // GitHub adds success() to a job condition unless it already uses a status function.
-  if (!String(job.if ?? '').includes('always()') && prerequisites.some(key => dependencies[key].result !== 'success')) return false;
-  return evaluateGuard(job.if, event, dependencies);
+  if (!String(job.if ?? '').includes('always()') && prerequisites.some(key => effectiveDependencies[key].result !== 'success')) return false;
+  return evaluateGuard(job.if, event, effectiveDependencies);
 }
 
 function cancelsInProgress(event: Event, workflow = ci): boolean {
@@ -161,7 +170,7 @@ describe('public draft quality admission', () => {
   });
 
   it('retains the exact paid readiness guard, public engine, and retired internal boundary', () => {
-    expect(paid.jobs.review.if).toBe("${{ github.event_name == 'repository_dispatch' || (github.event.pull_request.state == 'open' && !github.event.pull_request.draft && github.event.pull_request.base.ref == github.event.repository.default_branch) }}");
+    expect(paid.jobs.review.if).toBe("${{ always() && (github.event_name == 'repository_dispatch' || (github.event_name == 'pull_request_target' && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.mode != 'operator-waiver' && github.event.pull_request.state == 'open' && !github.event.pull_request.draft && github.event.pull_request.base.ref == github.event.repository.default_branch)) }}");
     expect(paid.on.pull_request).toBeUndefined();
     expect(paid.on.pull_request_target).toEqual({ types: actions });
     expect(paid.jobs.review.name).toBe('Review Bot PR Controller');
@@ -171,8 +180,19 @@ describe('public draft quality admission', () => {
       expect(admitted('review', { ...paidDraft, action }, paid)).toBe(false);
       expect(admitted('review', { ...paidDraft, action, draft: false }, paid)).toBe(true);
       expect(admitted('review', { ...paidDraft, action, draft: false, state: 'closed' }, paid)).toBe(false);
+      expect(admitted('review', { ...paidDraft, action, draft: false, controllerMode: 'operator-waiver' }, paid)).toBe(false);
+      expect(admitted('finish-self-review', { ...paidDraft, action, draft: false, controllerMode: 'operator-waiver', reviewResult: 'skipped' }, paid)).toBe(true);
     }
     expect(admitted('review', { name: 'repository_dispatch', action: 'review-requested' }, paid)).toBe(true);
+    expect(admitted('review', { ...paidDraft, draft: false, startResult: 'failure' }, paid)).toBe(false);
+    expect(admitted('finish-self-review', { ...paidDraft, draft: false, startResult: 'failure', checkRunId: '9001' }, paid)).toBe(false);
+    expect(admitted('finish-self-review', { ...paidDraft, draft: false, checkRunId: '' }, paid)).toBe(false);
+    expect(paid.jobs['finish-self-review'].if).toBe("${{ always() && github.event_name == 'pull_request_target' && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.check-run-id != '' }}");
+    expect(admitted('start-self-review', { name: 'repository_dispatch', action: 'review-requested' }, paid)).toBe(false);
+    expect(paid.jobs.review.permissions?.checks).toBeUndefined();
+    expect(paid.permissions?.checks).toBeUndefined();
+    expect(paid.jobs['start-self-review'].permissions?.checks).toBe('write');
+    expect(paid.jobs['finish-self-review'].permissions?.checks).toBe('write');
   });
 
   it.each([

@@ -80,7 +80,7 @@ describe('review verdict enforcement (REL-580, REL-585)', () => {
 
   it('still runs when the review step failed, so a crashed review cannot skip the gate', () => {
     expect(enforce!.if).toContain('always()');
-    expect(enforce!.if).toContain("steps.mode.outputs.mode != 'operator-waiver'");
+    expect(enforce!.if).toContain("needs.start-self-review.outputs.mode != 'operator-waiver'");
   });
 
   describe('behavioral matrix (extracted script execution)', () => {
