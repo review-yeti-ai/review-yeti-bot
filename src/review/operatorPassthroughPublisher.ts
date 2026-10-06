@@ -82,7 +82,13 @@ export class OperatorPassthroughPublisher {
         else if (current.mayCreate) {
           // Even a committed first-create reservation does a bounded preflight
           // lookup. Repeated or uncertain attempts are reconcile-only.
-          check = await client.reconcileOperator(coordinates);
+          try { check = await client.reconcileOperator(coordinates); }
+          catch {
+            // This read happened before any create request, so resetting the
+            // reservation is safe. Once createOperatorPending is invoked, a
+            // failure is ambiguous and must stay on the reconcile-only path.
+            return { kind: 'not-started', retryDelayMs: this.retryDelayMs } satisfies OperatorPassthroughPublicationNotStarted;
+          }
           if (!check) check = await client.createOperatorPending(coordinates, { status: 'in_progress' });
         } else {
           check = await client.reconcileOperator(coordinates);
