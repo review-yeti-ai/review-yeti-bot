@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.119.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.119.1...v1.119.2) (2026-10-06)
+
+
+### Bug Fixes
+
+* **pause:** keep operator verdict SHIP during dependency outages ([586c61a](https://github.com/review-yeti-ai/review-yeti-bot/commit/586c61a1c6e573faa58f1506889d580f4aaa0490))
+
 ## [1.119.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.119.0...v1.119.1) (2026-10-06)
 
 
