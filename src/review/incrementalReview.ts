@@ -41,10 +41,20 @@
  */
 import { z } from 'zod';
 import type {
+  IncrementalDeltaFile,
+  IncrementalOpenFinding,
   IncrementalPriorIdentity,
   IncrementalReviewDisclosure,
   IncrementalReviewScope,
 } from '../types/incrementalReview';
+import {
+  DEFAULT_INCREMENTAL_MAX_CHAIN,
+  deltaHunkRanges,
+  deltaScopedPatch,
+  incrementalDeltaEnabledFor,
+  incrementalMaxChainFrom,
+  openFindingFrom,
+} from './incrementalDelta';
 import { INCREMENTAL_REVIEW_CLAIM_VERSION, type IncrementalReviewClaim } from './incrementalReviewClaim';
 import { isRegularFileMode } from './lockfileChangeVerification';
 import {
@@ -73,6 +83,9 @@ import {
 } from './workerReviewCompletion';
 
 export type {
+  IncrementalDeltaFile,
+  IncrementalLedgerDisclosure,
+  IncrementalOpenFinding,
   IncrementalPriorIdentity,
   IncrementalReviewDisclosure,
   IncrementalReviewScope,
@@ -141,6 +154,15 @@ export const priorReviewRecordSchema = z.object({
   shipIncompleteReason: z.enum(STORED_PRIOR_REFUSALS).optional(),
   /** Every path any lane of the prior review reported a finding on. */
   findingPaths: z.array(path).max(10_000),
+  /** Consecutive incremental reviews up to and including this one; 0 for a full review (ADR 0771). */
+  chainDepth: z.number().int().min(0).max(1000).optional(),
+  /** The prior review's findings, bounded, for the delta re-review ledger (ADR 0771). */
+  /** Tasks (composed) or lanes of the prior review: the bound on a delta re-review's plan. */
+  taskCount: z.number().int().min(1).max(64).optional(),
+  findings: z.array(z.object({
+    id: z.string().regex(/^f_[a-f0-9]{12}$/u), path, line: z.number().int().positive().safe().optional(),
+    severity: z.string().min(1).max(8), title: z.string().max(200),
+  }).strict()).max(200).optional(),
 }).strict();
 
 export type PriorReviewRecord = z.infer<typeof priorReviewRecordSchema>;
@@ -277,6 +299,11 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
       : storedEvidenceShipCompleteReason(result, conclusion);
     const findingPaths = [...new Set(result.personas.flatMap((persona) => persona.findings.map((finding) => finding.path)))].sort();
     const coverageComplete = storedCoverageComplete(result, { authoritative, gate: rows.gate, completionDigest: storedDigest });
+    const gatingLaneCount = result.personas.filter((persona) => persona.evidenceSource !== 'shadow').length;
+    const priorFindings = [...new Map(result.personas.flatMap((persona) => persona.findings.map((finding) =>
+      openFindingFrom({ path: finding.path, line: finding.line, severity: String(finding.severity), title: String(finding.title ?? '') })))
+      .map((finding) => [finding.id, finding] as const)).values()]
+      .sort((a, b) => a.id.localeCompare(b.id)).slice(0, 200);
     return priorReviewRecordSchema.parse({
       runId: coordinates.runId,
       executionAttempt,
@@ -291,6 +318,9 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
       coverageComplete,
       ...(shipIncompleteReason === null ? { shipComplete: true } : { shipComplete: false, shipIncompleteReason }),
       findingPaths,
+      chainDepth: result.incremental ? (result.incremental.chainDepth ?? 1) : 0,
+      ...(gatingLaneCount > 0 && gatingLaneCount <= 64 ? { taskCount: gatingLaneCount } : {}),
+      findings: priorFindings,
     });
   } catch {
     return null;
@@ -304,12 +334,18 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
 export interface CommitComparison {
   status: 'ahead' | 'behind' | 'diverged' | 'identical';
   mergeBaseSha: string;
-  files: Array<{ path: string; previousPath?: string }>;
+  files: Array<{ path: string; previousPath?: string; status?: string; patch?: string }>;
 }
 
 /** `GET /repos/{owner}/{repo}/compare/{base}...{head}`, bound to exact SHAs. */
 export interface CommitComparisonReader {
   compare(baseSha: string, headSha: string, signal?: AbortSignal): Promise<CommitComparison>;
+  /**
+   * The same comparison with each file's `status` and validated closed-hunk `patch` (absent when
+   * GitHub omitted or truncated it). Only the delta scope needs it; without it every touched file
+   * is reviewed whole, exactly as before.
+   */
+  compareDetailed?(baseSha: string, headSha: string, signal?: AbortSignal): Promise<CommitComparison>;
 }
 
 export interface IncrementalEvidence {
@@ -337,8 +373,11 @@ export async function gatherIncrementalEvidence(
   prior: { headSha: string; baseSha: string },
   current: { headSha: string; baseSha: string },
   signal?: AbortSignal,
+  options: { detailed?: boolean } = {},
 ): Promise<IncrementalEvidence> {
-  const heads = await reader.compare(prior.headSha, current.headSha, signal);
+  const heads = options.detailed && reader.compareDetailed
+    ? await reader.compareDetailed(prior.headSha, current.headSha, signal)
+    : await reader.compare(prior.headSha, current.headSha, signal);
   if (heads.status !== 'ahead' || !listedComplete(heads)) return { heads };
   const priorDiff = await reader.compare(prior.baseSha, prior.headSha, signal);
   const currentDiff = await reader.compare(current.baseSha, current.headSha, signal);
@@ -367,6 +406,7 @@ export type IncrementalFallbackReason =
   | 'base-moved-reviewed-files'
   | 'nothing-carried-forward'
   | 'no-new-reviewable-change'
+  | 'chain-cap-reached'
   | 'error';
 
 export type IncrementalDecision =
@@ -377,7 +417,16 @@ export type IncrementalDecision =
     reviewPaths: string[];
     carriedForwardPaths: string[];
     openFindingPaths: string[];
+    /** Touched files the previous review covered in full with no open finding. Delta scope only. */
+    deltaPaths?: string[];
+    /** Chain depth of THIS review: the prior record's depth plus one. Delta scope only. */
+    chainDepth?: number;
   };
+
+/** Delta scope switch for one decision. Absent means REL-1084 file-level carry only. */
+export interface IncrementalDeltaOptions {
+  maxChain: number;
+}
 
 export interface IncrementalCurrentIdentity {
   runId: string;
@@ -399,6 +448,7 @@ export function incrementalPrecheck(input: {
   prior: PriorReviewRecord | null;
   maxAgeMs: number;
   current: IncrementalCurrentIdentity;
+  delta?: IncrementalDeltaOptions;
 }): IncrementalDecision | null {
   const { prior, current } = input;
   if (!prior) return full('no-prior-review');
@@ -416,6 +466,8 @@ export function incrementalPrecheck(input: {
     return full('policy-or-config-changed');
   }
   if (!Number.isSafeInteger(input.maxAgeMs) || input.maxAgeMs <= 0 || prior.ageMs > input.maxAgeMs) return full('prior-too-old');
+  // ADR 0771: with the delta scope on, every (maxChain + 1)th head is reviewed in full to re-ground it.
+  if (input.delta && (prior.chainDepth ?? 0) >= input.delta.maxChain) return full('chain-cap-reached');
   return null;
 }
 
@@ -436,6 +488,7 @@ export function decideIncrementalReview(input: {
   current: IncrementalCurrentIdentity;
   currentPaths: readonly string[];
   evidence: IncrementalEvidence | null;
+  delta?: IncrementalDeltaOptions;
 }): IncrementalDecision {
   const early = incrementalPrecheck(input);
   if (early) return early;
@@ -458,13 +511,17 @@ export function decideIncrementalReview(input: {
     if (touched.some((file) => reviewed.has(file))) return full('base-moved-reviewed-files');
   }
   const changedSincePrevious = new Set(evidence.heads.files.flatMap((file) => [file.path, ...(file.previousPath ? [file.previousPath] : [])]));
+  // A rename or copy changes what a path means between the two heads, so it is never delta-scoped.
+  const moved = new Set(evidence.heads.files.flatMap((file) => (file.previousPath ? [file.path, file.previousPath] : [])));
   const open = new Set(prior.findingPaths);
   const reviewPaths: string[] = [];
   const carriedForwardPaths: string[] = [];
   const openFindingPaths: string[] = [];
+  const deltaPaths: string[] = [];
   for (const file of currentPaths) {
     if (!priorPaths.has(file) || changedSincePrevious.has(file)) {
       reviewPaths.push(file);
+      if (input.delta && priorPaths.has(file) && !open.has(file) && !moved.has(file)) deltaPaths.push(file);
     } else if (open.has(file)) {
       reviewPaths.push(file);
       openFindingPaths.push(file);
@@ -472,7 +529,7 @@ export function decideIncrementalReview(input: {
       carriedForwardPaths.push(file);
     }
   }
-  if (carriedForwardPaths.length === 0) return full('nothing-carried-forward');
+  if (carriedForwardPaths.length === 0 && deltaPaths.length === 0) return full('nothing-carried-forward');
   if (reviewPaths.length === openFindingPaths.length) return full('no-new-reviewable-change');
   return {
     mode: 'incremental',
@@ -486,6 +543,8 @@ export function decideIncrementalReview(input: {
     reviewPaths: reviewPaths.sort(),
     carriedForwardPaths: carriedForwardPaths.sort(),
     openFindingPaths: openFindingPaths.sort(),
+    // Present only under the delta scope, so the sub-flag off leaves the REL-1084 decision unchanged.
+    ...(input.delta ? { deltaPaths: deltaPaths.sort(), chainDepth: (prior.chainDepth ?? 0) + 1 } : {}),
   };
 }
 
@@ -517,21 +576,32 @@ export function applyIncrementalScope(
   files: readonly EffectiveReviewFile[],
   scope: IncrementalReviewScope | undefined,
 ): { files: EffectiveReviewFile[]; disclosure: IncrementalReviewDisclosure | null } {
-  if (!scope || scope.carriedForwardPaths.length === 0) return { files: [...files], disclosure: null };
+  const deltaByPath = new Map((scope?.deltaFiles ?? []).map((file) => [file.path, file] as const));
+  if (!scope || (scope.carriedForwardPaths.length === 0 && deltaByPath.size === 0)) return { files: [...files], disclosure: null };
   const carry = new Set(scope.carriedForwardPaths);
   const open = new Set(scope.openFindingPaths);
   const carried: string[] = [];
   const reviewed: string[] = [];
+  const delta: IncrementalDeltaFile[] = [];
   const out = files.map((file) => {
-    if (carry.has(file.path) && !open.has(file.path) && !isSubmoduleEntry(file) && isRegularFileMode(file.mode)
-      && typeof file.patch === 'string' && file.content === undefined) {
+    const whole = !isSubmoduleEntry(file) && isRegularFileMode(file.mode)
+      && typeof file.patch === 'string' && file.content === undefined;
+    if (carry.has(file.path) && !open.has(file.path) && whole) {
       carried.push(file.path);
       return { ...file, patch: carryForwardPatch(file.patch, scope.previous.headSha) };
+    }
+    // Delta scope: a touched file the previous review covered in full. An open-finding file is never
+    // narrowed, so a flagged defect is always verified against the whole code it flagged.
+    const narrowed = deltaByPath.get(file.path);
+    if (narrowed && !open.has(file.path) && whole) {
+      delta.push(narrowed);
+      reviewed.push(file.path);
+      return { ...file, patch: deltaScopedPatch(file.patch, narrowed.patch, scope.previous.headSha) };
     }
     reviewed.push(file.path);
     return file;
   });
-  if (carried.length === 0) return { files: out, disclosure: null };
+  if (carried.length === 0 && delta.length === 0) return { files: out, disclosure: null };
   const presentOpen = files.map((file) => file.path).filter((file) => open.has(file));
   return {
     files: out,
@@ -540,6 +610,11 @@ export function applyIncrementalScope(
       carriedForwardPaths: carried.sort(),
       reReviewedOpenFindingPaths: presentOpen.sort(),
       reviewedPaths: reviewed.sort(),
+      ...(delta.length > 0 ? {
+        deltaPaths: delta.map((file) => file.path).sort(),
+        deltaHunkCount: delta.reduce((total, file) => total + deltaHunkRanges(file.patch).length, 0),
+      } : {}),
+      ...(scope.chainDepth !== undefined ? { chainDepth: scope.chainDepth } : {}),
       estimatedTokensBefore: estimateTokens(files),
       estimatedTokensAfter: estimateTokens(out),
     },
@@ -574,7 +649,7 @@ export function attachIncrementalDisclosure<T extends object>(
 
 /** The completion claim for what the engine actually carried forward. */
 export function incrementalClaimFrom(disclosure: IncrementalReviewDisclosure | null | undefined): IncrementalReviewClaim | undefined {
-  if (!disclosure || disclosure.carriedForwardPaths.length === 0) return undefined;
+  if (!disclosure || (disclosure.carriedForwardPaths.length === 0 && !disclosure.deltaPaths?.length)) return undefined;
   return {
     version: INCREMENTAL_REVIEW_CLAIM_VERSION,
     previousRunId: disclosure.previous.runId,
@@ -583,6 +658,8 @@ export function incrementalClaimFrom(disclosure: IncrementalReviewDisclosure | n
     previousBaseSha: disclosure.previous.baseSha,
     previousCompletionDigest: disclosure.previous.completionDigest,
     carriedForwardPaths: [...disclosure.carriedForwardPaths],
+    ...(disclosure.deltaPaths?.length ? { deltaPaths: [...disclosure.deltaPaths] } : {}),
+    ...(disclosure.chainDepth !== undefined ? { chainDepth: disclosure.chainDepth } : {}),
   };
 }
 
@@ -597,6 +674,8 @@ export interface IncrementalVerificationInput {
   maxAgeMs: number;
   /** The completing run's service-owned identity, beyond what the gate coordinates carry. */
   run: { runId: string; executionAttempt: number; configDigest: string };
+  /** `REVIEW_YETI_INCREMENTAL_MAX_CHAIN` on the service; consulted only for a delta claim. */
+  maxChain?: number;
 }
 
 /**
@@ -611,7 +690,12 @@ export async function verifyIncrementalClaim(options: Omit<IncrementalVerificati
   currentPaths: readonly string[];
   reader: CommitComparisonReader;
   signal?: AbortSignal;
-}): Promise<{ verified: boolean; reason: IncrementalFallbackReason | 'claim-mismatch' | 'verified' }> {
+}): Promise<{
+  verified: boolean;
+  reason: IncrementalFallbackReason | 'claim-mismatch' | 'delta-patch-unavailable' | 'verified';
+  /** The service's own comparison patches for a verified delta claim: what convergence scopes P2s by. */
+  deltaFiles?: IncrementalDeltaFile[];
+}> {
   const { claim, prior } = options;
   if (!prior) return { verified: false, reason: 'no-prior-review' };
   const named = { runId: claim.previousRunId, executionAttempt: claim.previousExecutionAttempt,
@@ -619,16 +703,35 @@ export async function verifyIncrementalClaim(options: Omit<IncrementalVerificati
   const stored = { runId: prior.runId, executionAttempt: prior.executionAttempt,
     headSha: prior.headSha, baseSha: prior.baseSha, completionDigest: prior.completionDigest };
   if (canonicalJson(named) !== canonicalJson(stored)) return { verified: false, reason: 'claim-mismatch' };
-  const early = incrementalPrecheck({ prior, maxAgeMs: options.maxAgeMs, current: options.current });
+  // A claim that names delta paths or a chain depth was made under the delta scope: re-decide under it.
+  const delta: IncrementalDeltaOptions | undefined = claim.deltaPaths || claim.chainDepth !== undefined
+    ? { maxChain: options.maxChain ?? DEFAULT_INCREMENTAL_MAX_CHAIN } : undefined;
+  const early = incrementalPrecheck({ prior, maxAgeMs: options.maxAgeMs, current: options.current, ...(delta ? { delta } : {}) });
   if (early && early.mode === 'full') return { verified: false, reason: early.reason };
-  const evidence = await gatherIncrementalEvidence(options.reader, prior, options.current, options.signal);
+  const evidence = await gatherIncrementalEvidence(options.reader, prior, options.current, options.signal,
+    { detailed: Boolean(claim.deltaPaths) });
   const decision = decideIncrementalReview({
     prior, maxAgeMs: options.maxAgeMs, current: options.current, currentPaths: options.currentPaths, evidence,
+    ...(delta ? { delta } : {}),
   });
   if (decision.mode !== 'incremental') return { verified: false, reason: decision.reason };
   const permitted = new Set(decision.carriedForwardPaths);
   if (!claim.carriedForwardPaths.every((file) => permitted.has(file))) return { verified: false, reason: 'claim-mismatch' };
-  return { verified: true, reason: 'verified' };
+  if (claim.chainDepth !== undefined && claim.chainDepth !== (decision.chainDepth ?? (prior.chainDepth ?? 0) + 1)) return { verified: false, reason: 'claim-mismatch' };
+  if (!claim.deltaPaths) return { verified: true, reason: 'verified' };
+  // Delta scope: a path is permitted only when the decision derived it from the service's own prior
+  // record and comparisons, and its patch is the service's own complete, closed-hunk one.
+  const allowedDelta = new Set(decision.deltaPaths ?? []);
+  if (!claim.deltaPaths.every((file) => allowedDelta.has(file))) return { verified: false, reason: 'claim-mismatch' };
+  const deltaFiles: IncrementalDeltaFile[] = [];
+  for (const file of claim.deltaPaths) {
+    const entry = evidence.heads.files.find((candidate) => candidate.path === file);
+    if (!entry || entry.status !== 'modified' || typeof entry.patch !== 'string') {
+      return { verified: false, reason: 'delta-patch-unavailable' };
+    }
+    deltaFiles.push({ path: file, patch: entry.patch, hunks: deltaHunkRanges(entry.patch).length });
+  }
+  return { verified: true, reason: 'verified', deltaFiles };
 }
 
 // ---------------------------------------------------------------------------
@@ -662,17 +765,44 @@ export async function planIncrementalReview(options: {
 }): Promise<IncrementalPlan | null> {
   if (!incrementalReviewEnabledFor(options.env, options.repository)) return null;
   if (!options.base || !options.reader) return { scope: null, decision: full('error') };
+  const delta: IncrementalDeltaOptions | undefined = incrementalDeltaEnabledFor(options.env, options.repository)
+    ? { maxChain: incrementalMaxChainFrom(options.env) } : undefined;
   const abort = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const plan = async (): Promise<IncrementalPlan> => {
     const { prior, maxAgeMs } = await options.base!.read(abort.signal);
-    const early = incrementalPrecheck({ prior, maxAgeMs, current: options.current });
+    const early = incrementalPrecheck({ prior, maxAgeMs, current: options.current, ...(delta ? { delta } : {}) });
     if (early) return { scope: null, decision: early };
-    const evidence = await gatherIncrementalEvidence(options.reader!, prior!, options.current, abort.signal);
-    const decision = decideIncrementalReview({ prior, maxAgeMs, current: options.current, currentPaths: options.currentPaths, evidence });
-    return decision.mode === 'incremental'
-      ? { scope: { previous: decision.previous, carriedForwardPaths: decision.carriedForwardPaths, openFindingPaths: decision.openFindingPaths }, decision }
-      : { scope: null, decision };
+    const evidence = await gatherIncrementalEvidence(options.reader!, prior!, options.current, abort.signal,
+      { detailed: Boolean(delta) });
+    const decision = decideIncrementalReview({
+      prior, maxAgeMs, current: options.current, currentPaths: options.currentPaths, evidence, ...(delta ? { delta } : {}),
+    });
+    if (decision.mode !== 'incremental') return { scope: null, decision };
+    const scope: IncrementalReviewScope = {
+      previous: decision.previous, carriedForwardPaths: decision.carriedForwardPaths, openFindingPaths: decision.openFindingPaths,
+    };
+    if (delta) {
+      // A delta path needs the service-validated patch; without one the file simply stays whole.
+      const deltaFiles: IncrementalDeltaFile[] = (decision.deltaPaths ?? []).flatMap((file) => {
+        const entry = evidence.heads.files.find((candidate) => candidate.path === file);
+        return entry && entry.status === 'modified' && typeof entry.patch === 'string'
+          ? [{ path: file, patch: entry.patch, hunks: deltaHunkRanges(entry.patch).length }] : [];
+      });
+      if (decision.carriedForwardPaths.length === 0 && deltaFiles.length === 0) {
+        return { scope: null, decision: full('nothing-carried-forward') };
+      }
+      // Every prior finding whose file is re-read whole: untouched open-finding files, and files this
+      // push touched. Delta files never carry one (a file with an open finding is never delta-scoped).
+      const wholePaths = new Set(decision.reviewPaths);
+      for (const file of deltaFiles) wholePaths.delete(file.path);
+      const openFindings: IncrementalOpenFinding[] = (prior!.findings ?? []).filter((finding) => wholePaths.has(finding.path));
+      scope.deltaFiles = deltaFiles;
+      scope.openFindings = openFindings;
+      scope.chainDepth = decision.chainDepth ?? (prior!.chainDepth ?? 0) + 1;
+      if (prior!.taskCount !== undefined) scope.previousTaskCount = prior!.taskCount;
+    }
+    return { scope, decision };
   };
   try {
     return await Promise.race([plan(), new Promise<never>((_, reject) => {
@@ -716,6 +846,7 @@ const FALLBACK_TEXT: Record<IncrementalFallbackReason, string> = {
   'base-moved-reviewed-files': 'the merge base moved and changed a reviewed file',
   'nothing-carried-forward': 'every changed file changed again or carries an open finding',
   'no-new-reviewable-change': 'no file changed since the previous review',
+  'chain-cap-reached': 'the incremental chain reached its cap, so this head is re-reviewed in full to re-ground it',
   error: 'the previous review could not be read or verified',
 };
 
@@ -766,7 +897,13 @@ export function renderIncrementalSummary(
       lines.push(`- Re-reviewed in full because a finding from that review is still open (${disclosure.reReviewedOpenFindingPaths.length}): `
         + listed(disclosure.reReviewedOpenFindingPaths));
     }
-    lines.push(`- Reviewed in full (${disclosure.reviewedPaths.length}): ${listed(disclosure.reviewedPaths)}`);
+    if (disclosure.deltaPaths?.length) {
+      lines.push(`- Delta-scoped: lanes saw only the change since that head, ${disclosure.deltaHunkCount ?? 0} hunk(s) `
+        + `(${disclosure.deltaPaths.length}): ${listed(disclosure.deltaPaths)}`);
+    }
+    const wholePaths = disclosure.reviewedPaths.filter((file) => !disclosure.deltaPaths?.includes(file));
+    lines.push(`- Reviewed in full (${wholePaths.length}): ${listed(wholePaths)}`);
+    if (disclosure.chainDepth !== undefined) lines.push(`- Incremental chain depth: ${disclosure.chainDepth}.`);
     return lines;
   }
   if (!plan) return [];

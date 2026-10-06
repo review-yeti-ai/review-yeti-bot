@@ -478,6 +478,11 @@ export interface TrustedReviewCoverageContract {
    */
   incrementalVerified?: boolean;
   /**
+   * ADR 0771: the service's own previous-head...head patches for the delta-scoped paths of a verified
+   * incremental claim. Convergence narrows a P2 on these files to the lines the delta touched.
+   */
+  incrementalDeltaFiles?: ReadonlyArray<{ path: string; patch: string }>;
+  /**
    * REL-1085: true only when the service re-derived the verdict-cache decision from its own
    * source record and GitHub reads and it permits every file the completion served from cache.
    * A completion that served anything from cache without this is refused.
@@ -1173,7 +1178,12 @@ export function deriveCanonicalWorkerReviewEvidence(
       return invalidEvidence('carried-forward completion was not verified against its prior review record');
     }
     const paths = new Set(changedFiles.map((file) => file.path));
-    if (isDocumentationOnlyCompletion(completion.result) || !carried.carriedForwardPaths.every((path) => paths.has(path))) {
+    if (isDocumentationOnlyCompletion(completion.result)
+      || !carried.carriedForwardPaths.every((path) => paths.has(path))
+      || !(carried.deltaPaths ?? []).every((path) => paths.has(path))
+      // A delta claim is only valid with the service's own patches for exactly the paths it names.
+      || (carried.deltaPaths !== undefined
+        && !carried.deltaPaths.every((path) => (contract.incrementalDeltaFiles ?? []).some((file) => file.path === path)))) {
       return invalidEvidence('carried-forward completion names a file outside the trusted changed set');
     }
   }
@@ -1324,6 +1334,8 @@ export function deriveCanonicalWorkerReviewEvidence(
     // and thread read. Only canonical findings count; a satisfied or out-of-diff P2 does not.
     p2Count: evaluateFindingConvergence({
       findings: canonical.findings, changedFiles, priorThreads: contract.findingThreads ?? [],
+      ...(contract.incrementalVerified === true && contract.incrementalDeltaFiles?.length
+        ? { deltaScope: contract.incrementalDeltaFiles } : {}),
       ...(contract.reviewDecisionPolicy ? { policyVersion: contract.reviewDecisionPolicy } : {}),
     }).counts.requiredP2,
     ...(expectedDecision ? { reviewDecision: expectedDecision } : {}),
