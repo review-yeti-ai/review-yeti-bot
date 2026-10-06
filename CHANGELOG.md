@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.119.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.119.2...v1.119.3) (2026-10-06)
+
+
+### Bug Fixes
+
+* **pause:** keep SHIP listener available during storage bootstrap outage (no-linear) ([#1412](https://github.com/review-yeti-ai/review-yeti-bot/issues/1412)) ([5e59ab7](https://github.com/review-yeti-ai/review-yeti-bot/commit/5e59ab7e0e5a00e53cda49071ea4f49d13d82c29))
+
 ## [1.119.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.119.1...v1.119.2) (2026-10-06)
 
 
