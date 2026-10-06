@@ -66,12 +66,13 @@ function checkNameFor(stage: OperatorPassthroughPublicationClaim['stage']) {
 function apiForPublication(
   publication: OperatorPassthroughPublicationClaim,
   options: { failPost?: boolean; failPatch?: boolean; responseAppId?: number;
-    existingChecks?: Record<string, unknown>[] } = {},
+    failPreflightRead?: boolean; existingChecks?: Record<string, unknown>[] } = {},
 ) {
   const name = checkNameFor(publication.stage);
   const id = publication.stage === 'review'
     ? publication.reviewCheckId ?? 7_901
     : publication.gateCheckId ?? 7_902;
+  let failPreflightRead = options.failPreflightRead ?? false;
   let currentCheck: Record<string, unknown> = {
     id,
     name,
@@ -85,6 +86,10 @@ function apiForPublication(
     const url = new URL(String(input));
     const method = init?.method ?? 'GET';
     if (method === 'GET' && url.pathname.endsWith(`/commits/${publication.coordinates.headSha}/check-runs`)) {
+      if (failPreflightRead) {
+        failPreflightRead = false;
+        throw new Error(`preflight read failed before create: ${TOKEN}`);
+      }
       const existingChecks = options.existingChecks ?? [];
       return response({ total_count: existingChecks.length, check_runs: existingChecks });
     }
@@ -136,6 +141,33 @@ function repositoryFor(claims: OperatorPassthroughPublicationClaim[]) {
   const retryPublication = vi.fn(async () => true);
   const repository = { claimPublication, publishLocked, retryPublication } as unknown as OperatorPassthroughPublicationRepository;
   return { repository, claimPublication, publishLocked, retryPublication, callbackResults };
+}
+
+function repositoryForCreateRecovery(publication: OperatorPassthroughPublicationClaim) {
+  let creationState: 'reserved' | 'creating' | 'bound' = 'reserved';
+  const claims: OperatorPassthroughPublicationClaim[] = [];
+  const claimPublication = vi.fn(async () => {
+    if (creationState === 'bound') return null;
+    const checkId = publication.stage === 'review' ? publication.reviewCheckId : publication.gateCheckId;
+    const current = { ...publication, mayCreate: creationState === 'reserved' && checkId === null };
+    if (current.mayCreate) creationState = 'creating';
+    claims.push(current);
+    return current;
+  });
+  const publishLocked = vi.fn(async (current: OperatorPassthroughPublicationClaim, publish: Publish) => {
+    const result = await publish(current);
+    if ('kind' in result) {
+      if (result.kind === 'not-started' && current.mayCreate && creationState === 'creating') {
+        creationState = 'reserved';
+      }
+      return 'retry' as const;
+    }
+    creationState = 'bound';
+    return 'published' as const;
+  });
+  const retryPublication = vi.fn(async () => true);
+  const repository = { claimPublication, publishLocked, retryPublication } as unknown as OperatorPassthroughPublicationRepository;
+  return { repository, claimPublication, publishLocked, retryPublication, claims };
 }
 
 function publisherFor(
@@ -314,27 +346,53 @@ describe('OperatorPassthroughPublisher', () => {
     });
   });
 
-  it('keeps an uncertain create reconcile-only on retry instead of issuing a second POST', async () => {
-    const first = claim({ stage: 'review', mayCreate: true });
-    const retry = { ...first, mayCreate: false };
-    const f = repositoryFor([first, retry]);
-    const api = apiForPublication(first, { failPost: true });
-    const clientFor = vi.fn(async () => api.client);
-    const publisher = publisherFor(f.repository, clientFor);
+  it.each(['review', 'gate'] as const)(
+    'retries a preflight read failure as not-started and recovers the %s check', async (stage) => {
+      const publication = claim({ stage, mayCreate: true });
+      const f = repositoryForCreateRecovery(publication);
+      const api = apiForPublication(publication, { failPreflightRead: true });
+      const clientFor = vi.fn(async () => api.client);
+      const publisher = publisherFor(f.repository, clientFor);
 
-    const firstResult = await publisher.runOnce(first.publicationId);
-    const secondResult = await publisher.runOnce(first.publicationId);
-    expect(firstResult).toMatchObject({ status: 'retry' });
-    expect(secondResult).toMatchObject({ status: 'retry' });
+      const firstResult = await publisher.runOnce(publication.publicationId);
+      expect(firstResult).toMatchObject({ status: 'retry' });
+      expect(f.retryPublication).not.toHaveBeenCalled();
+      expect(api.fetchImplementation.mock.calls.map(([, init]) => init?.method ?? 'GET')).toEqual(['GET']);
+      const secondResult = await publisher.runOnce(publication.publicationId);
 
-    const methods = api.fetchImplementation.mock.calls.map(([, init]) => init?.method ?? 'GET');
-    expect(methods.filter((method) => method === 'POST')).toHaveLength(1);
-    expect(methods.filter((method) => method === 'GET')).toHaveLength(2);
-    expect(methods.filter((method) => method === 'PATCH')).toHaveLength(0);
-    expect(clientFor).toHaveBeenCalledTimes(2);
-    expect(f.retryPublication).toHaveBeenCalledOnce();
-    expect(JSON.stringify([firstResult, secondResult])).not.toContain(TOKEN);
-  });
+      expect(secondResult).toMatchObject({ status: 'published' });
+      expect(f.claims.map((entry) => entry.mayCreate)).toEqual([true, true]);
+      const methods = api.fetchImplementation.mock.calls.map(([, init]) => init?.method ?? 'GET');
+      expect(methods).toEqual(['GET', 'GET', 'POST', 'GET', 'PATCH']);
+      expect(methods.filter((method) => method === 'POST')).toHaveLength(1);
+      expect(JSON.stringify([firstResult, secondResult])).not.toContain(TOKEN);
+    },
+  );
+
+  it.each(['review', 'gate'] as const)(
+    'keeps an uncertain %s create reconcile-only on retry instead of issuing a second POST', async (stage) => {
+      const first = claim({ stage, mayCreate: true });
+      const retry = { ...first, mayCreate: false };
+      const f = repositoryFor([first, retry]);
+      const api = apiForPublication(first, { failPost: true });
+      const clientFor = vi.fn(async () => api.client);
+      const publisher = publisherFor(f.repository, clientFor);
+
+      const firstResult = await publisher.runOnce(first.publicationId);
+      const secondResult = await publisher.runOnce(first.publicationId);
+      expect(firstResult).toMatchObject({ status: 'retry' });
+      expect(secondResult).toMatchObject({ status: 'retry' });
+
+      const methods = api.fetchImplementation.mock.calls.map(([, init]) => init?.method ?? 'GET');
+      expect(methods.filter((method) => method === 'POST')).toHaveLength(1);
+      expect(methods.filter((method) => method === 'GET')).toHaveLength(2);
+      expect(methods.filter((method) => method === 'PATCH')).toHaveLength(0);
+      expect(clientFor).toHaveBeenCalledTimes(2);
+      expect(f.retryPublication).toHaveBeenCalledOnce();
+      expect(f.callbackResults.at(-1)).toEqual({ kind: 'reconcile-pending', retryDelayMs: 5_000 });
+      expect(JSON.stringify([firstResult, secondResult])).not.toContain(TOKEN);
+    },
+  );
 
   it('stops before client preparation or GitHub calls when the candidate has changed', async () => {
     const publication = claim();
