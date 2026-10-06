@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 import * as benchmark from '../../scripts/competitive-review-benchmark.mjs';
 import { resolveComposedEngineMaxTurns } from '../../src/panel/composedEngine';
@@ -33,6 +34,34 @@ function referenceRows() {
     }
   }
   return rows;
+}
+
+function createPinnedGitFixture() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-pinned-git-source-'));
+  const git = (args: string[]) => execFileSync('git', args, { cwd: directory, encoding: 'utf8' });
+  git(['init', '--quiet', directory]);
+  git(['remote', 'add', 'origin', 'https://github.com/example/repo.git']);
+  git(['config', 'user.name', 'Benchmark Fixture']);
+  git(['config', 'user.email', 'benchmark-fixture@example.invalid']);
+  fs.mkdirSync(path.join(directory, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(directory, 'src/changed.ts'), 'export const value = 1;\n');
+  fs.writeFileSync(path.join(directory, 'src/deleted.ts'), 'export const removed = true;\n');
+  git(['add', '--all']);
+  git(['commit', '--quiet', '-m', 'base']);
+  const baseSha = git(['rev-parse', 'HEAD']).trim();
+
+  fs.writeFileSync(path.join(directory, 'src/changed.ts'), 'export const value = 2;\n');
+  fs.writeFileSync(path.join(directory, 'src/added.ts'), 'export const added = true;\n');
+  fs.rmSync(path.join(directory, 'src/deleted.ts'));
+  git(['add', '--all']);
+  git(['commit', '--quiet', '-m', 'head']);
+  const headSha = git(['rev-parse', 'HEAD']).trim();
+  const changedPaths = git(['diff', '--name-only', '-z', baseSha, headSha]).split('\0').filter(Boolean);
+  const changedFiles = changedPaths.map((filePath) => {
+    const patch = git(['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--unified=5', baseSha, headSha, '--', filePath]);
+    return { path: filePath, patch, originalPatchLength: Buffer.byteLength(patch, 'utf8') };
+  });
+  return { directory, git, snapshot: { repository: 'example/repo', baseSha, headSha, changedFiles } };
 }
 
 describe('competitive review benchmark input boundaries', () => {
@@ -277,6 +306,108 @@ describe('competitive review benchmark input boundaries', () => {
       expect(prepared.sha256).toMatch(/^[a-f0-9]{64}$/u);
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a missing pinned Git cache instead of treating failed source reads as complete', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-missing-source-cache-'));
+    try {
+      const repository = 'example/repo';
+      const baseSha = 'a'.repeat(40);
+      const headSha = 'b'.repeat(40);
+      const patch = 'diff --git a/src/app.js b/src/app.js\n@@ -1 +1 @@\n-old\n+new\n';
+      const changedFiles = [{ path: 'src/app.js', patch, originalPatchLength: patch.length }];
+      let workerCalls = 0;
+      const runtime = {
+        publishing: {
+          openaiTransport: () => ({ baseUrl: 'https://gateway.example/v1', apiKey: 'test-only', model: 'pr-reviewer' }),
+          resolveWorkerConfig: () => ({ review_engine: 'composed', reviewer_effort: 'medium' }),
+          resolveReviewEngine: () => 'composed',
+          runPublishingReviewWorker: async (_env: unknown, deps: any) => {
+            workerCalls += 1;
+            const provider = deps.repoFileProviderFactory();
+            await provider.readFileAt('src/app.js', 'head');
+            return { version: 'WorkerReviewResult.v1', verdict: 'BLOCK', conclusion: 'failure',
+              coverage: { mode: 'panel', expectedLaneCount: 1, completedLaneCount: 1, failedLaneCount: 0,
+                rosterValid: true, quorumSatisfied: false, fullPanelComplete: false },
+              findingCount: 0, blockingFindingCount: 0,
+              metrics: { totalPromptTokens: 0, totalCompletionTokens: 0, totalTokens: 0, totalTurns: 0,
+                totalDurationMs: 0 } };
+          },
+        },
+        OpenRouterClient: class { async complete() { throw new Error('unexpected_network_call'); } },
+        createPathMatcher: () => () => true,
+        executeComposedReview: async () => ({ personas: [] }),
+      };
+
+      const result = await benchmark.runActualDiscoveryCase({ repository, prNumber: 7, baseSha, headSha }, {
+        repository, baseSha, headSha, changedFiles, omissions: [], sourceAdapter: 'pinned_git_objects',
+        sourceRepoDir: path.join(directory, 'missing-cache'),
+      }, runtime as any, {
+        purpose: 'smoke', transportEnv: {
+          NODE_ENV: 'test',
+          REVIEW_YETI_GATEWAY_BASE_URL: 'https://gateway.example/v1',
+          REVIEW_YETI_BIFROST_API_KEY: 'test-only', REVIEW_MODEL: 'pr-reviewer',
+        },
+      });
+
+      expect(result.source?.sourceReadOmissions).toContain('pinned_source_cache_unavailable');
+      expect(result.status).toBe('incomplete');
+      expect(result.sourceCachePreflight).toMatchObject({ status: 'failed', reason: 'pinned_source_cache_unavailable' });
+      expect(workerCalls).toBe(0);
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('preflights exact base/head Git pins and patches while allowing genuine add/delete sides', () => {
+    const fixture = createPinnedGitFixture();
+    try {
+      expect(benchmark.preflightPinnedGitSnapshot(fixture.snapshot, fixture.directory)).toMatchObject({
+        status: 'verified', baseSha: fixture.snapshot.baseSha, headSha: fixture.snapshot.headSha,
+        changedFileCount: 3, addedFileCount: 1, deletedFileCount: 1,
+      });
+      expect(benchmark.preflightDiscoveryCaseSource({ ...fixture.snapshot, sourceAdapter: 'pinned_git_objects' },
+        fixture.directory)).toMatchObject({ status: 'verified', sourceAdapter: 'pinned_git_objects', immutableSourceRechecked: true });
+      expect(benchmark.preflightDiscoveryCaseSource({ ...fixture.snapshot, sourceAdapter: 'github_exact_commit_trees_and_raw_blobs',
+        sourceTreeIndex: { base: {}, head: {} } },
+        fixture.directory)).toMatchObject({ status: 'prepared_input_only', immutableSourceRechecked: false });
+      expect(benchmark.preflightDiscoveryCaseSource({ ...fixture.snapshot, sourceAdapter: 'unknown' },
+        fixture.directory)).toMatchObject({ status: 'failed', reason: 'source_adapter_unavailable' });
+      expect(() => benchmark.preflightPinnedGitSnapshot(fixture.snapshot,
+        path.join(fixture.directory, 'missing-cache'))).toThrow('pinned_source_cache_unavailable');
+      expect(() => benchmark.preflightPinnedGitSnapshot({ ...fixture.snapshot, headSha: 'f'.repeat(40) },
+        fixture.directory)).toThrow('pinned_source_reference_unavailable');
+      const changedFiles = fixture.snapshot.changedFiles.map((file: any) => file.path === 'src/changed.ts'
+        ? { ...file, patch: `${file.patch}tampered` } : file);
+      expect(() => benchmark.preflightPinnedGitSnapshot({ ...fixture.snapshot, changedFiles },
+        fixture.directory)).toThrow('pinned_source_diff_mismatch');
+    } finally {
+      fs.rmSync(fixture.directory, { recursive: true, force: true });
+    }
+  });
+
+  it('records missing pinned blobs without treating valid add/delete absence as read failure', async () => {
+    const fixture = createPinnedGitFixture();
+    try {
+      const provider = benchmark.createGitSnapshotFileProvider(fixture.directory, fixture.snapshot, () => () => true);
+      const addedBase = await provider.readFileAt('src/added.ts', 'base');
+      const addedHead = await provider.readFileAt('src/added.ts', 'head');
+      const deletedBase = await provider.readFileAt('src/deleted.ts', 'base');
+      const deletedHead = await provider.readFileAt('src/deleted.ts', 'head');
+      expect([addedBase.content, addedHead.content, deletedBase.content, deletedHead.content])
+        .toEqual([null, 'export const added = true;\n', 'export const removed = true;\n', null]);
+      expect(provider.sourceReadOmissions()).toEqual([]);
+
+      const headBlob = fixture.git(['rev-parse', `${fixture.snapshot.headSha}:src/changed.ts`]).trim();
+      const blobPath = path.join(fixture.directory, '.git', 'objects', headBlob.slice(0, 2), headBlob.slice(2));
+      expect(fs.existsSync(blobPath)).toBe(true);
+      fs.rmSync(blobPath);
+      const brokenProvider = benchmark.createGitSnapshotFileProvider(fixture.directory, fixture.snapshot, () => () => true);
+      await brokenProvider.readFileAt('src/changed.ts', 'head');
+      expect(brokenProvider.sourceReadOmissions()).toEqual(['pinned_source_blob_unavailable']);
+    } finally {
+      fs.rmSync(fixture.directory, { recursive: true, force: true });
     }
   });
 

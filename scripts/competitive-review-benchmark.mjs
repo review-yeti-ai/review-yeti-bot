@@ -1070,6 +1070,124 @@ function pathInTree(repoDir, sha, filePath) {
   }
 }
 
+/** Prove a prepared Git-backed case still resolves to its exact public repository and pins. */
+export function preflightPinnedGitSnapshot(prCase, repoDir) {
+  if (!repoDir || !fs.existsSync(path.join(repoDir, '.git'))) {
+    throw new Error('pinned_source_cache_unavailable');
+  }
+  const baseSha = String(prCase?.baseSha || '').toLowerCase();
+  const headSha = String(prCase?.headSha || '').toLowerCase();
+  if (!HASH_RE.test(baseSha) || !HASH_RE.test(headSha)) throw new Error('pinned_source_reference_unavailable');
+  for (const sha of [baseSha, headSha]) {
+    try {
+      if (runGit(['rev-parse', '--verify', `${sha}^{commit}`], repoDir).trim().toLowerCase() !== sha) {
+        throw new Error('pinned_source_reference_unavailable');
+      }
+    } catch {
+      throw new Error('pinned_source_reference_unavailable');
+    }
+  }
+  let origin;
+  try { origin = runGit(['remote', 'get-url', 'origin'], repoDir).trim(); }
+  catch { throw new Error('pinned_source_repository_mismatch'); }
+  let originRepository = '';
+  try {
+    const parsed = new URL(origin);
+    if (parsed.hostname.toLowerCase() === 'github.com') originRepository = parsed.pathname.replace(/^\//u, '').replace(/\.git$/iu, '');
+  } catch {
+    const ssh = origin.match(/^git@github\.com:(.+?)(?:\.git)?$/iu);
+    if (ssh) originRepository = ssh[1];
+  }
+  if (originRepository.toLowerCase() !== String(prCase?.repository || '').toLowerCase()) {
+    throw new Error('pinned_source_repository_mismatch');
+  }
+
+  const changedFiles = Array.isArray(prCase?.changedFiles) ? prCase.changedFiles : [];
+  const safePath = (value) => typeof value === 'string' && value.length > 0
+    && !value.startsWith('/') && !value.split('/').some((part) => part === '..' || part === '.');
+  if (changedFiles.some((file) => !safePath(file?.path) || typeof file?.patch !== 'string')) {
+    throw new Error('pinned_source_changed_paths_mismatch');
+  }
+  let changedPaths;
+  let basePaths;
+  let headPaths;
+  try {
+    changedPaths = runGit(['diff', '--name-only', '-z', baseSha, headSha], repoDir).split('\0').filter(Boolean);
+    basePaths = new Set(runGit(['ls-tree', '-r', '--name-only', '-z', baseSha], repoDir).split('\0').filter(Boolean));
+    headPaths = new Set(runGit(['ls-tree', '-r', '--name-only', '-z', headSha], repoDir).split('\0').filter(Boolean));
+  } catch {
+    throw new Error('pinned_source_tree_unavailable');
+  }
+  const suppliedPaths = changedFiles.map((file) => file.path);
+  if (new Set(suppliedPaths).size !== suppliedPaths.length || changedPaths.length !== suppliedPaths.length
+    || changedPaths.some((filePath) => !suppliedPaths.includes(filePath))) {
+    throw new Error('pinned_source_changed_paths_mismatch');
+  }
+  let addedFileCount = 0;
+  let deletedFileCount = 0;
+  const patchRows = [];
+  for (const file of changedFiles) {
+    let exactPatch;
+    try {
+      exactPatch = runGit(['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--unified=5',
+        baseSha, headSha, '--', file.path], repoDir);
+    } catch {
+      throw new Error('pinned_source_diff_unavailable');
+    }
+    if (exactPatch !== file.patch) throw new Error('pinned_source_diff_mismatch');
+    const basePresent = basePaths.has(file.path);
+    const headPresent = headPaths.has(file.path);
+    if (!basePresent && !headPresent) throw new Error('pinned_source_changed_paths_mismatch');
+    if (!basePresent && headPresent) addedFileCount += 1;
+    if (basePresent && !headPresent) deletedFileCount += 1;
+    if (file.content !== undefined) {
+      if (!headPresent) throw new Error('pinned_source_blob_mismatch');
+      let exactContent;
+      try { exactContent = runGit(['show', `${headSha}:${file.path}`], repoDir); }
+      catch { throw new Error('pinned_source_blob_unavailable'); }
+      if (exactContent !== file.content) throw new Error('pinned_source_blob_mismatch');
+    }
+    patchRows.push([file.path, sha256(file.patch)]);
+  }
+  patchRows.sort(([left], [right]) => left.localeCompare(right));
+  return { status: 'verified', baseSha, headSha, changedFileCount: changedFiles.length,
+    addedFileCount, deletedFileCount, patchSetSha256: sha256(JSON.stringify(patchRows)) };
+}
+
+/** Validate the local source adapter before entering the model-backed runtime. */
+export function preflightDiscoveryCaseSource(snapshot, repoDir, prCase = snapshot) {
+  const sourceAdapter = snapshot?.sourceAdapter;
+  if (sourceAdapter === 'pinned_git_objects') {
+    try {
+      return { sourceAdapter, ...preflightPinnedGitSnapshot({
+        ...prCase,
+        repository: snapshot.repository,
+        baseSha: snapshot.baseSha,
+        headSha: snapshot.headSha,
+        changedFiles: snapshot.changedFiles,
+      }, repoDir), immutableSourceRechecked: true };
+    } catch (error) {
+      const rawReason = String(error?.message || 'source_preflight_failed');
+      const reason = /^[a-z0-9_]+$/u.test(rawReason) ? rawReason : 'source_preflight_failed';
+      return { status: 'failed', sourceAdapter, reason, immutableSourceRechecked: true };
+    }
+  }
+  if (sourceAdapter === 'github_exact_commit_trees_and_raw_blobs') {
+    const identityMatches = snapshot.repository === prCase?.repository
+      && snapshot.baseSha === prCase?.baseSha && snapshot.headSha === prCase?.headSha;
+    const treesAvailable = snapshot.sourceTreeIndex?.base && snapshot.sourceTreeIndex?.head
+      && typeof snapshot.sourceTreeIndex.base === 'object' && typeof snapshot.sourceTreeIndex.head === 'object';
+    if (!identityMatches || !treesAvailable || !Array.isArray(snapshot.changedFiles)) {
+      return { status: 'failed', sourceAdapter, reason: 'prepared_api_snapshot_incomplete', immutableSourceRechecked: false };
+    }
+    // API-backed bytes are trusted only as part of the digest-bound, preparer-produced local
+    // artifact. This run-stage check does not independently refetch or attest that snapshot.
+    return { status: 'prepared_input_only', sourceAdapter, immutableSourceRechecked: false };
+  }
+  return { status: 'failed', sourceAdapter: sourceAdapter || 'unknown', reason: 'source_adapter_unavailable',
+    immutableSourceRechecked: false };
+}
+
 /**
  * Fetch exact public base/head Git objects and read their patch without checking out or executing
  * source files. Source paths and untrusted text are returned as data only.
@@ -1401,24 +1519,42 @@ function publicRepoCacheDirectory(repository, cacheRoot) {
   return path.resolve(cacheRoot, repository.replace(/[^A-Za-z0-9._-]+/gu, '__'));
 }
 
-function createGitSnapshotFileProvider(repoDir, prCase, createPathMatcher) {
+export function createGitSnapshotFileProvider(repoDir, prCase, createPathMatcher) {
   const pathsBySha = new Map();
   const contents = new Map();
+  const resourceOmissions = new Set();
   const safePath = (value) => typeof value === 'string' && value.length > 0
     && !value.startsWith('/') && !value.split('/').some((part) => part === '..' || part === '.');
   const pathsAt = (sha) => {
     if (!pathsBySha.has(sha)) {
-      const paths = runGit(['ls-tree', '-r', '--name-only', '-z', sha], repoDir).split('\0').filter(Boolean);
-      pathsBySha.set(sha, paths.filter(safePath));
+      try {
+        const paths = runGit(['ls-tree', '-r', '--name-only', '-z', sha], repoDir).split('\0').filter(Boolean);
+        pathsBySha.set(sha, paths.filter(safePath));
+      } catch {
+        resourceOmissions.add('pinned_source_tree_unavailable');
+        pathsBySha.set(sha, null);
+      }
     }
     return pathsBySha.get(sha);
   };
   const read = (sha, filePath) => {
-    if (!safePath(filePath)) return null;
+    if (!safePath(filePath)) {
+      resourceOmissions.add('pinned_source_path_unavailable');
+      return null;
+    }
     const key = `${sha}:${filePath}`;
-    if (!contents.has(key)) {
-      try { contents.set(key, runGit(['show', key], repoDir)); }
-      catch { contents.set(key, null); }
+    if (contents.has(key)) return contents.get(key);
+    const paths = pathsAt(sha);
+    // A path absent from an exact commit is an expected base/head absence for added/deleted
+    // files. It is not a failed read; the verifier decides whether that side is sufficient.
+    if (!paths || !paths.includes(filePath)) {
+      contents.set(key, null);
+      return null;
+    }
+    try { contents.set(key, runGit(['show', key], repoDir)); }
+    catch {
+      resourceOmissions.add('pinned_source_blob_unavailable');
+      contents.set(key, null);
     }
     return contents.get(key);
   };
@@ -1434,11 +1570,12 @@ function createGitSnapshotFileProvider(repoDir, prCase, createPathMatcher) {
     },
     async findFiles(query) {
       const matches = createPathMatcher(query);
-      return pathsAt(prCase.headSha).filter((filePath) => matches(filePath));
+      const paths = pathsAt(prCase.headSha);
+      return paths ? paths.filter((filePath) => matches(filePath)) : [];
     },
     async readFile(filePath) { return read(prCase.headSha, filePath); },
     async treeTruncated() { return false; },
-    sourceReadOmissions() { return []; },
+    sourceReadOmissions() { return [...resourceOmissions].sort(); },
   };
 }
 
@@ -1574,10 +1711,21 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
   historySource = null,
   fileProviderFactory = null,
 } = {}) {
+  const sourceCachePreflight = preflightDiscoveryCaseSource(snapshot, snapshot.sourceRepoDir, prCase);
+  if (sourceCachePreflight.status === 'failed') {
+    return {
+      status: 'incomplete',
+      reason: sourceCachePreflight.reason,
+      sourceCachePreflight,
+      source: { sourceReadOmissions: [sourceCachePreflight.reason] },
+      findings: [],
+    };
+  }
   const sourceOmissions = snapshot.omissions || [];
   const requiredSourceOmissions = sourceOmissions.filter((entry) => entry !== 'binary_patch');
   if (requiredSourceOmissions.length || !Array.isArray(snapshot.changedFiles) || snapshot.changedFiles.length === 0) {
-    return { status: 'incomplete', reason: requiredSourceOmissions[0] || sourceOmissions[0] || 'empty_diff', findings: [] };
+    return { status: 'incomplete', reason: requiredSourceOmissions[0] || sourceOmissions[0] || 'empty_diff',
+      sourceCachePreflight, findings: [] };
   }
   const reviewPolicy = purpose === 'qualification' || purpose === 'baseline'
     ? buildDiscoveryPolicy(sourcePolicy, { purpose, effortProfile })
@@ -1751,6 +1899,7 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
   } : null;
   return {
     status: caseStatus,
+    sourceCachePreflight,
     runtimeEntryPoint: 'runPublishingReviewWorker',
     runtimeLane: 'production_selected_composed_discovery',
     executionPurpose: purpose === 'qualification' ? 'full_production_envelope_quality_input'
@@ -1820,6 +1969,7 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
       changedPatchChars: diff.length,
       sourceOmissions,
       sourceReadOmissions,
+      sourceCachePreflight,
       adapters: {
         sourceLoader: snapshot.sourceAdapter || 'pinned_git_objects',
         repoFileProvider: fileProviderFactory ? 'explicit_read_only_fixture' : snapshot.sourceAdapter || 'pinned_git_objects',
