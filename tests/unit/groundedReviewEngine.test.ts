@@ -122,6 +122,7 @@ describe('grounded review engine', () => {
     expect(oneP1SourceFails.outcomes.filter((row) => row.severity === 'P1' && row.status === 'insufficient')).toHaveLength(1);
     expect(oneP1SourceFails.outcomes.filter((row) => row.severity === 'P2' && row.status === 'confirmed')).toHaveLength(11);
     expect(oneP1SourceFails.unverifiedBlockerCount).toBe(1);
+    expect(oneP1SourceFails.coverageComplete).toBe(false);
   });
 
   it('removes a contradicted P2, retains a supported cross-file P1, and leaves uncertain blockers incomplete', () => {
