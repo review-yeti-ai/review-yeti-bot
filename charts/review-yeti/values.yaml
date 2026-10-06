@@ -343,6 +343,14 @@ publishing:
   # (REVIEW_YETI_INCREMENTAL_MAX_AGE_HOURS on the dispatch service, default 72).
   # Revert path: set back to "" (a line break in the value refuses app-gate Jobs).
   incremental: ""
+  # Delta-scoped incremental re-review (worker flag REVIEW_YETI_INCREMENTAL_DELTA). Empty by
+  # default. Has no effect unless `incremental` is also on for the repository. When on, a
+  # re-review carries only files untouched since the prior review and narrows touched files to
+  # their new hunks; open-finding files are still reviewed whole. Same off/on/all/allowlist
+  # grammar as `incremental`. The carry-chain cap is service config
+  # (REVIEW_YETI_INCREMENTAL_MAX_CHAIN on the dispatch service, default 4).
+  # Revert path: set back to "" (a line break in the value refuses app-gate Jobs).
+  incrementalDelta: ""
   # REL-1082: risk-ordered review budget per lane (worker flag REVIEW_YETI_BUDGET). Empty by
   # default, so nothing is forwarded and every lane gets today's content. The operator forwards
   # a non-empty value verbatim to app-gate workers only; the worker reads it as off/on/all or a

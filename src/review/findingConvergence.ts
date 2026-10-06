@@ -19,11 +19,16 @@
  *    satisfies a P0 or P1.
  * 4. A P2 outside the diff of the new head does not block. "In the diff" means anchored to a line
  *    the pull request adds or changes at that head (or to a changed gitlink path).
+ * 5. ADR 0771: for a file the incremental re-review showed only as the change since the previous head
+ *    (`deltaScope`, re-derived by the service), "in the diff" narrows to the lines that change touched
+ *    plus their context, because the rest of the file was reviewed in full at that head. This only
+ *    ever applies to a P2; a P0/P1 is never narrowed.
  */
 import { createHash } from 'node:crypto';
 import { claimTokens, claimType, compareClaims } from './claimSimilarity';
 import { changedLineNumbers } from './reviewCore';
 import { REVIEW_SEVERITY_POLICY_V2 } from './reviewDecision';
+import { deltaReviewedLines } from './incrementalDelta';
 
 export const FINDING_FINGERPRINT_PREFIX = 'fp1_';
 export const FINDING_MARKER_PREFIX = '<!-- review-yeti:finding';
@@ -225,9 +230,30 @@ function changedLineIndex(changedFiles: readonly ConvergenceChangedFile[]): Map<
   return index;
 }
 
-function insideDiff(finding: ConvergenceFinding, index: Map<string, Set<number> | null>): boolean {
+export interface ConvergenceDeltaScope {
+  path: string;
+  /** The service's own previous-head...head patch for this path. */
+  patch: string;
+}
+
+function deltaLineIndex(scope: readonly ConvergenceDeltaScope[]): Map<string, Set<number>> {
+  const index = new Map<string, Set<number>>();
+  for (const file of scope) {
+    const path = normalizedPath(file?.path);
+    if (path) index.set(path, deltaReviewedLines(file.patch));
+  }
+  return index;
+}
+
+function insideDiff(finding: ConvergenceFinding, index: Map<string, Set<number> | null>,
+  delta: Map<string, Set<number>> = new Map()): boolean {
   const path = normalizedPath(finding?.path);
   if (!index.has(path)) return false;
+  const narrowed = delta.get(path);
+  if (narrowed) {
+    const at = Number(finding?.line);
+    return Number.isInteger(at) && narrowed.has(at);
+  }
   const lines = index.get(path);
   // A changed path without line hunks (gitlink, binary, mode-only) is in the diff as a path.
   if (lines === null || lines === undefined) return true;
@@ -263,9 +289,12 @@ export function evaluateFindingConvergence<F extends ConvergenceFinding>(input: 
   changedFiles: readonly ConvergenceChangedFile[];
   priorThreads?: readonly PriorFindingThread[];
   policyVersion?: typeof REVIEW_SEVERITY_POLICY_V2;
+  /** ADR 0771: delta-scoped files of a verified incremental re-review. Absent means whole diff. */
+  deltaScope?: readonly ConvergenceDeltaScope[];
 }): ConvergenceResult<F> {
   const threads = Array.isArray(input.priorThreads) ? input.priorThreads : [];
   const index = changedLineIndex(Array.isArray(input.changedFiles) ? input.changedFiles : []);
+  const delta = deltaLineIndex(Array.isArray(input.deltaScope) ? input.deltaScope : []);
   const used = new Set<PriorFindingThread>();
   const entries: ConvergenceEntry<F>[] = [];
   for (const finding of Array.isArray(input.findings) ? input.findings : []) {
@@ -284,7 +313,7 @@ export function evaluateFindingConvergence<F extends ConvergenceFinding>(input: 
         && statedResolutionReason(matchedThread.resolution.reason) !== null) {
         status = 'satisfied';
         resolution = matchedThread.resolution;
-      } else if (!insideDiff(finding, index)) {
+      } else if (!insideDiff(finding, index, delta)) {
         status = 'outside-diff';
       }
     }
