@@ -125,6 +125,10 @@ function selectEntries(response: any, identity: ReturnType<typeof validatePayloa
     }
     numbers.add(number); positions.add(entry.position);
   }
+  const orderedPositions = [...positions].sort((left, right) => left - right);
+  if (orderedPositions.some((position, index) => position !== index + 1)) {
+    throw new Error('Merge queue positions are not contiguous');
+  }
   const current = queue.entries.nodes.find((entry: any) => entry.pullRequest.number === identity.currentNumber);
   if (!current || current.headCommit?.oid !== identity.merge_group.head_sha
     || current.baseCommit?.oid !== identity.merge_group.base_sha) throw new Error('Merge queue no longer matches the webhook');

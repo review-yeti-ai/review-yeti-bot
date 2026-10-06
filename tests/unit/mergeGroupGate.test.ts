@@ -488,6 +488,16 @@ describe('native merge-group Review Yeti gate', () => {
     ['paginated queue evidence', () => {
       const value: any = queue(); value.data.repository.mergeQueue.entries.pageInfo.hasNextPage = true; return value;
     }, undefined, 'Merge queue evidence is incomplete', undefined],
+    ['single-entry position gap', () => {
+      const value: any = queue(); value.data.repository.mergeQueue.entries.nodes[0].position = 2; return value;
+    }, undefined, 'Merge queue positions are not contiguous', undefined],
+    ['multiple-entry position gap', () => {
+      const value: any = queue(PR_HEAD, [{
+        position: 3, state: 'AWAITING_CHECKS', baseCommit: { oid: BASE }, headCommit: { oid: 'e'.repeat(40) },
+        pullRequest: { number: 43, state: 'OPEN', baseRefName: 'main', headRefOid: 'd'.repeat(40),
+          repository: { nameWithOwner: 'exampleorg/dashboard' } },
+      }]); return value;
+    }, undefined, 'Merge queue positions are not contiguous', undefined],
     ['incomplete check-run evidence', () => queue(), { total_count: 2, check_runs: [{
       id: 8015, name: 'Review Yeti', head_sha: PR_HEAD, status: 'completed', conclusion: 'success', app: officialApp,
     }] }, undefined, { checkId: 9015, conclusion: 'failure',
@@ -499,11 +509,11 @@ describe('native merge-group Review Yeti gate', () => {
       const url = String(input);
       if (url === 'https://api.github.com/graphql') return response(queueResponse());
       if (url.includes(`/commits/${GROUP_HEAD}/check-runs`)) return response({ total_count: 0, check_runs: [] });
-      if (url.endsWith('/check-runs') && init?.method === 'POST') return groupCheckResponse(9015, init);
+      if (url.endsWith('/check-runs') && init?.method === 'POST') return groupCheckResponse(9015, init, false, queueResponse());
       if (url.includes(`/commits/${PR_HEAD}/check-runs`)) return response(checkResponse || { total_count: 1, check_runs: [{
         id: 8015, name: 'Review Yeti', head_sha: PR_HEAD, status: 'completed', conclusion: 'success', app: officialApp,
       }] });
-      if (url.endsWith('/check-runs/9015') && init?.method === 'PATCH') return groupCheckResponse(9015, init);
+      if (url.endsWith('/check-runs/9015') && init?.method === 'PATCH') return groupCheckResponse(9015, init, false, queueResponse());
       return response({}, 500);
     }) as typeof fetch;
     const gate = createMergeGroupGate({
