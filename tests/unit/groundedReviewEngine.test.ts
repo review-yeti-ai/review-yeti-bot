@@ -6,17 +6,91 @@ import {
 } from '../../src/review/groundedReviewEngine';
 import { findingFingerprint } from '../../src/review/findingConvergence';
 import { REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
+import { parseChangedFiles } from '../../src/review/changedFiles';
 import type { ReviewModelClient } from '../../src/gateway/openRouterClient';
 import type { RepoFileProvider } from '../../src/panel/panelEngine';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
+const repository = 'example-org/sample-project';
 
 function patch(path: string, oldLine: string, newLine: string): string {
   return `@@ -1 +1 @@\n-${oldLine}\n+${newLine}`;
 }
 
 describe('grounded review engine', () => {
+  it.each([
+    {
+      kind: 'added', path: 'src/new.ts', line: 1, absentSide: 'base' as const,
+      diff: 'diff --git a/src/new.ts b/src/new.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/new.ts\n@@ -0,0 +1 @@\n+export const value = unsafe();\n',
+      current: 'export const value = unsafe();', previous: null,
+    },
+    {
+      kind: 'deleted', path: 'src/old.ts', line: 1, absentSide: 'head' as const,
+      diff: 'diff --git a/src/old.ts b/src/old.ts\ndeleted file mode 100644\n--- a/src/old.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-export const value = unsafe();\n',
+      current: null, previous: 'export const value = unsafe();',
+    },
+  ])('grounds a $kind file through an authenticated absent source side', async ({ path, line, absentSide, diff, current, previous }) => {
+    const file = parseChangedFiles(diff, { repository, headSha: head, baseSha: base }).files[0];
+    const absentCommit = absentSide === 'head' ? head : base;
+    const complete = vi.fn(async (request: any) => {
+      const userMessage = request.messages[1].content;
+      expect(userMessage).toContain('"absent"');
+      expect(userMessage).toContain(`"side":"${absentSide}"`);
+      return { model: 'test-verifier', content: JSON.stringify({ status: 'confirmed',
+        violatedInvariant: 'The exported value must not invoke an unsafe operation.',
+        failurePath: 'A caller reaches the unsafe operation through the exported value.',
+        benignCheck: 'The changed source has no validation before the call.',
+        changeConnection: `The ${absentSide === 'base' ? 'added' : 'deleted'} file supplies the causal behavior.`,
+        citations: ['head:' + path, 'base:' + path, 'diff:' + path] }), usage: null, costUSD: null };
+    });
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (requestedPath, side) => {
+        const absent = (side === 'head' && current === null) || (side === 'base' && previous === null);
+        return {
+          content: side === 'head' ? current : previous,
+          sha: side === 'head' ? head : base,
+          presence: absent ? 'absent' : 'present',
+          source: { repository, path: requestedPath, side },
+        } as Awaited<ReturnType<NonNullable<RepoFileProvider['readFileAt']>>>;
+      },
+      readDiff: () => ({ patch: file.patch!,
+        identity: { repository, headSha: head, baseSha: base } }),
+    };
+    const result = await runIndependentGroundedVerification({
+      findings: [{ severity: 'P1', path, line, title: 'Unsafe exported behavior' }],
+      changedFiles: [file], provider, repository, headSha: head, baseSha: base,
+      model: 'test-model', client: { complete } as unknown as ReviewModelClient,
+    });
+    expect(result.outcomes[0].status, JSON.stringify(result.outcomes[0])).toBe('confirmed');
+    expect(complete).toHaveBeenCalledOnce();
+    expect(result.outcomes[0].evidence?.citations).toContainEqual(expect.objectContaining({
+      id: `${absentSide}:${path}`, side: absentSide, sha: absentCommit, presence: 'absent',
+    }));
+  });
+
+  it.each(['absent', 'unavailable'] as const)(
+    'keeps an expected-present candidate source reported as %s incomplete without calling the verifier', async (presence) => {
+    const path = 'src/unavailable.ts';
+    const diff = `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-oldValue();\n+newValue();\n`;
+    const file = parseChangedFiles(diff, { repository, headSha: head, baseSha: base }).files[0];
+    const complete = vi.fn();
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (_requestedPath, side) => ({ content: null, sha: side === 'head' ? head : base,
+        presence, source: { repository, path, side } }) as Awaited<ReturnType<NonNullable<RepoFileProvider['readFileAt']>>>,
+      readDiff: () => ({ patch: file.patch!, identity: { repository, headSha: head, baseSha: base } }),
+    };
+    const result = await runIndependentGroundedVerification({ findings: [{ severity: 'P1', path, line: 1,
+      title: 'Changed behavior is unsafe' }], changedFiles: [file], provider, repository,
+      headSha: head, baseSha: base, model: 'test-model', client: { complete } as unknown as ReviewModelClient });
+    expect(result.outcomes[0].status).toBe('insufficient');
+    expect(result.coverageComplete).toBe(false);
+    expect(result.unverifiedBlockerCount).toBe(1);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
   it('assigns every changed region deterministically without truncating the 24-partition ceiling', () => {
     const files = Array.from({ length: 31 }, (_, index) => ({ path: `src/file-${index}.ts`,
       patch: `@@ -1 +1 @@\n-old-${index}\n+new-${index}\n@@ -10 +10 @@\n-old-again-${index}\n+new-again-${index}` }));
