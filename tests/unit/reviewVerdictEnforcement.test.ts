@@ -80,7 +80,13 @@ describe('review verdict enforcement (REL-580, REL-585)', () => {
 
   it('still runs when the review step failed, so a crashed review cannot skip the gate', () => {
     expect(enforce!.if).toContain('always()');
-    expect(enforce!.if).toContain("needs.start-self-review.outputs.mode != 'operator-waiver'");
+    expect(enforce!.if).toContain("needs.start-self-review.outputs.mode == 'review'");
+    expect(enforce!.if).toContain("needs.start-self-review.outputs.mode == 'dispatch-review'");
+    expect(enforce!.if).toContain("vars.REVIEW_YETI_PASSTHROUGH != 'true'");
+    expect(enforce!.if).not.toContain("needs.start-self-review.outputs.mode != 'operator-waiver'");
+    // The parent job admits only when the start step succeeds and binds a check ID.
+    const reviewJob = yaml.load(raw) as { jobs: Record<string, { if?: string }> };
+    expect(reviewJob.jobs.review.if).toContain("needs.start-self-review.result == 'success'");
   });
 
   describe('behavioral matrix (extracted script execution)', () => {
