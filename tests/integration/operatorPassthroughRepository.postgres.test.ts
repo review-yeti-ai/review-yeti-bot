@@ -1,11 +1,13 @@
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Pool } from 'pg';
+import { GitHubReviewGateClient } from '../../src/github/reviewGateClient';
 import {
   PostgresOperatorPassthroughRepository,
 } from '../../src/persistence/operatorPassthroughRepository';
 import { OPERATOR_PASSTHROUGH_SCHEMA_SQL } from '../../src/persistence/operatorPassthroughSchema';
 import { reviewDispatchPrLockKey } from '../../src/persistence/reviewCiPersistence';
+import { OperatorPassthroughPublisher } from '../../src/review/operatorPassthroughPublisher';
 import type {
   OperatorPassthroughCandidate,
   OperatorPassthroughPublicationClaim,
@@ -322,6 +324,113 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
       { stage: 'review', mayCreate: true, externalId: firstClaim!.reviewExternalId },
       { stage: 'review', mayCreate: false, externalId: firstClaim!.reviewExternalId },
     ]);
+  });
+
+  it('releases a failed preflight read for one safe create retry and binds its terminal check once', async () => {
+    const candidateInput = inputFor();
+    const recorded = await repository.record(candidateInput, NOW);
+    let now = NOW;
+    let failPreflightRead = true;
+    let currentCheck: Record<string, unknown> | undefined;
+    const id = 7_901;
+    const fetchImplementation = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? 'GET';
+
+      if (method === 'GET' && url.pathname.endsWith(`/commits/${candidateInput.candidate.headSha}/check-runs`)) {
+        if (failPreflightRead) {
+          failPreflightRead = false;
+          throw new Error('preflight read failed');
+        }
+        const checks = currentCheck ? [currentCheck] : [];
+        return new Response(JSON.stringify({ total_count: checks.length, check_runs: checks }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      if (method === 'POST' && url.pathname.endsWith('/check-runs')) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        currentCheck = {
+          id,
+          name: body.name,
+          app: { id: EXPECTED_APP_ID },
+          head_sha: body.head_sha,
+          external_id: body.external_id,
+          status: body.status,
+          conclusion: null,
+        };
+        return new Response(JSON.stringify(currentCheck), {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      if (url.pathname.endsWith(`/check-runs/${id}`) && method === 'GET' && currentCheck) {
+        return new Response(JSON.stringify(currentCheck), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      if (url.pathname.endsWith(`/check-runs/${id}`) && method === 'PATCH' && currentCheck) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        currentCheck = { ...currentCheck, status: body.status, conclusion: body.conclusion };
+        return new Response(JSON.stringify(currentCheck), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      throw new Error(`unexpected GitHub request ${method} ${url.pathname}`);
+    });
+    const client = new GitHubReviewGateClient({
+      token: 'github-test-token',
+      expectedAppId: EXPECTED_APP_ID,
+      checkName: 'Review Yeti',
+      baseUrl: 'https://github.test/api/v3',
+      fetchImplementation,
+      timeoutMs: 1_000,
+      reconcileTimeoutMs: 1_000,
+    });
+    const publisher = new OperatorPassthroughPublisher({
+      repository,
+      clientFor: async () => client,
+      workerId: 'postgres-preflight-recovery',
+      now: () => now,
+      retryDelayMs: 5_000,
+    });
+
+    await expect(publisher.runOnce(recorded.publicationId)).resolves.toMatchObject({ status: 'retry' });
+    await expect(repository.getPublication(recorded.publicationId)).resolves.toMatchObject({
+      reviewCreationState: 'reserved',
+      reviewCheckId: null,
+      gateCreationState: 'reserved',
+      readyForShip: false,
+    });
+    const afterPreflightFailure = await pool!.query(`SELECT review_creation_state,review_check_id,lease_owner,
+      last_error_class,(extract(epoch FROM available_at)*1000)::bigint AS available_at_ms
+      FROM review_operator_passthrough_publications WHERE publication_id=$1`, [recorded.publicationId]);
+    expect(afterPreflightFailure.rows[0]).toMatchObject({
+      review_creation_state: 'reserved',
+      review_check_id: null,
+      lease_owner: null,
+      last_error_class: 'client-preparation',
+      available_at_ms: String(NOW + 5_000),
+    });
+
+    now += 5_001;
+    await expect(publisher.runOnce(recorded.publicationId)).resolves.toMatchObject({ status: 'published' });
+    await expect(repository.getPublication(recorded.publicationId)).resolves.toMatchObject({
+      reviewCreationState: 'bound',
+      reviewCheckId: id,
+      gateCreationState: 'reserved',
+      readyForShip: false,
+    });
+    expect(fetchImplementation.mock.calls.map(([, init]) => init?.method ?? 'GET'))
+      .toEqual(['GET', 'GET', 'POST', 'GET', 'PATCH']);
+    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(currentCheck).toMatchObject({ status: 'completed', conclusion: 'success' });
   });
 
   it('reclaims only a proven not-started create and rejects that result after an uncertain create', async () => {
