@@ -450,7 +450,9 @@ describe('REL-1080 trusted side accepts the git-derived diff with the same ident
     const workerSource = await loadSameHeadReviewSource(worker(), workerApi().request, { gitDiffSource: localSource() });
     expect(trusted.diff).toBe('');
     expect(trusted.expectedFileCount).toBe(EXPECTED_FILES);
-    expect(trusted.changedFiles).toEqual(parseChangedFiles(workerSource.diff).files);
+    expect(trusted.changedFiles).toEqual(parseChangedFiles(workerSource.diff, {
+      repository: 'example/candidate', baseSha: baseTipSha, headSha,
+    }).files);
     // A finding on a line the PR added anchors on both sides; one on an unchanged line does not.
     const finding = (line: number) => [{ severity: 'P1', path: 'src/mod-299.ts', line, title: 'Unsafe export',
       body: 'The exported value is wrong.' }];
@@ -545,7 +547,9 @@ describe('REL-1080 end to end: a >300-file, >20k-line PR completes through the t
 
     // The worker reviewed the git-derived diff.
     const workerSource = await loadSameHeadReviewSource(worker(), workerApi().request, { gitDiffSource: localSource() });
-    const workerFiles = parseChangedFiles(workerSource.diff).files;
+    const workerFiles = parseChangedFiles(workerSource.diff, {
+      repository: 'example/candidate', baseSha: baseTipSha, headSha,
+    }).files;
 
     const context = await contextFor(trustedFetcher().fetcher)(gate);
     expect(context.coverage.coverageComplete).toBe(true);
