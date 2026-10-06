@@ -477,6 +477,34 @@ describe('authoritative operator-pause admission responses', () => {
       .rejects.toBeInstanceOf(OperatorPassthroughDeliveryIdentityConflictError);
   });
 
+  it.each([
+    { repositoryId: 123, owner: 'example', repo: 'renamed-candidate' },
+    { repositoryId: 456, owner: 'example', repo: 'candidate' },
+  ])('rejects a configured name/ID conflict at both pause service boundaries before dependencies (%j)', async (requested) => {
+    const f = fixture();
+    f.config.repositoryIdentities = [{ repositoryId: 123, owner: 'example', repo: 'candidate' }];
+    const repo = operatorRepository();
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    const event = { transport: 'mcp' as const, eventName: 'trigger_review', deliveryId: 'mcp:identity-conflict',
+      deliveryDigest: 'a'.repeat(64) };
+    const unavailableInput = { ...requested, prNumber: candidate.prNumber, event };
+    const recordInput = { requested: { ...requested, prNumber: candidate.prNumber,
+      headSha: candidate.headSha, baseSha: candidate.baseSha }, event };
+
+    await expect(service.admission.reportOperatorPassthroughUnavailable!(unavailableInput))
+      .rejects.toThrow('Operator passthrough source identity is outside authoritative admission');
+    await expect(service.admission.recordOperatorPassthrough!(recordInput))
+      .rejects.toThrow('Operator passthrough candidate is outside authoritative admission');
+
+    expect(repo.assertDeliveryIdentity).not.toHaveBeenCalled();
+    expect(repo.record).not.toHaveBeenCalled();
+    expect(repo.claimPublication).not.toHaveBeenCalled();
+    expect(repo.getPublication).not.toHaveBeenCalled();
+    expect(mocks.currentCandidate).not.toHaveBeenCalled();
+    expect(mocks.mint).not.toHaveBeenCalled();
+  });
+
   it('bounds a never-resolving record and fences late completion from publisher and receipt reads', async () => {
     const f = fixture();
     const lateRecord = Promise.withResolvers<any>();
@@ -916,10 +944,15 @@ describe('dispatchIndex authoritative startup source contract', () => {
 
 describe('per-repository authoritative App routing', () => {
   const publicRepository = { repositoryId: 1326169548, owner: 'review-yeti-ai', repo: 'review-yeti-bot', expectedAppId: 4552718 };
-  function publicFixture() {
+  type PublicFixtureOptions = ReturnType<typeof fixture>['options']
+    & Pick<AuthoritativeReviewServiceOptions, 'passthroughEnabled' | 'operatorPassthroughRepository'>
+    & { publicAppCredentials: { appId: string; privateKey: string } };
+  function publicFixture(): Omit<ReturnType<typeof fixture>, 'options'> & { options: PublicFixtureOptions } {
     const f = fixture();
     f.config.publicRepository = publicRepository;
-    return { ...f, options: { ...f.options, publicAppCredentials: { appId: '4552718', privateKey: 'synthetic-public-key' } } };
+    const options = { ...f.options,
+      publicAppCredentials: { appId: '4552718', privateKey: 'synthetic-public-key' } } as PublicFixtureOptions;
+    return { ...f, options };
   }
   it('uses one publisher, exact public candidate credentials, and primary policy credentials', async () => {
     const f = publicFixture();
@@ -950,6 +983,22 @@ describe('per-repository authoritative App routing', () => {
   it.each([String(APP_ID), '4552719', ''])('rejects wrong dedicated credential App %s at startup', appId => {
     const f = publicFixture();
     f.options.publicAppCredentials.appId = appId;
+    expect(() => createAuthoritativeReviewService(f.options)).toThrow('Dedicated public review identity is invalid');
+    expect(mocks.mint).not.toHaveBeenCalled();
+  });
+  it('constructs the pinned public authority during pause when its service-owned signing key is unavailable', () => {
+    const f = publicFixture();
+    f.options.passthroughEnabled = true;
+    f.options.publicAppCredentials.privateKey = '';
+    f.options.operatorPassthroughRepository = { claimPublication: vi.fn() } as any;
+
+    expect(() => createAuthoritativeReviewService(f.options)).not.toThrow();
+    expect(mocks.mint).not.toHaveBeenCalled();
+  });
+  it('still rejects a missing public service-owned signing key outside pause', () => {
+    const f = publicFixture();
+    f.options.publicAppCredentials.privateKey = '';
+
     expect(() => createAuthoritativeReviewService(f.options)).toThrow('Dedicated public review identity is invalid');
     expect(mocks.mint).not.toHaveBeenCalled();
   });

@@ -3,7 +3,7 @@
  *
  * WHY THIS EXISTS (REL-1069 follow-up)
  *
- * `/ready` is served by THREE different implementations on the SAME path, chosen
+ * `/ready` is served by THREE different process roles on the SAME path, chosen
  * by which entrypoint the process runs:
  *
  *   entrypoint                       | deployment                     | /ready means
@@ -30,19 +30,30 @@
 export const READINESS_CONTRACTS = {
   /** Full app: can this process serve configured review work? */
   configuration: 'configuration',
-  /** Dispatch: can this process reach its database? */
+  /** Dispatch outside operator pause: can this process reach its database? */
   database: 'database',
+  /** Dispatch during global pause: can it return authenticated logical SHIP safely? */
+  pauseSafe: 'pause-safe',
   /** Job dispatcher: is the dispatch loop making progress? */
   loop: 'loop',
 } as const;
 
 export type ReadinessContract = (typeof READINESS_CONTRACTS)[keyof typeof READINESS_CONTRACTS];
 
+/** Last background-only database observation exposed by pause-safe readiness. */
+export interface PauseDatabaseProbeSnapshot {
+  readonly status: 'not_initialized' | 'unknown' | 'ready' | 'unavailable';
+  /** `null` means no database observation is available yet. */
+  readonly databaseReady: boolean | null;
+  readonly checkedAt: string | null;
+  readonly inProgress: boolean;
+}
+
 export interface ReadinessBody {
   readonly status: 'ready' | 'not_ready';
   /** Stable service identity, so a 503 names the implementation that produced it. */
   readonly service: string;
-  /** Which of the three questions this response answers. */
+  /** Which readiness question this response answers. */
   readonly readinessContract: ReadinessContract;
   readonly timestamp: string;
   readonly [key: string]: unknown;

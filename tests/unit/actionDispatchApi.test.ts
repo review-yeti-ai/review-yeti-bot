@@ -178,6 +178,41 @@ describe('ActionDispatchApi - GET status endpoint', () => {
 });
 
 describe('ActionDispatchApi - paused SHIP projection', () => {
+  it('returns truthful SHIP without touching publication storage during paused bootstrap', async () => {
+    const now = Date.parse('2026-10-06T12:00:00.000Z');
+    const dispatch = {
+      version: 'ActionDispatch.v1', deliveryId: `actions:98765:1:123:42:${'a'.repeat(40)}`, repositoryId: 123,
+      owner: 'exampleorg', repo: 'example-meta', prNumber: 42,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), actionSha: 'c'.repeat(40), publishMode: 'app-gate',
+      requestedAt: new Date(now).toISOString(),
+      caller: { runId: '98765', runAttempt: 1, eventName: 'workflow_dispatch' },
+    };
+    const verify = vi.fn(async () => ({ repository: 'exampleorg/example-meta', repository_id: '123',
+      repository_owner_id: '99', run_id: '98765', run_attempt: '1', event_name: 'workflow_dispatch' }));
+    const recordOperatorPassthrough = vi.fn();
+    const admit = vi.fn();
+    const app = express(); app.use(express.json());
+    app.use('/api/dispatch', createActionDispatchRouter({
+      verifier: { verify }, admission: { admit } as any, resolveInstallationId: vi.fn(),
+      allowAppGate: true, passthroughEnabled: true, storageInitialized: () => false, now: () => now,
+      authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [123],
+        recordOperatorPassthrough } as any,
+    }));
+
+    const response = await request(app).post('/api/dispatch/action').auth('opaque-oidc-token', { type: 'bearer' }).send(dispatch);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ version: 'ActionDispatchPassthrough.v1', status: 'passthrough',
+      reason: 'operator_global_passthrough', candidateState: 'unavailable', verdict: 'SHIP',
+      expectedLanes: 0, completedLanes: 0, publicationId: null, auditDigest: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null,
+      reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+      headSha: null, baseSha: null });
+    expect(verify).toHaveBeenCalledOnce();
+    expect(recordOperatorPassthrough).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
   it('preserves OIDC-authenticated SHIP with null current authority coordinates after initial authority outage', async () => {
     const now = Date.parse('2026-10-06T12:00:00.000Z');
     const runId = '98765';
@@ -207,6 +242,7 @@ describe('ActionDispatchApi - paused SHIP projection', () => {
       verifier: { verify }, admission: { admit } as any, resolveInstallationId: vi.fn(),
       allowAppGate: true, passthroughEnabled: true, now: () => now,
       authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [repositoryId],
+        repositoryIdentities: [{ repositoryId, owner: 'exampleorg', repo: 'example-meta' }],
         recordOperatorPassthrough } as any,
     }));
 
@@ -225,6 +261,51 @@ describe('ActionDispatchApi - paused SHIP projection', () => {
       requested: { repositoryId, owner: 'exampleorg', repo: 'example-meta', prNumber: 42, headSha, baseSha },
       event: { transport: 'github-actions-oidc', deliveryId: `github-actions-oidc:${deliveryId}` },
     });
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { storageInitialized: false, repositoryId: 123, owner: 'exampleorg', repo: 'renamed-meta' },
+    { storageInitialized: true, repositoryId: 123, owner: 'exampleorg', repo: 'renamed-meta' },
+    { storageInitialized: false, repositoryId: 456, owner: 'exampleorg', repo: 'example-meta' },
+    { storageInitialized: true, repositoryId: 456, owner: 'exampleorg', repo: 'example-meta' },
+  ])('rejects configured name/ID conflicts before any paused work (storageInitialized=$storageInitialized, $repositoryId/$owner/$repo)', async (testCase) => {
+    const now = Date.parse('2026-10-06T12:00:00.000Z');
+    const dispatch = {
+      version: 'ActionDispatch.v1',
+      deliveryId: `actions:98765:1:${testCase.repositoryId}:42:${'a'.repeat(40)}`,
+      repositoryId: testCase.repositoryId,
+      owner: testCase.owner,
+      repo: testCase.repo,
+      prNumber: 42,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), actionSha: 'c'.repeat(40), publishMode: 'app-gate',
+      requestedAt: new Date(now).toISOString(),
+      caller: { runId: '98765', runAttempt: 1, eventName: 'workflow_dispatch' },
+    };
+    const verify = vi.fn(async () => ({ repository: `${testCase.owner}/${testCase.repo}`,
+      repository_id: String(testCase.repositoryId), repository_owner_id: '99', run_id: '98765',
+      run_attempt: '1', event_name: 'workflow_dispatch' }));
+    const resolveInstallationId = vi.fn();
+    const recordOperatorPassthrough = vi.fn();
+    const admit = vi.fn();
+    const app = express(); app.use(express.json());
+    app.use('/api/dispatch', createActionDispatchRouter({
+      verifier: { verify }, admission: { admit } as any, resolveInstallationId,
+      allowAppGate: true, passthroughEnabled: true,
+      storageInitialized: () => testCase.storageInitialized, now: () => now,
+      authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [123, 456],
+        repositoryIdentities: [{ repositoryId: 123, owner: 'exampleorg', repo: 'example-meta' }],
+        recordOperatorPassthrough } as any,
+    }));
+
+    const response = await request(app).post('/api/dispatch/action')
+      .auth('opaque-oidc-token', { type: 'bearer' }).send(dispatch);
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ error: 'Action dispatch is not authorized' });
+    expect(verify).toHaveBeenCalledOnce();
+    expect(resolveInstallationId).not.toHaveBeenCalled();
+    expect(recordOperatorPassthrough).not.toHaveBeenCalled();
     expect(admit).not.toHaveBeenCalled();
   });
 });

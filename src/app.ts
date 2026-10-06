@@ -52,6 +52,17 @@ import { logger } from './utils/logger';
 import { resolveRepositoryVisibility } from './github/repositoryVisibility';
 import { createRepoFileProvider } from './panel/repoFileProvider';
 import { LiveStreamBus } from './live/liveStreamBus';
+import { z } from 'zod';
+import {
+  authoritativeRepositoryForName,
+  PUBLIC_REVIEW_REPOSITORY_ID,
+} from './auth/repositoryReviewAuthority';
+import { AUTHORITATIVE_REVIEW_APP_ID } from './auth/authoritativeServiceIdentity';
+import { githubWebhookConfigFromEnv } from './auth/githubWebhookConfig';
+import { centralExternalTargetConfigFromEnv } from './config/actionDispatchConfig';
+import { createGitHubWebhookAdmissionHandler } from './review/githubWebhookAdmission';
+import type { AuthoritativeReviewAdmission } from './review/authoritativeServiceContracts';
+import type { GitHubWebhookConfig } from './auth/githubWebhookConfig';
 import {
   initTelemetry,
   getTracer,
@@ -92,6 +103,129 @@ function requiredEnv(name: string): string {
 
 function privateKey(): string {
   return requiredEnv('GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
+}
+
+interface LegacyOperatorPauseConfig {
+  requested: boolean;
+  identityConfigured: boolean;
+  webhook?: GitHubWebhookConfig;
+  authority?: AuthoritativeReviewAdmission;
+  externalRepositories?: ReadonlyMap<string, number>;
+  handleWebhook?: ReturnType<typeof createGitHubWebhookAdmissionHandler>;
+}
+
+const pausedRepositoryName = z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u)
+  .refine((value) => value !== '.' && value !== '..');
+const pausedRepositoryIdentity = z.object({
+  repositoryId: z.number().int().positive().safe(),
+  owner: pausedRepositoryName,
+  repo: pausedRepositoryName,
+}).strict();
+
+function positiveIdCsv(value: string | undefined, name: string, maximum: number): number[] {
+  if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') > 2_000) throw new Error(`${name} is invalid`);
+  const entries = value.split(',').map((entry) => entry.trim());
+  if (entries.length < 1 || entries.length > maximum || entries.some((entry) => !/^[1-9][0-9]*$/u.test(entry))) {
+    throw new Error(`${name} is invalid`);
+  }
+  const ids = entries.map(Number);
+  if (ids.some((id) => !Number.isSafeInteger(id)) || new Set(ids).size !== ids.length) {
+    throw new Error(`${name} is invalid`);
+  }
+  return ids;
+}
+
+function legacyOperatorPauseConfigFromEnv(environment: NodeJS.ProcessEnv): LegacyOperatorPauseConfig {
+  const pauseValue = environment.REVIEW_YETI_PASSTHROUGH;
+  // Fail safe when the global switch is malformed: no legacy route should start
+  // normal review work while operators are attempting to pause it.
+  const requested = pauseValue !== undefined && pauseValue !== 'false';
+  if (!requested) return { requested: false, identityConfigured: false };
+
+  try {
+    if (pauseValue !== 'true') throw new Error('operator pause flag is invalid');
+    const oidcPolicy = githubActionsOidcPolicyFromEnv(environment);
+    if (oidcPolicy.allowAppGate !== true) throw new Error('App webhook gate is disabled');
+    const webhook = githubWebhookConfigFromEnv(environment, oidcPolicy);
+    if (!webhook?.passthroughEnabled) throw new Error('paused App webhook config is unavailable');
+
+    if (environment.AUTHORITATIVE_REVIEW_ENABLED !== 'true'
+      || environment.AUTHORITATIVE_REVIEW_APP_ID !== String(AUTHORITATIVE_REVIEW_APP_ID)
+      || environment.GITHUB_APP_ID !== String(AUTHORITATIVE_REVIEW_APP_ID)) {
+      throw new Error('authoritative App identity is invalid');
+    }
+    const primaryIds = positiveIdCsv(environment.AUTHORITATIVE_REVIEW_REPOSITORY_IDS,
+      'AUTHORITATIVE_REVIEW_REPOSITORY_IDS', 100);
+    if (primaryIds.includes(PUBLIC_REVIEW_REPOSITORY_ID)
+      || primaryIds.some((id) => !oidcPolicy.repositoryIds.has(String(id))
+        || !webhook.repositoryIds.has(String(id)))) {
+      throw new Error('authoritative repository enrollment is invalid');
+    }
+
+    const identities: Array<{ repositoryId: number; owner: string; repo: string }> = [];
+    const rawIdentities = environment.AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES;
+    if (rawIdentities !== undefined) {
+      if (Buffer.byteLength(rawIdentities, 'utf8') > 8_192) throw new Error('repository identity map is too large');
+      const parsed = z.array(pausedRepositoryIdentity).min(1).max(100).parse(JSON.parse(rawIdentities));
+      const ids = new Set<number>();
+      const names = new Set<string>();
+      for (const identity of parsed) {
+        const key = `${identity.owner}/${identity.repo}`.toLowerCase();
+        if (!primaryIds.includes(identity.repositoryId) || ids.has(identity.repositoryId) || names.has(key)) {
+          throw new Error('repository identity map is inconsistent');
+        }
+        ids.add(identity.repositoryId);
+        names.add(key);
+        identities.push(identity);
+      }
+    }
+
+    // The public repository uses its own App and remains an exact opt-in.
+    // Pause removes the signing-key requirement; it does not widen that target.
+    const external = centralExternalTargetConfigFromEnv(environment, { allowUnavailableSigningKey: true });
+    for (const [fullName, repositoryId] of external.repositories) {
+      const [owner, repo] = fullName.split('/');
+      if (!webhook.repositoryIds.has(String(repositoryId))) {
+        throw new Error('public target is not webhook-enrolled');
+      }
+      if (identities.some((identity) => identity.repositoryId === repositoryId
+        || `${identity.owner}/${identity.repo}`.toLowerCase() === fullName.toLowerCase())) {
+        throw new Error('public target identity conflicts with primary enrollment');
+      }
+      identities.push({ repositoryId, owner, repo });
+    }
+    if (primaryIds.length + external.repositories.size > 100) throw new Error('repository enrollment is too large');
+
+    const allRepositoryIds = [...primaryIds, ...external.repositories.values()];
+    const authority: AuthoritativeReviewAdmission = {
+      expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
+      expectedAppIdFor: (repository) => external.repositories.has(`${repository.owner}/${repository.repo}`)
+        ? (external.appCredentials ? Number(external.appCredentials.appId) : AUTHORITATIVE_REVIEW_APP_ID)
+        : AUTHORITATIVE_REVIEW_APP_ID,
+      repositoryIds: allRepositoryIds,
+      ...(identities.length > 0 ? { repositoryIdentities: identities } : {}),
+      resolver: { resolve: async () => { throw new Error('current review authority is unavailable during operator pause'); } },
+      recordOperatorPassthrough: async () => {
+        throw new Error('durable operator publication is unavailable during legacy app pause');
+      },
+    };
+    const handleWebhook = createGitHubWebhookAdmissionHandler({
+      config: webhook,
+      storageInitialized: () => false,
+      admission: {
+        admit: async () => { throw new Error('review admission is unavailable during operator pause'); },
+        terminalizeRunsForClosedPullRequest: async () => { throw new Error('review lifecycle is unavailable during operator pause'); },
+      } as any,
+      authoritativePublishing: authority,
+      currentPullRequestForPassthrough: async () => {
+        throw new Error('current pull-request reads are unavailable during storage-outage pause');
+      },
+    });
+    return { requested: true, identityConfigured: true, webhook, authority,
+      externalRepositories: external.repositories, handleWebhook };
+  } catch {
+    return { requested: true, identityConfigured: false };
+  }
 }
 
 /**
@@ -781,6 +915,7 @@ export function createApp(): Express {
   initTelemetry();
   const app = express();
   const eventHandler = new GitHubEventHandler();
+  const legacyOperatorPause = legacyOperatorPauseConfigFromEnv(process.env);
 
   app.use(telemetryMiddleware());
 
@@ -826,6 +961,22 @@ export function createApp(): Express {
   });
 
   app.get('/ready', async (_req, res) => {
+    if (legacyOperatorPause.requested) {
+      const ready = legacyOperatorPause.identityConfigured;
+      return res.status(readinessStatus(ready)).json(readinessBody(
+        'ct-review-bot',
+        READINESS_CONTRACTS.pauseSafe,
+        ready,
+        {
+          configurationReady: ready,
+          openRouterReady: null,
+          operatorPauseEnabled: true,
+          pauseIdentityConfigured: ready,
+          databaseReady: null,
+          uptimeSeconds: process.uptime(),
+        },
+      ));
+    }
     // REL-1069: the webhook name and the model key were both wrong here, which
     // made the full app report not-ready on a correctly-configured Bifrost
     // deployment: no environment sets `WEBHOOK_SECRET` (the app, the wizard and
@@ -874,27 +1025,38 @@ export function createApp(): Express {
 
   // API Routers (Unauthenticated / Public routes)
   app.use('/api/auth', createAuthRouter());
-  app.use('/api/onboarding', createOnboardingRouter());
+  app.use('/api/onboarding', createOnboardingRouter({ operatorPauseEnabled: legacyOperatorPause.requested }));
   app.use('/api/router', createProviderRouter());
   app.use('/api/live', createLiveRouter());
 
   if (process.env.ACTION_DISPATCH_ENABLED === 'true') {
-    if (!postgresStore.isConfigured()) {
+    const dispatchDatabaseConfigured = postgresStore.isConfigured();
+    if (!dispatchDatabaseConfigured && !legacyOperatorPause.requested) {
       throw new Error('ACTION_DISPATCH_ENABLED requires DATABASE_URL or POSTGRES_URL for durable admission');
     }
     const oidcPolicy = githubActionsOidcPolicyFromEnv();
     const dispatchConfig = actionDispatchConfigFromEnv();
-    const dispatchRepository = new PostgresReviewDispatchRepository(postgresStore.getPool(), undefined, {
-      lifecycleEvents: 'enabled',
-      requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
-    });
+    const dispatchRepository = dispatchDatabaseConfigured
+      ? new PostgresReviewDispatchRepository(postgresStore.getPool(), undefined, {
+        lifecycleEvents: 'enabled',
+        requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
+      })
+      : {
+        admit: async () => { throw new Error('durable dispatch admission is unavailable during operator pause'); },
+        markWorkerFailure: async () => { throw new Error('durable worker completion is unavailable during operator pause'); },
+        readRunRetryContext: async () => { throw new Error('durable worker completion is unavailable during operator pause'); },
+        markWorkerSuccess: async () => { throw new Error('durable worker completion is unavailable during operator pause'); },
+        authorizeWorkerEvidence: async () => { throw new Error('durable worker completion is unavailable during operator pause'); },
+      };
     app.use('/api/dispatch', createActionDispatchRouter({
       verifier: new GitHubActionsOidcVerifier({ policy: oidcPolicy }),
       admission: dispatchRepository,
       allowAppGate: oidcPolicy.allowAppGate,
       passthroughEnabled: dispatchConfig.passthroughEnabled,
+      storageInitialized: legacyOperatorPause.requested ? () => false : undefined,
+      authoritativePublishing: legacyOperatorPause.authority,
       requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
-      centralExternalRepositories: dispatchConfig.centralExternalRepositories,
+      centralExternalRepositories: legacyOperatorPause.externalRepositories ?? dispatchConfig.centralExternalRepositories,
       workerCompletion: {
         verifier: createWorkerCompletionVerifier(),
         repository: dispatchRepository,
@@ -934,7 +1096,10 @@ export function createApp(): Express {
   app.use('/api/dashboard/integrations', integrationsRouter);
   app.use('/api/dashboard/mcp', integrationsRouter);
   app.use('/api/analytics', createAnalyticsRouter());
-  app.use('/api/github', createGitHubAppApiRouter());
+  app.use('/api/github', createGitHubAppApiRouter({
+    operatorPauseEnabled: legacyOperatorPause.requested,
+    operatorPauseAuthority: legacyOperatorPause.authority,
+  }));
   app.use('/api', createMemoryRouter());
   const reviewHitlRouter = createReviewHitlRouter();
   app.use('/api/reviews', reviewHitlRouter);
@@ -942,9 +1107,22 @@ export function createApp(): Express {
 
   // GitHub Webhooks Router
   app.use(createWebhookRouter({
+    ...(legacyOperatorPause.webhook ? { secret: legacyOperatorPause.webhook.secret } : {}),
     onEvent: async (req: RequestWithRawBody) => {
       const eventName = String(req.headers['x-github-event'] || '');
       const deliveryId = String(req.headers['x-github-delivery'] || '');
+      if (legacyOperatorPause.requested) {
+        if (!legacyOperatorPause.handleWebhook || !req.rawBody) {
+          throw new Error('Operator pause requires a valid static App identity before webhook admission');
+        }
+        return legacyOperatorPause.handleWebhook({
+          eventName,
+          deliveryId,
+          rawBody: req.rawBody,
+          body: req.body,
+          signature256: req.headers['x-hub-signature-256'] as string | undefined,
+        });
+      }
       logger.info('Received GitHub webhook event', { eventName, deliveryId });
 
       const trigger = eventHandler.evaluateTrigger(eventName, req.body, deliveryId);

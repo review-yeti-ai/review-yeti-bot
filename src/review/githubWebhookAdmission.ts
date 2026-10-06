@@ -1,4 +1,4 @@
-import { expectedReviewAppIdFor } from '../auth/repositoryReviewAuthority';
+import { expectedReviewAppIdFor, matchesConfiguredReviewRepositoryIdentity } from '../auth/repositoryReviewAuthority';
 import { isPausedAuthorityReadUnavailable } from '../github/authoritativeReadFailure';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
@@ -16,7 +16,7 @@ import {
   githubWebhookRepositorySchema, requireEnrolledGitHubWebhookRepository, UnenrolledGitHubWebhookIdentityError,
 } from '../auth/githubWebhookIdentity';
 import { logger } from '../utils/logger';
-import { MergeGroupGateInProgressError } from './mergeGroupGate';
+import { MergeGroupGateInProgressError, parseEnrolledMergeGroupWebhookIdentity } from './mergeGroupGate';
 import {
   isRecoverableFailureTitle,
   REVIEW_REFRESH_ACTION,
@@ -154,6 +154,8 @@ const refreshCheckRunWebhook = z.discriminatedUnion('action', [z.object({
 
 export interface GitHubWebhookAdmissionOptions {
   config: GitHubWebhookConfig;
+  /** False until the dispatch process has completed its storage schema bootstrap. */
+  storageInitialized?: () => boolean;
   admission: Pick<ReviewDispatchRepository, 'admit' | 'terminalizeRunsForClosedPullRequest'> &
     Partial<Pick<ReviewDispatchRepository, 'cancelRunsForPullRequest' | 'advanceDebounceAvailableAt'>>;
   authoritativePublishing?: AuthoritativeReviewAdmission;
@@ -292,6 +294,40 @@ function operatorPassthroughAuthorityUnavailableReceipt(
   });
 }
 
+function operatorPassthroughStorageUnavailableReceipt(
+  event: GitHubWebhookAdmissionEvent,
+  identity: { repositoryId: number; owner: string; repo: string; prNumber: number },
+): Record<string, unknown> {
+  const receipt = {
+    status: 'unavailable', reason: 'operator_global_passthrough', reviewStarted: false,
+    candidateState: 'unavailable', eventName: event.eventName, deliveryId: event.deliveryId,
+    repositoryId: identity.repositoryId, repository: `${identity.owner}/${identity.repo}`,
+    prNumber: identity.prNumber, headSha: null, baseSha: null, verdict: 'SHIP',
+    expectedLanes: 0, completedLanes: 0, publicationId: null, auditDigest: null,
+    publicationState: 'unavailable', publicationReceiptAvailable: null,
+    reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+    message: 'Operator pause preserves logical SHIP with zero review lanes. Storage initialization is unavailable; no current candidate or durable publication receipt is asserted. Protected merge eligibility is false.',
+  };
+  logger.info('GitHub App delivery returned logical SHIP while storage initialization was unavailable', {
+    repositoryId: identity.repositoryId, prNumber: identity.prNumber,
+    candidateState: receipt.candidateState, publicationState: receipt.publicationState, mergeEligible: false,
+  });
+  return receipt;
+}
+
+function operatorPassthroughLifecycleDeferredReceipt(
+  event: GitHubWebhookAdmissionEvent,
+  identity: { repositoryId: number; owner: string; repo: string; prNumber: number },
+  lifecycleAction: string,
+): Record<string, unknown> {
+  return {
+    ...operatorPassthroughStorageUnavailableReceipt(event, identity),
+    deferredLifecycleAction: lifecycleAction,
+    lifecycleApplied: false,
+    message: `Operator pause preserves logical SHIP with zero review lanes. Storage initialization is unavailable; ${lifecycleAction} was not applied and no runs are claimed terminalized or cancelled. No current candidate or durable publication receipt is asserted. Protected merge eligibility is false.`,
+  };
+}
+
 function validLabelReviewIdentity(body: Record<string, any>, repositoryName: string,
   pr: Record<string, any>, prNumber: number): boolean {
   return positiveInteger.safeParse(prNumber).success
@@ -301,6 +337,18 @@ function validLabelReviewIdentity(body: Record<string, any>, repositoryName: str
     && sha.safeParse(pr.base?.sha).success
     && pr.base?.repo?.full_name === repositoryName
     && positiveInteger.safeParse(Number(body.installation?.id)).success;
+}
+
+/** Keep caller-supplied webhook names bound to any locally configured ID/name pair. */
+function authoritativeWebhookIdentityMatches(authority: AuthoritativeReviewAdmission,
+  identity: { repositoryId: number; owner: string; repo: string }): boolean {
+  return matchesConfiguredReviewRepositoryIdentity(authority, identity);
+}
+
+function pausedWebhookIdentityIsEnrolled(authority: AuthoritativeReviewAdmission | undefined,
+  authoritativeIds: ReadonlySet<number>, identity: { repositoryId: number; owner: string; repo: string }): boolean {
+  return Boolean(authority && authoritativeIds.has(identity.repositoryId)
+    && authoritativeWebhookIdentityMatches(authority, identity));
 }
 
 /** Admit signed, allowlisted GitHub App review events directly. */
@@ -315,11 +363,29 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
     if (!Buffer.isBuffer(event.rawBody) || !delivery || delivery.length > 256) {
       throw new Error('GitHub webhook identity is unavailable');
     }
+    const pauseStorageUnavailable = options.config.passthroughEnabled === true
+      && options.storageInitialized?.() === false;
     if (eventName === 'merge_group') {
       const action = event.body && typeof event.body === 'object' && !Array.isArray(event.body)
         ? (event.body as Record<string, unknown>).action : undefined;
       if (typeof action === 'string' && action.length > 0 && action !== 'checks_requested') {
         return { status: 'ignored', reason: 'unsupported_merge_group_action' };
+      }
+      let pausedMergeGroupIdentity: { repositoryId: number; owner: string; repo: string; prNumber: number } | undefined;
+      if (options.config.passthroughEnabled === true) {
+        try { pausedMergeGroupIdentity = parseEnrolledMergeGroupWebhookIdentity(event.body, options.config); }
+        catch (error) {
+          if (error instanceof UnenrolledGitHubWebhookIdentityError) return { status: 'ignored', reason: 'not_enrolled' };
+          throw error;
+        }
+        const authority = options.authoritativePublishing;
+        if (!authority || !authoritativeIds.has(pausedMergeGroupIdentity.repositoryId)
+          || !authoritativeWebhookIdentityMatches(authority, pausedMergeGroupIdentity)) {
+          return { status: 'ignored', reason: 'not_enrolled' };
+        }
+      }
+      if (pauseStorageUnavailable) {
+        return operatorPassthroughStorageUnavailableReceipt(event, pausedMergeGroupIdentity!);
       }
       if (!options.mergeGroupGate) throw new Error('Merge-group webhook gate is unavailable');
       let result;
@@ -329,6 +395,10 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       catch (error) {
         if (error instanceof UnenrolledGitHubWebhookIdentityError) return { status: 'ignored', reason: 'not_enrolled' };
         if (error instanceof MergeGroupGateInProgressError) return { status: 'accepted', reason: 'merge_group_in_progress' };
+        if (options.config.passthroughEnabled === true && pausedMergeGroupIdentity
+          && isPausedAuthorityReadUnavailable(error)) {
+          return operatorPassthroughAuthorityUnavailableReceipt(options, event, pausedMergeGroupIdentity);
+        }
         throw error;
       }
       return { status: result.conclusion, checkId: result.checkId,
@@ -363,6 +433,10 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       const authoritative = options.authoritativePublishing;
       const hasAuthoritativeIdentity = authoritative !== undefined
         && authoritativeIds.has(payload.repository.id);
+      if (options.config.passthroughEnabled === true && authoritative && hasAuthoritativeIdentity
+        && !authoritativeWebhookIdentityMatches(authoritative, requested)) {
+        return { status: 'ignored', reason: 'not_enrolled' };
+      }
       // GitHub's native re-request action carries no separately named action
       // identifier. Admit it only where the service can re-read and bind the
       // exact current candidate/policy; legacy enrollment must keep using the
@@ -373,6 +447,15 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       if (options.config.passthroughEnabled !== true
         && authoritative?.acceptNewRequests === false && authoritativeIds.has(payload.repository.id)) {
         return { status: 'ignored', reason: 'authoritative_admission_paused' };
+      }
+      if (pauseStorageUnavailable) {
+        if (!authoritative || !hasAuthoritativeIdentity) {
+          throw new Error('Paused refresh requires current authoritative candidate resolution');
+        }
+        if (!authoritativeWebhookIdentityMatches(authoritative, requested)) {
+          return { status: 'ignored', reason: 'not_enrolled' };
+        }
+        return operatorPassthroughStorageUnavailableReceipt(event, requested);
       }
       let resolved;
       try {
@@ -466,11 +549,18 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
           return { status: 'ignored', reason: 'invalid_review_trigger_identity', deliveryId: delivery };
         }
         const authority = options.authoritativePublishing;
-        if (!authority || !authoritativeIds.has(repositoryId)) {
+        if (!authority) {
           throw new Error('Issue comment operator SHIP requires an enrolled authoritative App identity');
+        }
+        if (!authoritativeIds.has(repositoryId)
+          || !authoritativeWebhookIdentityMatches(authority, { repositoryId, owner, repo })) {
+          return { status: 'ignored', reason: 'not_enrolled' };
         }
         if (!options.currentPullRequestForPassthrough) {
           throw new Error('Issue comment operator SHIP requires a current GitHub pull request read');
+        }
+        if (pauseStorageUnavailable) {
+          return operatorPassthroughStorageUnavailableReceipt(event, { repositoryId, owner, repo, prNumber });
         }
         let current;
         try {
@@ -584,9 +674,19 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         || closedPayload.pull_request.base.repo.full_name !== closedPayload.repository.full_name) {
         return { status: 'ignored', reason: 'not_enrolled' };
       }
+      const closedIdentity = { repositoryId: closedPayload.repository.id, owner: closedOwner, repo: closedRepo };
+      if (options.config.passthroughEnabled === true) {
+        if (!pausedWebhookIdentityIsEnrolled(options.authoritativePublishing, authoritativeIds, closedIdentity)) {
+          return { status: 'ignored', reason: 'not_enrolled' };
+        }
+        if (pauseStorageUnavailable) {
+          return operatorPassthroughLifecycleDeferredReceipt(event,
+            { ...closedIdentity, prNumber: closedPayload.pull_request.number }, 'pull_request_closed');
+        }
+      }
       if (options.currentPullRequestForClose) {
         const current = await options.currentPullRequestForClose({
-          repositoryId: closedPayload.repository.id, owner: closedOwner, repo: closedRepo,
+          ...closedIdentity,
           prNumber: closedPayload.pull_request.number,
         });
         if (current.open) {
@@ -632,6 +732,16 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         || draftPayload.pull_request.base.repo.full_name !== draftPayload.repository.full_name) {
         return { status: 'ignored', reason: 'not_enrolled' };
       }
+      const draftIdentity = { repositoryId: draftPayload.repository.id, owner: draftEnrolled.owner, repo: draftEnrolled.repo };
+      if (options.config.passthroughEnabled === true) {
+        if (!pausedWebhookIdentityIsEnrolled(options.authoritativePublishing, authoritativeIds, draftIdentity)) {
+          return { status: 'ignored', reason: 'not_enrolled' };
+        }
+        if (pauseStorageUnavailable) {
+          return operatorPassthroughLifecycleDeferredReceipt(event,
+            { ...draftIdentity, prNumber: draftPayload.pull_request.number }, 'converted_to_draft');
+        }
+      }
       const draftReceivedAt = now();
       const cancelled = options.admission.cancelRunsForPullRequest
         ? await options.admission.cancelRunsForPullRequest({
@@ -671,6 +781,25 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       const receivedAt = now();
 
       if (isOptOutLabel(labelName) || hasOptOutLabel(prLabels)) {
+        if (options.config.passthroughEnabled === true) {
+          const validLifecycleIdentity = positiveInteger.safeParse(prNumber).success
+            && positiveInteger.safeParse(Number(pr.number)).success
+            && Number(pr.number) === prNumber
+            && (body.number === undefined || Number(body.number) === prNumber)
+            && pr.base?.repo?.full_name === parsedRepo.data.full_name
+            && positiveInteger.safeParse(Number(body.installation?.id)).success;
+          if (!validLifecycleIdentity) {
+            return { status: 'ignored', reason: 'invalid_review_trigger_identity', deliveryId: delivery };
+          }
+          const identity = { repositoryId, owner, repo };
+          if (!pausedWebhookIdentityIsEnrolled(options.authoritativePublishing, authoritativeIds, identity)) {
+            return { status: 'ignored', reason: 'not_enrolled' };
+          }
+          if (pauseStorageUnavailable) {
+            return operatorPassthroughLifecycleDeferredReceipt(event,
+              { ...identity, prNumber }, 'opt_out_label_present');
+          }
+        }
         if (options.admission.cancelRunsForPullRequest) {
           await options.admission.cancelRunsForPullRequest({
             repositoryId, prNumber, cancelReason: 'opt_out_label', gateReason: 'review-opted-out', now: receivedAt,
@@ -694,7 +823,12 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
           const authority = options.authoritativePublishing;
           if (!authority || !authoritativeIds.has(repositoryId)) throw new Error('Opt-in label requires authoritative App identity');
           pausedRequested = { repositoryId, owner, repo, prNumber, headSha: pr.head.sha, baseSha: pr.base.sha };
-          expectedReviewAppIdFor(authority, pausedRequested);
+          if (!authoritativeWebhookIdentityMatches(authority, pausedRequested)) {
+            return { status: 'ignored', reason: 'not_enrolled', deliveryId: delivery, prNumber };
+          }
+          if (pauseStorageUnavailable) {
+            return operatorPassthroughStorageUnavailableReceipt(event, pausedRequested);
+          }
         }
         let repoConfig;
         try {
@@ -793,7 +927,12 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
           const authority = options.authoritativePublishing;
           if (!authority || !authoritativeIds.has(repositoryId)) throw new Error('Opt-out label removal requires authoritative App identity');
           pausedRequested = { repositoryId, owner, repo, prNumber, headSha: pr.head.sha, baseSha: pr.base.sha };
-          expectedReviewAppIdFor(authority, pausedRequested);
+          if (!authoritativeWebhookIdentityMatches(authority, pausedRequested)) {
+            return { status: 'ignored', reason: 'not_enrolled', deliveryId: delivery, prNumber };
+          }
+          if (pauseStorageUnavailable) {
+            return operatorPassthroughStorageUnavailableReceipt(event, pausedRequested);
+          }
         }
         let repoConfig;
         try {
@@ -860,16 +999,6 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
 
     const prLabels = extractLabelNames(pr.labels);
     const receivedAt = now();
-    if (hasOptOutLabel(prLabels)) {
-      if (options.admission.cancelRunsForPullRequest) {
-        await options.admission.cancelRunsForPullRequest({
-          repositoryId, prNumber: pr.number, cancelReason: 'opt_out_label',
-          gateReason: 'review-opted-out', now: receivedAt,
-        });
-      }
-      return { status: 'ignored', reason: 'opt_out_label_present', deliveryId: delivery, prNumber: pr.number };
-    }
-
     const requested = {
       repositoryId, owner, repo, prNumber: pr.number,
       headSha: pr.head.sha, baseSha: pr.base.sha,
@@ -879,7 +1008,35 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       if (!authority || !authoritativeIds.has(repositoryId)) {
         throw new Error('Paused pull-request trigger requires authoritative App identity');
       }
-      expectedReviewAppIdFor(authority, requested);
+      if (!authoritativeWebhookIdentityMatches(authority, requested)) {
+        return { status: 'ignored', reason: 'not_enrolled', deliveryId: delivery, prNumber: pr.number };
+      }
+    }
+    if (hasOptOutLabel(prLabels)) {
+      if (options.config.passthroughEnabled === true && pauseStorageUnavailable) {
+        return operatorPassthroughLifecycleDeferredReceipt(event,
+          { repositoryId, owner, repo, prNumber: pr.number }, 'opt_out_label_present');
+      }
+      if (options.admission.cancelRunsForPullRequest) {
+        await options.admission.cancelRunsForPullRequest({
+          repositoryId, prNumber: pr.number, cancelReason: 'opt_out_label',
+          gateReason: 'review-opted-out', now: receivedAt,
+        });
+      }
+      return { status: 'ignored', reason: 'opt_out_label_present', deliveryId: delivery, prNumber: pr.number };
+    }
+
+    if (options.config.passthroughEnabled === true) {
+      const authority = options.authoritativePublishing;
+      if (!authority || !authoritativeIds.has(repositoryId)) {
+        throw new Error('Paused pull-request trigger requires authoritative App identity');
+      }
+      if (!authoritativeWebhookIdentityMatches(authority, requested)) {
+        return { status: 'ignored', reason: 'not_enrolled', deliveryId: delivery, prNumber: pr.number };
+      }
+      if (pauseStorageUnavailable) {
+        return operatorPassthroughStorageUnavailableReceipt(event, requested);
+      }
     }
     let repoConfig;
     try {

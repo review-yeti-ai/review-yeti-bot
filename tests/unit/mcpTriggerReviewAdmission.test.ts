@@ -215,6 +215,37 @@ describe('trigger_review governed admission', () => {
     });
   });
 
+  it('returns SHIP before candidate or publication work while paused storage has not initialized', async () => {
+    const readCurrentCandidate = vi.fn();
+    const resolve = vi.fn();
+    const recordOperatorPassthrough = vi.fn();
+    const admit = vi.fn();
+    const query = vi.fn();
+    const tool = createTriggerReviewTool({
+      passthroughEnabled: true,
+      storageInitialized: () => false,
+      queryableDatabase: { query },
+      admissionRepository: { admit } as any,
+      authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [101],
+        repositoryIdentities: [{ repositoryId: 101, owner: 'exampleorg', repo: 'example-api' }],
+        resolver: { readCurrentCandidate, resolve }, recordOperatorPassthrough },
+    } as any);
+
+    const result = await tool.execute(request, { authenticatedByConfiguredAuthenticator: true,
+      authorizedRepository: { owner: 'exampleorg', repo: 'example-api' } });
+    const output = JSON.parse((result.content[0] as any).text);
+
+    expect(output).toMatchObject({ status: 'passthrough', reason: 'operator_global_passthrough',
+      candidate_state: 'unavailable', head_sha: null, verdict: 'SHIP', expected_lanes: 0,
+      completed_lanes: 0, publication_id: null, audit_digest: null, publication_state: 'unavailable',
+      publication_receipt_available: null, review_check_id: null, gate_check_id: null, merge_eligible: false });
+    expect(readCurrentCandidate).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(recordOperatorPassthrough).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
   it('does not let MCP passthrough bypass incomplete-P2 recovery authorization', async () => {
     const admit = vi.fn();
     const tool = createTriggerReviewTool({

@@ -135,6 +135,25 @@ describe('actionDispatchConfig', () => {
         });
       });
 
+      it('preserves the exact public App and repository identity during operator pause when its outbound key is unavailable', () => {
+        const config = actionDispatchConfigFromEnv({
+          REVIEW_YETI_PASSTHROUGH: 'true',
+          ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY,
+          REVIEW_YETI_PUBLIC_TARGET_APP_ID: '4552718',
+        });
+        expect(config.centralExternalRepositories.get(SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY)).toBe(
+          SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY_ID
+        );
+        expect(config.centralExternalAppCredentials).toEqual({ appId: '4552718', privateKey: '' });
+      });
+
+      it('still rejects missing dedicated outbound credentials outside operator pause', () => {
+        expect(() => actionDispatchConfigFromEnv({
+          ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY,
+          REVIEW_YETI_PUBLIC_TARGET_APP_ID: '4552718',
+        })).toThrow('Dedicated public-target GitHub App credentials are required for external dispatch');
+      });
+
       it('normalizes escaped newlines in the dedicated private key', () => {
         const config = actionDispatchConfigFromEnv({
           ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY,

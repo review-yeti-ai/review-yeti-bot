@@ -1,5 +1,5 @@
 import express, { type Express, type NextFunction, type Request, type Response, type RequestHandler, type Router } from 'express';
-import { READINESS_CONTRACTS, readinessBody, readinessStatus } from './health/readinessContract';
+import { READINESS_CONTRACTS, readinessBody, readinessStatus, type PauseDatabaseProbeSnapshot } from './health/readinessContract';
 import { createActionDispatchRouter, type ActionDispatchRouterOptions } from './api/actionDispatchApi';
 import { MAX_COMPLETION_BYTES } from './review/workerReviewCompletion';
 import { MAX_REVIEW_CHECKPOINT_BYTES } from './review/reviewExecutionCheckpoint';
@@ -26,6 +26,10 @@ export const PROVIDER_LEASE_RATE_LIMIT_PER_MINUTE = 1_200;
 
 export interface ActionDispatchAppOptions extends ActionDispatchRouterOptions {
   databaseReady(): Promise<boolean>;
+  /** Pause-only readiness can stay routable while storage bootstrap is unavailable. */
+  operatorPauseReadinessEnabled?: boolean;
+  /** Synchronous last-observation snapshot; pause readiness never waits for PostgreSQL. */
+  pauseDatabaseProbe?: () => PauseDatabaseProbeSnapshot;
   rateLimiter?: RequestHandler;
   metricsAuthToken?: string;
   ci?: ReviewCiRouterOptions;
@@ -168,6 +172,21 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
   }));
 
   app.get('/ready', async (_request: Request, response: Response) => {
+    if (options.operatorPauseReadinessEnabled === true) {
+      const storageInitialized = options.storageInitialized?.() ?? true;
+      const probe = options.pauseDatabaseProbe?.() ?? {
+        status: storageInitialized ? 'unknown' : 'not_initialized',
+        databaseReady: storageInitialized ? null : false,
+        checkedAt: null,
+        inProgress: false,
+      };
+      return response.status(200).json(readinessBody(
+        'ct-review-action-dispatch', READINESS_CONTRACTS.pauseSafe, true,
+        { operatorPauseEnabled: true, databaseReady: probe.databaseReady, storageInitialized,
+          databaseProbeStatus: probe.status, databaseProbeCheckedAt: probe.checkedAt,
+          databaseProbeInProgress: probe.inProgress },
+      ));
+    }
     try {
       const ready = await options.databaseReady();
       return response.status(readinessStatus(ready)).json(readinessBody(
@@ -199,8 +218,15 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
     }
   });
 
-  if (options.ci) app.use('/api/dispatch/ci', limiter, createReviewCiRouter(options.ci));
-  if (options.providerLease) {
+  if (options.storageInitialized && options.storageInitialized() === false) {
+    app.use('/api/dispatch', (request: Request, response: Response, next: NextFunction) => {
+      if (options.storageInitialized?.() !== false) return next();
+      if (options.passthroughEnabled === true && request.method === 'POST' && request.path === '/action') return next();
+      return response.status(503).json({ error: 'Review dispatch storage is not initialized' });
+    });
+  }
+  if (options.ci && options.passthroughEnabled !== true) app.use('/api/dispatch/ci', limiter, createReviewCiRouter(options.ci));
+  if (options.providerLease && options.passthroughEnabled !== true) {
     const leaseLimiter = options.providerLeaseRateLimiter ?? createRateLimiter({
       windowMs: 60_000, max: PROVIDER_LEASE_RATE_LIMIT_PER_MINUTE, trustProxy: true, keyGenerator: providerLeaseRateLimitKey,
     });

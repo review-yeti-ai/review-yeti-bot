@@ -10,7 +10,11 @@ import { executePersonaPanel } from '../panel/panelEngine';
 import { OpenRouterClient } from '../gateway/openRouterClient';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
 
-export function createOnboardingRouter(): Router {
+export interface OnboardingRouterOptions {
+  operatorPauseEnabled?: boolean;
+}
+
+export function createOnboardingRouter(options: OnboardingRouterOptions = {}): Router {
   const router = Router();
 
   // POST /api/onboarding/wizard or POST /api/onboarding/wizard/scan
@@ -99,6 +103,14 @@ export function createOnboardingRouter(): Router {
 
   // POST /api/onboarding/diagnostic
   router.post('/diagnostic', async (req: Request, res: Response) => {
+    if (options.operatorPauseEnabled === true) {
+      return res.status(503).json({
+        success: false,
+        status: 'unavailable',
+        reason: 'operator_global_passthrough',
+        message: 'Provider diagnostics are unavailable during the operator review pause.',
+      });
+    }
     try {
       const { appId, providerIds, repoId } = req.body || {};
 

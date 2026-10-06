@@ -50,7 +50,8 @@ function integer(value: string | undefined): number {
 export function authoritativeServiceConfigFromEnv(
   env: Readonly<Record<string, string | undefined>>,
   oidcPolicy: Pick<GitHubActionsOidcPolicy, 'allowAppGate' | 'repositoryIds'>,
-  dispatchConfig: Pick<ActionDispatchConfig, 'centralExternalRepositories' | 'centralExternalAppCredentials'>,
+  dispatchConfig: Pick<ActionDispatchConfig,
+    'passthroughEnabled' | 'centralExternalRepositories' | 'centralExternalAppCredentials'>,
 ): AuthoritativeServiceConfig | undefined {
   try {
     const enabled = env.AUTHORITATIVE_REVIEW_ENABLED;
@@ -92,7 +93,7 @@ export function authoritativeServiceConfigFromEnv(
       if (externalRepositories.size !== 1
         || externalRepositories.get(PUBLIC_REVIEW_REPOSITORY) !== PUBLIC_REVIEW_REPOSITORY_ID
         || externalCredentials?.appId !== String(PUBLIC_REVIEW_APP_ID)
-        || !externalCredentials.privateKey.trim()) throw new Error();
+        || (!externalCredentials.privateKey.trim() && dispatchConfig.passthroughEnabled !== true)) throw new Error();
       const [owner, repo] = PUBLIC_REVIEW_REPOSITORY.split('/');
       publicRepository = { repositoryId: PUBLIC_REVIEW_REPOSITORY_ID, owner, repo, expectedAppId: PUBLIC_REVIEW_APP_ID };
       if (repositoryIds.length >= 100) throw new Error();

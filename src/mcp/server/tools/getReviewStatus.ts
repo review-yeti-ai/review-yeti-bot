@@ -299,6 +299,8 @@ export const getReviewStatusDefinition: ToolDefinition = {
 
 export interface GetReviewStatusOptions {
   passthroughEnabled?: boolean;
+  /** False until the dispatcher has completed its storage schema bootstrap. */
+  storageInitialized?: () => boolean;
   authoritativePublishing?: Pick<AuthoritativeReviewAdmission,
     'expectedAppId' | 'expectedAppIdFor' | 'repositoryIds' | 'repositoryIdentities' | 'resolver'>;
   resolveGitHubPullRequest?: (owner: string, repo: string, pullNumber: number) => Promise<{
@@ -331,6 +333,12 @@ async function resolveOperatorPauseCandidate(input: GetReviewStatusInput,
   }
   if (typeof admission.resolver.readCurrentCandidate !== 'function') {
     throw new Error('Operator SHIP status requires the authoritative current-candidate reader');
+  }
+  if (options.storageInitialized?.() === false) {
+    return { authorityAvailable: false, current: false, repositoryId: mappedIdentity.repositoryId,
+      owner: mappedIdentity.owner, repo: mappedIdentity.repo, prNumber: input.pull_number,
+      headSha: null, baseSha: null, requestedHeadPrefix: input.head_sha?.toLowerCase() ?? null,
+      policyDigest: null, expectedAppId: null };
   }
   let snapshot: { repositoryId?: number; owner?: string; repo?: string; prNumber?: number; headSha: string; baseSha?: string };
   try {

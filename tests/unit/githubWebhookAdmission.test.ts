@@ -79,7 +79,8 @@ function closedPayload(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function fixture(admissionEnabled = true, passthroughEnabled = false) {
+function fixture(admissionEnabled = true, passthroughEnabled = false, storageInitialized?: boolean,
+  repositoryIdentities?: Array<{ repositoryId: number; owner: string; repo: string }>) {
   const admit = vi.fn(async () => ({ status: 'accepted', run: { runId: `run_${'1'.repeat(32)}` } }));
   const recordOperatorPassthrough = vi.fn(async () => ({ status: 'accepted' as const, candidateState: 'current' as const, verdict: 'SHIP' as const,
     expectedLanes: 0 as const, completedLanes: 0 as const, publicationId: 'd'.repeat(64),
@@ -100,8 +101,10 @@ function fixture(admissionEnabled = true, passthroughEnabled = false) {
       repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
     },
     admission: { admit } as any,
+    ...(storageInitialized === undefined ? {} : { storageInitialized: () => storageInitialized }),
     ...(passthroughEnabled ? {
       authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796],
+        ...(repositoryIdentities ? { repositoryIdentities } : {}),
         resolver: { resolve: resolveAuthoritative },
         recordOperatorPassthrough, reportOperatorPassthroughUnavailable,
       } as any,
@@ -156,6 +159,10 @@ function issueCommentPayload(comment = '/review') {
 
 function issueCommentPassthroughFixture(options: {
   passthroughEnabled?: boolean;
+  storageInitialized?: boolean;
+  webhookRepositoryIds?: number[];
+  authoritativeRepositoryIds?: number[];
+  repositoryIdentities?: Array<{ repositoryId: number; owner: string; repo: string }>;
   currentReadError?: Error;
   repositoryConfigError?: Error;
   current?: Partial<{
@@ -194,11 +201,14 @@ function issueCommentPassthroughFixture(options: {
   const handler = createGitHubWebhookAdmissionHandler({
     config: {
       secret: SECRET, admissionEnabled: true, passthroughEnabled: options.passthroughEnabled ?? true,
-      repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
+      repositoryIds: new Set((options.webhookRepositoryIds || ['614653796']).map(String)), ownerIds: new Set(['57884877']),
     },
+    ...(options.storageInitialized === undefined ? {} : { storageInitialized: () => options.storageInitialized! }),
     admission: { admit } as any,
     resolveRepositoryConfig,
-    authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796],
+    authoritativePublishing: { expectedAppId: 4385771,
+      repositoryIds: options.authoritativeRepositoryIds || [614653796],
+      ...(options.repositoryIdentities ? { repositoryIdentities: options.repositoryIdentities } : {}),
       resolver: { resolve: resolveAuthoritative }, recordOperatorPassthrough,
       reportOperatorPassthroughUnavailable } as any,
     currentPullRequestForPassthrough,
@@ -209,6 +219,35 @@ function issueCommentPassthroughFixture(options: {
 
 function issueCommentEvent(deliveryId: string, body = issueCommentPayload()) {
   return { eventName: 'issue_comment', deliveryId, rawBody: Buffer.from(JSON.stringify(body)), body };
+}
+
+function pausedLifecycleFixture() {
+  const never = () => new Promise<never>(() => {});
+  const terminalizeRunsForClosedPullRequest = vi.fn(never);
+  const cancelRunsForPullRequest = vi.fn(never);
+  const currentPullRequestForClose = vi.fn(never);
+  const admission = { admit: vi.fn(), terminalizeRunsForClosedPullRequest, cancelRunsForPullRequest };
+  const handler = createGitHubWebhookAdmissionHandler({
+    config: { secret: SECRET, admissionEnabled: true, passthroughEnabled: true,
+      repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+    storageInitialized: () => false,
+    admission: admission as any,
+    currentPullRequestForClose,
+    authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796],
+      repositoryIdentities: [{ repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard' }] } as any,
+    now: () => NOW,
+  });
+  return { handler, admission, terminalizeRunsForClosedPullRequest,
+    cancelRunsForPullRequest, currentPullRequestForClose };
+}
+
+async function resolveBeforeDeadline<T>(promise: Promise<T>): Promise<T | 'timed-out'> {
+  let timer: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<'timed-out'>((resolve) => {
+    timer = setTimeout(() => resolve('timed-out'), 50);
+  });
+  try { return await Promise.race([promise, timedOut]); }
+  finally { if (timer) clearTimeout(timer); }
 }
 
 function pausedRepositoryConfigOutageFixture(resolveRepositoryConfig: () => Promise<{
@@ -313,6 +352,25 @@ describe('native GitHub App webhook admission', () => {
       .set('X-Hub-Signature-256', `sha256=${'0'.repeat(64)}`)
       .send(auth.raw);
     expect(invalidSignature.status).toBe(401);
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('returns logical SHIP without reading or publishing while paused storage has not initialized', async () => {
+    const f = fixture(false, true, false);
+    const body = payload({ action: 'opened' });
+    const auth = signed(body, 'delivery-pause-bootstrap-unavailable');
+
+    const response = await postWebhook(f.instance, body, auth.delivery);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ status: 'unavailable', reason: 'operator_global_passthrough',
+      candidateState: 'unavailable', verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
+      headSha: null, baseSha: null, publicationId: null, auditDigest: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null,
+      reviewCheckId: null, gateCheckId: null, mergeEligible: false });
+    expect(f.resolveAuthoritative).not.toHaveBeenCalled();
+    expect(f.recordOperatorPassthrough).not.toHaveBeenCalled();
+    expect(f.reportOperatorPassthroughUnavailable).not.toHaveBeenCalled();
     expect(f.admit).not.toHaveBeenCalled();
   });
 
@@ -470,6 +528,70 @@ describe('native GitHub App webhook admission', () => {
     expect(f.admit).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['same ID with a different name', { repository: { ...payload().repository,
+      name: 'other', full_name: 'exampleorg/other' } }, [614653796], [614653796]],
+    ['same name with a different ID', { repository: { ...payload().repository, id: 999 } }, [614653796, 999], [614653796, 999]],
+  ])('rejects paused issue_comment %s before a typed current-read outage can become SHIP', async (_label, bodyOverrides, webhookRepositoryIds, authoritativeRepositoryIds) => {
+    const f = issueCommentPassthroughFixture({ storageInitialized: true,
+      currentReadError: new InternalGitHubDependencyUnavailableError(),
+      webhookRepositoryIds, authoritativeRepositoryIds,
+      repositoryIdentities: [{ repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard' }] });
+    const body = issueCommentPayload();
+    Object.assign(body, bodyOverrides);
+
+    await expect(f.handler(issueCommentEvent(`delivery-comment-binding-${_label.replaceAll(' ', '-')}`, body)))
+      .resolves.toEqual({ status: 'ignored', reason: 'not_enrolled' });
+    expect(f.currentPullRequestForPassthrough).not.toHaveBeenCalled();
+    expect(f.resolveAuthoritative).not.toHaveBeenCalled();
+    expect(f.reportOperatorPassthroughUnavailable).not.toHaveBeenCalled();
+    expect(f.recordOperatorPassthrough).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['same ID with a different name', { ...payload().repository, name: 'other', full_name: 'exampleorg/other' }],
+    ['same name with a different ID', { ...payload().repository, id: 999 }],
+  ])('rejects paused native refresh %s before a typed policy outage can become SHIP', async (_label, repository) => {
+    const resolve = vi.fn(async () => { throw new InternalGitHubDependencyUnavailableError(); });
+    const reportOperatorPassthroughUnavailable = vi.fn();
+    const recordOperatorPassthrough = vi.fn();
+    const body = rerequestPayload({ repository });
+    const checkRun = body.check_run as any;
+    checkRun.pull_requests[0].head.repo = { full_name: repository.full_name };
+    checkRun.pull_requests[0].base.repo = { full_name: repository.full_name };
+    const handler = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true, passthroughEnabled: true,
+        repositoryIds: new Set(['614653796', '999']), ownerIds: new Set(['57884877']) },
+      storageInitialized: () => true,
+      admission: { admit: vi.fn() } as any,
+      authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796, 999],
+        repositoryIdentities: [{ repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard' }],
+        resolver: { resolve }, reportOperatorPassthroughUnavailable, recordOperatorPassthrough } as any,
+    });
+
+    await expect(handler({ eventName: 'check_run', deliveryId: `delivery-refresh-binding-${_label.replaceAll(' ', '-')}`,
+      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({ status: 'ignored', reason: 'not_enrolled' });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(reportOperatorPassthroughUnavailable).not.toHaveBeenCalled();
+    expect(recordOperatorPassthrough).not.toHaveBeenCalled();
+  });
+
+  it('rejects a known local repository-name conflict before returning pause SHIP for an issue comment', async () => {
+    const f = issueCommentPassthroughFixture({ storageInitialized: false,
+      repositoryIdentities: [{ repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard' }] });
+    const body = issueCommentPayload();
+    body.repository = { id: 614653796, name: 'different', full_name: 'exampleorg/different',
+      owner: { id: 57884877, login: 'exampleorg' } };
+
+    await expect(f.handler(issueCommentEvent('delivery-comment-known-name-conflict', body)))
+      .resolves.toEqual({ status: 'ignored', reason: 'not_enrolled' });
+    expect(f.currentPullRequestForPassthrough).not.toHaveBeenCalled();
+    expect(f.reportOperatorPassthroughUnavailable).not.toHaveBeenCalled();
+    expect(f.recordOperatorPassthrough).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
   it('does not turn an untyped issue-comment lookup error into the paused SHIP fallback', async () => {
     const f = issueCommentPassthroughFixture({ currentReadError: new Error('GitHub returned 401') });
     const event = issueCommentEvent('delivery-comment-untyped-auth-error');
@@ -616,6 +738,8 @@ describe('native GitHub App webhook admission', () => {
         repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
       },
       admission: { admit, cancelRunsForPullRequest } as any,
+      authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796],
+        repositoryIdentities: [{ repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard' }] } as any,
       now: () => NOW,
     });
     const body = payload({ action: 'labeled', label: { name: 'wip' } });
@@ -633,6 +757,49 @@ describe('native GitHub App webhook admission', () => {
     expect(admit).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['closed', closedPayload(), 'pull_request_closed'],
+    ['converted_to_draft', { action: 'converted_to_draft', number: 42,
+      installation: { id: 456 }, repository: payload().repository,
+      pull_request: { number: 42, base: { repo: { full_name: 'exampleorg/dashboard' } } } }, 'converted_to_draft'],
+    ['opt-out label', payload({ action: 'labeled', label: { name: 'wip' } }), 'opt_out_label_present'],
+    ['opt-out still present', payload({ action: 'opened', pull_request: {
+      ...payload().pull_request, labels: [{ name: 'wip' }],
+    } }), 'opt_out_label_present'],
+  ])('defers %s lifecycle mutation before storage initialization without DB or GitHub reads', async (_label, body, lifecycleAction) => {
+    const f = pausedLifecycleFixture();
+    const eventName = 'pull_request';
+    const event = { eventName, deliveryId: `delivery-paused-lifecycle-${_label.replaceAll(' ', '-')}`,
+      rawBody: Buffer.from(JSON.stringify(body)), body };
+
+    const result = await resolveBeforeDeadline(f.handler(event));
+
+    expect(result).not.toBe('timed-out');
+    expect(result).toMatchObject({ status: 'unavailable', verdict: 'SHIP', candidateState: 'unavailable',
+      expectedLanes: 0, completedLanes: 0, publicationId: null, auditDigest: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null,
+      reviewCheckId: null, gateCheckId: null, mergeEligible: false, lifecycleApplied: false,
+      deferredLifecycleAction: lifecycleAction });
+    expect(f.currentPullRequestForClose).not.toHaveBeenCalled();
+    expect(f.terminalizeRunsForClosedPullRequest).not.toHaveBeenCalled();
+    expect(f.cancelRunsForPullRequest).not.toHaveBeenCalled();
+    expect(f.admission.admit).not.toHaveBeenCalled();
+  });
+
+  it('keeps known repository identity conflicts rejected before paused lifecycle deferral', async () => {
+    const f = pausedLifecycleFixture();
+    const body = closedPayload({ repository: { ...payload().repository,
+      id: 614653796, name: 'other', full_name: 'exampleorg/other' },
+    pull_request: { number: 42, state: 'closed', merged: false,
+      base: { repo: { full_name: 'exampleorg/other' } } } });
+
+    await expect(f.handler({ eventName: 'pull_request', deliveryId: 'delivery-paused-lifecycle-conflict',
+      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({ status: 'ignored', reason: 'not_enrolled' });
+    expect(f.currentPullRequestForClose).not.toHaveBeenCalled();
+    expect(f.terminalizeRunsForClosedPullRequest).not.toHaveBeenCalled();
+    expect(f.cancelRunsForPullRequest).not.toHaveBeenCalled();
+  });
+
   it('keeps draft cancellation active when webhook admission is paused for passthrough', async () => {
     const cancelRunsForPullRequest = vi.fn(async () => ({ cancelledRunIds: ['run_active'] }));
     const admit = vi.fn();
@@ -642,6 +809,8 @@ describe('native GitHub App webhook admission', () => {
         repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
       },
       admission: { admit, cancelRunsForPullRequest } as any,
+      authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796],
+        repositoryIdentities: [{ repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard' }] } as any,
       now: () => NOW,
     });
     const body = {
@@ -670,6 +839,7 @@ describe('native GitHub App webhook admission', () => {
     };
     const onEvent = createGitHubWebhookAdmissionHandler({
       config, admission: { admit: vi.fn() } as any, mergeGroupGate,
+      authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796] } as any,
     });
     const instance = createActionDispatchApp({
       verifier: { verify: vi.fn() } as any,
@@ -1259,7 +1429,9 @@ describe('native GitHub App webhook admission', () => {
       resolveInstallationId: vi.fn(), databaseReady: vi.fn(async () => true), allowAppGate: true,
       githubWebhook: { secret: SECRET, onEvent },
     });
-    const body = { action: 'checks_requested', merge_group: { head_sha: HEAD } };
+    const body = { action: 'checks_requested', installation: { id: 456 }, repository: payload().repository,
+      merge_group: { head_sha: HEAD, base_sha: BASE,
+        head_ref: 'refs/heads/gh-readonly-queue/main/pr-42-abcdef0', base_ref: 'refs/heads/main' } };
     const auth = signed(body, 'merge-delivery');
     const response = await request(instance).post('/api/webhooks/github')
       .set('Content-Type', 'application/json')
@@ -1272,6 +1444,95 @@ describe('native GitHub App webhook admission', () => {
       snapshotDigest: 'a'.repeat(64) });
     expect(mergeGroupGate).toHaveBeenCalledOnce();
     expect(admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['name conflict', { id: 614653796, name: 'different', full_name: 'exampleorg/different',
+      owner: { id: 57884877, login: 'exampleorg' } }],
+    ['authoritative ID mismatch', { id: 999, name: 'dashboard', full_name: 'exampleorg/dashboard',
+      owner: { id: 57884877, login: 'exampleorg' } }],
+  ])('does not return pause SHIP for a merge_group with a known authoritative %s', async (_label, repository) => {
+    const mergeGroupGate = vi.fn();
+    const admission = { admit: vi.fn() };
+    const handler = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true, passthroughEnabled: true,
+        repositoryIds: new Set(['614653796', '999']), ownerIds: new Set(['57884877']) },
+      admission: admission as any,
+      storageInitialized: () => false,
+      authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796],
+        repositoryIdentities: [{ repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard' }] } as any,
+      mergeGroupGate,
+    });
+    const body = { action: 'checks_requested', installation: { id: 456 }, repository,
+      merge_group: { head_sha: HEAD, base_sha: BASE,
+        head_ref: 'refs/heads/gh-readonly-queue/main/pr-42-abcdef0', base_ref: 'refs/heads/main' } };
+
+    await expect(handler({ eventName: 'merge_group', deliveryId: `delivery-${_label.replaceAll(' ', '-')}`,
+      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({ status: 'ignored', reason: 'not_enrolled' });
+    expect(mergeGroupGate).not.toHaveBeenCalled();
+    expect(admission.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing App key', new InternalGitHubDependencyUnavailableError()],
+    ['transient GitHub read', new TransientAuthoritativeReadError('retryable_server')],
+  ])('returns unavailable logical SHIP for a locally enrolled paused merge_group on %s', async (_label, readError) => {
+    const reportOperatorPassthroughUnavailable = vi.fn(async () => ({
+      status: 'unavailable' as const, candidateState: 'unavailable' as const,
+      publicationReceiptAvailable: null, message: 'Current merge-group authority is unavailable.',
+    }));
+    const mergeGroupGate = vi.fn(async () => { throw readError; });
+    const handler = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true, passthroughEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit: vi.fn() } as any,
+      storageInitialized: () => true,
+      authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796],
+        repositoryIdentities: [{ repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard' }],
+        reportOperatorPassthroughUnavailable } as any,
+      mergeGroupGate,
+    });
+    const body = { action: 'checks_requested', installation: { id: 456 }, repository: payload().repository,
+      merge_group: { head_sha: HEAD, base_sha: BASE,
+        head_ref: 'refs/heads/gh-readonly-queue/main/pr-42-abcdef0', base_ref: 'refs/heads/main' } };
+    const rawBody = Buffer.from(JSON.stringify(body));
+
+    await expect(handler({ eventName: 'merge_group', deliveryId: `delivery-outage-${_label.replaceAll(' ', '-')}`,
+      rawBody, body })).resolves.toMatchObject({
+      status: 'unavailable', reason: 'operator_global_passthrough', candidateState: 'unavailable',
+      headSha: null, baseSha: null, verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
+      publicationId: null, auditDigest: null, publicationState: 'unavailable',
+      publicationReceiptAvailable: null, reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+    });
+    expect(mergeGroupGate).toHaveBeenCalledOnce();
+    expect(reportOperatorPassthroughUnavailable).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
+      event: { transport: 'github-app', eventName: 'merge_group',
+        deliveryId: `github-app:delivery-outage-${_label.replaceAll(' ', '-')}`,
+        deliveryDigest: createHash('sha256').update(rawBody).digest('hex') },
+    }));
+  });
+
+  it('does not hide an untyped or not-found merge_group failure behind pause SHIP', async () => {
+    const reportOperatorPassthroughUnavailable = vi.fn();
+    const mergeGroupGate = vi.fn(async () => { throw new Error('404 merge queue not found'); });
+    const handler = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true, passthroughEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit: vi.fn() } as any,
+      storageInitialized: () => true,
+      authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796],
+        repositoryIdentities: [{ repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard' }],
+        reportOperatorPassthroughUnavailable } as any,
+      mergeGroupGate,
+    });
+    const body = { action: 'checks_requested', installation: { id: 456 }, repository: payload().repository,
+      merge_group: { head_sha: HEAD, base_sha: BASE,
+        head_ref: 'refs/heads/gh-readonly-queue/main/pr-42-abcdef0', base_ref: 'refs/heads/main' } };
+
+    await expect(handler({ eventName: 'merge_group', deliveryId: 'delivery-merge-not-found',
+      rawBody: Buffer.from(JSON.stringify(body)), body })).rejects.toThrow('404 merge queue not found');
+    expect(reportOperatorPassthroughUnavailable).not.toHaveBeenCalled();
   });
 
   it('quietly ignores a signed merge_group destroyed lifecycle delivery', async () => {

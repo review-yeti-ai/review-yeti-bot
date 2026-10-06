@@ -55,6 +55,8 @@ export const triggerReviewDefinition: ToolDefinition = {
 export interface TriggerReviewDependencies {
   /** Skip new durable review admission after exact caller, repository and candidate checks. */
   passthroughEnabled?: boolean;
+  /** False until the dispatcher has completed its storage schema bootstrap. */
+  storageInitialized?: () => boolean;
   admissionRepository?: Pick<ReviewDispatchRepository, 'admit'>;
   authoritativePublishing?: AuthoritativeReviewAdmission | {
     admission?: AuthoritativeReviewAdmission | ((candidate: any) => Promise<unknown>);
@@ -140,6 +142,18 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
           || context.authorizedRepository.owner.toLowerCase() !== owner.toLowerCase()
           || context.authorizedRepository.repo.toLowerCase() !== repo.toLowerCase()) {
           throw new Error('Paused MCP SHIP requires verified caller authentication and exact repository authorization');
+        }
+        if (deps.storageInitialized?.() === false) {
+          return buildToolResultJson({
+            dispatched: false, job_crd_created: false, status: 'passthrough',
+            reason: 'operator_global_passthrough', review_started: false,
+            candidate_state: 'unavailable', owner, repo, pull_number, head_sha: null,
+            verdict: 'SHIP', expected_lanes: 0, completed_lanes: 0,
+            publication_id: null, audit_digest: null, publication_state: 'unavailable',
+            publication_receipt_available: null, review_check_id: null, gate_check_id: null,
+            merge_eligible: false,
+            message: 'Operator pause preserves logical SHIP with zero review lanes. Storage initialization is unavailable; no current candidate or durable publication receipt is asserted. Protected merge eligibility is false.',
+          } satisfies TriggerReviewOutput);
         }
         try {
           const pauseCandidate = await resolver.readCurrentCandidate({ ...mappedPauseIdentity, prNumber: pull_number });

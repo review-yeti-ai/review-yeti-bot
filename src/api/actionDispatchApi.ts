@@ -1,4 +1,4 @@
-import { expectedReviewAppIdFor } from '../auth/repositoryReviewAuthority';
+import { expectedReviewAppIdFor, matchesConfiguredReviewRepositoryIdentity } from '../auth/repositoryReviewAuthority';
 import type { PreparedPublishingPolicy } from '../review/preparedPublishingPolicy';
 import { constantTimeDigestEqual } from '../utils/constantTimeDigest';
 import { Router, type Request, type Response } from 'express';
@@ -65,6 +65,8 @@ export interface ActionDispatchRouterOptions {
   requireExpectedGeneration?: boolean;
   /** Operator-owned no-op for new reviews; auth, schema, freshness and recovery gates still apply. */
   passthroughEnabled?: boolean;
+  /** False until the process has completed the schema bootstrap required by normal dispatch. */
+  storageInitialized?: () => boolean;
   /** Exact service-owned external targets admitted through the trusted central workflow. */
   centralExternalRepositories?: ReadonlyMap<string, number>;
   /** Service-owned finite pilot allowlist; callers cannot opt themselves in or out. */
@@ -219,8 +221,45 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     try {
       if (options.passthroughEnabled === true) {
         if (dispatch.publishMode !== 'app-gate' || !authoritative
-          || !authoritativeRepositories.has(dispatch.repositoryId) || !authoritative.recordOperatorPassthrough) {
+          || !authoritativeRepositories.has(dispatch.repositoryId)) {
           return response.status(503).json({ error: 'Authoritative operator SHIP publication is unavailable' });
+        }
+        if (!matchesConfiguredReviewRepositoryIdentity(authoritative, {
+          repositoryId: dispatch.repositoryId, owner: dispatch.owner, repo: dispatch.repo,
+        })) {
+          return response.status(403).json({ error: 'Action dispatch is not authorized' });
+        }
+        if (!authoritative.recordOperatorPassthrough) {
+          return response.status(503).json({ error: 'Authoritative operator SHIP publication is unavailable' });
+        }
+        if (options.storageInitialized?.() === false) {
+          return response.status(200).json({
+            version: 'ActionDispatchPassthrough.v1',
+            status: 'passthrough',
+            reason: 'operator_global_passthrough',
+            reviewStarted: false,
+            candidateState: 'unavailable',
+            verdict: 'SHIP',
+            expectedLanes: 0,
+            completedLanes: 0,
+            publicationId: null,
+            auditDigest: null,
+            publicationState: 'unavailable',
+            publicationReceiptAvailable: null,
+            reviewCheckId: null,
+            gateCheckId: null,
+            mergeEligible: false,
+            message: 'Operator pause preserves logical SHIP with zero review lanes. Storage initialization is unavailable; no current candidate or durable publication receipt is asserted. Protected merge eligibility is false.',
+            deliveryId: dispatch.deliveryId,
+            eventName: dispatch.caller.eventName,
+            repositoryId: dispatch.repositoryId,
+            owner: dispatch.owner,
+            repo: dispatch.repo,
+            prNumber: dispatch.prNumber,
+            headSha: null,
+            baseSha: null,
+            callerKind,
+          } as const);
         }
         const result = await authoritative.recordOperatorPassthrough({
           requested: { repositoryId: dispatch.repositoryId, owner: dispatch.owner, repo: dispatch.repo,

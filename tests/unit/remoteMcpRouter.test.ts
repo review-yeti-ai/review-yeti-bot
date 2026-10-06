@@ -14,7 +14,7 @@ import {
   type McpAuthenticator,
   McpAuthError,
 } from '../../src/mcp/server/mcpAuthenticator';
-import { buildToolResultText, buildToolResultJson, MCP_ERRORS } from '../../src/mcp/server/mcpTypes';
+import { buildToolResultText, buildToolResultJson, JSONRPC_ERRORS, MCP_ERRORS } from '../../src/mcp/server/mcpTypes';
 import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
 
 describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', () => {
@@ -237,6 +237,57 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
       owner: requested.owner, repo: requested.repo, prNumber: requested.prNumber });
     expect(resolve).toHaveBeenCalledExactlyOnceWith(requested);
     expect(query).toHaveBeenCalledOnce();
+  });
+
+  it('returns logical SHIP for an enrolled paused status request before storage initialization without reads', async () => {
+    const requested = { repositoryId: 123, owner: 'exampleorg', repo: 'example-api', prNumber: 46,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) };
+    const readCurrentCandidate = vi.fn();
+    const resolve = vi.fn();
+    const query = vi.fn();
+    const registry = createDefaultToolRegistry({ db: { query }, passthroughEnabled: true,
+      storageInitialized: () => false,
+      triggerDeps: { authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
+        repositoryIds: [requested.repositoryId], repositoryIdentities: [{ repositoryId: requested.repositoryId,
+          owner: requested.owner, repo: requested.repo }], resolver: { readCurrentCandidate, resolve } } } });
+
+    const result = await registry.getTool('get_review_status')!.execute({
+      owner: requested.owner, repo: requested.repo, pull_number: requested.prNumber,
+    }, {} as any) as any;
+    const output = JSON.parse((result.content[0] as any).text);
+
+    expect(output).toMatchObject({ found: true, verdict: 'SHIP', head_sha: null, phase: 'completed',
+      check_run: null, operator_exemption: { candidate_state: 'unavailable', publication_id: null,
+        audit_digest: null, base_sha: null, policy_digest: null, expected_app_id: null,
+        expected_lanes: 0, completed_lanes: 0, review_started: false,
+        publication_state: 'unavailable', publication_receipt_available: null,
+        review_check_id: null, gate_check_id: null, merge_eligible: false } });
+    expect(readCurrentCandidate).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('allows only the two pause status/trigger tools before storage initialization', async () => {
+    const { testApp, toolRegistry } = buildTestApp({ passthroughEnabled: true,
+      storageInitialized: () => false });
+
+    const blocked = await request(testApp).post('/api/mcp').set('Authorization', 'Bearer valid-token').send({
+      jsonrpc: '2.0', id: 91, method: 'tools/call', params: { name: 'get_model_matrix', arguments: {} },
+    });
+    expect(blocked.status).toBe(503);
+    expect(blocked.body.error).toMatchObject({ code: JSONRPC_ERRORS.INTERNAL_ERROR,
+      message: 'Review storage is not initialized' });
+    const blockedHandler = vi.mocked(toolRegistry.getTool).mock.results.at(-1)?.value;
+    expect(blockedHandler?.execute).not.toHaveBeenCalled();
+
+    const allowed = await request(testApp).post('/api/mcp').set('Authorization', 'Bearer valid-token').send({
+      jsonrpc: '2.0', id: 92, method: 'tools/call', params: {
+        name: 'get_review_status', arguments: { owner: 'exampleorg', repo: 'example-api', pull_number: 42 },
+      },
+    });
+    expect(allowed.status).toBe(200);
+    const allowedHandler = vi.mocked(toolRegistry.getTool).mock.results.at(-1)?.value;
+    expect(allowedHandler?.execute).toHaveBeenCalledOnce();
   });
 
   describe('Protocol Negotiation', () => {

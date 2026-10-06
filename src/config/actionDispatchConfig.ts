@@ -77,9 +77,12 @@ export interface CentralExternalTargetConfig {
  */
 export function centralExternalTargetConfigFromEnv(
   environment: NodeJS.ProcessEnv | Pick<ActionDispatchEnvironment,
+    'REVIEW_YETI_PASSTHROUGH'
+    |
     'ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES'
     | 'REVIEW_YETI_PUBLIC_TARGET_APP_ID'
     | 'REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY'>,
+  options: { allowUnavailableSigningKey?: boolean } = {},
 ): CentralExternalTargetConfig {
   const configuredRepositories = environment.ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES;
   if (configuredRepositories === undefined) return { repositories: new Map() };
@@ -90,14 +93,15 @@ export function centralExternalTargetConfigFromEnv(
   const publicPrivateKey = environment.REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY?.trim().replace(/\\n/g, '\n');
   if (!publicAppId || !/^[1-9][0-9]*$/u.test(publicAppId)
     || !Number.isSafeInteger(Number(publicAppId))
-    || publicAppId !== String(PUBLIC_REVIEW_APP_ID) || !publicPrivateKey) {
+    || publicAppId !== String(PUBLIC_REVIEW_APP_ID)
+    || (!publicPrivateKey && options.allowUnavailableSigningKey !== true)) {
     throw new Error('Dedicated public-target GitHub App credentials are required for external dispatch');
   }
   return {
     repositories: new Map([
       [SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY, SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY_ID],
     ]),
-    appCredentials: { appId: publicAppId, privateKey: publicPrivateKey },
+    appCredentials: { appId: publicAppId, privateKey: publicPrivateKey || '' },
   };
 }
 
@@ -111,7 +115,9 @@ export function actionDispatchConfigFromEnv(
   else if (value === 'true') requireExpectedGeneration = true;
   else throw new Error('ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION must be exactly true or false');
 
-  const external = centralExternalTargetConfigFromEnv(environment);
+  const external = centralExternalTargetConfigFromEnv(environment, {
+    allowUnavailableSigningKey: passthroughEnabled,
+  });
   const centralExternalRepositories = external.repositories;
   const centralExternalAppCredentials = external.appCredentials;
 

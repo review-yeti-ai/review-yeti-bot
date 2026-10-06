@@ -236,18 +236,25 @@ finite Actions/OIDC repository and owner allowlists:
   `true` enables it, and other values prevent startup. After webhook signature,
   enrollment, event identity and trigger validation, eligible new App-webhook,
   merge-group, OIDC Action and authenticated MCP `trigger_review` requests
-  receive an explicit passthrough receipt. The service starts no review and does
+  receive logical SHIP with zero review lanes. The service starts no review and does
   not claim or consume an Action generation. OIDC, expected-generation
   presence, recovery authority and timestamp checks still apply. The App
-  operator remains enabled and responsive; completion and cancellation paths
-  continue so in-flight work can drain. The setting does not enroll additional
-  repositories. Set it back to `false` and roll out the service to resume normal
-  admission.
+  listener remains responsive; DB-backed completion and cancellation routes
+  resume after storage initialization. Existing external worker activity is not
+  cancelled. Signed close, draft-conversion and opt-out deliveries received
+  before storage initialization return an unavailable/deferred lifecycle result;
+  they do not claim that existing runs were terminalized or cancelled. The
+  setting does not enroll additional repositories. Set it back
+  to `false` and roll out the service to resume normal admission.
 
-  **Passthrough is a durable, service-owned SHIP exemption.** Each eligible
-  authenticated request is re-resolved against GitHub and current policy, then
-  recorded with its exact repository, PR, head, base, policy digest, App
-  identity and source delivery in the append-only operator-passthrough ledger.
+  **Passthrough is a service-owned SHIP exemption.** When storage and current
+  authority are available, each eligible authenticated request is re-resolved
+  against GitHub and current policy, then recorded with its exact repository,
+  PR, head, base, policy digest, App identity and source delivery in the
+  append-only operator-passthrough ledger. Before storage initialization
+  completes, the listener returns candidate/publication `unavailable`, null
+  unknown coordinates and check IDs, and `merge_eligible=false`. That fast path
+  performs no request-side database work and makes no durable receipt claim.
   The durable publisher posts the official `Review Yeti` and, where required,
   `Review Yeti Gate` checks with the `review-mode=passthrough` marker and a
   publication-specific external ID. Their titles identify this as SHIP with no
@@ -266,6 +273,25 @@ finite Actions/OIDC repository and owner allowlists:
   Authenticated admission and bounded catch-up both use this one ledger and
   publisher; merge-group checks bind the current ordered queue snapshot, pause
   mode and every constituent's current paired checks.
+
+  While pause is enabled, `/ready` returns HTTP 200 for the `pause-safe`
+  contract even if storage is not initialized or the last background database
+  probe failed. Its `storageInitialized`, `databaseReady`,
+  `databaseProbeStatus`, `databaseProbeCheckedAt` and
+  `databaseProbeInProgress` fields separate service availability from the last
+  read-only database observation. `databaseReady` is `false` before storage is
+  initialized, `null` when no probe has completed, and otherwise reflects the
+  most recent probe. `/ready` never waits for a database connection in pause;
+  outside pause, the normal database readiness contract remains unchanged.
+  Publisher/reconciliation begins after schema initialization succeeds.
+  Review CI routes, completion hooks, claims and new dispatch stay disabled
+  throughout pause.
+
+  The primary and dedicated public App IDs and repository bindings remain
+  required. If an outbound App signing key is absent while pause is enabled,
+  the listener still opens and that GitHub authority remains unavailable until
+  the key is restored; those keys remain required outside pause. OIDC caller
+  credentials, webhook secrets and static enrollment are validated normally.
 
   When the pause is disabled, active exemptions are retired through the same
   durable publisher before ordinary admission resumes. In-flight old publisher
