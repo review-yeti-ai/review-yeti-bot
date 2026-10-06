@@ -10,7 +10,7 @@ type Job = { name?: string; if?: string; needs?: string | string[]; permissions?
 type Workflow = { on: Record<string, { branches?: string[]; types?: string[] } | null | unknown[]>;
   concurrency?: { group?: string; 'cancel-in-progress'?: string | boolean };
   permissions?: Record<string, string>; jobs: Record<string, Job> };
-type Event = { name: string; action?: string; base?: string; ref?: string; draft?: boolean; state?: string; subject?: string };
+type Event = { name: string; action?: string; base?: string; baseRef?: string; defaultBranch?: string; ref?: string; draft?: boolean; state?: string; subject?: string };
 type Need = { result: string; outputs: Record<string, string> };
 const root = path.resolve(__dirname, '../..');
 const ci = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/ci-cd.yaml'), 'utf8')) as Workflow;
@@ -19,6 +19,7 @@ const quality = ['test-plan', 'vitest', 'vitest-postgres', 'worker-helper', 'bui
 const publication = ['publish-ghcr-arch', 'publish-ghcr', 'attest-published-indexes'];
 const actions = ['opened', 'synchronize', 'reopened', 'ready_for_review'];
 const draft: Event = { name: 'pull_request', action: 'opened', base: 'main', ref: 'refs/pull/42/merge', state: 'open', draft: true };
+const paidDraft: Event = { name: 'pull_request_target', action: 'opened', baseRef: 'main', defaultBranch: 'main', state: 'open', draft: true };
 function needs(): Record<string, Need> {
   return Object.fromEntries([...quality, ...publication].map(id => [id, { result: 'success', outputs: {
     'shard-count': '4', 'postgres-tests': '["tests/integration/example.postgres.test.ts"]',
@@ -27,7 +28,7 @@ function needs(): Record<string, Need> {
 
 function eventRegistered(event: Event, workflow: Workflow): boolean {
   const selector = workflow.on[event.name];
-  if (event.name === 'pull_request' || event.name === 'repository_dispatch') {
+  if (event.name === 'pull_request' || event.name === 'pull_request_target' || event.name === 'repository_dispatch') {
     const configured = selector as { branches?: string[]; types?: string[] } | undefined;
     return !!configured?.types?.includes(event.action ?? '')
       && (!configured.branches || configured.branches.includes(event.base ?? ''));
@@ -42,14 +43,15 @@ function eventRegistered(event: Event, workflow: Workflow): boolean {
 function evaluateGuard(guard: string | undefined, event: Event, dependencies: Record<string, Need>): boolean {
   if (!guard) return true;
   const expression = guard.replace(/^\s*\$\{\{\s*|\s*\}\}\s*$/gu, '');
-  const tokens = expression.match(/\s+|github\.(?:event_name|ref|event\.action|event\.head_commit\.message|event\.pull_request\.(?:draft|state))|needs\.[a-z-]+\.(?:result|outputs\.[a-z-]+)|always\(\)|startsWith|'(?:[^'\\]|\\.)*'|true|false|==|!=|\|\||&&|[!(),]/gu) ?? [];
+  const tokens = expression.match(/\s+|github\.(?:event_name|ref|event\.action|event\.head_commit\.message|event\.repository\.default_branch|event\.pull_request\.(?:draft|state|base\.ref))|needs\.[a-z-]+\.(?:result|outputs\.[a-z-]+)|always\(\)|startsWith|'(?:[^'\\]|\\.)*'|true|false|==|!=|\|\||&&|[!(),]/gu) ?? [];
   if (tokens.join('') !== expression) throw new Error('Unsupported workflow condition syntax');
   const executable = tokens.map(token => token.startsWith('needs.')
     ? 'needs' + token.slice(6).split('.').map(key => `[${JSON.stringify(key)}]`).join('') : token).join('');
   return Boolean(vm.runInNewContext(executable, {
     github: { event_name: event.name, ref: event.ref, event: {
       action: event.action,
-      head_commit: { message: event.subject }, pull_request: { draft: event.draft, state: event.state },
+      head_commit: { message: event.subject }, repository: { default_branch: event.defaultBranch ?? 'main' },
+      pull_request: { draft: event.draft, state: event.state, base: { ref: event.baseRef ?? 'main' } },
     } }, needs: dependencies, always: () => true,
     startsWith: (value: string, prefix: string) => value.toLowerCase().startsWith(prefix.toLowerCase()),
   }, { timeout: 2000 }));
@@ -159,15 +161,16 @@ describe('public draft quality admission', () => {
   });
 
   it('retains the exact paid readiness guard, public engine, and retired internal boundary', () => {
-    expect(paid.jobs.review.if).toBe("${{ github.event_name == 'repository_dispatch' || (github.event.pull_request.state == 'open' && !github.event.pull_request.draft) }}");
-    expect(paid.on.pull_request).toEqual({ types: actions });
-    expect(paid.jobs.review.name).toBe('Execute AI Review Pipeline');
+    expect(paid.jobs.review.if).toBe("${{ github.event_name == 'repository_dispatch' || (github.event.pull_request.state == 'open' && !github.event.pull_request.draft && github.event.pull_request.base.ref == github.event.repository.default_branch) }}");
+    expect(paid.on.pull_request).toBeUndefined();
+    expect(paid.on.pull_request_target).toEqual({ types: actions });
+    expect(paid.jobs.review.name).toBe('Review Bot PR Controller');
     expect(paid.jobs.review.steps.filter(step => step.uses === './').map(step => step.with?.['execution-backend'])).toEqual(['local']);
     expect(fs.existsSync(path.join(root, '.github/workflows/ct-review-bot.yml'))).toBe(false);
     for (const action of actions) {
-      expect(admitted('review', { ...draft, action }, paid)).toBe(false);
-      expect(admitted('review', { ...draft, action, draft: false }, paid)).toBe(true);
-      expect(admitted('review', { ...draft, action, draft: false, state: 'closed' }, paid)).toBe(false);
+      expect(admitted('review', { ...paidDraft, action }, paid)).toBe(false);
+      expect(admitted('review', { ...paidDraft, action, draft: false }, paid)).toBe(true);
+      expect(admitted('review', { ...paidDraft, action, draft: false, state: 'closed' }, paid)).toBe(false);
     }
     expect(admitted('review', { name: 'repository_dispatch', action: 'review-requested' }, paid)).toBe(true);
   });
@@ -211,9 +214,9 @@ describe('public draft quality admission', () => {
     const step = publish.jobs['legacy-runtime'].steps.find(step => step.uses?.startsWith('docker/build-push-action@'))!;
     step.with!.push = true;
     expect(() => assertQualityClasses(publish)).toThrow();
-    const paidDraft = structuredClone(paid); paidDraft.jobs.review.if = undefined;
-    expect(admitted('review', draft, paidDraft)).toBe(true);
-    expect(() => expect(admitted('review', draft, paidDraft)).toBe(false)).toThrow();
+    const paidUnGuarded = structuredClone(paid); paidUnGuarded.jobs.review.if = undefined;
+    expect(admitted('review', paidDraft, paidUnGuarded)).toBe(true);
+    expect(() => expect(admitted('review', paidDraft, paidUnGuarded)).toBe(false)).toThrow();
     const unguarded = structuredClone(ci); unguarded.jobs['publish-ghcr-arch'].if = 'always()';
     expect(admitted('publish-ghcr-arch', draft, unguarded)).toBe(true);
     expect(() => expect(admitted('publish-ghcr-arch', draft, unguarded)).toBe(false)).toThrow();
