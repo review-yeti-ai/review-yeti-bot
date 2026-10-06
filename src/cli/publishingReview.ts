@@ -2553,7 +2553,7 @@ export async function runPublishingReviewWorker(
       const convergence: ConvergenceResult<ReviewFinding> = evaluateFindingConvergence({
         findings, changedFiles, priorThreads: priorFindingThreads,
         ...(reviewDecisionPolicy ? { policyVersion: reviewDecisionPolicy } : {}),
-        // ADR 0770: exactly the delta files the engine showed lanes as a delta (what the claim names),
+        // ADR 0771: exactly the delta files the engine showed lanes as a delta (what the claim names),
         // so this check and the trusted Gate scope a P2 by the same patches.
         ...(incrementalDisclosure?.deltaPaths?.length ? { deltaScope: (incrementalScope?.deltaFiles ?? [])
           .filter((file) => incrementalDisclosure.deltaPaths!.includes(file.path))

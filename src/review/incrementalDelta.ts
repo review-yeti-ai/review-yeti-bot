@@ -1,5 +1,5 @@
 /**
- * Delta-scoped incremental re-review (ADR 0770; extends REL-1084, `incrementalReview.ts`).
+ * Delta-scoped incremental re-review (ADR 0771; extends REL-1084, `incrementalReview.ts`).
  *
  * REL-1084 carries an unchanged file forward but re-reviews a TOUCHED file whole. A pull request
  * under repair touches the same few files on every push, so almost nothing carries and each push

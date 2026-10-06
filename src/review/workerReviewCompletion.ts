@@ -478,7 +478,7 @@ export interface TrustedReviewCoverageContract {
    */
   incrementalVerified?: boolean;
   /**
-   * ADR 0770: the service's own previous-head...head patches for the delta-scoped paths of a verified
+   * ADR 0771: the service's own previous-head...head patches for the delta-scoped paths of a verified
    * incremental claim. Convergence narrows a P2 on these files to the lines the delta touched.
    */
   incrementalDeltaFiles?: ReadonlyArray<{ path: string; patch: string }>;

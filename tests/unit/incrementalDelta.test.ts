@@ -36,7 +36,7 @@ import { parseChangedFiles } from '../../src/review/changedFiles';
 import type { IncrementalReviewScope } from '../../src/types/incrementalReview';
 
 /**
- * ADR 0770: delta-scoped incremental re-review. Pure units: flags, hunk and region math, the grouped
+ * ADR 0771: delta-scoped incremental re-review. Pure units: flags, hunk and region math, the grouped
  * ledger and its validation, the decision, the engine-side patch replacement, the trusted
  * verification, and the convergence narrowing.
  */

@@ -450,7 +450,7 @@ export class AuthoritativeReviewReader {
   }
 
   /**
-   * ADR 0770: the same comparison with each file's status and validated closed-hunk patch (absent when
+   * ADR 0771: the same comparison with each file's status and validated closed-hunk patch (absent when
    * GitHub omitted or truncated it), for the delta-scoped incremental re-review. Callers treat a list
    * of 300 files as possibly incomplete.
    */

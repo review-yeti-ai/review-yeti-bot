@@ -167,7 +167,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
     onEligibleCompletion?: (client: Queryable, gate: StoredReviewGate, now: number) => Promise<void>;
     /** REL-1084: the oldest prior review a carry-forward may rest on (service configuration). */
     incrementalMaxAgeMs?: number;
-    /** ADR 0770: `REVIEW_YETI_INCREMENTAL_MAX_CHAIN`, consulted only for a delta-scoped claim. */
+    /** ADR 0771: `REVIEW_YETI_INCREMENTAL_MAX_CHAIN`, consulted only for a delta-scoped claim. */
     incrementalMaxChain?: number;
     /** REL-1085: the oldest stored review a verdict-cache hit may rest on (service configuration). */
     verdictCacheMaxAgeMs?: number;
