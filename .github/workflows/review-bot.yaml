@@ -3,7 +3,7 @@ name: Review Bot
 # Central review repository runner.
 #
 # Two entry points:
-#   1. pull_request       — reviews PRs raised against this repository itself.
+#   1. pull_request_target — a base-owned controller reviews default-branch PRs in this repository.
 #   2. repository_dispatch — another repository dispatches here with a target_repo/pr_number
 #                            client_payload; this repo holds the personas, prompts and keys and
 #                            comments back on the originating PR.
@@ -11,7 +11,7 @@ name: Review Bot
 # The review itself is delegated to this repository's own action.yml, so every run exercises the
 # same code path third-party consumers get via `uses: review-yeti-ai/review-yeti-bot@v1`.
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
   repository_dispatch:
     types: [review-requested, re-review-requested, dispatch-review]
@@ -26,11 +26,64 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  start-self-review:
+    name: Start base-owned self-review check
+    if: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.state == 'open' && !github.event.pull_request.draft && github.event.pull_request.base.ref == github.event.repository.default_branch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: read
+    outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+      check-run-id: ${{ steps.start-check.outputs.check-run-id }}
+    steps:
+      - name: Checkout Review Runner (this repository)
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          # On pull_request_target github.sha is the trusted default-branch workflow commit.
+          # Never check out the pull request head or its base branch source.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node for the trusted controller
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '24'
+
+      - name: Resolve trusted self-review mode
+        id: mode
+        env:
+          REVIEW_YETI_PASSTHROUGH: ${{ vars.REVIEW_YETI_PASSTHROUGH }}
+        run: node scripts/self-review-check-run.mjs mode
+
+      - name: Start exact-head required review check
+        id: start-check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVIEW_MODE: ${{ steps.mode.outputs.mode }}
+        run: node scripts/self-review-check-run.mjs start
+
   review:
-    name: Execute AI Review Pipeline
-    # Idle draft edits prepare a candidate. Ready promotion or an explicit
-    # public-side request admits the paid native review.
-    if: ${{ github.event_name == 'repository_dispatch' || (github.event.pull_request.state == 'open' && !github.event.pull_request.draft) }}
+    name: Review Bot PR Controller
+    needs: [start-self-review]
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    outputs:
+      action-outcome: ${{ steps.review.outcome }}
+      enforce-outcome: ${{ steps.enforce.outcome }}
+      review-status: ${{ steps.review.outputs.review-status }}
+      verdict: ${{ steps.review.outputs.verdict }}
+      gate-decision: ${{ steps.review.outputs.gate-decision }}
+      merge-eligible: ${{ steps.review.outputs.merge-eligible }}
+      files-omitted: ${{ steps.review.outputs.files-omitted }}
+    # The target event uses base-owned code and admits only the repository's default branch.
+    # Idle draft edits prepare a candidate; a ready PR admits normal review unless the
+    # repository operator has explicitly set REVIEW_YETI_PASSTHROUGH=true.
+    if: ${{ always() && (github.event_name == 'repository_dispatch' || (github.event_name == 'pull_request_target' && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.mode != 'operator-waiver' && github.event.pull_request.state == 'open' && !github.event.pull_request.draft && github.event.pull_request.base.ref == github.event.repository.default_branch)) }}
     runs-on: ubuntu-latest
     # Caller-side hard backstop: no direct self-review or repository-dispatch path may run
     # longer than the central 20-minute evidence + 5-minute closeout contract.
@@ -38,9 +91,14 @@ jobs:
     steps:
       - name: Checkout Review Runner (this repository)
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          # On pull_request_target github.sha is the trusted default-branch workflow commit.
+          # Never check out the pull request head or its base branch source.
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Join the tailnet
-        if: env.TS_AUTHKEY != '' || vars.TS_OIDC_CLIENT_ID != ''
+        if: ${{ (github.event_name != 'pull_request_target' || needs.start-self-review.outputs.mode != 'operator-waiver') && (env.TS_AUTHKEY != '' || vars.TS_OIDC_CLIENT_ID != '') }}
         continue-on-error: true
         uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4
         with:
@@ -55,7 +113,7 @@ jobs:
       # above ~1,000 bytes. A smaller tunnel MTU makes TLS certificate flights
       # complete; the gateway probe must pass before starting paid review lanes.
       - name: Verify gateway Tailnet TLS
-        if: contains(vars.OPENROUTER_BASE_URL, '.ts.net')
+        if: ${{ (github.event_name != 'pull_request_target' || needs.start-self-review.outputs.mode != 'operator-waiver') && contains(vars.OPENROUTER_BASE_URL, '.ts.net') }}
         env:
           GATEWAY_BASE_URL: ${{ vars.OPENROUTER_BASE_URL }}
         run: |
@@ -91,6 +149,7 @@ jobs:
       - name: Assert the review transport configuration is consistent
         id: transport
         shell: bash
+        if: github.event_name != 'pull_request_target' || needs.start-self-review.outputs.mode != 'operator-waiver'
         env:
           REVIEW_BASE_URL: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
           OPENCODE_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENCODE_API_KEY != '' }}
@@ -101,6 +160,7 @@ jobs:
 
       - name: Execute AI Review Panel
         id: review
+        if: github.event_name == 'repository_dispatch' || needs.start-self-review.outputs.mode != 'operator-waiver'
         uses: ./
         with:
           # Keep the public repository on its existing public-side engine even
@@ -169,7 +229,7 @@ jobs:
           doks-publish-mode: 'app-gate'
 
       - name: Report Verdict
-        if: always()
+        if: ${{ always() && (github.event_name != 'pull_request_target' || needs.start-self-review.outputs.mode != 'operator-waiver') }}
         run: |
           echo "Verdict: ${{ steps.review.outputs.verdict }}"
           echo "Findings: ${{ steps.review.outputs.findings-count }} (P0: ${{ steps.review.outputs.p0-count }}, P1: ${{ steps.review.outputs.p1-count }}, P2: ${{ steps.review.outputs.p2-count }})"
@@ -214,7 +274,8 @@ jobs:
       # with a distinct infrastructure message naming the lanes, so re-running the job is the
       # obvious action instead of hunting for findings that do not exist.
       - name: Enforce Verdict
-        if: always()
+        id: enforce
+        if: ${{ always() && (github.event_name != 'pull_request_target' || needs.start-self-review.outputs.mode != 'operator-waiver') }}
         env:
           VERDICT: ${{ steps.review.outputs.verdict }}
           REVIEW_STATUS: ${{ steps.review.outputs.review-status }}
@@ -279,3 +340,40 @@ jobs:
             ${{ steps.review.outputs.provider-telemetry-path }}
           if-no-files-found: ignore
           retention-days: 14
+
+  finish-self-review:
+    name: Complete base-owned self-review check
+    needs: [start-self-review, review]
+    if: ${{ always() && github.event_name == 'pull_request_target' && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.check-run-id != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: read
+    steps:
+      - name: Checkout Review Runner (this repository)
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node for the trusted controller
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '24'
+
+      - name: Finish exact-head required review check
+        id: finish-check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVIEW_MODE: ${{ needs.start-self-review.outputs.mode }}
+          CHECK_RUN_ID: ${{ needs.start-self-review.outputs.check-run-id }}
+          ACTION_OUTCOME: ${{ needs.review.outputs.action-outcome }}
+          ENFORCE_OUTCOME: ${{ needs.review.outputs.enforce-outcome }}
+          REVIEW_STATUS: ${{ needs.review.outputs.review-status }}
+          VERDICT: ${{ needs.review.outputs.verdict }}
+          GATE_DECISION: ${{ needs.review.outputs.gate-decision }}
+          MERGE_ELIGIBLE: ${{ needs.review.outputs.merge-eligible }}
+          FILES_OMITTED: ${{ needs.review.outputs.files-omitted }}
+        run: node scripts/self-review-check-run.mjs finish
