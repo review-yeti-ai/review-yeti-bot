@@ -478,20 +478,23 @@ describe('native merge-group Review Yeti gate', () => {
   it.each([
     ['mismatched current head', () => {
       const value: any = queue(); value.data.repository.mergeQueue.entries.nodes[0].headCommit.oid = 'd'.repeat(40); return value;
-    }, undefined],
+    }, undefined, 'Merge queue no longer matches the webhook', undefined],
     ['mismatched current base', () => {
       const value: any = queue(); value.data.repository.mergeQueue.entries.nodes[0].baseCommit.oid = 'd'.repeat(40); return value;
-    }, undefined],
+    }, undefined, 'Merge queue no longer matches the webhook', undefined],
     ['ineligible constituent', () => {
       const value: any = queue(); value.data.repository.mergeQueue.entries.nodes[0].pullRequest.state = 'CLOSED'; return value;
-    }, undefined],
+    }, undefined, 'Merge queue contains an ineligible constituent', undefined],
     ['paginated queue evidence', () => {
       const value: any = queue(); value.data.repository.mergeQueue.entries.pageInfo.hasNextPage = true; return value;
-    }, undefined],
+    }, undefined, 'Merge queue evidence is incomplete', undefined],
     ['incomplete check-run evidence', () => queue(), { total_count: 2, check_runs: [{
       id: 8015, name: 'Review Yeti', head_sha: PR_HEAD, status: 'completed', conclusion: 'success', app: officialApp,
-    }] }],
-  ])('fails closed for %s', async (_label, queueResponse, checkResponse) => {
+    }] }, undefined, { checkId: 9015, conclusion: 'failure',
+      snapshotDigest: queueSnapshotDigest(), constituents: 1 }],
+  ] as Array<[string, () => unknown, unknown, string | undefined,
+    { checkId: number; conclusion: 'failure'; snapshotDigest: string; constituents: number } | undefined]>)
+  ('fails closed for %s', async (_label, queueResponse, checkResponse, expectedError, expectedResult) => {
     const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === 'https://api.github.com/graphql') return response(queueResponse());
@@ -506,11 +509,10 @@ describe('native merge-group Review Yeti gate', () => {
     const gate = createMergeGroupGate({
       config, repository: repository() as any, tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation,
     });
-    if (_label === 'incomplete check-run evidence') {
-      await expect(gate(payload())).resolves.toEqual({ checkId: 9015, conclusion: 'failure',
-        snapshotDigest: queueSnapshotDigest(), constituents: 1 });
+    if (expectedResult) {
+      await expect(gate(payload())).resolves.toEqual(expectedResult);
     } else {
-      await expect(gate(payload())).rejects.toThrow();
+      await expect(gate(payload())).rejects.toThrow(expectedError);
     }
   });
 

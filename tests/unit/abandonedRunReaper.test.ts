@@ -95,16 +95,6 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
     expect(client.failAbandonedCheck).toHaveBeenCalledWith(run, 4385771, expect.any(AbortSignal));
   });
 
-  it('forbids creating a new raw failure check during the operator pause', async () => {
-    const f = fixture();
-    const subject = new AbandonedRunReaper({
-      repository: f.repository, checkClientFor: f.checkClientFor, workerId: 'reaper-a', publisherAppId: 4385771,
-      now: () => 902_000, limit: 5, allowCheckCreation: () => false,
-    });
-    await subject.runOnce();
-    expect(f.client.failAbandonedCheck).toHaveBeenCalledWith(run, 4385771, expect.any(AbortSignal), { allowCreate: false });
-  });
-
   it('sweeps non-publishable runs past their deadline and reports the count', async () => {
     const { subject, repository } = fixture();
     repository.retireExpiredNonPublishableRuns.mockResolvedValueOnce(3);

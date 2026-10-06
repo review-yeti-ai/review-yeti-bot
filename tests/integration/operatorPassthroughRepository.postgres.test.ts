@@ -358,6 +358,34 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
     expect(errorClass.rows[0].last_error_class).toBe('unknown-create');
   });
 
+  it('fences retryPublication by the active lease and makes the requested delay observable', async () => {
+    const recorded = await repository.record(inputFor(), NOW);
+    const original = await repository.claimPublication('publisher-retry-old', NOW, 10_000, recorded.publicationId);
+    expect(original).not.toBeNull();
+
+    const current = await repository.claimPublication('publisher-retry-current', NOW + 10_001, 10_000,
+      recorded.publicationId);
+    expect(current).toMatchObject({ publicationId: recorded.publicationId, mayCreate: false });
+
+    await expect(repository.retryPublication(original!, NOW + 10_002, 1_000)).resolves.toBe(false);
+    await expect(repository.retryPublication(current!, NOW + 10_002, 999)).rejects.toThrow();
+    await expect(repository.retryPublication(current!, NOW + 10_002, 1_000)).resolves.toBe(true);
+
+    const row = await pool!.query(`SELECT lease_owner,lease_token,last_error_class,
+      (extract(epoch FROM available_at)*1000)::bigint AS available_at_ms
+      FROM review_operator_passthrough_publications WHERE publication_id=$1`, [recorded.publicationId]);
+    expect(row.rows[0]).toMatchObject({
+      lease_owner: null,
+      lease_token: null,
+      last_error_class: 'transport',
+      available_at_ms: String(NOW + 11_002),
+    });
+    await expect(repository.claimPublication('publisher-retry-too-early', NOW + 11_001, 10_000,
+      recorded.publicationId)).resolves.toBeNull();
+    await expect(repository.claimPublication('publisher-retry-due', NOW + 11_002, 10_000,
+      recorded.publicationId)).resolves.toMatchObject({ publicationId: recorded.publicationId, mayCreate: false });
+  });
+
   it('respects the shared PR advisory lock for competing same-head policy publications', async () => {
     const repositoryId = 1_765_432_109;
     const first = await repository.record(inputFor({ repositoryId, prNumber: 88 }), NOW);
@@ -542,6 +570,58 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
       reviewCheckId: 7311,
       gateCheckId: 7312,
       readyForShip: true,
+    });
+  });
+
+  it('keeps retirement completion aligned for unstarted and partially published stages', async () => {
+    const unstartedInput = inputFor({ repositoryId: 1_623_456_781, prNumber: 81 });
+    const unstarted = await repository.record(unstartedInput, NOW);
+    await expect(repository.requestRetirement({
+      repositoryId: unstartedInput.candidate.repositoryId,
+      prNumber: unstartedInput.candidate.prNumber,
+      headSha: unstartedInput.candidate.headSha,
+    }, 'pause-disabled', NOW + 1)).resolves.toBe(1);
+    await expect(repository.getPublication(unstarted.publicationId)).resolves.toMatchObject({
+      reviewCreationState: 'not-created',
+      reviewRetiredAt: NOW + 1,
+      gateCreationState: 'not-created',
+      gateRetiredAt: NOW + 1,
+      retiredAt: NOW + 1,
+      readyForShip: false,
+    });
+
+    const partialInput = inputFor({ repositoryId: 1_623_456_782, prNumber: 82 });
+    const partial = await repository.record(partialInput, NOW);
+    const reviewClaim = await repository.claimPublication('publisher-partial-review', NOW, 10_000,
+      partial.publicationId);
+    await expect(repository.publishLocked(reviewClaim!, async (claim) => checkForClaim(claim, 7321),
+      () => NOW + 1)).resolves.toBe('published');
+    await expect(repository.requestRetirement({
+      repositoryId: partialInput.candidate.repositoryId,
+      prNumber: partialInput.candidate.prNumber,
+      headSha: partialInput.candidate.headSha,
+    }, 'normal-review-admitted', NOW + 2)).resolves.toBe(1);
+    await expect(repository.getPublication(partial.publicationId)).resolves.toMatchObject({
+      reviewCreationState: 'bound',
+      reviewCheckId: 7321,
+      reviewRetiredAt: null,
+      gateCreationState: 'not-created',
+      gateCheckId: null,
+      gateRetiredAt: NOW + 2,
+      retiredAt: null,
+      readyForShip: false,
+    });
+
+    const retireReviewClaim = await repository.claimPublication('publisher-partial-retire-review', NOW + 3, 10_000,
+      partial.publicationId);
+    expect(retireReviewClaim).toMatchObject({ stage: 'review', mayCreate: false, retiring: true });
+    await expect(repository.publishLocked(retireReviewClaim!, async (claim) => checkForClaim(claim, 7321, 'failure'),
+      () => NOW + 4)).resolves.toBe('published');
+    await expect(repository.getPublication(partial.publicationId)).resolves.toMatchObject({
+      reviewRetiredAt: NOW + 4,
+      gateRetiredAt: NOW + 2,
+      retiredAt: NOW + 4,
+      readyForShip: false,
     });
   });
 
