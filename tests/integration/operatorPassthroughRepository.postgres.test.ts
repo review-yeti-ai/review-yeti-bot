@@ -385,7 +385,7 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
       throw new Error(`unexpected GitHub request ${method} ${url.pathname}`);
     });
     const client = new GitHubReviewGateClient({
-      token: 'github-test-token',
+      token: 'ghs_operator_passthrough_test_token',
       expectedAppId: EXPECTED_APP_ID,
       checkName: 'Review Yeti',
       baseUrl: 'https://github.test/api/v3',
