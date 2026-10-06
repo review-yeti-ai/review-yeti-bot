@@ -24,6 +24,7 @@ import { AbandonedRunReaper } from './review/abandonedRunReaper';
 import { DelegatedFailureReader } from './k8s/delegatedFailureReader';
 import { initTelemetry } from './telemetry';
 import { centralExternalTargetConfigFromEnv } from './config/actionDispatchConfig';
+import { reviewYetiPassthroughEnabledFromEnv } from './config/reviewYetiPassthrough';
 import {
   closeDispatcherMetricsServer,
   createDispatcherMetricsServer,
@@ -34,6 +35,7 @@ import {
 
 async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
   const config = reviewJobDispatcherConfigFromEnv(environment);
+  const passthroughEnabled = reviewYetiPassthroughEnabledFromEnv(environment);
   // REL-1053: config.workerId is `review-job-dispatcher:<pod name>`, unique per
   // replica and the same identity this pod writes as a lease owner, so its
   // pushed metrics never collide with another replica's.
@@ -118,6 +120,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     workerImage: config.workerImage,
     namespace: config.namespace,
     runnerMode: config.runnerMode,
+    isDispatchPaused: () => passthroughEnabled,
     preparedReviewFor: async (claim) => {
       const prepared = await getPreparedPublishingPolicy(store.getPool(), claim.policyDigest);
       if (!prepared || prepared.policy.effectiveConfigDigest !== claim.configDigest) {

@@ -50,6 +50,7 @@ function fixture(overrides: Record<string, any> = {}) {
     currentPullRequestFor: overrides.currentPullRequestFor || (async () => ({
       open: true, draft: false, headSha: claim.headSha,
     })),
+    isDispatchPaused: overrides.isDispatchPaused,
     workerId: 'dispatcher-a',
     workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`,
     namespace: 'ct-review-qualification',
@@ -61,6 +62,15 @@ function fixture(overrides: Record<string, any> = {}) {
 }
 
 describe('ReviewJobDispatchEngine', () => {
+  it('does not claim or project already-queued work while the trusted global pause is active', async () => {
+    const { engine, repository, projector } = fixture({ isDispatchPaused: () => true });
+
+    await expect(engine.runOnce()).resolves.toEqual({ status: 'idle' });
+    expect(repository.claimNext).not.toHaveBeenCalled();
+    expect(projector.ensure).not.toHaveBeenCalled();
+    expect(repository.markProjected).not.toHaveBeenCalled();
+  });
+
   it('claims one row, builds the fail-closed contract, and records the deterministic projection', async () => {
     const { engine, repository, projector } = fixture();
     await expect(engine.runOnce()).resolves.toEqual({
