@@ -363,7 +363,10 @@ artifact `review-controller-receipt-<run>-<attempt>` contains `receipt.json`
 and binds the completed check ID, App/name/external ID, PR repository/head/base,
 workflow source SHA, run/attempt and event type. A paused same-repository
 dispatch receipt also records the validated target repository. The workflow
-source SHA is distinct from the PR candidate head and base SHAs.
+source SHA is recorded separately from the candidate head and base SHAs. On a
+`pull_request_target` run it may equal the PR base SHA; a manual or dispatch run
+uses the trusted default-branch workflow SHA, which can differ from the PR
+base observed during candidate resolution.
 
 ## Focused verification
 
