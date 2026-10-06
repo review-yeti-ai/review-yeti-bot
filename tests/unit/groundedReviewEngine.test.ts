@@ -37,6 +37,94 @@ describe('grounded review engine', () => {
     expect(omitted.omissions).toContain('patch-unavailable:src/omitted.ts');
   });
 
+  it('keeps slow P1 evidence ahead of fast P2 calls without making advisory overflow blocking', async () => {
+    const changedFiles = Array.from({ length: 25 }, (_, index) => {
+      const path = index === 24 ? 'src/z24.ts' : `src/a${String(index).padStart(2, '0')}.ts`;
+      return { path, patch: patch(path, 'before()', 'after()') };
+    });
+    const changedByPath = new Map(changedFiles.map((file) => [file.path, file]));
+    const contractPaths = Array.from({ length: 12 }, (_, index) => `src/contracts/c${String(index).padStart(2, '0')}.ts`);
+    const imports = contractPaths.map((path, index) =>
+      `import { Contract${index} } from './contracts/c${String(index).padStart(2, '0')}.ts';`).join('\n');
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (path, side) => {
+        if (path.startsWith('src/contracts/')) await new Promise((resolve) => setTimeout(resolve, 100));
+        const file = changedByPath.get(path);
+        if (file) return { content: path === 'src/a00.ts'
+          ? `${imports}\nexport const changed = '${side === 'head' ? 'after' : 'before'}';`
+          : `export const changed = '${side === 'head' ? 'after' : 'before'}';`,
+        sha: side === 'head' ? head : base };
+        if (contractPaths.includes(path)) return { content: `export type Contract${contractPaths.indexOf(path)} = string;`,
+          sha: side === 'head' ? head : base };
+        return { content: null, sha: side === 'head' ? head : base };
+      },
+      readDiff: (path) => {
+        const file = changedByPath.get(path);
+        return file ? { patch: file.patch,
+          identity: { repository: 'example-org/sample-project', headSha: head, baseSha: base } } : null;
+      },
+    };
+    let activeCalls = 0;
+    let peakConcurrentCalls = 0;
+    const complete = vi.fn(async (request: any) => {
+      activeCalls += 1;
+      peakConcurrentCalls = Math.max(peakConcurrentCalls, activeCalls);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const claim = JSON.parse(request.messages[1].content.match(/<claim>(.*?)<\/claim>/su)[1]);
+      activeCalls -= 1;
+      return { model: 'test-verifier', content: JSON.stringify({ status: 'confirmed',
+        violatedInvariant: 'The changed contract must be respected.',
+        failurePath: 'The changed branch violates the contract.', benignCheck: 'No guard preserves the contract.',
+        changeConnection: 'The admitted patch adds the violating branch.',
+        citations: [`head:${claim.path}`, `base:${claim.path}`, `diff:${claim.path}`] }), usage: null, costUSD: null };
+    });
+    const findings = [
+      ...Array.from({ length: 3 }, (_, index) => ({ severity: 'P1', path: 'src/a00.ts', line: 1,
+        title: `Blocker hypothesis ${index + 1}` })),
+      ...Array.from({ length: 22 }, (_, index) => ({ severity: 'P2', path: 'src/z24.ts', line: 1,
+        title: `Advisory hypothesis ${String(index + 1).padStart(2, '0')}` })),
+    ];
+
+    const verification = await runIndependentGroundedVerification({ findings, changedFiles, provider,
+      repository: 'example-org/sample-project', headSha: head, baseSha: base, model: 'test-model',
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+      client: { complete } as unknown as ReviewModelClient,
+      budget: { totalCalls: 12, callsPerTask: 12, concurrency: 18, stageBudgetMs: 10_000 },
+    });
+
+    expect(verification.calls).toBe(12);
+    expect(verification.outcomes.filter((row) => row.severity === 'P1' && row.status === 'confirmed')).toHaveLength(3);
+    expect(verification.outcomes.filter((row) => row.severity === 'P2' && row.status === 'confirmed')).toHaveLength(9);
+    expect(verification.outcomes.filter((row) => row.severity === 'P2' && row.status === 'insufficient')).toHaveLength(13);
+    expect(verification.unverifiedBlockerCount).toBe(0);
+    expect(verification.coverageComplete).toBe(true);
+    expect(peakConcurrentCalls).toBeGreaterThan(1);
+    expect(peakConcurrentCalls).toBeLessThanOrEqual(18);
+
+    const applied = applyGroundedVerificationToPersonas([{ id: 'security', findings }], verification,
+      changedFiles, REVIEW_SEVERITY_POLICY_V2);
+    expect(applied.unverifiedBlockerCount).toBe(0);
+    expect(applied.coverageComplete).toBe(true);
+    expect(applied.personas[0].findings).toHaveLength(25);
+
+    const failedP1Provider: RepoFileProvider = { ...provider, readFileAt: async (path, side) =>
+      path === 'src/a00.ts' && side === 'base' ? { content: null, sha: base } : provider.readFileAt!(path, side) };
+    const oneP1SourceFails = await runIndependentGroundedVerification({ findings: [findings[0],
+      { severity: 'P1', path: 'src/a01.ts', line: 1, title: 'Second blocker hypothesis' }, ...findings.slice(3)],
+    changedFiles, provider: failedP1Provider, repository: 'example-org/sample-project', headSha: head, baseSha: base,
+    model: 'test-model', severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+    client: { complete } as unknown as ReviewModelClient,
+    budget: { totalCalls: 12, callsPerTask: 12, concurrency: 18, stageBudgetMs: 10_000 },
+    });
+    expect(oneP1SourceFails.calls).toBe(12);
+    expect(oneP1SourceFails.outcomes.filter((row) => row.severity === 'P1' && row.status === 'confirmed')).toHaveLength(1);
+    expect(oneP1SourceFails.outcomes.filter((row) => row.severity === 'P1' && row.status === 'insufficient')).toHaveLength(1);
+    expect(oneP1SourceFails.outcomes.filter((row) => row.severity === 'P2' && row.status === 'confirmed')).toHaveLength(11);
+    expect(oneP1SourceFails.unverifiedBlockerCount).toBe(1);
+    expect(oneP1SourceFails.coverageComplete).toBe(false);
+  });
+
   it('removes a contradicted P2, retains a supported cross-file P1, and leaves uncertain blockers incomplete', () => {
     const p2 = { severity: 'P2', path: 'src/advisory.ts', line: 2, title: 'False advisory', body: 'The new branch is safe.' };
     const p1 = { severity: 'P1', path: 'src/consumer.ts', line: 7, title: 'Contract mismatch', body: 'The changed contract rejects this call.' };
