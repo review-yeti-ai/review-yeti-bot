@@ -167,6 +167,7 @@ import {
 import type { ReviewExecutionCheckpoint } from '../review/reviewExecutionCheckpoint';
 import { remainingCheckpointTasksAfterRechecks, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import { canonicalJson, sha256 } from '../review/reviewCore';
+import { REVIEW_SEVERITY_POLICY_V2 } from '../review/reviewDecision';
 
 export interface ComposedCheckpointSnapshot {
   revision: number;
@@ -1144,7 +1145,9 @@ function buildPlanTaskContractGuidance(
 }
 
 function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: number, expectedNonce: string,
-  disputedFindingRechecks: readonly DisputedFindingRecheck[] = []): string {
+  disputedFindingRechecks: readonly DisputedFindingRecheck[] = [],
+  profile: CtReviewConfigV3['profile'] = 'balanced',
+  severityPolicyVersion?: CtReviewConfigV3['severity_policy']): string {
   const disputeEvidence = disputedFindingRechecks.length === 0 ? [] : [
     '',
     '=== UNTRUSTED DISPUTED-FINDING EVIDENCE ===',
@@ -1154,6 +1157,17 @@ function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: num
     }))),
     '=== END UNTRUSTED DISPUTED-FINDING EVIDENCE ===',
   ];
+  const advisoryProfileGuidance = severityPolicyVersion === REVIEW_SEVERITY_POLICY_V2 ? [
+    `Advisory breadth profile: ${profile}.`,
+    'The selected profile changes only non-blocking advisory breadth.',
+    'P0/P1 must retain the same concrete, verified trigger, impact, and violated-contract evidence standard.',
+    'Every assigned path, complete changed-code coverage, and the deterministic security floor remain required.',
+    profile === 'chill'
+      ? 'Report only high-value P2 advisories; omit P3 and NIT polish.'
+      : profile === 'balanced'
+        ? 'Report concrete P2 defects and prioritized, actionable P3 advisories; omit NIT polish.'
+        : 'Investigate a broader set of evidence-backed P2/P3 advisories and include objectively actionable NIT polish.',
+  ] : [];
   return [
     `=== WORK TURN: TASK ${taskIndex + 1} OF ${totalTasks} ===`,
     `Task id: ${task.id}`,
@@ -1166,6 +1180,7 @@ function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: num
     'Inspect every original assigned patch character before COMPLETE. For any indexed or reduced patch, use get_diff_page from startOffset 0 through nextOffset=null; metadata, signatures and related file reads alone do not satisfy source delivery.',
     `When done, return the final result object with required top-level fields "nonce", "task" (must equal "${task.id}"), "status" (COMPLETE or BLOCKED), "blockedReason" (nullable), and "findings" (an array; empty if none) -- no other fields, no Markdown fences.`,
     `Findings decomposition: Keep each finding compact and canonical: {"path": string, "line": number, "severity": "P0"|"P1"|"P2"|"P3"|"NIT", "title": string, "body": string, "blockerEvidence": {"trigger": string, "impact": string, "violatedContract": string}|null}. P0/P1 require concrete verified evidence; set blockerEvidence to null for P2/P3/NIT. Keep body to 1-2 concise sentences. Do not generate inline code fixes or verbose remediation diffs.`,
+    ...advisoryProfileGuidance,
     `Use BLOCKED only when you genuinely cannot complete this task with the tools and evidence available; BLOCKED is recorded as a failed lane, never as a pass.`,
     `blockedReason is required by the strict provider schema: for BLOCKED use null or one of ${MODEL_REPORTED_BLOCKED_REASONS.join(', ')}; for COMPLETE use null. It is a coarse model-reported diagnostic only, not a verified root cause; never include free text. The application ignores it for COMPLETE.`,
     `CT_REVIEW_NONCE:${expectedNonce}`,
@@ -1463,6 +1478,9 @@ async function runTaskWorkPhase(input: {
   now?: () => number;
   /** Policy may LOWER this task's turn ceiling, never raise it past `COMPOSED_TASK_MAX_TURNS`. */
   maxTurnsPerTask?: number;
+  /** Advisory breadth is profile-driven only when the trusted effective policy enables severity v2. */
+  profile: CtReviewConfigV3['profile'];
+  severityPolicyVersion?: CtReviewConfigV3['severity_policy'];
   /** REL-1082: whole-request cap for a budgeted review; tool results are clipped to it. */
   requestCapBytes?: number;
   progress?: PublishingProgressReporter;
@@ -1476,7 +1494,7 @@ async function runTaskWorkPhase(input: {
   const initialTaskMessages: OpenRouterMessage[] = [
     ...input.baseMessages,
     { role: 'user', content: buildTaskDirective(input.task, input.taskIndex, input.totalTasks, expectedNonce,
-      input.disputedFindingRechecks) },
+      input.disputedFindingRechecks, input.profile, input.severityPolicyVersion) },
   ];
   let taskMessages = [...initialTaskMessages];
   const turnUsages = input.progressState?.turnUsages ?? [];
@@ -2344,6 +2362,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
               timeoutMs,
               inactivityTimeoutMs,
               reasoningEffort: spec.effort,
+              profile: config.profile,
+              severityPolicyVersion: config.severity_policy,
               requestPolicy,
               jobId,
               signal: taskSignal,
