@@ -246,8 +246,9 @@ export interface RepoFileProvider {
   findFiles(query: string): Promise<string[]>;
   /** Full content of a single file at the reviewed head, or null if it does not exist there. */
   readFile(path: string): Promise<string | null>;
-  /** Pinned source sides. `base` is the admitted PR base; `merge-base` remains available to callers that need Git ancestry evidence. */
-  readFileAt?(path: string, side: 'head' | 'base' | 'merge-base'): Promise<{ content: string | null; sha: string }>;
+  /** Pinned source sides. Null content is absence only when `presence: 'absent'` and exact path/revision-side identity are returned; otherwise it is unavailable. */
+  readFileAt?(path: string, side: 'head' | 'base' | 'merge-base'): Promise<{ content: string | null; sha: string;
+    presence?: 'present' | 'absent' | 'unavailable'; source?: { repository: string; path: string; side: 'head' | 'base' | 'merge-base' } }>;
   /** Original admitted patch, independent of shrinking or prompt packing. */
   readDiff?(path: string): { patch: string; originalPatchLength?: number;
     identity?: { repository: string; baseSha: string; headSha: string } } | null;

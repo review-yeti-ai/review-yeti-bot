@@ -375,6 +375,26 @@ describe('AuthoritativeReviewReader', () => {
       expect(f.fetcher.mock.calls[2][0]).toBe(`${API}${comparisonPath}?per_page=1&page=1`);
     });
 
+    it.each([
+      { status: 'added', path: 'src/new.ts', patch: '@@ -0,0 +1 @@\n+newValue', absentSide: 'base' },
+      { status: 'removed', path: 'src/old.ts', patch: '@@ -1 +0,0 @@\n-oldValue', absentSide: 'head' },
+    ] as const)('binds comparison $status status to exact revisions and patch digest', async ({ status, path, patch, absentSide }) => {
+      const comparisonPath = `/repos/exampleorg/central-policy/compare/${BASE}...${HEAD}`;
+      const comparison = jsonResponse({
+        url: `${API}${comparisonPath}`, base_commit: { sha: BASE }, merge_base_commit: { sha: BASE },
+        status: 'ahead', ahead_by: 1, behind_by: 0, total_commits: 1,
+        files: [{ sha: 'd'.repeat(40), filename: path, status,
+          additions: status === 'added' ? 1 : 0, deletions: status === 'removed' ? 1 : 0, changes: 1, patch }],
+      });
+      const tooLarge = jsonResponse({ errors: [{ resource: 'PullRequest', field: 'diff', code: 'too_large' }] }, 406);
+      const f = fixture(before(), tooLarge, comparison, before());
+      const source = await f.reader.exactCurrentDiff(request);
+      expect(source.changedFiles?.[0]?.sourcePresence).toEqual({
+        version: 'ReviewSourcePresence.v1', repository: 'exampleorg/central-policy', path, baseSha: BASE, headSha: HEAD,
+        absentSide, evidence: 'comparison-status', patchDigest: createHash('sha256').update(patch).digest('hex'),
+      });
+    });
+
     it.each([206, 302, 403, 500])('rejects partial/error diff HTTP %i without reading further', async (status) => {
       const f = fixture(before(), new Response(`${PRIVATE_BODY} ${TOKEN}`, { status }));
       expectRedacted(await rejected(f.reader.exactCurrentDiff(request))); expect(f.fetcher).toHaveBeenCalledTimes(2);

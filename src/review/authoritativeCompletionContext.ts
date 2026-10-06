@@ -6,7 +6,7 @@ import {
 import type { StoredReviewGate, TrustedGateCompletionContext } from './reviewGateContracts';
 import type { AuthoritativePublishingResolver } from './authoritativePublishingResolver';
 import { buildAuthoritativeReviewIdentity, reviewPolicySourceSchema, type CurrentReviewCandidate } from './authoritativeReviewIdentity';
-import { parseChangedFiles } from './changedFiles';
+import { bindChangedFileSourcePresence, parseChangedFiles } from './changedFiles';
 import { verifyPreparedPublishingConfig, type PreparedPublishingPolicy } from './preparedPublishingPolicy';
 import { resolveReviewApplicability } from './personaApplicability';
 import { verifyIncrementalClaim, type IncrementalVerificationInput } from './incrementalReview';
@@ -183,8 +183,11 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       if (changed(final)) return cancellation(final);
       if (typeof source.diff !== 'string' || Buffer.byteLength(source.diff, 'utf8') > MAX_AUTHORITATIVE_DIFF_BYTES) throw classified('bounds');
       if (source.changedFiles !== undefined && (source.diff !== '' || !Array.isArray(source.changedFiles))) throw classified('identity-mismatch');
+      const changedIdentity = { repository: `${requested.owner}/${requested.repo}`,
+        baseSha: requested.baseSha, headSha: requested.headSha };
       const { files, unreadable } = source.changedFiles === undefined
-        ? parseChangedFiles(source.diff) : { files: source.changedFiles, unreadable: [] };
+        ? parseChangedFiles(source.diff, changedIdentity)
+        : { files: bindChangedFileSourcePresence(source.changedFiles, changedIdentity), unreadable: [] };
       // Empty/unparseable same-head evidence is unavailable, not an exemption.
       // Empty changedFiles is reserved for cancellation, before derivation.
       // REL-1056: an entry with NO patch is a deterministic property of the diff

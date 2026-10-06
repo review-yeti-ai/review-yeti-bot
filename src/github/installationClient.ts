@@ -298,6 +298,11 @@ class GitHubApiResponseError extends Error {
   }
 }
 
+export type PinnedFileContentEvidence =
+  | { presence: 'present'; content: string }
+  | { presence: 'absent'; content: null }
+  | { presence: 'unavailable'; content: null };
+
 export class GitHubInstallationClient {
   private readonly baseUrl: string;
   private readonly token: string;
@@ -1106,36 +1111,48 @@ export class GitHubInstallationClient {
     return comparison.merge_base_commit.sha;
   }
 
+  async getFileContentEvidence(owner: string, repo: string, path: string, ref?: string): Promise<PinnedFileContentEvidence> {
+    const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+    const url = `/repos/${owner}/${repo}/contents/${encodedPath}` + (ref ? `?ref=${encodeURIComponent(ref)}` : '');
+    let data: any;
+    try { data = await this.request(url); }
+    catch (error) {
+      if (error instanceof GitHubApiResponseError && error.status === 404) return { presence: 'absent', content: null };
+      throw error;
+    }
+    if (data.encoding === 'base64' && typeof data.content === 'string') {
+      const bytes = Buffer.from(data.content.replace(/\n/g, ''), 'base64');
+      return bytes.length <= MAX_PINNED_SOURCE_BYTES
+        ? { presence: 'present', content: bytes.toString('utf8') } : { presence: 'unavailable', content: null };
+    }
+    // The contents endpoint omits inline bytes above 1 MiB. Fetch the exact
+    // blob it names, within the same admitted source bound, rather than return
+    // its empty placeholder as verified source.
+    if (data.encoding === 'none' && /^[0-9a-f]{40}$/u.test(data.sha || '')
+      && Number.isSafeInteger(data.size) && data.size <= MAX_PINNED_SOURCE_BYTES) {
+      const blob = await this.request(`/repos/${owner}/${repo}/git/blobs/${data.sha}`);
+      if (blob.sha !== data.sha || blob.encoding !== 'base64' || typeof blob.content !== 'string') {
+        throw new Error('Source blob identity mismatch');
+      }
+      const bytes = Buffer.from(blob.content.replace(/\n/g, ''), 'base64');
+      if (bytes.length !== data.size || bytes.length > MAX_PINNED_SOURCE_BYTES) throw new Error('Source blob size mismatch');
+      return { presence: 'present', content: bytes.toString('utf8') };
+    }
+    if (data.encoding === 'none') return { presence: 'unavailable', content: null };
+    if (typeof data.content === 'string') {
+      const bytes = Buffer.from(data.content, 'utf8');
+      return bytes.length <= MAX_PINNED_SOURCE_BYTES
+        ? { presence: 'present', content: data.content } : { presence: 'unavailable', content: null };
+    }
+    return { presence: 'unavailable', content: null };
+  }
+
   async getFileContent(owner: string, repo: string, path: string, ref?: string, options: { notFoundIsEmpty?: boolean } = {}): Promise<string | null> {
     try {
-      // A repository filename may contain query or fragment characters. It
-      // must never reinterpret the pinned ref or truncate the contents path.
-      const encodedPath = path.split('/').map(encodeURIComponent).join('/');
-      const url = `/repos/${owner}/${repo}/contents/${encodedPath}` + (ref ? `?ref=${encodeURIComponent(ref)}` : '');
-      const data = await this.request(url);
-      if (data.encoding === 'base64' && typeof data.content === 'string') {
-        return Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf8');
-      }
-      // The contents endpoint omits inline bytes above 1 MiB. Fetch the exact
-      // blob it names, within the same admitted source bound, rather than return
-      // its empty placeholder as verified source.
-      if (data.encoding === 'none' && /^[0-9a-f]{40}$/u.test(data.sha || '')
-        && Number.isSafeInteger(data.size) && data.size <= MAX_PINNED_SOURCE_BYTES) {
-        const blob = await this.request(`/repos/${owner}/${repo}/git/blobs/${data.sha}`);
-        if (blob.sha !== data.sha || blob.encoding !== 'base64' || typeof blob.content !== 'string') {
-          throw new Error('Source blob identity mismatch');
-        }
-        const bytes = Buffer.from(blob.content.replace(/\n/g, ''), 'base64');
-        if (bytes.length !== data.size || bytes.length > MAX_PINNED_SOURCE_BYTES) throw new Error('Source blob size mismatch');
-        return bytes.toString('utf8');
-      }
-      if (data.encoding === 'none') return null;
-      if (typeof data.content === 'string') {
-        return data.content;
-      }
-      return null;
+      const result = await this.getFileContentEvidence(owner, repo, path, ref);
+      return result.presence === 'present' ? result.content : null;
     } catch (error) {
-      if (options.notFoundIsEmpty && !/^GitHub API 404\b/u.test(error instanceof Error ? error.message : String(error))) {
+      if (options.notFoundIsEmpty && !(error instanceof GitHubApiResponseError && error.status === 404)) {
         throw error;
       }
       return null;
