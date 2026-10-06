@@ -13,6 +13,7 @@ import {
 } from '../../src/persistence/reviewGateRepository';
 import type { IncrementalVerificationInput } from '../../src/review/incrementalReview';
 import { sha256 } from '../../src/review/reviewCore';
+import { openFindingFrom } from '../../src/review/incrementalDelta';
 import { gateRecordFor, resolvedThreadsFor } from '../support/priorGateRecord';
 import { initializeOwnedReviewSchema } from '../support/ownedReviewSchema';
 import {
@@ -177,6 +178,9 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
       completionDigest: workerReviewCompletionDigest(completionFor(newest, PREV_HEAD, PREV_BASE, 1, 42,
         [{ severity: 'P2', path: 'src/open.ts', line: 3, title: 't', body: 'b' }])),
       ageMs: 3_600_000, coverageComplete: true, shipComplete: true, findingPaths: ['src/open.ts'],
+      // ADR 0771: the delta re-review's inputs. One gating lane, never carried, one itemizable finding.
+      chainDepth: 0, taskCount: 1,
+      findings: [openFindingFrom({ path: 'src/open.ts', line: 3, severity: 'P2', title: 't' })],
     });
   });
 

@@ -234,6 +234,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
           status: 'passthrough',
           reason: 'operator_global_passthrough',
           reviewStarted: false,
+          candidateState: result.candidateState,
           verdict: result.verdict,
           expectedLanes: result.expectedLanes,
           completedLanes: result.completedLanes,
@@ -251,12 +252,12 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
           owner: dispatch.owner,
           repo: dispatch.repo,
           prNumber: dispatch.prNumber,
-          headSha: dispatch.headSha,
-          baseSha: dispatch.baseSha,
+          headSha: result.candidateState === 'unavailable' ? null : dispatch.headSha,
+          baseSha: result.candidateState === 'unavailable' ? null : dispatch.baseSha,
           callerKind,
         } as const;
-        logger.info('Operator pause produced a candidate-bound SHIP exemption', {
-          repositoryId: receipt.repositoryId, prNumber: receipt.prNumber, headSha: receipt.headSha,
+        logger.info('Operator pause produced a zero-lane SHIP outcome', {
+          repositoryId: receipt.repositoryId, prNumber: receipt.prNumber, candidateState: receipt.candidateState,
           publicationState: receipt.publicationState, mergeEligible: receipt.mergeEligible,
         });
         return response.status(200).json(receipt);

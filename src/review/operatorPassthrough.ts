@@ -11,6 +11,141 @@ export type OperatorPassthroughTransport = 'github-app' | 'github-actions-oidc' 
 export type OperatorPassthroughCheckStage = 'review' | 'gate';
 export type OperatorPassthroughCheckState = 'reserved' | 'creating' | 'bound' | 'not-created';
 
+/** A short, admission-local deadline for the paused SHIP receipt path. */
+export const OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS = 1_500;
+/** Time reserved inside the parent receipt budget for a confirmed pre-POST reset. */
+export const OPERATOR_PASSTHROUGH_FINALIZE_RESERVE_MS = 300;
+
+export interface OperatorPassthroughOperationScope {
+  readonly deadlineAtMs: number;
+  readonly signal: AbortSignal;
+}
+
+export class OperatorPassthroughOperationDeadlineExceededError extends Error {
+  constructor() {
+    super('Operator passthrough receipt budget expired');
+    this.name = 'OperatorPassthroughOperationDeadlineExceededError';
+  }
+}
+
+/** A preflight-only child deadline that leaves the parent time for safe cleanup. */
+export class OperatorPassthroughPreflightDeadlineExceededError extends Error {
+  constructor() {
+    super('Operator passthrough preflight budget expired');
+    this.name = 'OperatorPassthroughPreflightDeadlineExceededError';
+  }
+}
+
+/** The child pre-POST timeout occurred, but persistence could not confirm reset-to-reserved. */
+export class OperatorPassthroughPreflightResetUnconfirmedError extends Error {
+  constructor() {
+    super('Operator passthrough preflight reset could not be confirmed');
+    this.name = 'OperatorPassthroughPreflightResetUnconfirmedError';
+  }
+}
+
+export function operatorPassthroughOperationExpired(scope?: OperatorPassthroughOperationScope): boolean {
+  return scope !== undefined && (scope.signal.aborted || performance.now() >= scope.deadlineAtMs);
+}
+
+export function operatorPassthroughOperationRemainingMs(scope: OperatorPassthroughOperationScope): number {
+  return Math.max(0, scope.deadlineAtMs - performance.now());
+}
+
+export function assertOperatorPassthroughOperationActive(scope?: OperatorPassthroughOperationScope): void {
+  if (operatorPassthroughOperationExpired(scope)) {
+    throw new OperatorPassthroughOperationDeadlineExceededError();
+  }
+}
+
+/** Await one step under the shared admission deadline; late completion is observed but never resumes its caller. */
+export async function awaitOperatorPassthroughOperation<T>(
+  operation: () => Promise<T>, scope?: OperatorPassthroughOperationScope,
+): Promise<T> {
+  assertOperatorPassthroughOperationActive(scope);
+  const pending = Promise.resolve().then(() => {
+    // The operation starts in a later microtask. Recheck at that boundary so
+    // a deadline/abort after scheduling cannot launch a late query or request.
+    assertOperatorPassthroughOperationActive(scope);
+    return operation();
+  });
+  if (!scope) return pending;
+
+  let removeAbortListener: () => void = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    const rejectDeadline = () => reject(new OperatorPassthroughOperationDeadlineExceededError());
+    if (scope.signal.aborted) {
+      rejectDeadline();
+      return;
+    }
+    scope.signal.addEventListener('abort', rejectDeadline, { once: true });
+    removeAbortListener = () => scope.signal.removeEventListener('abort', rejectDeadline);
+  });
+  try {
+    const value = await Promise.race([pending, aborted]);
+    assertOperatorPassthroughOperationActive(scope);
+    return value;
+  } finally {
+    removeAbortListener();
+  }
+}
+
+/** Apply the same small budget to all storage and publication steps for one pause receipt. */
+export async function withOperatorPassthroughReceiptBudget<T>(
+  operation: (scope: OperatorPassthroughOperationScope) => Promise<T>,
+  budgetMs = OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS,
+): Promise<T> {
+  if (!Number.isSafeInteger(budgetMs) || budgetMs < 1 || budgetMs > OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS) {
+    throw new Error('Invalid operator passthrough receipt budget');
+  }
+  const controller = new AbortController();
+  const scope: OperatorPassthroughOperationScope = {
+    deadlineAtMs: performance.now() + budgetMs,
+    signal: controller.signal,
+  };
+  const timer = setTimeout(() => controller.abort(), budgetMs);
+  try {
+    return await awaitOperatorPassthroughOperation(() => operation(scope), scope);
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+/** Run conclusively pre-POST work under a child deadline, preserving a small parent cleanup tail. */
+export async function withOperatorPassthroughPreflightBudget<T>(
+  operation: (scope: OperatorPassthroughOperationScope) => Promise<T>,
+  parent: OperatorPassthroughOperationScope,
+): Promise<T> {
+  assertOperatorPassthroughOperationActive(parent);
+  const available = Math.floor(operatorPassthroughOperationRemainingMs(parent));
+  const childBudget = Math.max(1, available - OPERATOR_PASSTHROUGH_FINALIZE_RESERVE_MS);
+  const controller = new AbortController();
+  const abortFromParent = () => controller.abort();
+  parent.signal.addEventListener('abort', abortFromParent, { once: true });
+  const child: OperatorPassthroughOperationScope = {
+    deadlineAtMs: Math.min(parent.deadlineAtMs, performance.now() + childBudget),
+    signal: controller.signal,
+  };
+  const timer = setTimeout(() => controller.abort(), childBudget);
+  try {
+    return await awaitOperatorPassthroughOperation(() => operation(child), child);
+  } catch (error) {
+    if (operatorPassthroughOperationExpired(parent)) {
+      throw new OperatorPassthroughOperationDeadlineExceededError();
+    }
+    if (operatorPassthroughOperationExpired(child)
+      || error instanceof OperatorPassthroughOperationDeadlineExceededError) {
+      throw new OperatorPassthroughPreflightDeadlineExceededError();
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    parent.signal.removeEventListener('abort', abortFromParent);
+    controller.abort();
+  }
+}
+
 export const OPERATOR_PASSTHROUGH_REVIEW_TITLE = `${REVIEW_WORKER_CHECK_NAME}: SHIP (passthrough: no review performed)`;
 export const OPERATOR_PASSTHROUGH_GATE_TITLE = `${REVIEW_GATE_CHECK_NAME}: SHIP (operator passthrough SHIP)`;
 export const OPERATOR_PASSTHROUGH_MODE_MARKER = 'review-mode=passthrough';
@@ -45,11 +180,28 @@ export interface OperatorPassthroughAdmissionRequest {
   event: OperatorPassthroughEvent;
 }
 
+/** Authenticated source identity for a no-current-coordinates SHIP response. */
+export interface OperatorPassthroughUnavailableRequest {
+  repositoryId: number;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  event: OperatorPassthroughEvent;
+}
+
 /** A reused transport delivery identity is an authority conflict, not a storage outage. */
 export class OperatorPassthroughDeliveryIdentityConflictError extends Error {
   constructor() {
     super('Operator passthrough delivery identity conflict');
     this.name = 'OperatorPassthroughDeliveryIdentityConflictError';
+  }
+}
+
+/** A storage read could not establish whether a source delivery was recorded. */
+export class OperatorPassthroughPersistenceUnavailableError extends Error {
+  constructor() {
+    super('Operator passthrough persistence is unavailable');
+    this.name = 'OperatorPassthroughPersistenceUnavailableError';
   }
 }
 
@@ -64,7 +216,9 @@ export interface OperatorPassthroughReconcileCursor {
 }
 
 export interface OperatorPassthroughAdmissionReceipt {
-  status: 'accepted' | 'duplicate';
+  status: 'accepted' | 'duplicate' | 'unavailable';
+  /** Whether an exact current candidate was validated before this response. */
+  candidateState: 'current' | 'unavailable';
   verdict: 'SHIP';
   expectedLanes: 0;
   completedLanes: 0;
@@ -159,20 +313,25 @@ export type OperatorPassthroughRecordResult = {
 };
 
 export interface OperatorPassthroughPublicationRepository {
-  record(input: OperatorPassthroughRecordInput, now?: number): Promise<OperatorPassthroughRecordResult>;
-  getPublication(publicationId: string): Promise<OperatorPassthroughPublicationSnapshot | null>;
+  /** Read-only conflict check used before a candidate-less outage response. */
+  assertDeliveryIdentity(event: OperatorPassthroughEvent, scope?: OperatorPassthroughOperationScope): Promise<void>;
+  record(input: OperatorPassthroughRecordInput, now?: number,
+    scope?: OperatorPassthroughOperationScope): Promise<OperatorPassthroughRecordResult>;
+  getPublication(publicationId: string, scope?: OperatorPassthroughOperationScope): Promise<OperatorPassthroughPublicationSnapshot | null>;
   requestRetirement(candidate: Pick<OperatorPassthroughCandidate, 'repositoryId' | 'prNumber' | 'headSha'>,
     reason: 'pause-disabled' | 'normal-review-admitted' | 'candidate-changed', now?: number): Promise<number>;
   retireInTransaction(client: { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> },
     candidate: Pick<OperatorPassthroughCandidate, 'repositoryId' | 'prNumber' | 'headSha'>,
     reason: 'pause-disabled' | 'normal-review-admitted' | 'candidate-changed', now: number): Promise<number>;
   requestAllRetirements(reason: 'pause-disabled', now?: number): Promise<number>;
-  claimPublication(workerId: string, now: number, leaseMs?: number, publicationId?: string): Promise<OperatorPassthroughPublicationClaim | null>;
+  claimPublication(workerId: string, now: number, leaseMs?: number, publicationId?: string,
+    scope?: OperatorPassthroughOperationScope): Promise<OperatorPassthroughPublicationClaim | null>;
   publishLocked(claim: OperatorPassthroughPublicationClaim,
     publish: (claim: OperatorPassthroughPublicationClaim) => Promise<ReviewGateCheck
       | OperatorPassthroughPublicationNotStarted | OperatorPassthroughReconcilePending | OperatorPassthroughRetireRequired>,
-    now?: () => number): Promise<'published' | 'stale-claim' | 'retry'>;
-  retryPublication(claim: OperatorPassthroughPublicationClaim, now: number, delayMs: number): Promise<boolean>;
+    now?: () => number, scope?: OperatorPassthroughOperationScope): Promise<'published' | 'stale-claim' | 'retry'>;
+  retryPublication(claim: OperatorPassthroughPublicationClaim, now: number, delayMs: number,
+    scope?: OperatorPassthroughOperationScope): Promise<boolean>;
 }
 
 export function validateOperatorPassthroughCandidate(candidate: OperatorPassthroughCandidate): void {
@@ -189,6 +348,20 @@ export function validateOperatorPassthroughCandidate(candidate: OperatorPassthro
   }
 }
 
+export function validateOperatorPassthroughEvent(event: OperatorPassthroughEvent): void {
+  const externalTransport = ['github-app', 'github-actions-oidc', 'mcp'].includes(event.transport);
+  const reconcilerTransport = event.transport === 'service-reconciler'
+    && event.eventName === 'existing-admission'
+    && typeof event.deliveryId === 'string'
+    && event.deliveryId.startsWith('service-reconcile:');
+  if ((!externalTransport && !reconcilerTransport)
+    || !/^[A-Za-z0-9_.-]{1,64}$/u.test(event.eventName)
+    || typeof event.deliveryId !== 'string' || event.deliveryId.length < 1 || event.deliveryId.length > 256
+    || !/^[a-f0-9]{64}$/u.test(event.deliveryDigest)) {
+    throw new Error('Operator passthrough source identity is invalid');
+  }
+}
+
 /**
  * Build the immutable, credential-free check identity in its own external-ID
  * namespace. It carries no run ID, attempt, or Action generation.
@@ -201,16 +374,7 @@ export function operatorPassthroughIdentity(input: OperatorPassthroughRecordInpu
   gateExternalId: string;
 } {
   validateOperatorPassthroughCandidate(input.candidate);
-  const externalTransport = ['github-app', 'github-actions-oidc', 'mcp'].includes(input.event.transport);
-  const reconcilerTransport = input.event.transport === 'service-reconciler'
-    && input.event.eventName === 'existing-admission'
-    && input.event.deliveryId.startsWith('service-reconcile:');
-  if ((!externalTransport && !reconcilerTransport)
-    || !/^[A-Za-z0-9_.-]{1,64}$/u.test(input.event.eventName)
-    || typeof input.event.deliveryId !== 'string' || input.event.deliveryId.length < 1 || input.event.deliveryId.length > 256
-    || !/^[a-f0-9]{64}$/u.test(input.event.deliveryDigest)) {
-    throw new Error('Operator passthrough source identity is invalid');
-  }
+  validateOperatorPassthroughEvent(input.event);
   return operatorPassthroughIdentityForCandidate(input.candidate, input.expectedAppId);
 }
 

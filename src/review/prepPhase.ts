@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { DEFAULT_ENGINE_REPOSITORY } from './reviewCheckIdentity';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { parseChangedFiles, type ChangedFile } from './changedFiles';
@@ -365,7 +366,7 @@ export async function dispatchMultiplexerTrigger(options: {
 export async function runPrepPhase(options: PrepPhaseOptions = {}): Promise<PrepPhaseResult> {
   const env = options.env || process.env;
   const runId = options.runId || env.REVIEW_RUN_ID || `run_${createHash('sha256').update(String(Date.now())).digest('hex').slice(0, 32)}`;
-  const repo = options.repo || env.REVIEW_REPO || 'review-yeti-ai/review-yeti-bot';
+  const repo = options.repo || env.REVIEW_REPO || DEFAULT_ENGINE_REPOSITORY;
   const prNumber = options.prNumber || Number(env.REVIEW_PR_NUMBER || '1');
   const headSha = options.headSha || env.REVIEW_HEAD_SHA || '0'.repeat(40);
   const baseSha = options.baseSha || env.REVIEW_BASE_SHA || '0'.repeat(40);

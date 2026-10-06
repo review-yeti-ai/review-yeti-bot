@@ -90,7 +90,7 @@ export function assertActionDispatchMatchesClaims(
   }
   const isDirect = repository === claims.repository && String(request.repositoryId) === claims.repository_id;
   const isSupportedExternalTarget = configuredExternalId === request.repositoryId;
-  const isCentralTarget = (CENTRAL_REVIEW_CONFIGURED && request.owner === CENTRAL_REVIEW_OWNER) || isSupportedExternalTarget;
+  const isCentralTarget = (CENTRAL_REVIEW_CONFIGURED && request.owner.toLowerCase() === CENTRAL_REVIEW_OWNER.toLowerCase()) || isSupportedExternalTarget;
   const isCentralRepositoryDispatch = request.caller.eventName === 'repository_dispatch';
   // A manual retry is signed as workflow_dispatch even though it enters through the same
   // central receiver. Admit it only when both GitHub's parent and reusable-workflow claims

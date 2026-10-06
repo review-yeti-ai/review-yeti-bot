@@ -4,6 +4,7 @@ import path from 'node:path';
 import yaml from 'js-yaml';
 import { describe, expect, it } from 'vitest';
 import { INCREMENTAL_FLAG } from '../../src/review/incrementalReview';
+import { INCREMENTAL_DELTA_FLAG } from '../../src/review/incrementalDelta';
 
 /**
  * REL-1084: `REVIEW_YETI_INCREMENTAL` only reaches a worker if the operator Deployment carries it
@@ -54,6 +55,14 @@ describe('operator incremental re-review source contract', () => {
     };
     expect(values.publishing.incremental).toBe('');
   });
+
+  it('ships delta-scoped incremental re-review off in Helm values, under the worker flag name', () => {
+    expect(INCREMENTAL_DELTA_FLAG).toBe('REVIEW_YETI_INCREMENTAL_DELTA');
+    const values = yaml.load(readFileSync(path.join(root, 'charts/review-yeti/values.yaml'), 'utf8')) as {
+      publishing: { incrementalDelta?: string };
+    };
+    expect(values.publishing.incrementalDelta).toBe('');
+  });
 });
 
 describe.skipIf(!helmAvailable())('rendered operator incremental re-review contract', () => {
@@ -68,6 +77,16 @@ describe.skipIf(!helmAvailable())('rendered operator incremental re-review contr
     const env = operatorEnv(after);
     expect(env.filter((entry) => entry.name === INCREMENTAL_FLAG)).toEqual([{ name: INCREMENTAL_FLAG, value: pilots }]);
     env.splice(env.findIndex((entry) => entry.name === INCREMENTAL_FLAG), 1);
+    expect(after).toEqual(before);
+  });
+
+  it('omits the delta flag by default and adds only that env entry when configured', () => {
+    expect(operatorEnv(render()).some((entry) => entry.name === INCREMENTAL_DELTA_FLAG)).toBe(false);
+    const before = render();
+    const after = render({ incrementalDelta: pilots });
+    const env = operatorEnv(after);
+    expect(env.filter((entry) => entry.name === INCREMENTAL_DELTA_FLAG)).toEqual([{ name: INCREMENTAL_DELTA_FLAG, value: pilots }]);
+    env.splice(env.findIndex((entry) => entry.name === INCREMENTAL_DELTA_FLAG), 1);
     expect(after).toEqual(before);
   });
 }, 60_000);

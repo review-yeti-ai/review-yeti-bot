@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { logger } from '../utils/logger';
+import { InternalGitHubDependencyUnavailableError } from './authoritativeReadFailure';
 import type { GitHubInstallationClient } from './installationClient';
 
 export interface GitHubAppAuthConfig {
@@ -85,9 +86,18 @@ export function generateGitHubAppJwt(appId: string, privateKeyPem: string): stri
   const payloadB64 = base64url(payload);
   const unsignedToken = `${headerB64}.${payloadB64}`;
 
-  const signer = crypto.createSign('RSA-SHA256');
-  signer.update(unsignedToken);
-  const signatureB64 = base64url(signer.sign(privateKeyPem));
+  let signature: Buffer;
+  try {
+    const signer = crypto.createSign('RSA-SHA256');
+    signer.update(unsignedToken);
+    signature = signer.sign(privateKeyPem);
+  } catch {
+    // The App private key is service-owned configuration. Crypto errors can
+    // include PEM details, so expose only the typed unavailable outcome used
+    // by the authorized pause path.
+    throw new InternalGitHubDependencyUnavailableError();
+  }
+  const signatureB64 = base64url(signature);
 
   return `${unsignedToken}.${signatureB64}`;
 }

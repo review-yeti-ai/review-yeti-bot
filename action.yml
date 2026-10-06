@@ -530,10 +530,6 @@ runs:
         POLICY_JSON: ${{ inputs.policy-json }}
       run: |
         set -euo pipefail
-        if [ -z "${DOKS_DISPATCH_URL}" ]; then
-          echo "::error::doks-dispatch-url is required when execution-backend is not local"
-          exit 1
-        fi
         node "$GITHUB_ACTION_PATH/scripts/dispatch-doks-action.mjs"
 
     # GitHub's diff media type (what `gh pr diff` requests) 406s once a pull

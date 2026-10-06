@@ -5,13 +5,16 @@ import type { AuthoritativeServiceConfig } from '../../src/auth/authoritativeSer
 import type { StoredReviewGate } from '../../src/review/reviewGateContracts';
 import type { AuthoritativeCompletionContextOptions } from '../../src/review/authoritativeCompletionContext';
 import type { AuthoritativePublishingResolverOptions } from '../../src/review/authoritativePublishingResolver';
+import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError } from '../../src/github/authoritativeReadFailure';
 import type { ReviewGatePublisherOptions } from '../../src/review/reviewGatePublisher';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { createAuthoritativeReviewService, type AuthoritativeReviewServiceOptions } from '../../src/review/authoritativeReviewService';
 import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
 import type { ReviewAdmissionInput } from '../../src/review/reviewRun';
-import type { OperatorPassthroughPublicationRepository, OperatorPassthroughReconcileAdmission } from '../../src/review/operatorPassthrough';
-import { OperatorPassthroughDeliveryIdentityConflictError } from '../../src/review/operatorPassthrough';
+import { OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS,
+  OperatorPassthroughDeliveryIdentityConflictError,
+  type OperatorPassthroughPublicationRepository, type OperatorPassthroughReconcileAdmission,
+} from '../../src/review/operatorPassthrough';
 
 const mocks = vi.hoisted(() => ({
   publisherConstructor: vi.fn(), resolverConstructor: vi.fn(),
@@ -426,11 +429,127 @@ describe('authoritative operator-pause admission responses', () => {
 
   function operatorRepository(overrides: Record<string, unknown> = {}) {
     return {
+      assertDeliveryIdentity: vi.fn().mockResolvedValue(undefined),
       record: vi.fn(), getPublication: vi.fn(), claimPublication: vi.fn().mockResolvedValue(null),
       publishLocked: vi.fn(), retryPublication: vi.fn(), requestRetirement: vi.fn(),
       retireInTransaction: vi.fn(), requestAllRetirements: vi.fn(), ...overrides,
     } as unknown as OperatorPassthroughPublicationRepository;
   }
+
+  async function resolveBeforeBound<T>(promise: Promise<T>): Promise<T> {
+    let settled = false;
+    let value: T | undefined;
+    let failure: unknown;
+    void promise.then((result) => { settled = true; value = result; }, (error) => { settled = true; failure = error; });
+    await vi.advanceTimersByTimeAsync(OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS + 1);
+    expect(settled).toBe(true);
+    if (failure !== undefined) throw failure;
+    return value as T;
+  }
+
+  it('bounds the candidate-less delivery identity lookup and preserves immediate conflicts', async () => {
+    const f = fixture();
+    const lookup = Promise.withResolvers<void>();
+    const repo = operatorRepository({ assertDeliveryIdentity: vi.fn(() => lookup.promise) });
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    const input = { repositoryId: candidate.repositoryId, owner: candidate.owner, repo: candidate.repo,
+      prNumber: candidate.prNumber, event: { transport: 'github-app' as const, eventName: 'pull_request',
+        deliveryId: 'github-app:lookup-timeout', deliveryDigest: 'e'.repeat(64) } };
+
+    const pending = service.admission.reportOperatorPassthroughUnavailable!(input);
+    await vi.advanceTimersByTimeAsync(0);
+    const result = await resolveBeforeBound(pending);
+
+    expect(result).toMatchObject({ status: 'unavailable', candidateState: 'unavailable', verdict: 'SHIP',
+      expectedLanes: 0, completedLanes: 0, publicationId: null, auditDigest: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null, mergeEligible: false,
+      reviewCheckId: null, gateCheckId: null });
+    expect(repo.record).not.toHaveBeenCalled();
+    expect(repo.claimPublication).not.toHaveBeenCalled();
+    expect(repo.getPublication).not.toHaveBeenCalled();
+
+    const conflictRepo = operatorRepository({ assertDeliveryIdentity: vi.fn()
+      .mockRejectedValue(new OperatorPassthroughDeliveryIdentityConflictError()) });
+    const conflictService = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: conflictRepo,
+      passthroughEnabled: true });
+    await expect(conflictService.admission.reportOperatorPassthroughUnavailable!(input))
+      .rejects.toBeInstanceOf(OperatorPassthroughDeliveryIdentityConflictError);
+  });
+
+  it('bounds a never-resolving record and fences late completion from publisher and receipt reads', async () => {
+    const f = fixture();
+    const lateRecord = Promise.withResolvers<any>();
+    const record = vi.fn(() => lateRecord.promise);
+    const repo = operatorRepository({ record });
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    const pending = service.admission.recordOperatorPassthrough!(request());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(record).toHaveBeenCalledOnce();
+    const result = await resolveBeforeBound(pending);
+
+    expect(result).toMatchObject({ status: 'accepted', candidateState: 'current', verdict: 'SHIP',
+      publicationId: null, auditDigest: null, publicationState: 'unavailable',
+      publicationReceiptAvailable: null, mergeEligible: false, reviewCheckId: null, gateCheckId: null });
+    lateRecord.resolve({ status: 'accepted', publicationId: 'f'.repeat(64), auditDigest: 'd'.repeat(64),
+      verdict: 'SHIP', expectedLanes: 0, completedLanes: 0 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(repo.record).toHaveBeenCalledOnce();
+    expect(repo.claimPublication).not.toHaveBeenCalled();
+    expect(repo.getPublication).not.toHaveBeenCalled();
+  });
+
+  it('bounds a stalled publisher and reports only the already-confirmed durable receipt', async () => {
+    const f = fixture();
+    const publicationId = 'f'.repeat(64);
+    const auditDigest = 'd'.repeat(64);
+    const publisher = Promise.withResolvers<null>();
+    const repo = operatorRepository({
+      record: vi.fn().mockResolvedValue({ status: 'accepted', publicationId, auditDigest,
+        verdict: 'SHIP', expectedLanes: 0, completedLanes: 0 }),
+      claimPublication: vi.fn(() => publisher.promise),
+    });
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    const pending = service.admission.recordOperatorPassthrough!(request());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(repo.claimPublication).toHaveBeenCalledOnce();
+    const result = await resolveBeforeBound(pending);
+
+    expect(result).toMatchObject({ verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
+      publicationId, auditDigest, publicationState: 'unavailable', publicationReceiptAvailable: true,
+      mergeEligible: false, reviewCheckId: null, gateCheckId: null });
+    publisher.resolve(null);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(repo.getPublication).not.toHaveBeenCalled();
+  });
+
+  it('bounds a stalled publication read and never converts its late success into merge eligibility', async () => {
+    const f = fixture();
+    const publicationId = 'f'.repeat(64);
+    const auditDigest = 'd'.repeat(64);
+    const latePublication = Promise.withResolvers<any>();
+    const repo = operatorRepository({
+      record: vi.fn().mockResolvedValue({ status: 'accepted', publicationId, auditDigest,
+        verdict: 'SHIP', expectedLanes: 0, completedLanes: 0 }),
+      getPublication: vi.fn(() => latePublication.promise),
+    });
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    const pending = service.admission.recordOperatorPassthrough!(request());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(repo.getPublication).toHaveBeenCalledOnce();
+    const result = await resolveBeforeBound(pending);
+
+    expect(result).toMatchObject({ verdict: 'SHIP', publicationId, auditDigest,
+      publicationState: 'unavailable', publicationReceiptAvailable: true,
+      reviewCheckId: null, gateCheckId: null, mergeEligible: false });
+    latePublication.resolve({ publicationId, auditDigest, reviewCheckId: 1, reviewCreationState: 'bound',
+      gateCheckId: 2, gateCreationState: 'bound', retirementRequestedAt: null, retiredAt: null, readyForShip: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(result.mergeEligible).toBe(false);
+  });
 
   it('retries one uncertain record with the same delivery identity and returns its verified pending receipt', async () => {
     const f = fixture();
@@ -473,6 +592,88 @@ describe('authoritative operator-pause admission responses', () => {
       publicationId: null, auditDigest: null, publicationState: 'unavailable',
       reviewCheckId: null, gateCheckId: null, mergeEligible: false });
     expect(result.message).toContain('durable publication retry could not be confirmed');
+  });
+
+  it('returns candidate-unavailable logical SHIP when initial authority read is typed transient, without writing', async () => {
+    const f = fixture();
+    const record = vi.fn();
+    const repo = operatorRepository({ record });
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    const transient = new TransientAuthoritativeReadError('retryable_server');
+    mocks.currentCandidate.mockRejectedValueOnce(transient);
+
+    const result = await service.admission.recordOperatorPassthrough!(request());
+
+    expect(result).toMatchObject({ status: 'unavailable', candidateState: 'unavailable', verdict: 'SHIP',
+      expectedLanes: 0, completedLanes: 0, publicationId: null, auditDigest: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null,
+      reviewCheckId: null, gateCheckId: null, mergeEligible: false });
+    expect(result.message).not.toContain('synthetic private transport detail');
+    expect(record).not.toHaveBeenCalled();
+    expect(repo.claimPublication).not.toHaveBeenCalled();
+    expect(repo.getPublication).not.toHaveBeenCalled();
+    expect(mocks.publish).not.toHaveBeenCalled();
+  });
+
+  it('returns candidate-unavailable SHIP for internal App credential/permission loss after enrollment', async () => {
+    const f = fixture();
+    const repo = operatorRepository();
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    mocks.currentCandidate.mockRejectedValueOnce(new InternalGitHubDependencyUnavailableError());
+
+    const result = await service.admission.recordOperatorPassthrough!(request());
+
+    expect(result).toMatchObject({ status: 'unavailable', candidateState: 'unavailable', verdict: 'SHIP',
+      expectedLanes: 0, completedLanes: 0, publicationId: null, auditDigest: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null,
+      reviewCheckId: null, gateCheckId: null, mergeEligible: false });
+    expect(repo.assertDeliveryIdentity).toHaveBeenCalledOnce();
+    expect(repo.record).not.toHaveBeenCalled();
+    expect(repo.claimPublication).not.toHaveBeenCalled();
+    expect(repo.getPublication).not.toHaveBeenCalled();
+    expect(mocks.publish).not.toHaveBeenCalled();
+  });
+
+  it('reports candidate-less logical SHIP after a typed outage with only a read-only delivery conflict check', async () => {
+    const f = fixture();
+    const repo = operatorRepository();
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    const input = { repositoryId: candidate.repositoryId, owner: candidate.owner, repo: candidate.repo,
+      prNumber: candidate.prNumber, event: { transport: 'github-app' as const, eventName: 'pull_request',
+        deliveryId: 'github-app:source-outage', deliveryDigest: 'f'.repeat(64) } };
+
+    const result = await service.admission.reportOperatorPassthroughUnavailable!(input);
+
+    expect(result).toMatchObject({ status: 'unavailable', candidateState: 'unavailable', verdict: 'SHIP',
+      expectedLanes: 0, completedLanes: 0, publicationId: null, auditDigest: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null,
+      reviewCheckId: null, gateCheckId: null, mergeEligible: false });
+    expect(repo.assertDeliveryIdentity).toHaveBeenCalledTimes(1);
+    expect(repo.assertDeliveryIdentity).toHaveBeenCalledWith(input.event, expect.objectContaining({
+      deadlineAtMs: expect.any(Number), signal: expect.any(AbortSignal),
+    }));
+    expect(repo.record).not.toHaveBeenCalled();
+    expect(repo.claimPublication).not.toHaveBeenCalled();
+    expect(mocks.publish).not.toHaveBeenCalled();
+  });
+
+  it('rejects a known same-delivery identity conflict on the candidate-less outage path', async () => {
+    const f = fixture();
+    const repo = operatorRepository({ assertDeliveryIdentity: vi.fn().mockRejectedValue(
+      new OperatorPassthroughDeliveryIdentityConflictError()) });
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    const input = { repositoryId: candidate.repositoryId, owner: candidate.owner, repo: candidate.repo,
+      prNumber: candidate.prNumber, event: { transport: 'github-app' as const, eventName: 'pull_request',
+        deliveryId: 'github-app:source-conflict', deliveryDigest: 'f'.repeat(64) } };
+
+    await expect(service.admission.reportOperatorPassthroughUnavailable!(input))
+      .rejects.toBeInstanceOf(OperatorPassthroughDeliveryIdentityConflictError);
+    expect(repo.record).not.toHaveBeenCalled();
+    expect(mocks.publish).not.toHaveBeenCalled();
   });
 
   it('keeps known receipt identity but reports unavailable when immediate publication and read fail', async () => {
@@ -525,6 +726,40 @@ describe('authoritative operator-pause admission responses', () => {
     expect(repo.claimPublication).not.toHaveBeenCalled();
     expect(result).toMatchObject({ verdict: 'SHIP', publicationId: null, auditDigest: null,
       publicationState: 'unavailable', publicationReceiptAvailable: null, mergeEligible: false });
+  });
+
+  it('cancels a storage-retry authority read when the receipt budget expires', async () => {
+    const f = fixture();
+    const record = vi.fn().mockRejectedValue(new Error('database unavailable'));
+    const repo = operatorRepository({ record });
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    const retryReadStarted = Promise.withResolvers<void>();
+    const lateCandidate = Promise.withResolvers<typeof candidate>();
+    let retryReadSignal: AbortSignal | undefined;
+    mocks.currentCandidate.mockResolvedValueOnce(candidate).mockResolvedValueOnce(candidate)
+      .mockImplementationOnce((_repository: unknown, signal: AbortSignal) => {
+        retryReadSignal = signal;
+        retryReadStarted.resolve();
+        return lateCandidate.promise;
+      });
+
+    const pending = service.admission.recordOperatorPassthrough!(request());
+    await vi.advanceTimersByTimeAsync(0);
+    await retryReadStarted.promise;
+    const result = await resolveBeforeBound(pending);
+
+    expect(retryReadSignal?.aborted).toBe(true);
+    expect(record).toHaveBeenCalledOnce();
+    expect(repo.claimPublication).not.toHaveBeenCalled();
+    expect(repo.getPublication).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ verdict: 'SHIP', publicationId: null, auditDigest: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null, mergeEligible: false });
+
+    lateCandidate.resolve(candidate);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(record).toHaveBeenCalledOnce();
+    expect(repo.claimPublication).not.toHaveBeenCalled();
   });
 
   it('preserves a conflicting transport delivery identity instead of returning pause SHIP', async () => {

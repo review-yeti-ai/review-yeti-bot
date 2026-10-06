@@ -67,9 +67,9 @@ function queueSnapshotDigest(passthrough = false, value: any = queue()): string 
   const identity = payload();
   const mergeGroup = identity.merge_group;
   const queueData = value.data.repository.mergeQueue;
-  const allEntries = [...queueData.entries.nodes].sort((left, right) => left.position - right.position);
+  const current = queueData.entries.nodes.find((entry: any) => entry.pullRequest.number === 42);
   return sha256(canonicalJson({
-    version: 'ReviewYetiMergeQueueSnapshot.v1',
+    version: 'ReviewYetiMergeQueueSnapshot.v1.group',
     repositoryId: identity.repository.id,
     repository: identity.repository.full_name,
     owner: identity.repository.owner.login,
@@ -81,19 +81,7 @@ function queueSnapshotDigest(passthrough = false, value: any = queue()): string 
     groupHeadSha: mergeGroup.head_sha,
     groupBaseSha: mergeGroup.base_sha,
     currentPullRequest: 42,
-    entries: allEntries.map((entry: any) => ({
-      position: entry.position,
-      state: entry.state,
-      baseCommitSha: entry.baseCommit.oid,
-      headCommitSha: entry.headCommit.oid,
-      pullRequest: {
-        number: entry.pullRequest.number,
-        state: entry.pullRequest.state,
-        baseRefName: entry.pullRequest.baseRefName,
-        headRefOid: entry.pullRequest.headRefOid,
-        repository: entry.pullRequest.repository.nameWithOwner,
-      },
-    })),
+    currentPullRequestHeadRefOid: current.pullRequest.headRefOid,
     operatorPassthroughEnabled: passthrough,
   }));
 }
@@ -188,6 +176,47 @@ describe('native merge-group Review Yeti gate', () => {
     await expect(gate(payload())).resolves.toEqual({ checkId: 9013, conclusion: 'success',
       snapshotDigest: queueSnapshotDigest(false, queue(PR_HEAD, trailing)), constituents: 1 });
     expect((fetchImplementation as any).mock.calls.some(([url]: [unknown]) => String(url).includes(behindHead))).toBe(false);
+  });
+
+  it('binds a group-scoped snapshot that is stable across queue churn behind or around the current entry', async () => {
+    const trailing = (state: string) => [{
+      position: 2, state, baseCommit: { oid: BASE }, headCommit: { oid: 'e'.repeat(40) },
+      pullRequest: { number: 43, state: 'OPEN', baseRefName: 'main', headRefOid: 'd'.repeat(40),
+        repository: { nameWithOwner: 'exampleorg/dashboard' } },
+    }];
+    const extra = { position: 3, state: 'QUEUED', baseCommit: { oid: BASE }, headCommit: { oid: '9'.repeat(40) },
+      pullRequest: { number: 44, state: 'OPEN', baseRefName: 'main', headRefOid: '8'.repeat(40),
+        repository: { nameWithOwner: 'exampleorg/dashboard' } } };
+    // Cross-repo parity pin: the merge-queue guard recomputes this exact shape
+    // and asserts the same value for the same fixture.
+    const stable = queueSnapshotDigest(false, queue());
+    expect(stable).toBe('01798226793ee04566826b6551726d33376e82f27034c8b166e0fa5962ccd953');
+    expect(queueSnapshotDigest(false, queue(PR_HEAD, trailing('QUEUED')))).toBe(stable);
+    expect(queueSnapshotDigest(false, queue(PR_HEAD, [...trailing('AWAITING_CHECKS'), extra]))).toBe(stable);
+    expect(queueSnapshotDigest(true, queue())).not.toBe(stable);
+    expect(queueSnapshotDigest(false, queue('f'.repeat(40)))).not.toBe(stable);
+
+    // The queue moves between the two qualification reads with no webhook; the
+    // gate must still publish against the unchanged group identity.
+    let graphqlReads = 0;
+    const reads = [queue(PR_HEAD, trailing('QUEUED')), queue(PR_HEAD, [...trailing('AWAITING_CHECKS'), extra])];
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes(`/commits/${GROUP_HEAD}/check-runs`)) return response({ total_count: 0, check_runs: [] });
+      if (url.endsWith('/check-runs') && init?.method === 'POST') return groupCheckResponse(9014, init);
+      if (url === 'https://api.github.com/graphql') return response(reads[Math.min(graphqlReads++, 1)]);
+      if (url.includes(`/commits/${PR_HEAD}/check-runs`)) return response({ total_count: 1, check_runs: [{
+        id: 8014, name: 'Review Yeti', head_sha: PR_HEAD, status: 'completed', conclusion: 'success', app: officialApp,
+      }] });
+      if (url.endsWith('/check-runs/9014') && init?.method === 'PATCH') return groupCheckResponse(9014, init);
+      return response({}, 500);
+    }) as typeof fetch;
+    const gate = createMergeGroupGate({
+      config, repository: repository() as any, tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation,
+    });
+    await expect(gate(payload())).resolves.toEqual({ checkId: 9014, conclusion: 'success',
+      snapshotDigest: stable, constituents: 1 });
+    expect(graphqlReads).toBe(2);
   });
 
   it('rejects unavailable queue evidence before publishing a synthetic check', async () => {

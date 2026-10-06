@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createGetReviewStatusTool } from '../../src/mcp/server/tools/getReviewStatus';
 import { operatorPassthroughReadyForShip } from '../../src/review/operatorPassthrough';
 import { AuthoritativeCandidateChangedError } from '../../src/review/authoritativePublishingResolver';
+import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError } from '../../src/github/authoritativeReadFailure';
 
 const candidate = {
   publication_id: 'a'.repeat(64), audit_digest: 'b'.repeat(64),
@@ -22,8 +23,11 @@ function statusOptions(overrides: Record<string, unknown> = {}) {
     authoritativePublishing: {
       expectedAppId: candidate.expected_app_id,
       repositoryIds: [currentCandidate.repositoryId],
-      resolver: { resolve: vi.fn(async () => ({ current: currentCandidate,
-        prepared: { policy: { effectivePolicyDigest: candidate.policy_digest } } })) },
+      repositoryIdentities: [{ repositoryId: currentCandidate.repositoryId,
+        owner: currentCandidate.owner, repo: currentCandidate.repo }],
+      resolver: { readCurrentCandidate: vi.fn(async () => currentCandidate),
+        resolve: vi.fn(async () => ({ current: currentCandidate,
+          prepared: { policy: { effectivePolicyDigest: candidate.policy_digest } } })) },
     },
     resolveGitHubPullRequest: vi.fn(async () => ({ headSha: currentCandidate.headSha,
       baseSha: currentCandidate.baseSha, repositoryId: currentCandidate.repositoryId })),
@@ -103,6 +107,101 @@ describe('get_review_status operator-passthrough projection', () => {
       message: expect.stringContaining('publication is unavailable') });
   });
 
+  it('returns unavailable current SHIP and destroys only the timed-out status client', async () => {
+    vi.useFakeTimers();
+    try {
+      const lateRead = Promise.withResolvers<{ rows: any[] }>();
+      const query = vi.fn(async (sql: string) => {
+        if (sql.startsWith('SELECT publication_id')) return lateRead.promise;
+        return { rows: [] };
+      });
+      const connection = { query, release: vi.fn() };
+      const db = { query: vi.fn(), connect: vi.fn(async () => connection) };
+      const pending = createGetReviewStatusTool(db, statusOptions())
+        .execute({ owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number });
+      await vi.advanceTimersByTimeAsync(1_501);
+      const result = await pending;
+      const value = JSON.parse((result.content[0] as { text: string }).text);
+      expect(value).toMatchObject({ found: true, verdict: 'SHIP', head_sha: candidate.head_sha,
+        operator_exemption: { candidate_state: 'current', publication_id: null, audit_digest: null,
+          publication_state: 'unavailable', publication_receipt_available: null,
+          review_check_id: null, gate_check_id: null, merge_eligible: false } });
+      expect(db.connect).toHaveBeenCalledOnce();
+      expect(query.mock.calls.map(([sql]) => sql)).toEqual(expect.arrayContaining(['BEGIN READ ONLY']));
+      expect(query.mock.calls.filter(([sql]) => sql.startsWith('SELECT publication_id'))).toHaveLength(1);
+      expect(query.mock.calls.some(([sql]) => sql.startsWith('SET LOCAL statement_timeout = '))).toBe(true);
+      expect(connection.release).toHaveBeenCalledWith(expect.any(Error));
+      expect(query).not.toHaveBeenCalledWith('ROLLBACK');
+      expect(query).not.toHaveBeenCalledWith('COMMIT');
+      lateRead.resolve({ rows: [candidate] });
+      await Promise.resolve();
+      expect(value.operator_exemption).toMatchObject({ publication_id: null, publication_state: 'unavailable', merge_eligible: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a timed-out historical receipt unavailable instead of asserting stale-head SHIP', async () => {
+    vi.useFakeTimers();
+    try {
+      const query = vi.fn(async (sql: string) => {
+        if (sql.startsWith('SELECT publication_id')) return new Promise<{ rows: any[] }>(() => {});
+        return { rows: [] };
+      });
+      const connection = { query, release: vi.fn() };
+      const db = { query: vi.fn(), connect: vi.fn(async () => connection) };
+      const options = statusOptions({ authoritativePublishing: {
+        expectedAppId: candidate.expected_app_id,
+        repositoryIds: [currentCandidate.repositoryId],
+        repositoryIdentities: [{ repositoryId: currentCandidate.repositoryId,
+          owner: currentCandidate.owner, repo: currentCandidate.repo }],
+        resolver: { readCurrentCandidate: vi.fn(async () => currentCandidate),
+          resolve: vi.fn(async () => { throw new AuthoritativeCandidateChangedError(); }) },
+      } });
+      const pending = createGetReviewStatusTool(db, options)
+        .execute({ owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number, head_sha: 'a'.repeat(40) });
+      await vi.advanceTimersByTimeAsync(1_501);
+      const result = await pending;
+      const value = JSON.parse((result.content[0] as { text: string }).text);
+      expect(value).toMatchObject({ found: false, verdict: 'PENDING', phase: 'unknown' });
+      expect(value).not.toHaveProperty('operator_exemption');
+      expect(connection.release).toHaveBeenCalledWith(expect.any(Error));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['current-candidate lookup', 'policy resolution'] as const)(
+    'returns zero-lane SHIP with unknown coordinates when internal GitHub %s permission is unavailable', async (stage) => {
+    const query = vi.fn();
+    const unavailable = new InternalGitHubDependencyUnavailableError();
+    const options = statusOptions({ authoritativePublishing: {
+      expectedAppId: candidate.expected_app_id,
+      repositoryIds: [currentCandidate.repositoryId],
+      repositoryIdentities: [{ repositoryId: currentCandidate.repositoryId,
+        owner: currentCandidate.owner, repo: currentCandidate.repo }],
+      resolver: {
+        readCurrentCandidate: vi.fn(stage === 'current-candidate lookup'
+          ? async () => { throw unavailable; } : async () => currentCandidate),
+        resolve: vi.fn(stage === 'policy resolution' ? async () => { throw unavailable; } : async () => ({
+          current: currentCandidate, prepared: { policy: { effectivePolicyDigest: candidate.policy_digest } },
+        })),
+      },
+    } });
+
+    const result = await createGetReviewStatusTool({ query }, options)
+      .execute({ owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number });
+    const value = JSON.parse((result.content[0] as { text: string }).text);
+
+    expect(value).toMatchObject({ found: true, verdict: 'SHIP', head_sha: null, phase: 'completed',
+      check_run: null, active_worker: null, active_projection: null,
+      operator_exemption: { candidate_state: 'unavailable', publication_id: null, audit_digest: null,
+        base_sha: null, policy_digest: null, expected_app_id: null, expected_lanes: 0,
+        completed_lanes: 0, review_started: false, publication_state: 'unavailable',
+        publication_receipt_available: null, review_check_id: null, gate_check_id: null, merge_eligible: false } });
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it('keeps the pause verdict when a malformed durable receipt cannot be trusted', async () => {
     const malformedRow = { ...candidate, publication_id: 'not-a-publication-digest' };
     const query = vi.fn()
@@ -143,11 +242,75 @@ describe('get_review_status operator-passthrough projection', () => {
     } });
   });
 
+  it('returns logical SHIP with no current authority coordinates when initial candidate authority is transiently unavailable', async () => {
+    const readCurrentCandidate = vi.fn().mockRejectedValue(new TransientAuthoritativeReadError('network'));
+    const query = vi.fn(async () => ({ rows: [] }));
+    const resolver = { readCurrentCandidate, resolve: vi.fn() };
+    const options = statusOptions({
+      authoritativePublishing: { expectedAppId: candidate.expected_app_id,
+        repositoryIds: [currentCandidate.repositoryId],
+        repositoryIdentities: [{ repositoryId: currentCandidate.repositoryId,
+          owner: currentCandidate.owner, repo: currentCandidate.repo }], resolver },
+    });
+    const result = await createGetReviewStatusTool({ query }, options).execute({ owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number,
+      head_sha: candidate.head_sha });
+    const value = JSON.parse((result.content[0] as { text: string }).text);
+
+    expect(value).toMatchObject({ found: true, verdict: 'SHIP', attempt_id: null, head_sha: null,
+      phase: 'completed', check_run: null, active_worker: null, active_projection: null,
+      operator_exemption: { candidate_state: 'unavailable', publication_id: null, audit_digest: null,
+        base_sha: null, policy_digest: null, expected_app_id: null, expected_lanes: 0,
+        completed_lanes: 0, review_started: false, publication_state: 'unavailable',
+        publication_receipt_available: null, review_check_id: null, gate_check_id: null, merge_eligible: false },
+    });
+    expect(readCurrentCandidate).toHaveBeenCalledOnce();
+    expect(resolver.resolve).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+    expect(options.resolveGitHubPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('does not fall open when the caller signal is canceled or local repository identity is missing', async () => {
+    const readCurrentCandidate = vi.fn().mockRejectedValue(new Error('caller canceled'));
+    const resolver = { readCurrentCandidate, resolve: vi.fn() };
+    const query = vi.fn(async () => ({ rows: [] }));
+    const withIdentity = statusOptions({ authoritativePublishing: { expectedAppId: candidate.expected_app_id,
+      repositoryIds: [currentCandidate.repositoryId], repositoryIdentities: [{ repositoryId: currentCandidate.repositoryId,
+        owner: currentCandidate.owner, repo: currentCandidate.repo }], resolver } });
+    await expect(createGetReviewStatusTool({ query }, withIdentity).execute({ owner: candidate.owner,
+      repo: candidate.repo, pull_number: candidate.pr_number })).rejects.toThrow();
+
+    const withoutIdentity = statusOptions({ authoritativePublishing: { expectedAppId: candidate.expected_app_id,
+      repositoryIds: [currentCandidate.repositoryId], resolver } });
+    await expect(createGetReviewStatusTool({ query }, withoutIdentity).execute({ owner: candidate.owner,
+      repo: candidate.repo, pull_number: candidate.pr_number })).rejects.toThrow();
+    expect(query).not.toHaveBeenCalled();
+    expect(withoutIdentity.resolveGitHubPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('rejects ambiguous paused repository names before any caller-name GitHub lookup', async () => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    const options = statusOptions({ authoritativePublishing: {
+      expectedAppId: candidate.expected_app_id, repositoryIds: [123, 124],
+      repositoryIdentities: [
+        { repositoryId: 123, owner: candidate.owner, repo: candidate.repo },
+        { repositoryId: 124, owner: candidate.owner, repo: candidate.repo },
+      ],
+      resolver: { readCurrentCandidate: vi.fn(), resolve: vi.fn() },
+    } });
+    await expect(createGetReviewStatusTool({ query }, options).execute({ owner: candidate.owner,
+      repo: candidate.repo, pull_number: candidate.pr_number })).rejects.toThrow();
+    expect(options.resolveGitHubPullRequest).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it('reports a closed candidate published historically without current merge eligibility', async () => {
     const query = vi.fn(async () => ({ rows: [candidate] }));
     const options = statusOptions({ authoritativePublishing: {
       expectedAppId: candidate.expected_app_id, repositoryIds: [currentCandidate.repositoryId],
-      resolver: { resolve: vi.fn(async () => { throw new AuthoritativeCandidateChangedError(); }) },
+      repositoryIdentities: [{ repositoryId: currentCandidate.repositoryId,
+        owner: currentCandidate.owner, repo: currentCandidate.repo }],
+      resolver: { readCurrentCandidate: vi.fn(async () => currentCandidate),
+        resolve: vi.fn(async () => { throw new AuthoritativeCandidateChangedError(); }) },
     } });
     const result = await createGetReviewStatusTool({ query }, options)
       .execute({ owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number,

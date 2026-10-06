@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { createActionDispatchRouter } from '../../src/api/actionDispatchApi';
 import type { ReviewDispatchRepository, RunStatusResult } from '../../src/persistence/reviewDispatchRepository';
 import { WorkerCompletionPersistenceError } from '../../src/review/workerCompletionPersistenceError';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
 
 function sha256Hex(data: string): string {
   return createHash('sha256').update(data).digest('hex');
@@ -173,6 +174,58 @@ describe('ActionDispatchApi - GET status endpoint', () => {
 
     expect(res.status).toBe(200);
     expect(mockRepo.getRunStatus).toHaveBeenCalledWith('run_xyz', 3);
+  });
+});
+
+describe('ActionDispatchApi - paused SHIP projection', () => {
+  it('preserves OIDC-authenticated SHIP with null current authority coordinates after initial authority outage', async () => {
+    const now = Date.parse('2026-10-06T12:00:00.000Z');
+    const runId = '98765';
+    const repositoryId = 123;
+    const headSha = 'a'.repeat(40);
+    const baseSha = 'b'.repeat(40);
+    const deliveryId = `actions:${runId}:1:${repositoryId}:42:${headSha}`;
+    const dispatch = {
+      version: 'ActionDispatch.v1', deliveryId, repositoryId,
+      owner: 'exampleorg', repo: 'example-meta', prNumber: 42,
+      headSha, baseSha, actionSha: 'c'.repeat(40), publishMode: 'app-gate',
+      requestedAt: new Date(now).toISOString(),
+      caller: { runId, runAttempt: 1, eventName: 'workflow_dispatch' },
+    };
+    const claims = { repository: 'exampleorg/example-meta', repository_id: String(repositoryId),
+      repository_owner_id: '99', run_id: runId, run_attempt: '1', event_name: 'workflow_dispatch' };
+    const verify = vi.fn(async () => claims);
+    const admit = vi.fn();
+    const recordOperatorPassthrough = vi.fn(async () => ({ status: 'unavailable' as const,
+      candidateState: 'unavailable' as const, verdict: 'SHIP' as const, expectedLanes: 0 as const,
+      completedLanes: 0 as const, publicationId: null, auditDigest: null,
+      publicationState: 'unavailable' as const, publicationReceiptAvailable: null,
+      reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+      message: 'Operator pause preserves logical SHIP; current authority and publication receipt are unavailable.' }));
+    const app = express(); app.use(express.json());
+    app.use('/api/dispatch', createActionDispatchRouter({
+      verifier: { verify }, admission: { admit } as any, resolveInstallationId: vi.fn(),
+      allowAppGate: true, passthroughEnabled: true, now: () => now,
+      authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [repositoryId],
+        recordOperatorPassthrough } as any,
+    }));
+
+    const response = await request(app).post('/api/dispatch/action').auth('opaque-oidc-token', { type: 'bearer' }).send(dispatch);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ version: 'ActionDispatchPassthrough.v1', status: 'passthrough',
+      candidateState: 'unavailable', verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
+      publicationId: null, auditDigest: null, publicationState: 'unavailable',
+      publicationReceiptAvailable: null, reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+      repositoryId, owner: 'exampleorg', repo: 'example-meta', prNumber: 42,
+      headSha: null, baseSha: null });
+    expect(verify).toHaveBeenCalledOnce();
+    expect(recordOperatorPassthrough).toHaveBeenCalledOnce();
+    expect((recordOperatorPassthrough.mock.calls as unknown as any[])[0]?.[0]).toMatchObject({
+      requested: { repositoryId, owner: 'exampleorg', repo: 'example-meta', prNumber: 42, headSha, baseSha },
+      event: { transport: 'github-actions-oidc', deliveryId: `github-actions-oidc:${deliveryId}` },
+    });
+    expect(admit).not.toHaveBeenCalled();
   });
 });
 

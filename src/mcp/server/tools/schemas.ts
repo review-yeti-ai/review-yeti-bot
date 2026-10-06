@@ -124,9 +124,6 @@ export interface ReviewStatusOutput {
   operator_exemption?: {
     publication_id: string | null;
     audit_digest: string | null;
-    base_sha: string;
-    policy_digest: string;
-    expected_app_id: number;
     expected_lanes: 0;
     completed_lanes: 0;
     review_started: false;
@@ -135,7 +132,10 @@ export interface ReviewStatusOutput {
     review_check_id: number | null;
     gate_check_id: number | null;
     merge_eligible: boolean;
-  };
+  } & (
+    { candidate_state: 'current' | 'historical'; base_sha: string; policy_digest: string; expected_app_id: number }
+    | { candidate_state: 'unavailable'; base_sha: null; policy_digest: null; expected_app_id: null }
+  );
   message?: string;
 }
 
@@ -274,7 +274,6 @@ export type TriggerReviewOutput = {
   owner: string;
   repo: string;
   pull_number: number;
-  head_sha: string;
   verdict: 'SHIP';
   expected_lanes: 0;
   completed_lanes: 0;
@@ -286,7 +285,10 @@ export type TriggerReviewOutput = {
   gate_check_id: number | null;
   merge_eligible: boolean;
   message: string;
-};
+} & (
+  { candidate_state: 'current'; head_sha: string }
+  | { candidate_state: 'unavailable'; head_sha: null }
+);
 
 // =============================================================================
 // 5. cancel_review

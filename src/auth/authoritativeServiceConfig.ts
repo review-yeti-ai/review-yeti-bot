@@ -18,11 +18,18 @@ const sourceSchema = z.object({
   ref: z.string().min(1).max(256).regex(/^[^\u0000-\u0020\u007f]+$/u),
   path: reviewPolicySourceSchema.shape.path,
 }).strict();
+const repositoryIdentitySchema = z.object({
+  repositoryId: reviewPolicySourceSchema.shape.repositoryId,
+  owner: name,
+  repo: name,
+}).strict();
 
 export interface AuthoritativeServiceConfig {
   expectedAppId: number;
   admissionEnabled: boolean;
   repositoryIds: number[];
+  /** Optional name-to-ID bindings for authenticated transports that carry no repository ID. */
+  repositoryIdentities?: Array<{ repositoryId: number; owner: string; repo: string }>;
   publicRepository?: { repositoryId: number; owner: string; repo: string; expectedAppId: number };
   policyRepository: { repositoryId: number; owner: string; repo: string };
   policyRef: string;
@@ -62,6 +69,22 @@ export function authoritativeServiceConfigFromEnv(
     // The primary allowlist cannot accidentally grant the public repository
     // primary-App authority. Its existing dedicated App is an exact opt-in.
     if (repositoryIds.includes(PUBLIC_REVIEW_REPOSITORY_ID)) throw new Error();
+    let repositoryIdentities: AuthoritativeServiceConfig['repositoryIdentities'];
+    const rawIdentities = env.AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES;
+    if (rawIdentities !== undefined) {
+      if (Buffer.byteLength(rawIdentities, 'utf8') > 8_192) throw new Error();
+      const entries = z.array(repositoryIdentitySchema).min(1).max(100).parse(JSON.parse(rawIdentities));
+      const ids = new Set<number>();
+      const names = new Set<string>();
+      for (const entry of entries) {
+        const key = `${entry.owner}/${entry.repo}`.toLowerCase();
+        if (!repositoryIds.includes(entry.repositoryId) || entry.repositoryId === PUBLIC_REVIEW_REPOSITORY_ID
+          || ids.has(entry.repositoryId) || names.has(key)) throw new Error();
+        ids.add(entry.repositoryId);
+        names.add(key);
+      }
+      repositoryIdentities = entries;
+    }
     let publicRepository: AuthoritativeServiceConfig['publicRepository'];
     const externalRepositories = dispatchConfig.centralExternalRepositories;
     const externalCredentials = dispatchConfig.centralExternalAppCredentials;
@@ -91,6 +114,7 @@ export function authoritativeServiceConfigFromEnv(
     if (tickMs < 1_000 || tickMs > 60_000) throw new Error();
     return {
       expectedAppId, admissionEnabled: admit === 'true', repositoryIds,
+      ...(repositoryIdentities ? { repositoryIdentities } : {}),
       ...(publicRepository ? { publicRepository } : {}),
       policyRepository: { repositoryId: source.repositoryId, owner: source.owner, repo: source.repo },
       policyRef: source.ref, policyPath: source.path, transport: { baseUrl, model }, tickMs,

@@ -45,6 +45,7 @@ function actionPassthroughReceipt(request: ActionDispatchRequest, overrides: Rec
     status: 'passthrough',
     reason: 'operator_global_passthrough',
     reviewStarted: false,
+    candidateState: 'current',
     deliveryId: request.deliveryId,
     repositoryId: request.repositoryId,
     owner: request.owner,
@@ -90,6 +91,62 @@ describe('DOKS Action dispatch client', () => {
       REFRESH_EXECUTION_ATTEMPT: '1', INCOMPLETE_P2_RECOVERY: 'true' }));
     expect(request.incompleteP2Recovery).toBe(true);
     expect(buildDispatchRequest(environment({ INCOMPLETE_P2_RECOVERY: 'false' }))).not.toHaveProperty('incompleteP2Recovery');
+  });
+
+  it('accepts candidate-unavailable SHIP only with null current coordinates and no durable receipt claims', async () => {
+    const { buildDispatchRequest, dispatchAction, writeDispatchOutputs } = await import(modulePath);
+    const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+    const request = buildDispatchRequest(dispatchEnvironment);
+    const unavailable = actionPassthroughReceipt(request, {
+      candidateState: 'unavailable', headSha: null, baseSha: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null,
+      publicationId: null, auditDigest: null, reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(unavailable), { status: 200 }));
+
+    const result = await dispatchAction(dispatchEnvironment, fetchMock);
+
+    expect(result).toMatchObject({ candidateState: 'unavailable', headSha: null, baseSha: null,
+      verdict: 'SHIP', expectedLanes: 0, completedLanes: 0, publicationState: 'unavailable',
+      publicationReceiptAvailable: null, publicationId: null, auditDigest: null,
+      reviewCheckId: null, gateCheckId: null, mergeEligible: false });
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-doks-authority-unavailable-'));
+    const outputPath = path.join(directory, 'output');
+    writeDispatchOutputs(outputPath, result);
+    const output = fs.readFileSync(outputPath, 'utf8');
+    expect(output).toContain('verdict=SHIP');
+    expect(output).toContain('review-status=OPERATOR_AUTHORITY_UNAVAILABLE');
+    expect(output).toContain('merge-eligible=false');
+    expect(output).toContain('current candidate and policy authority are unavailable');
+    expect(output).not.toContain(request.headSha);
+    expect(output).not.toContain(request.baseSha);
+    expect(output).not.toContain('OPERATOR_EXEMPTION_PUBLISHED');
+    expect(output).not.toMatch(/(?:=|\s)null\b/u);
+  });
+
+  it.each([
+    { headSha: 'b'.repeat(40) },
+    { baseSha: 'c'.repeat(40) },
+    { publicationId: 'f'.repeat(64), auditDigest: 'e'.repeat(64), publicationReceiptAvailable: null },
+    { publicationReceiptAvailable: false },
+    { gateCheckId: 5002 },
+    { mergeEligible: true },
+  ])('rejects candidate-unavailable receipt with authority/receipt claims %j', async (override) => {
+    const { buildDispatchRequest, dispatchAction } = await import(modulePath);
+    const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+    const request = buildDispatchRequest(dispatchEnvironment);
+    const unavailable = actionPassthroughReceipt(request, {
+      candidateState: 'unavailable', headSha: null, baseSha: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null,
+      publicationId: null, auditDigest: null, reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+      ...override,
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(unavailable), { status: 200 }));
+    await expect(dispatchAction(dispatchEnvironment, fetchMock)).rejects.toThrow(/invalid passthrough receipt/u);
   });
 
   it.each([
@@ -239,6 +296,13 @@ describe('DOKS Action dispatch client', () => {
     ]) {
       expect(() => validateDispatchEndpoint(unsafe), unsafe).toThrow(/dispatch endpoint/i);
     }
+  });
+
+  it('fails with a clear error when the caller supplies no dispatch endpoint', async () => {
+    const { dispatchAction } = await import(modulePath);
+    const fetchMock = vi.fn();
+    await expect(dispatchAction(environment({ DOKS_DISPATCH_URL: '' }), fetchMock)).rejects.toThrow(/DOKS_DISPATCH_URL is required/u);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('rejects mutable action refs and unsupported publication modes', async () => {

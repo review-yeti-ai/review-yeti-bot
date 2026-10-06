@@ -10,6 +10,7 @@ import { bindChangedFileSourcePresence, parseChangedFiles } from './changedFiles
 import { verifyPreparedPublishingConfig, type PreparedPublishingPolicy } from './preparedPublishingPolicy';
 import { resolveReviewApplicability } from './personaApplicability';
 import { verifyIncrementalClaim, type IncrementalVerificationInput } from './incrementalReview';
+import type { IncrementalDeltaFile } from '../types/incrementalReview';
 import { routedLanesOf, verifyVerdictCacheClaim, type VerdictCacheVerificationInput } from './verdictCache';
 import { canonicalJson } from './reviewCore';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
@@ -42,7 +43,7 @@ export interface AuthoritativeCompletionContextOptions {
   /** Mint only a repository-scoped read token. Neither credentials nor readers are cached. */
   readerFactory: (repository: ReviewRepositoryIdentity, signal: AbortSignal) =>
     Promise<Pick<AuthoritativeReviewReader, 'currentCandidate' | 'exactCurrentDiff'>
-      & Partial<Pick<AuthoritativeReviewReader, 'commitComparison' | 'comparisonContent' | 'findingThreads'>>>;
+      & Partial<Pick<AuthoritativeReviewReader, 'commitComparison' | 'commitComparisonDetailed' | 'comparisonContent' | 'findingThreads'>>>;
   /** Already configured with the service's trusted central policy/ref/transport. */
   publishingResolver: Pick<AuthoritativePublishingResolver, 'resolve'>;
   /** Whole operation, including storage, token mint, policy refresh and body reads. */
@@ -238,18 +239,28 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       // decision that does not permit the claim leaves it unverified, which the canonical
       // derivation refuses.
       let incrementalVerified: boolean | undefined;
+      let incrementalDeltaFiles: IncrementalDeltaFile[] | undefined;
       if (incremental) {
         substage = 'exact-diff';
         const compare = reader.commitComparison?.bind(reader);
-        incrementalVerified = compare ? (await step(() => verifyIncrementalClaim({
+        const detailed = reader.commitComparisonDetailed?.bind(reader);
+        const verification = compare ? (await step(() => verifyIncrementalClaim({
           claim: incremental.claim, prior: incremental.prior, maxAgeMs: incremental.maxAgeMs,
+          ...(incremental.maxChain !== undefined ? { maxChain: incremental.maxChain } : {}),
           current: { runId: incremental.run.runId, repositoryId: requested.repositoryId, prNumber: requested.prNumber,
             headSha: requested.headSha, baseSha: requested.baseSha, policyDigest,
             configDigest: incremental.run.configDigest, executionAttempt: incremental.run.executionAttempt },
           currentPaths: files.map((file) => file.path),
-          reader: { compare: (base, head, signal) => compare({ ...repository }, base, head, signal ?? abort.signal) },
+          reader: {
+            compare: (base, head, signal) => compare({ ...repository }, base, head, signal ?? abort.signal),
+            // A delta claim needs the service's own patches; without the detailed read it cannot verify.
+            ...(detailed ? { compareDetailed: (base: string, head: string, signal?: AbortSignal) =>
+              detailed({ ...repository }, base, head, signal ?? abort.signal) } : {}),
+          },
           signal: abort.signal,
-        }))).verified : false;
+        }))) : undefined;
+        incrementalVerified = verification ? verification.verified : false;
+        if (verification?.verified && verification.deltaFiles?.length) incrementalDeltaFiles = verification.deltaFiles;
       }
       // REL-1085: a completion that served files from the verdict cache is re-decided here from
       // the service's own source record, exact-SHA comparisons and THIS applicability decision's
@@ -303,6 +314,7 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
         // worker quorum. Derivation separately requires ALL these exact IDs.
         quorumSatisfied: expectedPersonaIds.length > 0,
         ...(incrementalVerified === undefined ? {} : { incrementalVerified }),
+        ...(incrementalDeltaFiles ? { incrementalDeltaFiles } : {}),
         ...(verdictCacheVerified === undefined ? {} : { verdictCacheVerified }),
         // REL-1139: the same decision's disclosures, as counts, so a completion that claims a
         // skipped moderator is re-decided on this exact head (deriveCanonicalWorkerReviewEvidence).

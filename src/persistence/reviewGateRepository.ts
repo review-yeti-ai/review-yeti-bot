@@ -167,6 +167,8 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
     onEligibleCompletion?: (client: Queryable, gate: StoredReviewGate, now: number) => Promise<void>;
     /** REL-1084: the oldest prior review a carry-forward may rest on (service configuration). */
     incrementalMaxAgeMs?: number;
+    /** ADR 0771: `REVIEW_YETI_INCREMENTAL_MAX_CHAIN`, consulted only for a delta-scoped claim. */
+    incrementalMaxChain?: number;
     /** REL-1085: the oldest stored review a verdict-cache hit may rest on (service configuration). */
     verdictCacheMaxAgeMs?: number;
   }) {
@@ -316,6 +318,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         claim,
         prior: await selectPriorReviewRecord(client, event.runId),
         maxAgeMs: this.options.incrementalMaxAgeMs ?? DEFAULT_INCREMENTAL_MAX_AGE_MS,
+        ...(this.options.incrementalMaxChain !== undefined ? { maxChain: this.options.incrementalMaxChain } : {}),
         run: { runId: coordinates.runId, executionAttempt: coordinates.executionAttempt,
           configDigest: String(row.effective_config_digest) },
       } : undefined;
@@ -375,7 +378,9 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
 
       const convergence = trusted && derived?.valid && timestampValid
         ? evaluateFindingConvergence({ findings: derived.canonical.findings,
-          changedFiles: trusted.coverage.changedFiles, priorThreads: trusted.coverage.findingThreads ?? [] })
+          changedFiles: trusted.coverage.changedFiles, priorThreads: trusted.coverage.findingThreads ?? [],
+          ...(trusted.coverage.incrementalVerified === true && trusted.coverage.incrementalDeltaFiles?.length
+            ? { deltaScope: trusted.coverage.incrementalDeltaFiles } : {}) })
         : undefined;
       const groundedOutcomes = trusted && derived?.valid && timestampValid
         ? event.result.groundedReview?.verification.outcomes ?? [] : [];

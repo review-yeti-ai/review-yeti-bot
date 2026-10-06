@@ -142,13 +142,19 @@ function selectEntries(response: any, identity: ReturnType<typeof validatePayloa
       throw new Error('Merge queue contains an ineligible constituent');
     }
   }
-  const allEntries = [...queue.entries.nodes].sort((left: any, right: any) => left.position - right.position) as QueueEntry[];
   const selected = entries as QueueEntry[];
+  // Group-scoped snapshot. The group head SHA already pins the exact content of
+  // every constituent, and GitHub rebuilds the group (new SHA, new webhook) if a
+  // constituent changes. Entries behind the current one, and the position/state
+  // of entries ahead, change without any webhook, so binding them made the
+  // published receipt go stale with nothing to republish it. Constituents at or
+  // ahead of the current entry are still fully verified above and again at
+  // completion; the consumer recomputes this exact shape.
   return {
     id: queue.id,
     entries: selected,
     snapshot: {
-      version: 'ReviewYetiMergeQueueSnapshot.v1',
+      version: 'ReviewYetiMergeQueueSnapshot.v1.group',
       repositoryId: identity.repository.id,
       repository: identity.repository.full_name,
       owner: identity.owner,
@@ -160,19 +166,7 @@ function selectEntries(response: any, identity: ReturnType<typeof validatePayloa
       groupHeadSha: identity.merge_group.head_sha,
       groupBaseSha: identity.merge_group.base_sha,
       currentPullRequest: identity.currentNumber,
-      entries: allEntries.map((entry) => ({
-        position: entry.position,
-        state: entry.state,
-        baseCommitSha: entry.baseCommit.oid,
-        headCommitSha: entry.headCommit.oid,
-        pullRequest: {
-          number: entry.pullRequest.number,
-          state: entry.pullRequest.state,
-          baseRefName: entry.pullRequest.baseRefName,
-          headRefOid: entry.pullRequest.headRefOid,
-          repository: entry.pullRequest.repository.nameWithOwner,
-        },
-      })),
+      currentPullRequestHeadRefOid: current.pullRequest.headRefOid,
     },
   };
 }

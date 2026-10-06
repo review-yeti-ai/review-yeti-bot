@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReviewRepositoryIdentity } from '../../src/github/authoritativeReviewReader';
+import { TransientAuthoritativeReadError } from '../../src/github/authoritativeReadFailure';
 import { AuthoritativeCandidateChangedError, AuthoritativePublishingResolver, type AuthoritativePublishingResolverOptions } from '../../src/review/authoritativePublishingResolver';
 import { buildAuthoritativeReviewIdentity, type CurrentReviewCandidate } from '../../src/review/authoritativeReviewIdentity';
 import { preparePublishingPolicy, verifyPreparedPublishingConfig } from '../../src/review/preparedPublishingPolicy';
@@ -51,6 +52,13 @@ function expectRedacted(error: Error) {
   expect(error.cause).toBeUndefined();
 }
 
+function expectTransient(error: Error, kind: 'deadline' | 'network') {
+  expect(error).toBeInstanceOf(TransientAuthoritativeReadError);
+  expect(error).toMatchObject({ kind, message: 'Authoritative source read is temporarily unavailable' });
+  expect(error.cause).toBeUndefined();
+  expect(`${error.stack}\n${JSON.stringify(error)}`).not.toContain(secret);
+}
+
 function expectCandidateChanged(error: Error) {
   expect(error).toBeInstanceOf(AuthoritativeCandidateChangedError);
   expect(error.message).toBe('Authoritative publishing candidate changed');
@@ -94,6 +102,36 @@ describe('AuthoritativePublishingResolver', () => {
     expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
+  it.each(['candidateFactory', 'candidateRead', 'policyFactory', 'policyRevision', 'policyFile', 'finalCandidateRead'] as const)(
+    'preserves only a typed transient source failure from %s', async (stage) => {
+      const f = fixture();
+      const transient = new TransientAuthoritativeReadError('network');
+      if (stage === 'candidateFactory') f.candidateReaderFactory.mockRejectedValueOnce(transient);
+      if (stage === 'candidateRead') f.currentCandidate.mockRejectedValueOnce(transient);
+      if (stage === 'policyFactory') f.policyReaderFactory.mockRejectedValueOnce(transient);
+      if (stage === 'policyRevision') f.resolvePolicyRevision.mockRejectedValueOnce(transient);
+      if (stage === 'policyFile') f.immutablePolicyFile.mockRejectedValueOnce(transient);
+      if (stage === 'finalCandidateRead') f.currentCandidate.mockResolvedValueOnce(current).mockRejectedValueOnce(transient);
+
+      const error = await rejection(f.resolver.resolve(requested));
+
+      expect(error).toMatchObject({ name: 'TransientAuthoritativeReadError', kind: 'network' });
+      expect(error.message).not.toContain('synthetic private transport detail');
+      expect(error.cause).toBeUndefined();
+    });
+
+  it('does not classify schema, authorization, or caller-cancellation failures as transient', async () => {
+    const f = fixture();
+    f.currentCandidate.mockRejectedValueOnce(new Error('HTTP 403'));
+    const error = await rejection(f.resolver.resolve(requested));
+    expect(error).not.toMatchObject({ name: 'TransientAuthoritativeReadError' });
+
+    const cancelled = new AbortController();
+    cancelled.abort();
+    const cancellation = await rejection(f.resolver.resolve(requested, cancelled.signal));
+    expect(cancellation).not.toMatchObject({ name: 'TransientAuthoritativeReadError' });
+  });
+
   it('reads the bounded reconciliation seed from the exact requested repository and PR', async () => {
     const f = fixture();
     const seed = { repositoryId: requested.repositoryId, owner: requested.owner,
@@ -119,7 +157,7 @@ describe('AuthoritativePublishingResolver', () => {
     expect(f.policyReaderFactory).not.toHaveBeenCalled();
   });
 
-  it('redacts and bounds a reconciliation seed read that exceeds the resolver deadline', async () => {
+  it('returns a typed deadline when a reconciliation seed read exceeds the resolver deadline', async () => {
     const f = fixture();
     f.currentCandidate.mockImplementationOnce(() => new Promise<CurrentReviewCandidate>(() => undefined));
     const seed = { repositoryId: requested.repositoryId, owner: requested.owner,
@@ -128,7 +166,7 @@ describe('AuthoritativePublishingResolver', () => {
 
     await vi.advanceTimersByTimeAsync(250);
 
-    expectRedacted(await timedOut);
+    expectTransient(await timedOut, 'deadline');
     expect(f.candidateReaderFactory).toHaveBeenCalledOnce();
     expect(f.policyReaderFactory).not.toHaveBeenCalled();
   });
@@ -325,7 +363,7 @@ describe('AuthoritativePublishingResolver', () => {
       await vi.advanceTimersByTimeAsync(249);
       expect(settled).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
-      expectRedacted(await pending);
+      expectTransient(await pending, 'deadline');
       expect(f.candidateReaderFactory.mock.calls[0][1].aborted).toBe(true);
       if (f.policyReaderFactory.mock.calls.length) expect(f.policyReaderFactory.mock.calls[0][1].aborted).toBe(true);
     });
@@ -340,7 +378,7 @@ describe('AuthoritativePublishingResolver', () => {
     f.immutablePolicyFile.mockImplementation(() => new Promise<never>(() => undefined));
     const pending = rejection(f.resolver.resolve(requested));
     await vi.advanceTimersByTimeAsync(250);
-    expectRedacted(await pending);
+    expectTransient(await pending, 'deadline');
     expect(f.immutablePolicyFile).toHaveBeenCalledOnce();
     expect(f.currentCandidate).toHaveBeenCalledOnce();
   });
@@ -351,11 +389,24 @@ describe('AuthoritativePublishingResolver', () => {
     f.candidateReaderFactory.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
     const pending = rejection(f.resolver.resolve(requested));
     await vi.advanceTimersByTimeAsync(250);
-    expectRedacted(await pending);
+    expectTransient(await pending, 'deadline');
     finish({ currentCandidate: f.currentCandidate });
     await vi.advanceTimersByTimeAsync(0);
     expect(f.currentCandidate).not.toHaveBeenCalled();
     expect(f.policyReaderFactory).not.toHaveBeenCalled();
+  });
+
+  it('does not start a seed read when its candidate-reader factory resolves after timeout', async () => {
+    const f = fixture();
+    let finish!: (reader: { currentCandidate: typeof f.currentCandidate }) => void;
+    f.candidateReaderFactory.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = rejection(f.resolver.readCurrentCandidate({ repositoryId: requested.repositoryId,
+      owner: requested.owner, repo: requested.repo, prNumber: requested.prNumber }));
+    await vi.advanceTimersByTimeAsync(250);
+    expectTransient(await pending, 'deadline');
+    finish({ currentCandidate: f.currentCandidate });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.currentCandidate).not.toHaveBeenCalled();
   });
 
   it('rejects a pre-aborted caller without minting or reading', async () => {
@@ -364,6 +415,27 @@ describe('AuthoritativePublishingResolver', () => {
     expectRedacted(await rejection(f.resolver.resolve(requested, controller.signal)));
     expect(f.candidateReaderFactory).not.toHaveBeenCalled();
     expect(f.policyReaderFactory).not.toHaveBeenCalled();
+  });
+
+  it('keeps pre-aborted candidate and full reads non-transient even at the deadline boundary', async () => {
+    const f = fixture();
+    const controller = new AbortController(); controller.abort();
+    const now = vi.spyOn(performance, 'now');
+    now.mockReturnValueOnce(0).mockReturnValue(250);
+    const candidateRead = await rejection(f.resolver.readCurrentCandidate({ repositoryId: requested.repositoryId,
+      owner: requested.owner, repo: requested.repo, prNumber: requested.prNumber }, controller.signal));
+    expect(candidateRead).not.toBeInstanceOf(TransientAuthoritativeReadError);
+    expectRedacted(candidateRead);
+    expect(f.candidateReaderFactory).not.toHaveBeenCalled();
+
+    now.mockRestore();
+    const secondClock = vi.spyOn(performance, 'now');
+    secondClock.mockReturnValueOnce(0).mockReturnValue(250);
+    const fullRead = await rejection(f.resolver.resolve(requested, controller.signal));
+    expect(fullRead).not.toBeInstanceOf(TransientAuthoritativeReadError);
+    expectRedacted(fullRead);
+    expect(f.candidateReaderFactory).not.toHaveBeenCalled();
+    secondClock.mockRestore();
   });
 
   it('propagates caller cancellation and never continues a late reader result', async () => {

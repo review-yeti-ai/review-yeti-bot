@@ -3,6 +3,8 @@ import { formatPatch, OMIT_HEADERS, structuredPatch } from 'diff';
 import { z } from 'zod';
 import { reviewPolicySourceSchema, type CurrentReviewCandidate, type ImmutableReviewPolicyFile } from '../review/authoritativeReviewIdentity';
 import { isGitHubInstallationToken } from './githubTransportPolicy';
+import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError,
+  internalGitHubDependencyUnavailableForStatus, transientAuthoritativeReadForStatus } from './authoritativeReadFailure';
 import { bindChangedFileSourcePresence, bindComparisonAbsentSide, type ChangedFile } from '../review/changedFiles';
 import { MAX_CHANGED_FILE_PATCH_BYTES } from '../review/reviewEvidenceLimits';
 import {
@@ -140,30 +142,73 @@ export class AuthoritativeReviewReader {
     let bodyReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let onAbort: () => void = () => undefined;
+    let onDeadline: () => void = () => undefined;
+    let termination: 'caller-cancelled' | 'deadline' | undefined;
     const expired = new Promise<never>((_, reject) => {
       onAbort = () => {
+        if (termination !== undefined) return;
+        termination = 'caller-cancelled';
         abort.abort();
         void bodyReader?.cancel().catch(() => undefined);
         reject(new Error('Review reader request unavailable'));
       };
-      timer = setTimeout(onAbort, this.timeoutMs);
+      onDeadline = () => {
+        if (termination !== undefined) return;
+        termination = 'deadline';
+        abort.abort();
+        void bodyReader?.cancel().catch(() => undefined);
+        reject(new TransientAuthoritativeReadError('deadline'));
+      };
+      timer = setTimeout(onDeadline, this.timeoutMs);
       signal?.addEventListener('abort', onAbort, { once: true });
       if (signal?.aborted) onAbort();
     });
     const read = async (): Promise<string> => {
+      if (signal?.aborted || termination === 'caller-cancelled'
+        || (abort.signal.aborted && termination !== 'deadline')) {
+        throw new Error('Review reader request unavailable');
+      }
+      if (termination === 'deadline') throw new TransientAuthoritativeReadError('deadline');
       if (abort.signal.aborted) throw new Error('Review reader request unavailable');
-      const response = await this.fetcher(`${this.api}${path}`, {
-        method: 'GET', redirect: 'error', signal: abort.signal,
-        headers: {
-          Accept: accept, Authorization: `Bearer ${this.options.token}`,
-          'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'review-yeti-authoritative-reader',
-        },
-      });
+      let response: Response;
+      try {
+        response = await this.fetcher(`${this.api}${path}`, {
+          method: 'GET', redirect: 'error', signal: abort.signal,
+          headers: {
+            Accept: accept, Authorization: `Bearer ${this.options.token}`,
+            'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'review-yeti-authoritative-reader',
+          },
+        });
+      } catch {
+        if (signal?.aborted || termination === 'caller-cancelled') {
+          throw new Error('Review reader request unavailable');
+        }
+        if (termination === 'deadline') throw new TransientAuthoritativeReadError('deadline');
+        throw new TransientAuthoritativeReadError('network');
+      }
+      if (signal?.aborted || termination === 'caller-cancelled') {
+        void response.body?.cancel().catch(() => undefined);
+        throw new Error('Review reader request unavailable');
+      }
+      if (termination === 'deadline') {
+        void response.body?.cancel().catch(() => undefined);
+        throw new TransientAuthoritativeReadError('deadline');
+      }
       const oversizedCandidate = detectOversizedDiff && response.status === 406;
       const oversizedSuccessfulDiff = detectOversizedDiff && response.status === 200;
       if (allowNotFound && response.status === 404) {
         void response.body?.cancel().catch(() => undefined);
         throw new MissingPinnedObject();
+      }
+      const transient = transientAuthoritativeReadForStatus(response.status, response.headers);
+      if (transient) {
+        void response.body?.cancel().catch(() => undefined);
+        throw transient;
+      }
+      const dependencyUnavailable = internalGitHubDependencyUnavailableForStatus(response.status, response.headers);
+      if (dependencyUnavailable) {
+        void response.body?.cancel().catch(() => undefined);
+        throw dependencyUnavailable;
       }
       if (abort.signal.aborted || (response.status !== 200 && !oversizedCandidate) || !response.body) {
         void response.body?.cancel().catch(() => undefined);
@@ -172,10 +217,18 @@ export class AuthoritativeReviewReader {
       const reader = response.body.getReader();
       bodyReader = reader;
       const chunks: Uint8Array[] = [];
-      let bytes = 0;
-      try {
-        while (true) {
-          const next = await reader.read();
+        let bytes = 0;
+        try {
+          while (true) {
+          let next: Awaited<ReturnType<typeof reader.read>>;
+          try { next = await reader.read(); }
+          catch {
+            if (termination === 'caller-cancelled' || signal?.aborted) {
+              throw new Error('Review reader request unavailable');
+            }
+            if (termination === 'deadline') throw new TransientAuthoritativeReadError('deadline');
+            throw new TransientAuthoritativeReadError('network');
+          }
           if (abort.signal.aborted) throw new Error('Review reader request unavailable');
           if (next.done) break;
           bytes += next.value.byteLength;
@@ -205,7 +258,11 @@ export class AuthoritativeReviewReader {
       // GitHub error bodies and transport errors can contain credential or
       // repository content. Neither belongs in admission logs or responses.
       abort.abort();
+      if (signal?.aborted || termination === 'caller-cancelled') {
+        throw new Error('Review reader request unavailable');
+      }
       if (error instanceof OversizedPullDiff || error instanceof MissingPinnedObject) throw error;
+      if (error instanceof TransientAuthoritativeReadError || error instanceof InternalGitHubDependencyUnavailableError) throw error;
       throw new Error('Review reader request unavailable');
     } finally {
       if (timer !== undefined) clearTimeout(timer);
@@ -215,7 +272,10 @@ export class AuthoritativeReviewReader {
 
   private async json(path: string, signal?: AbortSignal): Promise<unknown> {
     try { return JSON.parse(await this.text(path, 'application/vnd.github+json', MAX_RESPONSE_BYTES, signal)); }
-    catch { throw new Error('Review reader request unavailable'); }
+    catch (error) {
+      if (error instanceof TransientAuthoritativeReadError || error instanceof InternalGitHubDependencyUnavailableError) throw error;
+      throw new Error('Review reader request unavailable');
+    }
   }
 
   private route(input: ReviewRepositoryIdentity): { target: ReviewRepositoryIdentity; path: string } {
@@ -446,6 +506,28 @@ export class AuthoritativeReviewReader {
       status,
       mergeBaseSha,
       files: files.map((file) => ({ path: file.path, ...(file.previousPath ? { previousPath: file.previousPath } : {}) })),
+    };
+  }
+
+  /**
+   * ADR 0771: the same comparison with each file's status and validated closed-hunk patch (absent when
+   * GitHub omitted or truncated it), for the delta-scoped incremental re-review. Callers treat a list
+   * of 300 files as possibly incomplete.
+   */
+  async commitComparisonDetailed(input: ReviewRepositoryIdentity, baseSha: string, headSha: string, signal?: AbortSignal): Promise<{
+    status: 'ahead' | 'behind' | 'diverged' | 'identical';
+    mergeBaseSha: string;
+    files: Array<{ path: string; previousPath?: string; status: string; patch?: string }>;
+  }> {
+    const { status, mergeBaseSha, files } = await this.comparisonEvidence(input, baseSha, headSha, signal);
+    return {
+      status,
+      mergeBaseSha,
+      files: files.map((file) => ({
+        path: file.path, status: file.status,
+        ...(file.previousPath ? { previousPath: file.previousPath } : {}),
+        ...(file.patch ? { patch: file.patch } : {}),
+      })),
     };
   }
 

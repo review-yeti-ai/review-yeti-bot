@@ -20,14 +20,80 @@ import {
   matchesReviewStatusIdentity,
 } from '../reviewStatusVerdict';
 import { normalizeOperationalTelemetry, type OperationalTelemetry } from '../../../review/workerCompletion';
-import { operatorPassthroughReadyForShip } from '../../../review/operatorPassthrough';
+import {
+  awaitOperatorPassthroughOperation,
+  operatorPassthroughOperationExpired,
+  operatorPassthroughOperationRemainingMs,
+  operatorPassthroughReadyForShip,
+  OperatorPassthroughOperationDeadlineExceededError,
+  withOperatorPassthroughReceiptBudget,
+  type OperatorPassthroughOperationScope,
+} from '../../../review/operatorPassthrough';
 import { REVIEW_DISPATCH_OUTBOX_STATUS } from '../../../persistence/reviewDispatchStatus';
-import { expectedReviewAppIdFor } from '../../../auth/repositoryReviewAuthority';
+import { authoritativeRepositoryForName, expectedReviewAppIdFor } from '../../../auth/repositoryReviewAuthority';
+import { isPausedAuthorityReadUnavailable } from '../../../github/authoritativeReadFailure';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
 import { AuthoritativeCandidateChangedError } from '../../../review/authoritativePublishingResolver';
 
 export interface ReviewStatusDbClient {
   query(sql: string, values?: unknown[]): Promise<{ rows: any[] }>;
+  connect?: () => Promise<ReviewStatusDbConnection>;
+}
+
+export interface ReviewStatusDbConnection {
+  query(sql: string, values?: unknown[]): Promise<{ rows: any[] }>;
+  release(error?: Error): void;
+}
+
+/** A pause-only bounded read. Pool clients get a real read-only transaction and
+ * server statement deadline; timeout destroys only that checked-out client. */
+async function queryOperatorPassthroughStatus(db: ReviewStatusDbClient, sql: string, values: unknown[]): Promise<{ rows: any[] }> {
+  return withOperatorPassthroughReceiptBudget(async (scope: OperatorPassthroughOperationScope) => {
+    if (!db.connect) return awaitOperatorPassthroughOperation(() => db.query(sql, values), scope);
+    let connecting: Promise<ReviewStatusDbConnection> | undefined;
+    let client: ReviewStatusDbConnection;
+    try {
+      client = await awaitOperatorPassthroughOperation(() => {
+        connecting = db.connect!();
+        return connecting;
+      }, scope);
+    } catch (error) {
+      if (connecting) {
+        void connecting.then((lateClient) => lateClient.release(new Error('Operator pause status receipt deadline expired')),
+          () => undefined);
+      }
+      throw error;
+    }
+    let releaseError: Error | undefined;
+    try {
+      await awaitOperatorPassthroughOperation(() => client.query('BEGIN READ ONLY'), scope);
+      const statementTimeout = Math.max(1, Math.floor(operatorPassthroughOperationRemainingMs(scope)));
+      await awaitOperatorPassthroughOperation(
+        () => client.query(`SET LOCAL statement_timeout = '${statementTimeout}ms'`), scope);
+      const lockTimeout = Math.max(1, Math.min(5_000, Math.floor(operatorPassthroughOperationRemainingMs(scope))));
+      await awaitOperatorPassthroughOperation(
+        () => client.query(`SET LOCAL lock_timeout = '${lockTimeout}ms'`), scope);
+      const result = await awaitOperatorPassthroughOperation(() => client.query(sql, values), scope);
+      await awaitOperatorPassthroughOperation(() => client.query('COMMIT'), scope);
+      return result;
+    } catch (error) {
+      if (operatorPassthroughOperationExpired(scope)
+        || error instanceof OperatorPassthroughOperationDeadlineExceededError) {
+        // node-postgres client.release(error) discards this connection, stopping
+        // a late server query without changing the shared pool or other users.
+        releaseError = new Error('Operator pause status receipt deadline expired');
+      } else {
+        try {
+          await awaitOperatorPassthroughOperation(() => client.query('ROLLBACK'), scope);
+        } catch {
+          releaseError = new Error('Operator pause status read could not be rolled back');
+        }
+      }
+      throw error;
+    } finally {
+      client.release(releaseError);
+    }
+  });
 }
 
 const OPERATOR_PASSTHROUGH_STATUS_COLUMNS = `publication_id,owner,repo,pr_number,head_sha,base_sha,policy_digest,expected_app_id,
@@ -234,7 +300,7 @@ export const getReviewStatusDefinition: ToolDefinition = {
 export interface GetReviewStatusOptions {
   passthroughEnabled?: boolean;
   authoritativePublishing?: Pick<AuthoritativeReviewAdmission,
-    'expectedAppId' | 'expectedAppIdFor' | 'repositoryIds' | 'resolver'>;
+    'expectedAppId' | 'expectedAppIdFor' | 'repositoryIds' | 'repositoryIdentities' | 'resolver'>;
   resolveGitHubPullRequest?: (owner: string, repo: string, pullNumber: number) => Promise<{
     headSha: string; baseSha?: string; repositoryId?: number;
   }>;
@@ -245,25 +311,48 @@ interface ResolvedPauseCandidateBase {
   owner: string;
   repo: string;
   prNumber: number;
-  headSha: string;
-  baseSha: string;
   requestedHeadPrefix: string | null;
-  expectedAppId: number;
 }
-type ResolvedPauseCandidate = ResolvedPauseCandidateBase &
-  ({ current: true; policyDigest: string } | { current: false; policyDigest: null });
+type ResolvedPauseCandidate = ResolvedPauseCandidateBase & (
+  { authorityAvailable: true; current: true; headSha: string; baseSha: string; policyDigest: string; expectedAppId: number }
+  | { authorityAvailable: true; current: false; headSha: string; baseSha: string; policyDigest: null; expectedAppId: number }
+  | { authorityAvailable: false; current: false; headSha: null; baseSha: null; policyDigest: null; expectedAppId: null }
+);
 
 async function resolveOperatorPauseCandidate(input: GetReviewStatusInput,
   options: GetReviewStatusOptions): Promise<ResolvedPauseCandidate> {
   const admission = options.authoritativePublishing;
-  if (!admission || !options.resolveGitHubPullRequest) {
+  if (!admission) {
     throw new Error('Operator SHIP status requires current authoritative candidate resolution');
   }
-  const snapshot = await options.resolveGitHubPullRequest(input.owner, input.repo, input.pull_number);
+  const mappedIdentity = authoritativeRepositoryForName(admission, input.owner, input.repo);
+  if (!mappedIdentity) {
+    throw new Error('Operator SHIP status requires an enrolled local repository identity mapping');
+  }
+  if (typeof admission.resolver.readCurrentCandidate !== 'function') {
+    throw new Error('Operator SHIP status requires the authoritative current-candidate reader');
+  }
+  let snapshot: { repositoryId?: number; owner?: string; repo?: string; prNumber?: number; headSha: string; baseSha?: string };
+  try {
+    snapshot = await admission.resolver.readCurrentCandidate({ ...mappedIdentity, prNumber: input.pull_number });
+  } catch (error) {
+    if (isPausedAuthorityReadUnavailable(error)) {
+      return { authorityAvailable: false, current: false, repositoryId: mappedIdentity.repositoryId,
+        owner: mappedIdentity.owner, repo: mappedIdentity.repo, prNumber: input.pull_number,
+        headSha: null, baseSha: null, requestedHeadPrefix: input.head_sha?.toLowerCase() ?? null,
+        policyDigest: null, expectedAppId: null };
+    }
+    throw error;
+  }
   if (!Number.isSafeInteger(snapshot.repositoryId) || Number(snapshot.repositoryId) <= 0
     || typeof snapshot.headSha !== 'string' || !/^[a-f0-9]{40}$/iu.test(snapshot.headSha)
     || typeof snapshot.baseSha !== 'string' || !/^[a-f0-9]{40}$/iu.test(snapshot.baseSha)) {
     throw new Error('Current pull request identity is unavailable');
+  }
+  if (mappedIdentity && (snapshot.repositoryId !== mappedIdentity.repositoryId
+    || snapshot.owner !== mappedIdentity.owner || snapshot.repo !== mappedIdentity.repo
+    || snapshot.prNumber !== input.pull_number)) {
+    throw new Error('Current pull request identity conflicts with local repository enrollment');
   }
   const headSha = snapshot.headSha.toLowerCase();
   const baseSha = snapshot.baseSha.toLowerCase();
@@ -271,11 +360,11 @@ async function resolveOperatorPauseCandidate(input: GetReviewStatusInput,
   if (!admission.repositoryIds.includes(repositoryId)) {
     throw new Error('Operator SHIP status is outside authoritative repository admission');
   }
-  const requested = { repositoryId, owner: input.owner, repo: input.repo,
+  const requested = { repositoryId, owner: mappedIdentity?.owner ?? input.owner, repo: mappedIdentity?.repo ?? input.repo,
     prNumber: input.pull_number, headSha, baseSha };
   const expectedAppId = expectedReviewAppIdFor(admission, requested);
   const result: ResolvedPauseCandidate = { ...requested, requestedHeadPrefix: input.head_sha?.toLowerCase() ?? null,
-    policyDigest: null, expectedAppId, current: false };
+    policyDigest: null, expectedAppId, current: false, authorityAvailable: true };
   if (input.head_sha && !headSha.startsWith(input.head_sha.toLowerCase())) return result;
   try {
     const resolved = await admission.resolver.resolve(requested);
@@ -286,9 +375,14 @@ async function resolveOperatorPauseCandidate(input: GetReviewStatusInput,
     if (typeof policyDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(policyDigest)) {
       throw new Error('Current policy identity is unavailable');
     }
-    return { ...result, policyDigest, current: true };
+    return { ...result, policyDigest, current: true, authorityAvailable: true };
   } catch (error) {
     if (error instanceof AuthoritativeCandidateChangedError) return result;
+    if (isPausedAuthorityReadUnavailable(error)) {
+      return { authorityAvailable: false, current: false, repositoryId, owner: input.owner,
+        repo: input.repo, prNumber: input.pull_number, headSha: null, baseSha: null,
+        requestedHeadPrefix: input.head_sha?.toLowerCase() ?? null, policyDigest: null, expectedAppId: null };
+    }
     throw error;
   }
 }
@@ -348,7 +442,7 @@ async function historicalOperatorPassthroughStatus(db: ReviewStatusDbClient | un
   const requestedHead = candidate.requestedHeadPrefix ?? candidate.headSha;
   let rows: any[];
   try {
-    rows = (await db.query(`SELECT ${OPERATOR_PASSTHROUGH_STATUS_COLUMNS}
+    rows = (await queryOperatorPassthroughStatus(db, `SELECT ${OPERATOR_PASSTHROUGH_STATUS_COLUMNS}
       FROM review_operator_passthrough_publications
       WHERE owner=$1 AND repo=$2 AND pr_number=$3 AND retirement_requested_at IS NULL AND retired_at IS NULL
         AND head_sha LIKE ($4 || '%')
@@ -373,7 +467,7 @@ async function historicalOperatorPassthroughStatus(db: ReviewStatusDbClient | un
       id: gateCheckId, url: `https://github.com/${input.owner}/${input.repo}/runs/${gateCheckId}`,
       conclusion: published ? 'success' : null,
     }, active_worker: null, active_projection: null,
-    operator_exemption: { publication_id: row.publication_id, audit_digest: row.audit_digest,
+    operator_exemption: { candidate_state: 'historical', publication_id: row.publication_id, audit_digest: row.audit_digest,
       base_sha: row.base_sha, policy_digest: row.policy_digest, expected_app_id: Number(row.expected_app_id),
       expected_lanes: 0, completed_lanes: 0, review_started: false,
       publication_state: published ? 'published' : 'pending', publication_receipt_available: true,
@@ -396,7 +490,7 @@ function unavailableOperatorStatus(candidate: ResolvedPauseCandidate & { current
     schema_version: 'ReviewStatus.v2', found: true, verdict: 'SHIP', attempt_id: null,
     head_sha: candidate.headSha, phase: 'completed', check_run: null, active_worker: null,
     active_projection: null,
-    operator_exemption: { publication_id: null, audit_digest: null, base_sha: candidate.baseSha,
+    operator_exemption: { candidate_state: 'current', publication_id: null, audit_digest: null, base_sha: candidate.baseSha,
       policy_digest: candidate.policyDigest, expected_app_id: candidate.expectedAppId,
       expected_lanes: 0, completed_lanes: 0, review_started: false,
       publication_state: 'unavailable', publication_receipt_available: publicationReceiptAvailable,
@@ -405,12 +499,25 @@ function unavailableOperatorStatus(candidate: ResolvedPauseCandidate & { current
   } satisfies ReviewStatusOutput);
 }
 
+function unavailableCandidateOperatorStatus(candidate: ResolvedPauseCandidate & { authorityAvailable: false }): ToolResult {
+  return buildToolResultJson({
+    schema_version: 'ReviewStatus.v2', found: true, verdict: 'SHIP', attempt_id: null,
+    head_sha: null, phase: 'completed', check_run: null, active_worker: null, active_projection: null,
+    operator_exemption: { candidate_state: 'unavailable', publication_id: null, audit_digest: null,
+      base_sha: null, policy_digest: null, expected_app_id: null,
+      expected_lanes: 0, completed_lanes: 0, review_started: false,
+      publication_state: 'unavailable', publication_receipt_available: null,
+      review_check_id: null, gate_check_id: null, merge_eligible: false },
+    message: `Operator pause preserves logical SHIP with zero review lanes. Current candidate and policy authority could not be confirmed; no current coordinates or durable publication receipt are asserted. Protected merge eligibility is false.`,
+  } satisfies ReviewStatusOutput);
+}
+
 async function operatorPassthroughStatus(db: ReviewStatusDbClient | undefined, input: GetReviewStatusInput,
   candidate: ResolvedPauseCandidate & { current: true }): Promise<ToolResult> {
   if (!db) return unavailableOperatorStatus(candidate, null);
   let result: { rows: any[] };
   try {
-    const resultSet = await db.query(`SELECT ${OPERATOR_PASSTHROUGH_STATUS_COLUMNS}
+    const resultSet = await queryOperatorPassthroughStatus(db, `SELECT ${OPERATOR_PASSTHROUGH_STATUS_COLUMNS}
         FROM review_operator_passthrough_publications
         WHERE owner=$1 AND repo=$2 AND pr_number=$3 AND retirement_requested_at IS NULL AND retired_at IS NULL
           AND head_sha=$4
@@ -442,6 +549,7 @@ async function operatorPassthroughStatus(db: ReviewStatusDbClient | undefined, i
     },
     active_worker: null, active_projection: null,
     operator_exemption: {
+      candidate_state: 'current',
       publication_id: row.publication_id, audit_digest: row.audit_digest,
       base_sha: row.base_sha, policy_digest: row.policy_digest, expected_app_id: Number(row.expected_app_id),
       expected_lanes: 0, completed_lanes: 0, review_started: false,
@@ -468,6 +576,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient, options: Ge
 
       if (options.passthroughEnabled === true) {
         const candidate = await resolveOperatorPauseCandidate(parsed.data, options);
+        if (!candidate.authorityAvailable) return unavailableCandidateOperatorStatus(candidate);
         if (!candidate.current) return historicalOperatorPassthroughStatus(db, parsed.data, candidate);
         return operatorPassthroughStatus(db, parsed.data, candidate);
       }

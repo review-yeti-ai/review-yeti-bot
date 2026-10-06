@@ -6,6 +6,7 @@ import { AuthoritativeReviewReader, type ReviewRepositoryIdentity } from '../git
 import { getBoundedRepositoryToken } from '../github/boundedAppToken';
 import { trustedGitDiffSource } from '../github/largeDiffSourceWiring';
 import { AuthoritativeCandidateChangedError, AuthoritativePublishingResolver } from './authoritativePublishingResolver';
+import { isPausedAuthorityReadUnavailable } from '../github/authoritativeReadFailure';
 import { createAuthoritativeCompletionContext, type AuthoritativeCompletionContextOptions } from './authoritativeCompletionContext';
 import { ReviewGatePublisher, type ReviewGatePublisherOptions } from './reviewGatePublisher';
 import type { ReviewAdmissionInput } from './reviewRun';
@@ -14,8 +15,12 @@ import { canonicalJson } from './reviewCore';
 import { GitHubReviewGateClient, REVIEW_GATE_CHECK_NAME, REVIEW_WORKER_CHECK_NAME } from '../github/reviewGateClient';
 import { OperatorPassthroughPublisher } from './operatorPassthroughPublisher';
 import { operatorPassthroughIdentity, OperatorPassthroughDeliveryIdentityConflictError,
+  OperatorPassthroughOperationDeadlineExceededError, OperatorPassthroughPersistenceUnavailableError,
+  awaitOperatorPassthroughOperation, validateOperatorPassthroughEvent, withOperatorPassthroughReceiptBudget,
   type OperatorPassthroughAdmissionReceipt, type OperatorPassthroughAdmissionRequest,
+  type OperatorPassthroughUnavailableRequest,
   type OperatorPassthroughPublicationRepository, type OperatorPassthroughPublicationSnapshot,
+  type OperatorPassthroughOperationScope,
   type OperatorPassthroughRecordResult, type OperatorPassthroughReconcileAdmission,
   type OperatorPassthroughReconcileCursor } from './operatorPassthrough';
 import { logger } from '../utils/logger';
@@ -24,9 +29,10 @@ const OPERATOR_PASSTHROUGH_CATCH_UP_BATCH_SIZE = 10;
 
 function unavailableOperatorPassthroughReceipt(publicationId: string | null, auditDigest: string | null,
   publicationReceiptAvailable: boolean | null,
-  status: OperatorPassthroughAdmissionReceipt['status'] = 'accepted'): OperatorPassthroughAdmissionReceipt {
+  status: OperatorPassthroughAdmissionReceipt['status'] = 'accepted',
+  candidateState: OperatorPassthroughAdmissionReceipt['candidateState'] = 'current'): OperatorPassthroughAdmissionReceipt {
   return {
-    status, verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
+    status, candidateState, verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
     publicationId, auditDigest, publicationState: 'unavailable', publicationReceiptAvailable,
     reviewCheckId: null, gateCheckId: null, mergeEligible: false,
     message: publicationReceiptAvailable === true
@@ -117,11 +123,11 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
   const operatorPublisher = operatorRepository ? new OperatorPassthroughPublisher({
     repository: operatorRepository,
     workerId: `${options.workerId}:operator-passthrough`,
-    candidateIsCurrent: async (claim) => {
+    candidateIsCurrent: async (claim, scope?: OperatorPassthroughOperationScope) => {
       try {
         const current = await resolver.resolve({ repositoryId: claim.coordinates.repositoryId,
           owner: claim.coordinates.owner, repo: claim.coordinates.repo, prNumber: claim.coordinates.prNumber,
-          headSha: claim.coordinates.headSha, baseSha: claim.coordinates.baseSha });
+          headSha: claim.coordinates.headSha, baseSha: claim.coordinates.baseSha }, scope?.signal);
         return current.prepared.policy.effectivePolicyDigest === claim.coordinates.policyDigest
           && expectedAppIdFor(claim.coordinates) === claim.expectedAppId;
       } catch (error) {
@@ -129,19 +135,42 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
         throw error;
       }
     },
-    clientFor: async (claim) => {
+    clientFor: async (claim, preparationScope?: OperatorPassthroughOperationScope,
+      requestScope?: OperatorPassthroughOperationScope) => {
       const selected = claim.coordinates;
       if (!repositoryIds.includes(selected.repositoryId) || expectedAppIdFor(selected) !== claim.expectedAppId) {
         throw new Error('Operator passthrough publication is outside the enrolled identity');
       }
       const minted = await getBoundedRepositoryToken(authFor(selected), 'publish', {
+        ...(preparationScope ? { signal: preparationScope.signal } : {}),
         fetchImplementation: options.fetchImplementation,
       });
       return new GitHubReviewGateClient({ token: minted.token, expectedAppId: claim.expectedAppId,
         checkName: claim.stage === 'review' ? REVIEW_WORKER_CHECK_NAME : REVIEW_GATE_CHECK_NAME,
-        baseUrl: options.baseUrl, fetchImplementation: options.fetchImplementation });
+        baseUrl: options.baseUrl, fetchImplementation: options.fetchImplementation,
+        ...(requestScope ? { signal: requestScope.signal } : {}) });
     },
   }) : undefined;
+  const reportOperatorPassthroughUnavailable = operatorRepository && passthroughEnabled
+    ? async (input: OperatorPassthroughUnavailableRequest): Promise<OperatorPassthroughAdmissionReceipt> => {
+      const identity = { repositoryId: input.repositoryId, owner: input.owner, repo: input.repo };
+      if (!repositoryIds.includes(input.repositoryId) || !Number.isSafeInteger(input.prNumber) || input.prNumber <= 0
+        || !/^[A-Za-z0-9_.-]{1,100}$/u.test(input.owner) || !/^[A-Za-z0-9_.-]{1,100}$/u.test(input.repo)) {
+        throw new Error('Operator passthrough source identity is outside authoritative admission');
+      }
+      expectedAppIdFor(identity);
+      validateOperatorPassthroughEvent(input.event);
+      try {
+        await withOperatorPassthroughReceiptBudget((scope) =>
+          operatorRepository.assertDeliveryIdentity(input.event, scope));
+      }
+      catch (error) {
+        if (error instanceof OperatorPassthroughDeliveryIdentityConflictError) throw error;
+        if (!(error instanceof OperatorPassthroughPersistenceUnavailableError
+          || error instanceof OperatorPassthroughOperationDeadlineExceededError)) throw error;
+      }
+      return unavailableOperatorPassthroughReceipt(null, null, null, 'unavailable', 'unavailable');
+    } : undefined;
   const recordOperatorPassthrough = operatorRepository && passthroughEnabled && operatorPublisher
     ? async (input: OperatorPassthroughAdmissionRequest) => {
       const requested = {
@@ -155,66 +184,113 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
       if (!repositoryIds.includes(requested.repositoryId)) {
         throw new Error('Operator passthrough candidate is outside authoritative admission');
       }
-      const resolved = await resolver.resolve(requested);
+      validateOperatorPassthroughEvent(input.event);
       const expectedAppId = expectedAppIdFor(requested);
+      let resolved;
+      try { resolved = await resolver.resolve(requested); }
+      catch (error) {
+        if (error instanceof AuthoritativeCandidateChangedError) throw error;
+        if (!isPausedAuthorityReadUnavailable(error)) throw error;
+        try {
+          await withOperatorPassthroughReceiptBudget((scope) =>
+            operatorRepository.assertDeliveryIdentity(input.event, scope));
+        }
+        catch (identityError) {
+          if (identityError instanceof OperatorPassthroughDeliveryIdentityConflictError) throw identityError;
+          if (!(identityError instanceof OperatorPassthroughPersistenceUnavailableError
+            || identityError instanceof OperatorPassthroughOperationDeadlineExceededError)) throw identityError;
+        }
+        return unavailableOperatorPassthroughReceipt(null, null, null, 'unavailable', 'unavailable');
+      }
       const candidate = { ...requested, policyDigest: resolved.prepared.policy.effectivePolicyDigest };
       const recordInput = { candidate, expectedAppId, event: input.event };
       // Keep caller/event and exact candidate validation outside the persistence
       // fallback. Only a storage failure after these checks is eligible for a
       // bounded same-delivery retry or an unavailable logical-SHIP response.
       operatorPassthroughIdentity(recordInput);
-      let recorded: OperatorPassthroughRecordResult;
+      let recorded: OperatorPassthroughRecordResult | undefined;
       try {
-        recorded = await operatorRepository.record(recordInput);
+        return await withOperatorPassthroughReceiptBudget(async (scope) => {
+          try {
+            recorded = await awaitOperatorPassthroughOperation(
+              () => operatorRepository.record(recordInput, undefined, scope), scope);
+          } catch (error) {
+            if (error instanceof OperatorPassthroughDeliveryIdentityConflictError
+              || error instanceof OperatorPassthroughOperationDeadlineExceededError) throw error;
+            let current;
+            try {
+              current = await awaitOperatorPassthroughOperation(
+                () => resolver.resolve(requested, scope.signal), scope);
+            } catch (resolveError) {
+              if (resolveError instanceof AuthoritativeCandidateChangedError
+                || resolveError instanceof OperatorPassthroughOperationDeadlineExceededError) throw resolveError;
+              // The initial exact-current resolution already authorized this
+              // logical pause response. A later read failure cannot make a
+              // timed-out admission eligible for a same-delivery retry.
+              return unavailableOperatorPassthroughReceipt(null, null, null);
+            }
+            if (current.prepared.policy.effectivePolicyDigest !== candidate.policyDigest) {
+              throw new AuthoritativeCandidateChangedError();
+            }
+            try {
+              // Reuse the exact delivery identity only while the original
+              // receipt budget remains active. An ambiguous late COMMIT is
+              // reconciled by the durable outbox, never by a second call here.
+              recorded = await awaitOperatorPassthroughOperation(
+                () => operatorRepository.record(recordInput, undefined, scope), scope);
+            } catch (retryError) {
+              if (retryError instanceof OperatorPassthroughDeliveryIdentityConflictError
+                || retryError instanceof OperatorPassthroughOperationDeadlineExceededError) throw retryError;
+              return unavailableOperatorPassthroughReceipt(null, null, null);
+            }
+          }
+          // Event transports get immediate bounded publication. The same
+          // deadline fences late completion before a second pass or receipt read.
+          if (input.event.transport !== 'service-reconciler') {
+            const firstPublication = await awaitOperatorPassthroughOperation(
+              () => operatorPublisher.runOnce(recorded!.publicationId, scope), scope);
+            if (firstPublication.preflightResetUnconfirmed) {
+              return unavailableOperatorPassthroughReceipt(recorded!.publicationId,
+                recorded!.auditDigest, true, recorded!.status);
+            }
+            const secondPublication = await awaitOperatorPassthroughOperation(
+              () => operatorPublisher.runOnce(recorded!.publicationId, scope), scope);
+            if (secondPublication.preflightResetUnconfirmed) {
+              return unavailableOperatorPassthroughReceipt(recorded!.publicationId,
+                recorded!.auditDigest, true, recorded!.status);
+            }
+          }
+          let publication: OperatorPassthroughPublicationSnapshot | null;
+          try {
+            publication = await awaitOperatorPassthroughOperation(
+              () => operatorRepository.getPublication(recorded!.publicationId, scope), scope);
+          } catch (error) {
+            if (error instanceof OperatorPassthroughOperationDeadlineExceededError) throw error;
+            return unavailableOperatorPassthroughReceipt(recorded!.publicationId,
+              recorded!.auditDigest, true, recorded!.status);
+          }
+          if (!publication) return unavailableOperatorPassthroughReceipt(recorded!.publicationId,
+            recorded!.auditDigest, true, recorded!.status);
+          if (publication.retirementReason === 'candidate-changed') throw new AuthoritativeCandidateChangedError();
+          const publicationState = publication.retirementRequestedAt !== null
+            ? publication.retiredAt !== null ? 'retired' as const : 'retiring' as const
+            : publication.readyForShip ? 'published' as const : 'pending' as const;
+          return { status: recorded!.status, verdict: 'SHIP' as const, expectedLanes: 0 as const, completedLanes: 0 as const,
+            candidateState: 'current' as const,
+            publicationId: publication.publicationId, auditDigest: publication.auditDigest, publicationState,
+            publicationReceiptAvailable: true,
+            reviewCheckId: publication.reviewCheckId, gateCheckId: publication.gateCheckId,
+            mergeEligible: publication.readyForShip,
+            message: publication.readyForShip
+              ? 'Operator pause authorizes SHIP with zero review lanes; both official checks are durably published.'
+              : 'Operator pause authorizes SHIP with zero review lanes; official check publication is pending and protected merge is not eligible.' };
+        });
       } catch (error) {
-        if (error instanceof OperatorPassthroughDeliveryIdentityConflictError) throw error;
-        let current;
-        try { current = await resolver.resolve(requested); }
-        catch (resolveError) {
-          if (resolveError instanceof AuthoritativeCandidateChangedError) throw resolveError;
-          // The initial exact-current resolution already authorized this
-          // logical pause response. A transient read failure cannot turn that
-          // SHIP verdict into PENDING, but it does prevent claiming a retry.
-          return unavailableOperatorPassthroughReceipt(null, null, null);
-        }
-        if (current.prepared.policy.effectivePolicyDigest !== candidate.policyDigest) {
-          throw new AuthoritativeCandidateChangedError();
-        }
-        try {
-          // Reuse the exact delivery identity. If the first COMMIT succeeded
-          // but its acknowledgement was lost, the repository returns duplicate.
-          recorded = await operatorRepository.record(recordInput);
-        } catch (retryError) {
-          if (retryError instanceof OperatorPassthroughDeliveryIdentityConflictError) throw retryError;
-          return unavailableOperatorPassthroughReceipt(null, null, null);
-        }
+        if (!(error instanceof OperatorPassthroughOperationDeadlineExceededError)) throw error;
+        return recorded
+          ? unavailableOperatorPassthroughReceipt(recorded.publicationId, recorded.auditDigest, true, recorded.status)
+          : unavailableOperatorPassthroughReceipt(null, null, null);
       }
-      // Event transports get immediate bounded publication. The deterministic
-      // service reconciler records first and lets the ordinary durable outbox
-      // cadence publish, so a large catch-up batch does not issue unbounded API
-      // calls inside one tick.
-      if (input.event.transport !== 'service-reconciler') {
-        await operatorPublisher.runOnce(recorded.publicationId).catch(() => undefined);
-        await operatorPublisher.runOnce(recorded.publicationId).catch(() => undefined);
-      }
-      let publication: OperatorPassthroughPublicationSnapshot | null;
-      try { publication = await operatorRepository.getPublication(recorded.publicationId); }
-      catch { return unavailableOperatorPassthroughReceipt(recorded.publicationId,
-        recorded.auditDigest, true, recorded.status); }
-      if (!publication) return unavailableOperatorPassthroughReceipt(recorded.publicationId,
-        recorded.auditDigest, true, recorded.status);
-      if (publication.retirementReason === 'candidate-changed') throw new AuthoritativeCandidateChangedError();
-      const publicationState = publication.retirementRequestedAt !== null
-        ? publication.retiredAt !== null ? 'retired' as const : 'retiring' as const
-        : publication.readyForShip ? 'published' as const : 'pending' as const;
-      return { status: recorded.status, verdict: 'SHIP' as const, expectedLanes: 0 as const, completedLanes: 0 as const,
-        publicationId: publication.publicationId, auditDigest: publication.auditDigest, publicationState,
-        publicationReceiptAvailable: true,
-        reviewCheckId: publication.reviewCheckId, gateCheckId: publication.gateCheckId,
-        mergeEligible: publication.readyForShip,
-        message: publication.readyForShip
-          ? 'Operator pause authorizes SHIP with zero review lanes; both official checks are durably published.'
-          : 'Operator pause authorizes SHIP with zero review lanes; official check publication is pending and protected merge is not eligible.' };
     } : undefined;
   const resolveCompletion = createAuthoritativeCompletionContext({
     getStoredPrepared: options.getStoredPrepared,
@@ -305,7 +381,9 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
     resolver,
     admission: { expectedAppId: config.expectedAppId,
       acceptNewRequests: config.admissionEnabled && !passthroughEnabled,
-      repositoryIds, ...(publicAuthority ? { expectedAppIdFor } : {}), resolver,
+      repositoryIds, ...(config.repositoryIdentities ? { repositoryIdentities: config.repositoryIdentities } : {}),
+      ...(publicAuthority ? { expectedAppIdFor } : {}), resolver,
+      ...(reportOperatorPassthroughUnavailable ? { reportOperatorPassthroughUnavailable } : {}),
       ...(recordOperatorPassthrough ? { recordOperatorPassthrough } : {}) },
     completion: { verifier: createWorkerCompletionVerifier(), repository, resolve: resolveCompletion },
     ...(operatorRepository ? { operatorPassthroughRepository: operatorRepository } : {}),

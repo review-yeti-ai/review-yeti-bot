@@ -26,6 +26,20 @@ export const queryActiveJobsDefinition: ToolDefinition = {
   },
 };
 
+/**
+ * review_runs has no verdict column (verdicts live in review_logs / the
+ * arbiter result). A run is active until it reaches a terminal status.
+ */
+export const ACTIVE_REVIEW_RUN_STATUSES = ['queued', 'running', 'publishing'] as const;
+
+export const ACTIVE_JOBS_BASE_SQL = `
+          SELECT r.run_id, r.owner, r.repo, r.pr_number, r.head_sha,
+                 r.status, r.created_at, r.received_at, r.burst_started_at,
+                 r.terminal_deadline
+            FROM review_runs r
+           WHERE r.status IN ('queued', 'running', 'publishing')
+        `;
+
 export function createQueryActiveJobsTool(db?: ActiveJobsDbClient) {
   return {
     definition: queryActiveJobsDefinition,
@@ -46,13 +60,7 @@ export function createQueryActiveJobsTool(db?: ActiveJobsDbClient) {
       }
 
       try {
-        let sql = `
-          SELECT r.run_id, r.owner, r.repo, r.pr_number, r.head_sha,
-                 r.status, r.created_at, r.received_at, r.burst_started_at,
-                 r.terminal_deadline
-            FROM review_runs r
-           WHERE (r.verdict IS NULL OR r.status IN ('pending', 'running', 'dispatched', 'projected'))
-        `;
+        let sql = ACTIVE_JOBS_BASE_SQL;
         const values: unknown[] = [];
         if (owner) {
           values.push(owner);

@@ -50,6 +50,17 @@ async function redacted(pending: Promise<unknown>) {
   expect(text).not.toContain(token);
 }
 
+async function transient(pending: Promise<unknown>, kind: string) {
+  const error = await pending.then(() => undefined, (reason: unknown) => reason);
+  expect(error).toMatchObject({ name: 'TransientAuthoritativeReadError', kind,
+    message: 'Authoritative source read is temporarily unavailable' });
+  expect((error as Error).cause).toBeUndefined();
+  const text = `${(error as Error).stack}\n${JSON.stringify(error)}`;
+  expect(text).not.toContain(marker);
+  expect(text).not.toContain(privateKey);
+  expect(text).not.toContain(token);
+}
+
 describe('getBoundedRepositoryToken', () => {
   beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] }); });
   afterEach(() => {
@@ -108,7 +119,7 @@ describe('getBoundedRepositoryToken', () => {
   });
 
   it.each([{ owner: '.' }, { repo: '..' }, { owner: 'x/y' }, { repo: 'x?key' }, { appId: '0' },
-    { appId: '1e3' }, { appId: '9007199254740992' }, { privateKey: marker }])
+    { appId: '1e3' }, { appId: '9007199254740992' }])
   ('rejects invalid signing/repository config %j without transport', async (override) => {
     const fetchImplementation = fetchStub();
     await redacted(getBoundedRepositoryToken({ ...config, ...override }, 'read', { fetchImplementation }));
@@ -142,13 +153,110 @@ describe('getBoundedRepositoryToken', () => {
     expect(fetchImplementation).not.toHaveBeenCalled();
   });
 
-  it.each([301, 302, 307, 308, 401, 403, 404, 429, 500])('rejects HTTP %s without reading raw diagnostic bodies', async (status) => {
+  it.each([301, 302, 307, 308, 404])('rejects HTTP %s without reading raw diagnostic bodies', async (status) => {
     const body = wire(Buffer.from(marker), false);
     const fetchImplementation = vi.fn(async () => new Response(body.response.body, { status }));
     await redacted(getBoundedRepositoryToken(config, 'read', { fetchImplementation }));
     expect(fetchImplementation).toHaveBeenCalledOnce();
     expect(body.pull).not.toHaveBeenCalled();
     expect(body.cancel).toHaveBeenCalledOnce();
+  });
+
+  it.each([500, 502, 503, 504])('preserves a redacted retryable-server classification for HTTP %s', async (status) => {
+    const fetchImplementation = vi.fn(async () => new Response(marker, { status }));
+    const error = await getBoundedRepositoryToken(config, 'read', { fetchImplementation })
+      .then(() => undefined, (reason: unknown) => reason);
+    expect(error).toMatchObject({ name: 'TransientAuthoritativeReadError', kind: 'retryable_server' });
+    expect((error as Error).message).not.toContain(marker);
+    expect((error as Error).cause).toBeUndefined();
+    expect(`${(error as Error).stack}\n${JSON.stringify(error)}`).not.toContain(marker);
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+
+  it('preserves explicit rate-limit evidence while a bare forbidden response remains final', async () => {
+    const rateLimited = vi.fn(async () => new Response(marker, {
+      status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1' },
+    }));
+    const error = await getBoundedRepositoryToken(config, 'read', { fetchImplementation: rateLimited })
+      .then(() => undefined, (reason: unknown) => reason);
+    expect(error).toMatchObject({ name: 'TransientAuthoritativeReadError', kind: 'rate_limit' });
+    expect((error as Error).message).not.toContain(marker);
+    expect((error as Error).cause).toBeUndefined();
+
+    const forbidden = vi.fn(async () => new Response(marker, { status: 403 }));
+    await expect(getBoundedRepositoryToken(config, 'read', { fetchImplementation: forbidden }))
+      .rejects.toMatchObject({ name: 'InternalGitHubDependencyUnavailableError' });
+    expect(forbidden).toHaveBeenCalledOnce();
+  });
+
+  it.each([401, 403])('labels internal App-token HTTP %s as a typed dependency authorization outage', async (status) => {
+    const body = wire(Buffer.from(marker), false);
+    const fetchImplementation = vi.fn(async () => new Response(body.response.body, { status }));
+    const error = await getBoundedRepositoryToken(config, 'read', { fetchImplementation })
+      .then(() => undefined, (reason: unknown) => reason);
+
+    expect(error).toMatchObject({ name: 'InternalGitHubDependencyUnavailableError' });
+    expect((error as Error).message).not.toContain(marker);
+    expect((error as Error).cause).toBeUndefined();
+    expect(body.pull).not.toHaveBeenCalled();
+    expect(body.cancel).toHaveBeenCalledOnce();
+  });
+
+  it('classifies an absent service-owned App key as unavailable before any request', async () => {
+    const fetchImplementation = fetchStub();
+    const error = await getBoundedRepositoryToken({ ...config, privateKey: '' }, 'read', { fetchImplementation })
+      .then(() => undefined, (reason: unknown) => reason);
+
+    expect(error).toMatchObject({ name: 'InternalGitHubDependencyUnavailableError',
+      message: 'Internal GitHub authority dependency is unavailable' });
+    expect(fetchImplementation).not.toHaveBeenCalled();
+    expect((error as Error).stack).not.toContain(privateKey);
+  });
+
+  it('rejects malformed static App identity even when the private key is absent', async () => {
+    const fetchImplementation = fetchStub();
+    await redacted(getBoundedRepositoryToken({ ...config, appId: 'not-an-app-id', privateKey: '' }, 'read',
+      { fetchImplementation }));
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it('classifies only the App signing failure for a malformed-present service key', async () => {
+    const fetchImplementation = fetchStub();
+    const error = await getBoundedRepositoryToken({ ...config, privateKey: 'malformed-present-private-key' }, 'read',
+      { fetchImplementation }).then(() => undefined, (reason: unknown) => reason);
+
+    expect(error).toMatchObject({ name: 'InternalGitHubDependencyUnavailableError',
+      message: 'Internal GitHub authority dependency is unavailable' });
+    expect(fetchImplementation).not.toHaveBeenCalled();
+    expect((error as Error).message).not.toContain('malformed-present-private-key');
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it('classifies a fetch rejection as network failure without retaining its cause', async () => {
+    const fetchImplementation = vi.fn(async () => { throw new Error(marker); });
+    const error = await getBoundedRepositoryToken(config, 'read', { fetchImplementation })
+      .then(() => undefined, (reason: unknown) => reason);
+    expect(error).toMatchObject({ name: 'TransientAuthoritativeReadError', kind: 'network' });
+    expect((error as Error).message).not.toContain(marker);
+    expect((error as Error).cause).toBeUndefined();
+    expect(`${(error as Error).stack}\n${JSON.stringify(error)}`).not.toContain(marker);
+  });
+
+  it('does not classify a successful response with malformed token JSON as transient', async () => {
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL) => new Response(
+      String(input).endsWith('/installation') ? JSON.stringify({ id: 987 }) : marker, { status: 200 }));
+    const error = await getBoundedRepositoryToken(config, 'read', { fetchImplementation })
+      .then(() => undefined, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toMatchObject({ name: 'TransientAuthoritativeReadError' });
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it('classifies a response-stream read rejection as network failure', async () => {
+    const body = new ReadableStream<Uint8Array>({ pull(controller) { controller.error(new Error(marker)); } });
+    const fetchImplementation = vi.fn(async () => new Response(body, { status: 200 }));
+    await transient(getBoundedRepositoryToken(config, 'read', { fetchImplementation }), 'network');
+    expect(fetchImplementation).toHaveBeenCalledOnce();
   });
 
   it('rejects a fetch implementation that followed a redirect', async () => {
@@ -208,7 +316,7 @@ describe('getBoundedRepositoryToken', () => {
     const response = { ok: true, status: 200, redirected: false, body: { getReader: () => ({
       read: async () => { throw new Error(marker); }, cancel, releaseLock,
     }) } } as unknown as Response;
-    await redacted(getBoundedRepositoryToken(config, 'read', { fetchImplementation: vi.fn(async () => response) }));
+    await transient(getBoundedRepositoryToken(config, 'read', { fetchImplementation: vi.fn(async () => response) }), 'network');
     expect(cancel).toHaveBeenCalledOnce();
     expect(releaseLock).toHaveBeenCalledOnce();
   });
@@ -231,7 +339,7 @@ describe('getBoundedRepositoryToken', () => {
 
   it('redacts transport exceptions and never retries', async () => {
     const fetchImplementation = vi.fn(async () => { throw new Error(marker); });
-    await redacted(getBoundedRepositoryToken(config, 'read', { fetchImplementation }));
+    await transient(getBoundedRepositoryToken(config, 'read', { fetchImplementation }), 'network');
     expect(fetchImplementation).toHaveBeenCalledOnce();
   });
 
@@ -239,7 +347,7 @@ describe('getBoundedRepositoryToken', () => {
     const factory = vi.spyOn(appAuth, 'getGitHubAppRepositoryReadToken').mockImplementation(() => new Promise(() => {}));
     const fetchImplementation = fetchStub();
     let settled = false;
-    const failure = redacted(getBoundedRepositoryToken(config, 'read', { timeoutMs, fetchImplementation })).then(() => { settled = true; });
+    const failure = transient(getBoundedRepositoryToken(config, 'read', { timeoutMs, fetchImplementation }), 'deadline').then(() => { settled = true; });
     await vi.advanceTimersByTimeAsync((timeoutMs ?? 10_000) - 1);
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
@@ -251,7 +359,7 @@ describe('getBoundedRepositoryToken', () => {
   it('aborts uncooperative fetch and cancels its late response without a second request', async () => {
     let finish!: (response: Response) => void;
     const fetchImplementation = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>((resolve) => { finish = resolve; }));
-    const failure = redacted(getBoundedRepositoryToken(config, 'read', { timeoutMs: 250, fetchImplementation }));
+    const failure = transient(getBoundedRepositoryToken(config, 'read', { timeoutMs: 250, fetchImplementation }), 'deadline');
     await vi.advanceTimersByTimeAsync(250);
     await failure;
     expect(fetchImplementation.mock.calls[0][1]?.signal?.aborted).toBe(true);
@@ -268,7 +376,7 @@ describe('getBoundedRepositoryToken', () => {
     const body = wire(Buffer.from(JSON.stringify(tokenBody())), false);
     const fetchImplementation = fetchStub().mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }))
       .mockResolvedValueOnce(body.response);
-    const failure = redacted(getBoundedRepositoryToken(config, 'read', { timeoutMs: 250, fetchImplementation }));
+    const failure = transient(getBoundedRepositoryToken(config, 'read', { timeoutMs: 250, fetchImplementation }), 'deadline');
     await vi.advanceTimersByTimeAsync(200);
     finish(new Response('{"id":987}'));
     await vi.advanceTimersByTimeAsync(49);
@@ -288,7 +396,7 @@ describe('getBoundedRepositoryToken', () => {
     const read = vi.fn(() => new Promise<ReadableStreamReadResult<Uint8Array>>(() => {}));
     const releaseLock = vi.fn();
     const response = { ok: true, status: 200, redirected: false, body: { getReader: () => ({ read, cancel, releaseLock }) } } as unknown as Response;
-    const failure = redacted(getBoundedRepositoryToken(config, 'read', { timeoutMs: 250, fetchImplementation: vi.fn(async () => response) }));
+    const failure = transient(getBoundedRepositoryToken(config, 'read', { timeoutMs: 250, fetchImplementation: vi.fn(async () => response) }), 'deadline');
     await vi.advanceTimersByTimeAsync(250);
     await failure;
     expect(read).toHaveBeenCalledOnce();
