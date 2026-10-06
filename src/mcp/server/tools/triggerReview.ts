@@ -70,6 +70,8 @@ export interface TriggerReviewDependencies {
   now?: () => number;
 }
 
+// Production tool dispatch is behind remoteMcpRouter authentication and exact owner/repo RBAC;
+// both normal admission and the pause-SHIP branch below rely on that trusted transport boundary.
 export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
   const nowFn = deps.now || Date.now;
 

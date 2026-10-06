@@ -457,9 +457,11 @@ export function resolveWorkerConfig(
       ...(severityPolicy === undefined ? {} : { severity_policy: severityPolicy }),
       profile: {
         value: requestedProfile,
-        applied: reviewEngine !== 'composed',
+        applied: reviewEngine !== 'composed' || severityPolicy === 'review-yeti-severity.v2',
         reason: reviewEngine === 'composed'
-          ? 'The composed engine does not read profile; it derives tasks from path risk and coverage.'
+          ? severityPolicy === 'review-yeti-severity.v2'
+            ? 'The composed engine applies this profile to advisory breadth under severity v2; blocker evidence and coverage remain profile-independent.'
+            : 'The composed advisory profile is inactive under legacy severity because P2 findings remain blocking.'
           : 'The selected panel engine applies profile during effort and token-budget resolution.',
       },
       provider: {

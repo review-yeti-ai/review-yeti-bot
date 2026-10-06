@@ -114,6 +114,93 @@ describe('executeComposedReview', () => {
     expect(complete.mock.calls.map(([request]) => request.reasoningEffort)).toEqual(['max', 'max']);
   });
 
+  it.each([
+    ['chill', 'Report only high-value P2 advisories; omit P3 and NIT polish.'],
+    ['balanced', 'Report concrete P2 defects and prioritized, actionable P3 advisories; omit NIT polish.'],
+    ['assertive', 'Investigate a broader set of evidence-backed P2/P3 advisories and include objectively actionable NIT polish.'],
+  ] as const)('applies the %s advisory profile only to v2 task prompts without changing blockers or coverage', async (profile, expectedAdvisoryScope) => {
+    const cfg = config();
+    cfg.review_engine = 'composed';
+    cfg.severity_policy = 'review-yeti-severity.v2';
+    cfg.profile = profile;
+    const prompts: string[] = [];
+    const blocker = {
+      severity: 'P1', path: 'src/auth/guard.ts', line: 1, title: 'Verified auth bypass',
+      body: 'An unauthenticated request reaches the protected operation.',
+      blockerEvidence: {
+        trigger: 'Send the request without a session.',
+        impact: 'The protected operation runs for an unauthenticated caller.',
+        violatedContract: 'Only authenticated callers may invoke the protected operation.',
+      },
+    };
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      prompts.push(text);
+      const nonce = nonceFrom(text);
+      if (text.includes('=== PLAN TURN ===')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [{ id: 'auth-guard', dimension: 'security',
+          paths: ['src/auth/guard.ts'], question: 'Can an unauthenticated caller reach the protected operation?',
+          rationale: 'The changed path controls access to a protected operation.' }] }));
+      }
+      return fakeResponse(JSON.stringify({ nonce, task: 'auth-guard', status: 'COMPLETE', findings: [blocker] }));
+    });
+    const reviewFiles = [{ path: 'src/auth/guard.ts', patch: '@@ -1 +1 @@\n-return false;\n+return true;' }];
+
+    const result = await executeComposedReview({ config: cfg, changedFiles: reviewFiles,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
+
+    const planPrompt = prompts.find((text) => text.includes('=== PLAN TURN ==='));
+    const taskPrompt = prompts.find((text) => text.includes('=== WORK TURN: TASK'));
+    expect(planPrompt).toBeDefined();
+    expect(taskPrompt).toContain(`Advisory breadth profile: ${profile}.`);
+    expect(taskPrompt).toContain(expectedAdvisoryScope);
+    expect(taskPrompt).toContain('The selected profile changes only non-blocking advisory breadth.');
+    expect(taskPrompt).toContain('P0/P1 must retain the same concrete, verified trigger, impact, and violated-contract evidence standard.');
+    expect(taskPrompt).toContain('Every assigned path, complete changed-code coverage, and the deterministic security floor remain required.');
+    expect(planPrompt).not.toContain('Advisory breadth profile:');
+
+    const arbitration = computeArbitration(result.personas, 1, {
+      changedFiles: reviewFiles,
+      coverageComplete: true,
+      panelSize: 1,
+      severityPolicyVersion: 'review-yeti-severity.v2',
+    });
+    const incomplete = computeArbitration(result.personas, 1, {
+      changedFiles: reviewFiles,
+      coverageComplete: false,
+      panelSize: 1,
+      severityPolicyVersion: 'review-yeti-severity.v2',
+    });
+    expect(arbitration.verdict).toBe('FIX_FIRST');
+    expect(arbitration.metrics).toMatchObject({ p1Count: 1, p2Count: 0, p3Count: 0, nitCount: 0 });
+    expect(incomplete.status).toBe('INCOMPLETE_REVIEW');
+  });
+
+  it('does not apply composed advisory breadth prompts without severity v2', async () => {
+    const cfg = config();
+    cfg.review_engine = 'composed';
+    cfg.profile = 'assertive';
+    const prompts: string[] = [];
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      prompts.push(text);
+      const nonce = nonceFrom(text);
+      if (text.includes('=== PLAN TURN ===')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [{ id: 'auth-guard', dimension: 'security',
+          paths: ['src/auth/guard.ts'], question: 'Can an unauthenticated caller reach the protected operation?',
+          rationale: 'The changed path controls access to a protected operation.' }] }));
+      }
+      return fakeResponse(JSON.stringify({ nonce, task: 'auth-guard', status: 'COMPLETE', findings: [] }));
+    });
+
+    await executeComposedReview({ config: cfg, changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40), client: { complete } });
+
+    const taskPrompt = prompts.find((text) => text.includes('=== WORK TURN: TASK'));
+    expect(taskPrompt).toBeDefined();
+    expect(taskPrompt).not.toContain('Advisory breadth profile:');
+  });
+
   it.each(['COMPLETE', 'BLOCKED'] as const)(
     're-runs only the disputed task and records satisfaction only for %s output', async (status) => {
       const authTask = { id: 'auth-guard', dimension: 'security' as const,

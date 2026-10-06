@@ -40,6 +40,12 @@ export interface AbandonedRunReaperOptions {
   now?: () => number;
   limit?: number;
   /**
+   * Trusted process-wide operator mode. Preserve expiry cleanup, but do not
+   * claim or publish ordinary abandoned-review failures while maintenance SHIP
+   * publication is active. This value is read once from the process config.
+   */
+  passthroughEnabled?: boolean;
+  /**
    * REL-896: optional source of the Go operator's delegated-failure signal.
    * When present, its candidates make a queued/running run eligible for
    * claim before terminal_deadline. Omitted entirely, behavior is byte-for-byte
@@ -90,14 +96,16 @@ export class AbandonedRunReaper {
     // No reader configured keeps the exact pre-REL-896 3-argument call; a
     // configured reader always passes its (possibly empty) candidate list so
     // an eligible signal is never skipped by an unlucky poll-interval gap.
-    const delegatedCandidates = this.options.delegatedFailureReader
+    const delegatedCandidates = !this.options.passthroughEnabled && this.options.delegatedFailureReader
       ? await this.options.delegatedFailureReader.listCandidates()
       : undefined;
-    const runs = delegatedCandidates
-      ? await this.options.repository.claimAbandonedPublishingRuns(
-        this.options.workerId, now, this.limit, delegatedCandidates,
-      )
-      : await this.options.repository.claimAbandonedPublishingRuns(this.options.workerId, now, this.limit);
+    const runs = this.options.passthroughEnabled
+      ? []
+      : delegatedCandidates
+        ? await this.options.repository.claimAbandonedPublishingRuns(
+          this.options.workerId, now, this.limit, delegatedCandidates,
+        )
+        : await this.options.repository.claimAbandonedPublishingRuns(this.options.workerId, now, this.limit);
     let published = 0;
     let failed = 0;
     let quarantined = 0;
