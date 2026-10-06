@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import type { ReviewSourcePresence } from './reviewCore';
+
 /**
  * Git writes a diff header as `diff --git a/<src> b/<dst>`. With no quoting and
  * a path containing a space that line is genuinely ambiguous -- `a/x y b/z` can
@@ -78,8 +81,72 @@ export { isSubmodulePatch } from './submodulePatch';
 export interface ChangedFile {
   path: string;
   patch: string;
+  sourcePresence?: ReviewSourcePresence;
   mode?: string;
   isSubmodule?: boolean;
+}
+
+export interface ChangedFileIdentity {
+  repository: string;
+  baseSha: string;
+  headSha: string;
+}
+
+function validIdentity(identity: ChangedFileIdentity | undefined): identity is ChangedFileIdentity {
+  return Boolean(identity && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(identity.repository)
+    && /^[a-f0-9]{40}$/u.test(identity.baseSha) && /^[a-f0-9]{40}$/u.test(identity.headSha));
+}
+
+function patchDigest(patch: string): string {
+  return createHash('sha256').update(patch).digest('hex');
+}
+
+function nullSidePresence(chunk: string, path: string, identity: ChangedFileIdentity | undefined): ReviewSourcePresence | undefined {
+  if (!validIdentity(identity)) return undefined;
+  const oldPath = /^--- (.+)$/mu.exec(chunk)?.[1]?.replace(/\r$/u, '');
+  const newPath = /^\+\+\+ (.+)$/mu.exec(chunk)?.[1]?.replace(/\r$/u, '');
+  const oldAbsent = oldPath === '/dev/null';
+  const newAbsent = newPath === '/dev/null';
+  if (oldAbsent === newAbsent) return undefined;
+  const presentSidePath = unquoteGitPath((oldAbsent ? newPath : oldPath) ?? '').replace(/^[ab]\//u, '');
+  if (presentSidePath !== path) return undefined;
+  return { version: 'ReviewSourcePresence.v1', repository: identity.repository, path,
+    baseSha: identity.baseSha, headSha: identity.headSha, absentSide: oldAbsent ? 'base' : 'head',
+    evidence: 'unified-diff-null-side', patchDigest: patchDigest(chunk) };
+}
+
+/** Bind explicit unified-diff absence markers to the admitted source revisions. */
+export function bindChangedFileSourcePresence(files: readonly ChangedFile[], identity: ChangedFileIdentity): ChangedFile[] {
+  if (!validIdentity(identity)) throw new Error('Changed-file source identity is invalid');
+  return files.map((file) => {
+    const sourcePresence = file.sourcePresence ?? nullSidePresence(file.patch, file.path, identity);
+    return { ...file, ...(sourcePresence ? { sourcePresence } : {}) };
+  });
+}
+
+/** Bind an authoritative comparison status to its exact changed-file patch. */
+export function bindComparisonAbsentSide(file: ChangedFile, identity: ChangedFileIdentity,
+  absentSide: 'head' | 'base'): ChangedFile {
+  if (!validIdentity(identity)) throw new Error('Changed-file source identity is invalid');
+  return { ...file, sourcePresence: { version: 'ReviewSourcePresence.v1', repository: identity.repository,
+    path: file.path, baseSha: identity.baseSha, headSha: identity.headSha, absentSide,
+    evidence: 'comparison-status', patchDigest: patchDigest(file.patch) } };
+}
+
+/** Old-file line numbers removed by a unified diff, used only for authenticated deletions. */
+export function deletedLineNumbers(patch: string | undefined): Set<number> | null {
+  if (typeof patch !== 'string') return null;
+  const deleted = new Set<number>();
+  let oldLine = 0; let inHunk = false;
+  for (const line of patch.split(/\r?\n/u)) {
+    const hunk = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/u.exec(line);
+    if (hunk) { oldLine = Number(hunk[1]); inHunk = true; continue; }
+    if (!inHunk || line.startsWith('\\ No newline at end of file')) continue;
+    if (line.startsWith('-')) { deleted.add(oldLine); oldLine += 1; }
+    else if (line.startsWith('+')) continue;
+    else if (line.startsWith(' ')) oldLine += 1;
+  }
+  return deleted;
 }
 
 function extractMode(chunk: string): string | undefined {
@@ -95,7 +162,7 @@ function extractMode(chunk: string): string | undefined {
  * every chunk no path could be read from -- an unreviewable file, which the
  * caller must surface rather than drop.
  */
-export function parseChangedFiles(diff: string): { files: ChangedFile[]; unreadable: string[] } {
+export function parseChangedFiles(diff: string, identity?: ChangedFileIdentity): { files: ChangedFile[]; unreadable: string[] } {
   const files: ChangedFile[] = [];
   const unreadable: string[] = [];
   for (const chunk of String(diff).split(/^(?=diff --git )/mu)) {
@@ -104,9 +171,11 @@ export function parseChangedFiles(diff: string): { files: ChangedFile[]; unreada
     const mode = extractMode(chunk);
     const isSubmodule = mode === '160000' || isSubmodulePatch(chunk);
     if (path && path !== '/dev/null') {
+      const sourcePresence = nullSidePresence(chunk, path, identity);
       files.push({
         path,
         patch: chunk,
+        ...(sourcePresence ? { sourcePresence } : {}),
         ...(mode ? { mode } : {}),
         ...(isSubmodule ? { isSubmodule: true } : {}),
       });

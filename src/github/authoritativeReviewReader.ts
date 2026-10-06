@@ -3,7 +3,7 @@ import { formatPatch, OMIT_HEADERS, structuredPatch } from 'diff';
 import { z } from 'zod';
 import { reviewPolicySourceSchema, type CurrentReviewCandidate, type ImmutableReviewPolicyFile } from '../review/authoritativeReviewIdentity';
 import { isGitHubInstallationToken } from './githubTransportPolicy';
-import type { ChangedFile } from '../review/changedFiles';
+import { bindChangedFileSourcePresence, bindComparisonAbsentSide, type ChangedFile } from '../review/changedFiles';
 import { MAX_CHANGED_FILE_PATCH_BYTES } from '../review/reviewEvidenceLimits';
 import {
   MAX_COMPARISON_FILES, parseComparisonFiles,
@@ -317,7 +317,7 @@ export class AuthoritativeReviewReader {
     return { file: { path: file.path, patch: formatted }, contentBytes: (base?.bytes ?? 0) + (head?.bytes ?? 0) };
   }
 
-  private async comparisonFiles(repositoryPath: string, expected: number | undefined,
+  private async comparisonFiles(repositoryPath: string, repositoryName: string, expected: number | undefined,
     baseSha: string, headSha: string, signal?: AbortSignal): Promise<ChangedFile[]> {
     if (typeof expected !== 'number' || !Number.isSafeInteger(expected) || expected < 1 || expected > MAX_COMPARISON_FILES) {
       throw new Error('Review reader file count unavailable');
@@ -360,8 +360,12 @@ export class AuthoritativeReviewReader {
         reconstructed.set(index, result.file);
       }
     }
-    return files.map((file, index) => file.patch === undefined
-      ? reconstructed.get(index)! : { path: file.path, patch: file.patch });
+    const identity = { repository: repositoryName, baseSha, headSha };
+    return files.map((file, index) => {
+      const changed = file.patch === undefined ? reconstructed.get(index)! : { path: file.path, patch: file.patch };
+      return file.status === 'added' ? bindComparisonAbsentSide(changed, identity, 'base')
+        : file.status === 'removed' ? bindComparisonAbsentSide(changed, identity, 'head') : changed;
+    });
   }
 
   /**
@@ -407,8 +411,11 @@ export class AuthoritativeReviewReader {
       diff = await this.text(`${path}/pulls/${prNumber}`, 'application/vnd.github.v3.diff', MAX_AUTHORITATIVE_DIFF_BYTES, signal, true);
     } catch (error) {
       if (!(error instanceof OversizedPullDiff)) throw error;
-      changedFiles = await this.gitDerivedFiles(path, identity, before.expectedFileCount, baseSha, headSha, signal)
-        ?? await this.comparisonFiles(path, before.expectedFileCount, baseSha, headSha, signal);
+      const repositoryName = `${identity.owner}/${identity.repo}`;
+      const gitDerived = await this.gitDerivedFiles(path, identity, before.expectedFileCount, baseSha, headSha, signal);
+      changedFiles = gitDerived
+        ? bindChangedFileSourcePresence(gitDerived, { repository: repositoryName, baseSha, headSha })
+        : await this.comparisonFiles(path, repositoryName, before.expectedFileCount, baseSha, headSha, signal);
     }
     const after = await this.pullCandidate(target, signal);
     if (!matches(after.current)) return { current: after.current, diff: '' };

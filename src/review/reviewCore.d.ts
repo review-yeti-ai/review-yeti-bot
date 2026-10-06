@@ -29,6 +29,12 @@ export interface ReviewChangedFile {
   path: string;
   patch?: string;
   /**
+   * Exact-revision evidence that one side of this changed path is absent. This is populated only
+   * from an authenticated `/dev/null` diff header or the authoritative compare API and is never
+   * inferred from a nullable source read.
+   */
+  sourcePresence?: ReviewSourcePresence;
+  /**
    * Gitlink metadata. `reviewCore.js` reads both of these directly --
    * `isSubmodule === true || String(mode) === '160000'` -- to decide whether a changed entry is a
    * submodule pointer, but the declaration omitted them, so any caller constructing a
@@ -37,6 +43,17 @@ export interface ReviewChangedFile {
   mode?: string;
   isSubmodule?: boolean;
   submoduleCandidate?: boolean;
+}
+
+export interface ReviewSourcePresence {
+  version: 'ReviewSourcePresence.v1';
+  repository: string;
+  path: string;
+  baseSha: string;
+  headSha: string;
+  absentSide: 'head' | 'base';
+  evidence: 'unified-diff-null-side' | 'comparison-status';
+  patchDigest: string;
 }
 
 export interface ReviewLane {

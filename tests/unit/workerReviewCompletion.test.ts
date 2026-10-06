@@ -3,9 +3,10 @@ import { findingClaimType, findingFingerprint, findingFingerprintForClaimType } 
 import { createReviewDecisionV2, REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
 import { buildDeterministicCoverageManifest, groundedAffectedContextDigest, GROUNDED_VERIFICATION_VERSION,
   GROUNDED_DEFAULT_BUDGET } from '../../src/review/groundedReviewEngine';
-import { canonicalJson, computeArbitration, sha256 } from '../../src/review/reviewCore';
+import { canonicalJson, computeArbitration, sha256, type ReviewChangedFile } from '../../src/review/reviewCore';
 import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import { MAX_CHANGED_FILE_PATCH_BYTES } from '../../src/review/reviewEvidenceLimits';
+import { parseChangedFiles } from '../../src/review/changedFiles';
 import {
   MAX_COMPLETION_BYTES,
   MAX_TURN_USAGES,
@@ -96,7 +97,8 @@ const composedContract: TrustedReviewCoverageContract = {
 };
 const v2Contract: TrustedReviewCoverageContract = { ...contract, reviewDecisionPolicy: REVIEW_SEVERITY_POLICY_V2 };
 
-function withDecision(input: WorkerReviewCompletion, overrides: Record<string, unknown> = {}): WorkerReviewCompletion {
+function withDecision(input: WorkerReviewCompletion, overrides: Record<string, unknown> = {},
+  trustedChangedFiles: readonly ReviewChangedFile[] = changedFiles): WorkerReviewCompletion {
   const findings = input.result.personas.flatMap((persona) => persona.findings);
   const candidatesByFingerprint = new Map<string, typeof findings[number]>();
   const severityRank: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3, NIT: 4 };
@@ -127,20 +129,23 @@ function withDecision(input: WorkerReviewCompletion, overrides: Record<string, u
     completedLanes: input.result.personas.filter((persona) => persona.decision !== 'ERROR').length,
     counts, ...overrides,
   });
-  const coverage = buildDeterministicCoverageManifest(changedFiles);
+  const coverage = buildDeterministicCoverageManifest(trustedChangedFiles);
   const outcomes = [...candidatesByFingerprint.values()].map((finding) => {
     const claimType = findingClaimType({ path: finding.path, title: finding.title });
     const fingerprint = findingFingerprintForClaimType({ path: finding.path, title: finding.title }, claimType);
     const path = finding.path!;
-    const currentAffectedContextDigest = groundedAffectedContextDigest(finding, changedFiles, [path]);
+    const currentAffectedContextDigest = groundedAffectedContextDigest(finding, trustedChangedFiles, [path]);
+    const sourcePresence = trustedChangedFiles.find((file) => file.path === path)?.sourcePresence;
     const evidence = {
       violatedInvariant: 'The changed source violates the stated contract.',
       failurePath: 'The changed path reaches the contract without a guard.',
       benignCheck: 'The source contains no relevant guard.',
       changeConnection: 'The admitted patch exposes the behavior.',
       citations: [
-        { id: `head:${path}`, path, side: 'head', sha: expectedCoordinates.headSha },
-        { id: `base:${path}`, path, side: 'base', sha: expectedCoordinates.baseSha },
+        { id: `head:${path}`, path, side: 'head', sha: expectedCoordinates.headSha,
+          ...(sourcePresence?.absentSide === 'head' ? { presence: 'absent' as const } : {}) },
+        { id: `base:${path}`, path, side: 'base', sha: expectedCoordinates.baseSha,
+          ...(sourcePresence?.absentSide === 'base' ? { presence: 'absent' as const } : {}) },
         { id: `diff:${path}`, path, side: 'diff', sha: null },
       ],
       causalDiffPaths: [path],
@@ -824,6 +829,40 @@ describe('ADR 0002: the Gate derives required P2s with the same convergence as t
 });
 
 describe('versioned v2 worker/Gate decision agreement', () => {
+  it.each([
+    { kind: 'added', path: 'src/new.ts', line: 1,
+      diff: 'diff --git a/src/new.ts b/src/new.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/new.ts\n@@ -0,0 +1 @@\n+export const value = unsafe();\n',
+      absentSide: 'base' as const },
+    { kind: 'deleted', path: 'src/old.ts', line: 1,
+      diff: 'diff --git a/src/old.ts b/src/old.ts\ndeleted file mode 100644\n--- a/src/old.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-export const value = unsafe();\n',
+      absentSide: 'head' as const },
+  ])('accepts a bound $kind-side citation and rejects a receipt that omits its absence label', ({ path, line, diff, absentSide }) => {
+    const admittedFiles = parseChangedFiles(diff, { repository: `${expectedCoordinates.owner}/${expectedCoordinates.repo}`,
+      headSha: expectedCoordinates.headSha, baseSha: expectedCoordinates.baseSha }).files;
+    const finding = { severity: 'P1' as const, path, line, title: 'Unsafe exported behavior',
+      body: 'A caller reaches the unsafe operation.', blockerEvidence: {
+        trigger: 'A caller invokes the exported function.', impact: 'The function performs an unsafe operation.',
+        violatedContract: 'The export must validate input before the operation.',
+      } };
+    const input = completion({ result: { ...completion().result, verdict: 'FIX_FIRST', findingCount: 1,
+      blockingFindingCount: 1, personas: [lane('security', { decision: 'FINDINGS', findings: [finding] }), lane('architecture')] } });
+    const withReceipt = withDecision(input, {}, admittedFiles);
+    const trusted = { ...v2Contract, changedFiles: admittedFiles };
+    const accepted = derive(withReceipt, trusted);
+    expect(accepted, JSON.stringify(accepted)).toMatchObject({ valid: true, evidence: { verdict: 'FIX_FIRST', p1Count: 1 } });
+    const receipt = withReceipt.result.groundedReview!;
+    const citation = receipt.verification.outcomes[0]!.evidence!.citations.find((row) => row.side === absentSide)!;
+    expect(citation).toMatchObject({ presence: 'absent' });
+
+    const forged = structuredClone(withReceipt);
+    const outcome = forged.result.groundedReview!.verification.outcomes[0]!;
+    const forgedCitation = outcome.evidence!.citations.find((row) => row.side === absentSide)!;
+    delete forgedCitation.presence;
+    outcome.evidenceDigest = sha256(canonicalJson({ fingerprint: outcome.fingerprint,
+      currentAffectedContextDigest: outcome.affectedContextDigest, evidence: outcome.evidence }));
+    expectInvalid(derive(forged, trusted), /citation presence does not match trusted source-side evidence/u);
+  });
+
   it('accepts a complete advisory-only review and retains P2/P3/NIT receipt counts', () => {
     const input = completion({ result: { ...completion().result, findingCount: 3,
       personas: [lane('security', { decision: 'FINDINGS', findings: [

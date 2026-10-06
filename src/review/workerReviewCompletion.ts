@@ -6,6 +6,7 @@ import { DELETION_CLASSIFICATION_VERSION } from './deletionClassification';
 import { computeAppVerdict } from './reviewAdapters';
 import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane } from './reviewCore';
 import { canonicalJson, changedLineNumbers, publishFinding, sha256, validateReviewFindings } from './reviewCore';
+import { deletedLineNumbers } from './changedFiles';
 import { createReviewDecisionV2, reviewDecisionV2Schema, REVIEW_SEVERITY_POLICY_V2,
   type ReviewDecisionV2 } from './reviewDecision';
 import type { ReviewGateDecision, ReviewGateEvidence } from './reviewGatePolicy';
@@ -49,7 +50,7 @@ const boundedInteger = z.number().int().nonnegative().safe();
 const boundedText = (max = MAX_TEXT_CHARACTERS) => z.string().min(1).max(max);
 const groundedCitationSchema = z.object({ id: z.string().min(1).max(MAX_PATH_CHARACTERS + 16),
   path: z.string().min(1).max(MAX_PATH_CHARACTERS), side: z.enum(['head', 'base', 'diff']),
-  sha: sha.nullable() }).strict();
+  sha: sha.nullable(), presence: z.literal('absent').optional() }).strict();
 const groundedVerifiedEvidenceSchema = z.union([
   z.object({ violatedInvariant: boundedText(2_000), failurePath: boundedText(2_000), benignCheck: boundedText(2_000),
     changeConnection: boundedText(2_000), citations: z.array(groundedCitationSchema).min(2).max(32),
@@ -993,6 +994,7 @@ function groundedReviewReceiptError(
   changedFiles: ReviewChangedFile[],
   headSha: string,
   baseSha: string,
+  repository: string,
   required: boolean,
 ): string | null {
   const receipt = result.groundedReview;
@@ -1016,6 +1018,23 @@ function groundedReviewReceiptError(
     return 'grounded verification coverage status is inconsistent';
   }
   const changedByPath = new Map(changedFiles.map((file) => [file.path, file]));
+  for (const file of changedFiles) {
+    const presence = file.sourcePresence;
+    if (!presence) continue;
+    if (presence.version !== 'ReviewSourcePresence.v1' || presence.repository !== repository
+      || presence.path !== file.path || presence.headSha !== headSha || presence.baseSha !== baseSha
+      || !file.patch || presence.patchDigest !== sha256(file.patch)
+      || !['head', 'base'].includes(presence.absentSide)
+      || !['unified-diff-null-side', 'comparison-status'].includes(presence.evidence)) {
+      return 'changed-source absence evidence is not bound to the trusted repository revisions';
+    }
+    if (presence.evidence === 'unified-diff-null-side') {
+      const absentHeader = presence.absentSide === 'head'
+        ? /^\+\+\+ \/dev\/null$/mu.test(file.patch)
+        : /^--- \/dev\/null$/mu.test(file.patch);
+      if (!absentHeader) return 'changed-source absence evidence does not match its unified diff';
+    }
+  }
   const outcomes = new Map<string, typeof receipt.verification.outcomes[number]>();
   const currentFindings = result.personas.flatMap((persona) => persona.findings);
   if (required && currentFindings.some((finding) => {
@@ -1044,6 +1063,13 @@ function groundedReviewReceiptError(
     if (currentAffectedContextDigest !== outcome.affectedContextDigest) return 'grounded outcome context does not match the trusted changed set';
     if (outcome.status === 'insufficient') continue;
     const evidence = outcome.evidence!;
+    for (const citation of evidence.citations) {
+      const marker = changedByPath.get(citation.path)?.sourcePresence;
+      const shouldBeAbsent = marker?.absentSide === citation.side;
+      if ((citation.presence === 'absent') !== shouldBeAbsent) {
+        return 'grounded citation presence does not match trusted source-side evidence';
+      }
+    }
     const evidenceDigest = sha256(canonicalJson({ fingerprint: outcome.fingerprint,
       currentAffectedContextDigest, evidence }));
     if (evidenceDigest !== outcome.evidenceDigest) return 'grounded verification evidence digest is invalid';
@@ -1060,12 +1086,16 @@ function groundedReviewReceiptError(
         && outcome.relatedDiffPaths.includes(citation.path) && citation.id === `diff:${citation.path}`)
         .map((citation) => citation.path);
       const changedCausalPath = outcome.relatedDiffPaths.some((path) => {
-        const patch = changedByPath.get(path)?.patch;
-        return (changedLineNumbers(patch)?.size ?? 0) > 0;
+        const file = changedByPath.get(path);
+        const patch = file?.patch;
+        return (changedLineNumbers(patch)?.size ?? 0) > 0
+          || (file?.sourcePresence?.absentSide === 'head' && (deletedLineNumbers(patch)?.size ?? 0) > 0);
       });
       const directLineChange = changedLineNumbers(changed.patch)?.has(outcome.line) === true;
+      const directDeletion = changed.sourcePresence?.absentSide === 'head'
+        && deletedLineNumbers(changed.patch)?.has(outcome.line) === true;
       if (!headCitation || !baseCitation || citedDiffPaths.length === 0 || !changedCausalPath
-        || (!directLineChange && outcome.relatedDiffPaths.every((path) => path === outcome.path))) {
+        || (!directLineChange && !directDeletion && outcome.relatedDiffPaths.every((path) => path === outcome.path))) {
         return 'confirmed grounded outcome lacks exact current source or a changed causal path';
       }
     } else {
@@ -1129,6 +1159,7 @@ export function deriveCanonicalWorkerReviewEvidence(
   }
   const changedFiles = validateChangedFiles(contract.changedFiles);
   const groundedError = groundedReviewReceiptError(completion.result, changedFiles, expectedCoordinates.headSha, expectedCoordinates.baseSha,
+    `${expectedCoordinates.owner}/${expectedCoordinates.repo}`,
     contract.reviewDecisionPolicy === REVIEW_SEVERITY_POLICY_V2);
   if (groundedError) return invalidEvidence(groundedError);
   const groundedCoverageComplete = completion.result.groundedReview
