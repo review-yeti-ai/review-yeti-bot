@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.119.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.119.0...v1.119.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* address deferred review findings and remove the one-off container prune job ([0264441](https://github.com/review-yeti-ai/review-yeti-bot/commit/0264441dc0cba73411792c33f17cce25f5b5c5db))
+
 ## [1.119.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.118.1...v1.119.0) (2026-10-06)
 
 
