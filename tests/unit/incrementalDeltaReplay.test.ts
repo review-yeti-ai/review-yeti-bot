@@ -19,7 +19,7 @@ import { changedLineNumbers } from '../../src/review/reviewCore';
 import { evaluateFindingConvergence } from '../../src/review/findingConvergence';
 
 /**
- * ADR 0770 replay: the real head sequence of a pull request that took ~8 push cycles of ~25-30
+ * ADR 0771 replay: the real head sequence of a pull request that took ~8 push cycles of ~25-30
  * minutes each, mostly P2 nitpicks on lines the push did not touch. The fixture is GitHub compare
  * data captured from it (repository identifiers anonymized): per-head file lists, each head-to-head
  * step with its real patches, and the PR-wide patch size at every head.
@@ -84,7 +84,7 @@ async function planStep(index: number, chainDepth: number) {
   });
 }
 
-describe('real-PR replay (ADR 0770)', () => {
+describe('real-PR replay (ADR 0771)', () => {
   it('has the five real heads and four steps', () => {
     expect(fixture.heads.map((sha) => sha.slice(0, 8))).toEqual(['40f9fa95', '7d71a87b', '1ec17a20', 'fa3a2ddc', 'a13b959f']);
     expect(fixture.steps).toHaveLength(4);

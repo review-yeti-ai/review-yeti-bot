@@ -19,7 +19,7 @@
  *    satisfies a P0 or P1.
  * 4. A P2 outside the diff of the new head does not block. "In the diff" means anchored to a line
  *    the pull request adds or changes at that head (or to a changed gitlink path).
- * 5. ADR 0770: for a file the incremental re-review showed only as the change since the previous head
+ * 5. ADR 0771: for a file the incremental re-review showed only as the change since the previous head
  *    (`deltaScope`, re-derived by the service), "in the diff" narrows to the lines that change touched
  *    plus their context, because the rest of the file was reviewed in full at that head. This only
  *    ever applies to a P2; a P0/P1 is never narrowed.
@@ -289,7 +289,7 @@ export function evaluateFindingConvergence<F extends ConvergenceFinding>(input: 
   changedFiles: readonly ConvergenceChangedFile[];
   priorThreads?: readonly PriorFindingThread[];
   policyVersion?: typeof REVIEW_SEVERITY_POLICY_V2;
-  /** ADR 0770: delta-scoped files of a verified incremental re-review. Absent means whole diff. */
+  /** ADR 0771: delta-scoped files of a verified incremental re-review. Absent means whole diff. */
   deltaScope?: readonly ConvergenceDeltaScope[];
 }): ConvergenceResult<F> {
   const threads = Array.isArray(input.priorThreads) ? input.priorThreads : [];

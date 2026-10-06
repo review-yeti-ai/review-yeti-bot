@@ -401,7 +401,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
       lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000,
       // REL-1084: the service's incremental age limit (72 h default), shared with the planning read.
       incrementalMaxAgeMs: 72 * 60 * 60 * 1000,
-      // ADR 0770: the delta carry-chain cap (default 4), used by trusted verification.
+      // ADR 0771: the delta carry-chain cap (default 4), used by trusted verification.
       incrementalMaxChain: 4,
       // REL-1085: the verdict cache's age limit (72 h default), shared with its planning read.
       verdictCacheMaxAgeMs: 72 * 60 * 60 * 1000,

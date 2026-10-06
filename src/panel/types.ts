@@ -192,7 +192,7 @@ export interface PanelResult {
    * the check summary and the completion claim are built from exactly this.
    */
   incremental?: IncrementalReviewDisclosure;
-  /** ADR 0770: the delta re-review's per-task item outcomes. Set only for a delta-scoped review. */
+  /** ADR 0771: the delta re-review's per-task item outcomes. Set only for a delta-scoped review. */
   incrementalLedger?: IncrementalLedgerDisclosure;
   /**
    * REL-1082: what the risk-ordered review budget sent each lane that ran (full, signatures,

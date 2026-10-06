@@ -60,7 +60,7 @@ export interface IncrementalOpenFinding {
 }
 
 /**
- * The per-task outcome ledger of a delta re-review (ADR 0770): one explicit outcome for every open
+ * The per-task outcome ledger of a delta re-review (ADR 0771): one explicit outcome for every open
  * prior finding and every delta hunk, grouped under the tasks the single plan turn produced.
  */
 export interface IncrementalLedgerDisclosure {

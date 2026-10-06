@@ -28,7 +28,7 @@ export const incrementalReviewClaimSchema = z.object({
   /** Empty only when `deltaPaths` is not (a delta-only incremental review carries no whole file). */
   carriedForwardPaths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).max(MAX_CHANGED_FILES),
   /**
-   * Delta scope (ADR 0770): touched files whose lanes saw only the change since `previousHeadSha`.
+   * Delta scope (ADR 0771): touched files whose lanes saw only the change since `previousHeadSha`.
    * Absent unless the worker ran with `REVIEW_YETI_INCREMENTAL_DELTA`. The trusted side re-derives
    * the permitted set and refuses a path outside it.
    */

@@ -526,7 +526,7 @@ function buildTaskResultResponseFormat(withLedger = false) {
     },
   };
   if (!withLedger) return base;
-  // ADR 0770: a delta re-review's tasks also report an explicit outcome per assigned ledger item.
+  // ADR 0771: a delta re-review's tasks also report an explicit outcome per assigned ledger item.
   return {
     type: base.type,
     json_schema: {
@@ -1511,7 +1511,7 @@ async function runTaskWorkPhase(input: {
   taskIndex: number;
   totalTasks: number;
   disputedFindingRechecks?: readonly DisputedFindingRecheck[];
-  /** ADR 0770: this task's share of the delta re-review ledger; every item needs an explicit outcome. */
+  /** ADR 0771: this task's share of the delta re-review ledger; every item needs an explicit outcome. */
   ledgerItems?: readonly LedgerItem[];
   client: ReviewModelClient;
   model: string;
@@ -1666,7 +1666,7 @@ async function runTaskWorkPhase(input: {
       }
     }
 
-    // ADR 0770: a COMPLETE delta re-review task must account for every assigned item. A BLOCKED task is
+    // ADR 0771: a COMPLETE delta re-review task must account for every assigned item. A BLOCKED task is
     // already a failed lane, so it needs no ledger. A missing or inconsistent ledger is a contract
     // failure and goes through the same single correction and fresh-recovery path as a bad finding.
     let ledger: LedgerEntry[] | undefined;
@@ -1918,7 +1918,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
   let diffShrinkDisclosure: DiffShrinkDisclosure | null = null;
   // REL-1084: what the incremental scope actually carried forward, from the same call.
   let incrementalDisclosure: IncrementalReviewDisclosure | null = null;
-  // ADR 0770: builds the delta re-review's ledger disclosure from this run's settled tasks, or null.
+  // ADR 0771: builds the delta re-review's ledger disclosure from this run's settled tasks, or null.
   const ledgerHolder: { build: (() => IncrementalLedgerDisclosure) | null } = { build: null };
   // REL-1085: what the verdict cache actually served, from the same call.
   let verdictCacheDisclosure: VerdictCacheDisclosure | null = null;
@@ -2043,7 +2043,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
 
     // Policy may only narrow this, never widen it past the shared task hard cap -- `config.composed` is
     // base-policy-projected (see `resolveWorkerConfig` in `../config/publishingWorkerConfig.ts`).
-    // ADR 0770: a delta-scoped re-review plans no more tasks than the full review did (and at most
+    // ADR 0771: a delta-scoped re-review plans no more tasks than the full review did (and at most
     // `DELTA_DEFAULT_MAX_TASKS`). Hunks never become tasks or model calls: they are ledger items
     // routed into these tasks, so the call count is bounded by this number, not by the diff.
     const deltaScopedPaths = new Set(incrementalDisclosure?.deltaPaths ?? []);
@@ -2329,7 +2329,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     let blockerFindingDetected = false;
     let totalFindingsCollected = [...completedCheckpointTasks.values()].reduce((sum, f) => sum + f.length, 0);
     const settledTaskSummaries: string[] = [];
-    // ADR 0770: routed lazily, once, after the plan is fixed. Pure and path-based: no model call.
+    // ADR 0771: routed lazily, once, after the plan is fixed. Pure and path-based: no model call.
     let ledgerRouting: ReturnType<typeof routeLedgerItems> | null = null;
     const ledgerItemsFor = (taskId: string): LedgerItem[] => {
       if (ledgerItems.length === 0) return [];

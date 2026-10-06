@@ -154,9 +154,9 @@ export const priorReviewRecordSchema = z.object({
   shipIncompleteReason: z.enum(STORED_PRIOR_REFUSALS).optional(),
   /** Every path any lane of the prior review reported a finding on. */
   findingPaths: z.array(path).max(10_000),
-  /** Consecutive incremental reviews up to and including this one; 0 for a full review (ADR 0770). */
+  /** Consecutive incremental reviews up to and including this one; 0 for a full review (ADR 0771). */
   chainDepth: z.number().int().min(0).max(1000).optional(),
-  /** The prior review's findings, bounded, for the delta re-review ledger (ADR 0770). */
+  /** The prior review's findings, bounded, for the delta re-review ledger (ADR 0771). */
   /** Tasks (composed) or lanes of the prior review: the bound on a delta re-review's plan. */
   taskCount: z.number().int().min(1).max(64).optional(),
   findings: z.array(z.object({
@@ -466,7 +466,7 @@ export function incrementalPrecheck(input: {
     return full('policy-or-config-changed');
   }
   if (!Number.isSafeInteger(input.maxAgeMs) || input.maxAgeMs <= 0 || prior.ageMs > input.maxAgeMs) return full('prior-too-old');
-  // ADR 0770: with the delta scope on, every (maxChain + 1)th head is reviewed in full to re-ground it.
+  // ADR 0771: with the delta scope on, every (maxChain + 1)th head is reviewed in full to re-ground it.
   if (input.delta && (prior.chainDepth ?? 0) >= input.delta.maxChain) return full('chain-cap-reached');
   return null;
 }

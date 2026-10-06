@@ -7,7 +7,7 @@ import type { OpenRouterResponse } from '../../src/gateway/openRouterClient';
 import type { IncrementalReviewScope } from '../../src/types/incrementalReview';
 
 /**
- * ADR 0770: the composed engine's handling of a delta-scoped re-review.
+ * ADR 0771: the composed engine's handling of a delta-scoped re-review.
  *
  * The invariant these tests pin: hunks are ledger items inside the tasks of the ONE plan turn. The
  * number of model calls is `1 plan turn + one call per planned task`, bounded by `deltaMaxTasks`,
