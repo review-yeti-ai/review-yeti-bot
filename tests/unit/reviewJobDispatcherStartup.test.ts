@@ -143,6 +143,26 @@ describe('dispatcher preparedReviewFor entrypoint wiring', () => {
     expect(parsePreparedReviewExecution(json, f.claim.configDigest)).toEqual(JSON.parse(json));
   });
 
+  it('wires trusted process-wide passthrough into the standalone dispatch pause without disabling the loop', async () => {
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+    await callback();
+
+    const options = mocks.engine.mock.calls[0][0] as ReviewJobDispatchEngineOptions;
+    expect(options.isDispatchPaused).toEqual(expect.any(Function));
+    expect(options.isDispatchPaused?.()).toBe(true);
+    expect(mocks.loop).toHaveBeenCalledOnce();
+    expect(mocks.close).toHaveBeenCalledOnce();
+  });
+
+  it.each([undefined, 'false'])('leaves standalone dispatch unpaused when global passthrough is %s', async (value) => {
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', value);
+    await callback();
+
+    const options = mocks.engine.mock.calls[0][0] as ReviewJobDispatchEngineOptions;
+    expect(options.isDispatchPaused?.()).toBe(false);
+    expect(mocks.loop).toHaveBeenCalledOnce();
+  });
+
   it('rejects a missing stored policy', async () => {
     const lookup = await callback();
     mocks.pool.query.mockResolvedValue({ rows: [] });
