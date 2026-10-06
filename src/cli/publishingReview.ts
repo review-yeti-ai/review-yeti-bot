@@ -112,6 +112,7 @@ import {
   type CommitComparisonReader, type IncrementalBaseSource,
 } from '../review/incrementalReview';
 import { createIncrementalCompareReader } from '../github/incrementalCompareReader';
+import { renderIncrementalLedgerSummary } from '../review/incrementalDelta';
 import { loadReviewBudgetInput, renderReviewBudgetSummary, reviewBudgetEnabledFor } from '../review/reviewBudget';
 import { renderTaskSourceDelivery } from '../review/taskSourceDelivery';
 import { summarizeReviewBudgetSavings } from '../telemetry/reviewBudgetSavings';
@@ -2552,6 +2553,11 @@ export async function runPublishingReviewWorker(
       const convergence: ConvergenceResult<ReviewFinding> = evaluateFindingConvergence({
         findings, changedFiles, priorThreads: priorFindingThreads,
         ...(reviewDecisionPolicy ? { policyVersion: reviewDecisionPolicy } : {}),
+        // ADR 0770: exactly the delta files the engine showed lanes as a delta (what the claim names),
+        // so this check and the trusted Gate scope a P2 by the same patches.
+        ...(incrementalDisclosure?.deltaPaths?.length ? { deltaScope: (incrementalScope?.deltaFiles ?? [])
+          .filter((file) => incrementalDisclosure.deltaPaths!.includes(file.path))
+          .map((file) => ({ path: file.path, patch: file.patch })) } : {}),
       });
       const blocking = convergence.required;
       const requiredFindings = new Set<ReviewFinding>(blocking);
@@ -2779,6 +2785,7 @@ export async function runPublishingReviewWorker(
           `- **Token Savings**: Estimated ~${(fastShipResult?.tokensSaved ?? 0).toLocaleString()} tokens saved by bypassing full panel evaluation.`,
           ...renderDiffShrinkSummary(diffShrinkDisclosure),
           ...renderIncrementalSummary(incrementalDisclosure, incrementalPlan),
+          ...renderIncrementalLedgerSummary(panelResult.incrementalLedger),
           ...renderReviewBudgetSummary(panelResult.reviewBudget),
           ...renderTaskSourceDelivery(panelResult),
           // REL-1085: every file served from the verdict cache, or why none was.
@@ -2824,6 +2831,7 @@ export async function runPublishingReviewWorker(
           ...renderDiffShrinkSummary(diffShrinkDisclosure),
           // REL-1084: every carried-forward file, or why the review stayed full.
           ...renderIncrementalSummary(incrementalDisclosure, incrementalPlan),
+          ...renderIncrementalLedgerSummary(panelResult.incrementalLedger),
           ...renderReviewBudgetSummary(panelResult.reviewBudget),
           ...renderTaskSourceDelivery(panelResult),
           // REL-1085: every file served from the verdict cache, or why none was.

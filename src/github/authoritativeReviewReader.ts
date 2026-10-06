@@ -450,6 +450,28 @@ export class AuthoritativeReviewReader {
   }
 
   /**
+   * ADR 0770: the same comparison with each file's status and validated closed-hunk patch (absent when
+   * GitHub omitted or truncated it), for the delta-scoped incremental re-review. Callers treat a list
+   * of 300 files as possibly incomplete.
+   */
+  async commitComparisonDetailed(input: ReviewRepositoryIdentity, baseSha: string, headSha: string, signal?: AbortSignal): Promise<{
+    status: 'ahead' | 'behind' | 'diverged' | 'identical';
+    mergeBaseSha: string;
+    files: Array<{ path: string; previousPath?: string; status: string; patch?: string }>;
+  }> {
+    const { status, mergeBaseSha, files } = await this.comparisonEvidence(input, baseSha, headSha, signal);
+    return {
+      status,
+      mergeBaseSha,
+      files: files.map((file) => ({
+        path: file.path, status: file.status,
+        ...(file.previousPath ? { previousPath: file.previousPath } : {}),
+        ...(file.patch ? { patch: file.patch } : {}),
+      })),
+    };
+  }
+
+  /**
    * REL-1085: the same immutable comparison with each file's head blob SHA, status
    * and closed-hunk patch (absent when GitHub omitted or truncated it), for the
    * verdict cache's repository-scoped content keys. Callers treat a list of 300

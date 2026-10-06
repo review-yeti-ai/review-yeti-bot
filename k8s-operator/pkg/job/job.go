@@ -265,6 +265,10 @@ type PublishingConfig struct {
 	// comma-separated owner/repo allowlist, or an on/off switch). Empty keeps
 	// every review full, byte-identical to before this field existed.
 	Incremental string
+	// Delta-scoped incremental re-review (REVIEW_YETI_INCREMENTAL_DELTA). Forwarded verbatim as
+	// IncrementalDeltaEnv when non-empty; only has effect when Incremental is also on. Empty keeps
+	// the REL-1084 whole-file carry, byte-identical to before this field existed.
+	IncrementalDelta string
 	// REL-1082: risk-ordered review budget per lane. Forwarded verbatim as
 	// BudgetEnv when non-empty; the worker owns its interpretation (a
 	// comma- or space-separated owner/repo allowlist, or an on/off switch).
@@ -429,6 +433,11 @@ const BudgetEnv = "REVIEW_YETI_BUDGET"
 // src/review/incrementalReview.ts INCREMENTAL_FLAG). The operator forwards the
 // deployment value verbatim; the worker owns its interpretation.
 const IncrementalEnv = "REVIEW_YETI_INCREMENTAL"
+
+// IncrementalDeltaEnv is the worker's delta-scoped incremental flag
+// (src/review/incrementalDelta.ts INCREMENTAL_DELTA_FLAG). The operator forwards
+// the deployment value verbatim; the worker owns its interpretation.
+const IncrementalDeltaEnv = "REVIEW_YETI_INCREMENTAL_DELTA"
 
 // DiffShrinkEnv is the worker's deterministic diff-shrinking flag (REL-1079,
 // src/review/diffShrink.ts DIFF_SHRINK_FLAG). The operator forwards the
@@ -712,6 +721,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		}
 		if input.Publishing.Incremental != "" {
 			env = append(env, corev1.EnvVar{Name: IncrementalEnv, Value: input.Publishing.Incremental})
+		}
+		if input.Publishing.IncrementalDelta != "" {
+			env = append(env, corev1.EnvVar{Name: IncrementalDeltaEnv, Value: input.Publishing.IncrementalDelta})
 		}
 		if input.Publishing.Budget != "" {
 			env = append(env, corev1.EnvVar{Name: BudgetEnv, Value: input.Publishing.Budget})
@@ -1135,6 +1147,9 @@ func validatePublishing(config PublishingConfig) error {
 	// Same allowlist grammar as the diff shrink flag.
 	if strings.ContainsAny(config.Incremental, "\r\n") {
 		return configErr("incremental flag contains a line break")
+	}
+	if strings.ContainsAny(config.IncrementalDelta, "\r\n") {
+		return configErr("incremental delta flag contains a line break")
 	}
 	// Same allowlist grammar as the diff shrink flag: spaces are legitimate,
 	// a line break is not.

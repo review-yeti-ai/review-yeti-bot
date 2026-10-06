@@ -776,6 +776,7 @@ const FALLBACK_TEXT: Record<VerdictCacheFallbackReason, string> = {
   'base-moved-reviewed-files': 'the merge base moved and changed a reviewed file',
   'nothing-carried-forward': 'no file matched',
   'no-new-reviewable-change': 'no file changed since the previous review',
+  'chain-cap-reached': 'the incremental chain reached its cap',
   'no-cache-entries': 'the previous review recorded no cacheable file',
   'nothing-cached': 'no file matched a cached result on content, view and lane keys',
   error: 'the cache source could not be read or verified',
