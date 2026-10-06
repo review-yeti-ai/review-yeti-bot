@@ -13,7 +13,8 @@ const mocks = vi.hoisted(() => ({
   initTelemetry: vi.fn(), metricsConfig: vi.fn(() => ({ host: '0.0.0.0', port: 9090 })),
   metricsServer: {}, createMetricsServer: vi.fn(), listenMetricsServer: vi.fn(), closeMetricsServer: vi.fn(),
   loopHealth: vi.fn(), markCycle: vi.fn(), markStopping: vi.fn(), warn: vi.fn(),
-  sweep: vi.fn(), dispatch: vi.fn(),
+  sweep: vi.fn(), dispatch: vi.fn(), reaper: vi.fn(), reap: vi.fn(),
+  appIdentity: vi.fn(async () => ({ id: 4385771 })),
 }));
 vi.mock('@kubernetes/client-node', () => ({
   KubeConfig: class { loadFromCluster = mocks.loadFromCluster; makeApiClient = () => ({}); },
@@ -27,6 +28,16 @@ vi.mock('../../src/persistence/reviewDispatchRepository', () => ({
 }));
 vi.mock('../../src/persistence/reviewCompletionRepository', () => ({
   PostgresReviewCompletionRepository: mocks.completionRepository,
+}));
+vi.mock('../../src/review/abandonedRunReaper', () => ({
+  AbandonedRunReaper: class {
+    constructor(options: unknown) { mocks.reaper(options); }
+    runOnce = mocks.reap;
+  },
+}));
+vi.mock('../../src/github/appAuth', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/github/appAuth')>(),
+  getGitHubAppIdentity: mocks.appIdentity,
 }));
 vi.mock('../../src/k8s/kubernetesReviewJobProjector', () => ({ KubernetesReviewJobProjector: class {} }));
 vi.mock('../../src/k8s/reviewJobDispatchEngine', () => ({
@@ -145,21 +156,29 @@ describe('dispatcher preparedReviewFor entrypoint wiring', () => {
 
   it('wires trusted process-wide passthrough into the standalone dispatch pause without disabling the loop', async () => {
     vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+    vi.stubEnv('GITHUB_APP_ID', '4385771');
+    vi.stubEnv('GITHUB_APP_PRIVATE_KEY', 'test-key');
     await callback();
 
     const options = mocks.engine.mock.calls[0][0] as ReviewJobDispatchEngineOptions;
     expect(options.isDispatchPaused).toEqual(expect.any(Function));
     expect(options.isDispatchPaused?.()).toBe(true);
+    expect(mocks.reaper).toHaveBeenCalledOnce();
+    expect(mocks.reaper.mock.calls[0][0]).toMatchObject({ passthroughEnabled: true });
     expect(mocks.loop).toHaveBeenCalledOnce();
     expect(mocks.close).toHaveBeenCalledOnce();
   });
 
   it.each([undefined, 'false'])('leaves standalone dispatch unpaused when global passthrough is %s', async (value) => {
     vi.stubEnv('REVIEW_YETI_PASSTHROUGH', value);
+    vi.stubEnv('GITHUB_APP_ID', '4385771');
+    vi.stubEnv('GITHUB_APP_PRIVATE_KEY', 'test-key');
     await callback();
 
     const options = mocks.engine.mock.calls[0][0] as ReviewJobDispatchEngineOptions;
     expect(options.isDispatchPaused?.()).toBe(false);
+    expect(mocks.reaper).toHaveBeenCalledOnce();
+    expect(mocks.reaper.mock.calls[0][0]).toMatchObject({ passthroughEnabled: false });
     expect(mocks.loop).toHaveBeenCalledOnce();
   });
 

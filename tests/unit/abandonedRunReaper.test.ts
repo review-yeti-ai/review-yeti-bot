@@ -102,6 +102,34 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
     expect(repository.retireExpiredNonPublishableRuns).toHaveBeenCalledWith(902_000, 5);
   });
 
+  it('keeps expiry cleanup running but does not claim or publish abandoned failures in passthrough mode', async () => {
+    const f = fixture();
+    f.repository.retireExpiredNonPublishableRuns.mockResolvedValueOnce(2);
+    const delegatedFailureReader = { listCandidates: vi.fn(async () => [{
+      runId: run.runId, executionAttempt: run.executionAttempt, reason: 'worker_failed' as const,
+    }]) };
+    const subject = new AbandonedRunReaper({
+      repository: f.repository,
+      checkClientFor: f.checkClientFor,
+      workerId: 'reaper-a',
+      publisherAppId: 4385771,
+      now: () => 902_000,
+      limit: 5,
+      passthroughEnabled: true,
+      delegatedFailureReader,
+    });
+
+    await expect(subject.runOnce()).resolves.toEqual({
+      swept: 0, published: 0, failed: 0, retiredNonPublishable: 2,
+    });
+    expect(f.repository.retireExpiredNonPublishableRuns).toHaveBeenCalledWith(902_000, 5);
+    expect(f.repository.claimAbandonedPublishingRuns).not.toHaveBeenCalled();
+    expect(f.repository.reconcileAbandonedPublishingRun).not.toHaveBeenCalled();
+    expect(delegatedFailureReader.listCandidates).not.toHaveBeenCalled();
+    expect(f.checkClientFor).not.toHaveBeenCalled();
+    expect(f.client.failAbandonedCheck).not.toHaveBeenCalled();
+  });
+
   it('omits retiredNonPublishable from the outcome when nothing was swept', async () => {
     const { subject, repository } = fixture();
     repository.retireExpiredNonPublishableRuns.mockResolvedValueOnce(0);
