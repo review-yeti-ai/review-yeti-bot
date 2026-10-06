@@ -16,6 +16,9 @@ const CURRENT_OPERATOR_PUBLICATION_ID = 'a'.repeat(64);
 const CURRENT_OPERATOR_AUDIT_DIGEST = 'b'.repeat(64);
 const OLD_OPERATOR_PUBLICATION_ID = 'e'.repeat(64);
 const OLD_OPERATOR_AUDIT_DIGEST = 'f'.repeat(64);
+const LEGACY_MAINTENANCE_DIGEST = 'd'.repeat(64);
+const legacyMaintenanceReviewId = `review-yeti-maintenance:v1:${LEGACY_MAINTENANCE_DIGEST}:raw`;
+const legacyMaintenanceGateId = `review-yeti-maintenance:v1:${LEGACY_MAINTENANCE_DIGEST}:gate`;
 const currentOperatorReviewId = deriveOperatorPassthroughExternalId(
   CURRENT_OPERATOR_PUBLICATION_ID, CURRENT_OPERATOR_AUDIT_DIGEST, REVIEW_WORKER_CHECK_NAME);
 const currentOperatorGateId = deriveOperatorPassthroughExternalId(
@@ -236,17 +239,30 @@ describe('native merge-group Review Yeti gate', () => {
     expect(JSON.parse(String(completion[1].body)).output.summary).toContain(`PR #42: ${reason}`);
     });
 
-  it('does not accept a successful old operator worker and Gate pair when passthrough is disabled', async () => {
+  it.each([
+    {
+      label: 'previous operator-passthrough pair', reviewExternalId: oldOperatorReviewId,
+      gateExternalId: oldOperatorGateId, title: 'Review Yeti: SHIP (passthrough: no review performed)',
+      summary: 'review-mode=passthrough Zero review lanes ran.',
+      reason: 'latest exact-head Review Yeti check is not the current operator-passthrough SHIP',
+    },
+    {
+      label: 'deployed legacy maintenance pair', reviewExternalId: legacyMaintenanceReviewId,
+      gateExternalId: legacyMaintenanceGateId, title: 'SHIP: operator passthrough; review bypassed',
+      summary: 'review-mode=passthrough\nreview-completed=false\ndecision=SHIP',
+      reason: 'legacy operator maintenance SHIP is not current merge-group evidence',
+    },
+  ])('does not accept a $label as normal review evidence when passthrough is disabled', async ({
+    reviewExternalId, gateExternalId, title, summary, reason,
+  }) => {
     const normalConfig = { ...config, passthroughEnabled: false };
     const runs = [
-      { id: 8150, name: 'Review Yeti', head_sha: PR_HEAD, external_id: oldOperatorReviewId,
+      { id: 8150, name: 'Review Yeti', head_sha: PR_HEAD, external_id: reviewExternalId,
         status: 'completed', conclusion: 'success', app: officialApp,
-        output: { title: 'Review Yeti: SHIP (passthrough: no review performed)',
-          summary: 'review-mode=passthrough Zero review lanes ran.' } },
-      { id: 8151, name: 'Review Yeti Gate', head_sha: PR_HEAD, external_id: oldOperatorGateId,
+        output: { title, summary } },
+      { id: 8151, name: 'Review Yeti Gate', head_sha: PR_HEAD, external_id: gateExternalId,
         status: 'completed', conclusion: 'success', app: officialApp,
-        output: { title: 'Review Yeti Gate: SHIP (operator passthrough SHIP)',
-          summary: 'review-mode=passthrough Zero review lanes ran.' } },
+        output: { title, summary } },
     ];
     const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -267,7 +283,42 @@ describe('native merge-group Review Yeti gate', () => {
     const completion = (fetchImplementation as any).mock.calls.find(([url, init]: [unknown, RequestInit]) =>
       String(url).endsWith('/check-runs/9050') && init?.method === 'PATCH');
     expect(JSON.parse(String(completion[1].body)).output.summary)
-      .toContain('latest exact-head Review Yeti check is not the current operator-passthrough SHIP');
+      .toContain(reason);
+  });
+
+  it('does not treat successful deployed maintenance checks as a paused durable receipt', async () => {
+    const pausedConfig = { ...config, passthroughEnabled: true };
+    const legacyRuns = [
+      { id: 8150, name: 'Review Yeti', head_sha: PR_HEAD, external_id: legacyMaintenanceReviewId,
+        status: 'completed', conclusion: 'success', app: officialApp,
+        output: { title: 'SHIP: operator passthrough; review bypassed',
+          summary: 'review-mode=passthrough\nreview-completed=false\ndecision=SHIP' } },
+      { id: 8151, name: 'Review Yeti Gate', head_sha: PR_HEAD, external_id: legacyMaintenanceGateId,
+        status: 'completed', conclusion: 'success', app: officialApp,
+        output: { title: 'SHIP: operator passthrough; review bypassed',
+          summary: 'review-mode=passthrough\nreview-completed=false\ndecision=SHIP' } },
+    ];
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes(`/commits/${GROUP_HEAD}/check-runs`)) return response({ total_count: 0, check_runs: [] });
+      if (url.endsWith('/check-runs') && init?.method === 'POST') return groupCheckResponse(9051, init, true);
+      if (url === 'https://api.github.com/graphql') return response(queue());
+      if (url.includes(`/commits/${PR_HEAD}/check-runs`)) return response({
+        total_count: legacyRuns.length, check_runs: legacyRuns,
+      });
+      if (url.endsWith('/check-runs/9051') && init?.method === 'PATCH') return groupCheckResponse(9051, init, true);
+      return response({}, 500);
+    }) as typeof fetch;
+    const ensureOperatorPassthrough = vi.fn(async () => null);
+    const gate = createMergeGroupGate({ config: pausedConfig, repository: repository() as any,
+      tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation, ensureOperatorPassthrough });
+
+    await expect(gate(payload(), { deliveryId: 'legacy-without-current-receipt', deliveryDigest: 'd'.repeat(64) }))
+      .resolves.toEqual({ checkId: 9051, conclusion: 'failure',
+        snapshotDigest: queueSnapshotDigest(true), constituents: 1 });
+    expect(ensureOperatorPassthrough).toHaveBeenCalledOnce();
+    expect((fetchImplementation as any).mock.calls.some(([url]: [unknown]) =>
+      String(url).includes(`/commits/${PR_HEAD}/check-runs`))).toBe(false);
   });
 
   it.each([

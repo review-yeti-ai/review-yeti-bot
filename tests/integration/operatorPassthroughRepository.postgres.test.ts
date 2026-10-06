@@ -139,6 +139,18 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
     expect(statusIndex.rows[0].indexdef).toContain('retired_at IS NULL');
   });
 
+  it('claims the next due publication when the optional publication ID filter is omitted', async () => {
+    const recorded = await repository.record(inputFor(), NOW);
+
+    await expect(repository.claimPublication('publisher-unfiltered-claim', NOW, 10_000))
+      .resolves.toMatchObject({
+        publicationId: recorded.publicationId,
+        stage: 'review',
+        mayCreate: true,
+        retiring: false,
+      });
+  });
+
   it('lists only configured app-gate admissions and advances by repository/PR keyset', async () => {
     const repositoryId = 1_345_678_901;
     const otherRepositoryId = repositoryId + 1;

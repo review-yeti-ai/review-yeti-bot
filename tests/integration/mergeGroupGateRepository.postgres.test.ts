@@ -323,4 +323,45 @@ describeWithPostgres('PostgresMergeGroupGateRepository durable publication lifec
     }));
     await repository.release(current.repositoryId, current.headSha, current.snapshotDigest, currentOwner);
   });
+
+  it('keeps a prior successful snapshot fenced until its exact check is retired', async () => {
+    const prior = identity();
+    const current = { ...prior, snapshotDigest: randomBytes(32).toString('hex') };
+    const priorOwner = claimToken();
+    const exactPriorCheckId = 8_765_433;
+
+    await expect(repository.claim(prior.repositoryId, prior.headSha, prior.snapshotDigest, priorOwner))
+      .resolves.toEqual({ status: 'acquired' });
+    await expect(repository.reserveCheckCreation(prior.repositoryId, prior.headSha,
+      prior.snapshotDigest, priorOwner)).resolves.toBe(true);
+    await repository.bindCheck(prior.repositoryId, prior.headSha, prior.snapshotDigest,
+      priorOwner, exactPriorCheckId);
+    await repository.complete(prior.repositoryId, prior.headSha, prior.snapshotDigest, priorOwner, {
+      checkId: exactPriorCheckId, conclusion: 'success', snapshotDigest: prior.snapshotDigest,
+    });
+
+    const currentOwner = claimToken();
+    await expect(repository.claim(current.repositoryId, current.headSha, current.snapshotDigest, currentOwner))
+      .resolves.toEqual({ status: 'acquired' });
+    await expect(repository.listPriorPublications(current.repositoryId, current.headSha,
+      current.snapshotDigest, currentOwner)).resolves.toEqual([{
+      snapshotDigest: prior.snapshotDigest,
+      checkId: exactPriorCheckId,
+      checkCreationStarted: true,
+      conclusion: 'success',
+    }]);
+    await expect(repository.reserveCheckCreation(current.repositoryId, current.headSha,
+      current.snapshotDigest, currentOwner)).resolves.toBe(false);
+
+    await repository.settlePriorPublication(current.repositoryId, current.headSha, current.snapshotDigest,
+      currentOwner, prior.snapshotDigest, exactPriorCheckId);
+    await expect(repository.listPriorPublications(current.repositoryId, current.headSha,
+      current.snapshotDigest, currentOwner)).resolves.toEqual([]);
+    await expect(publicationRow(prior)).resolves.toMatchObject({
+      check_id: String(exactPriorCheckId), conclusion: 'failure', claim_token: null, lease_expires_at: null,
+    });
+    await expect(repository.reserveCheckCreation(current.repositoryId, current.headSha,
+      current.snapshotDigest, currentOwner)).resolves.toBe(true);
+    await repository.release(current.repositoryId, current.headSha, current.snapshotDigest, currentOwner);
+  });
 });

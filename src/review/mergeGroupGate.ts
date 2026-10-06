@@ -5,6 +5,7 @@ import {
 } from '../auth/authoritativeServiceIdentity';
 import {
   deriveOperatorPassthroughExternalId,
+  isLegacyOperatorMaintenanceReviewExternalId,
   isOperatorPassthroughReviewExternalId,
   REVIEW_GATE_CHECK_NAME,
   REVIEW_WORKER_CHECK_NAME,
@@ -190,6 +191,9 @@ function exactReviewFailure(checks: any, expectedHead: string,
   const latest = [...runs].sort((left, right) => Number(left.id) - Number(right.id)).at(-1);
   if (latest?.status !== 'completed' || latest?.conclusion !== 'success') {
     return 'latest exact-head Review Yeti check is not successful';
+  }
+  if (isLegacyOperatorMaintenanceReviewExternalId(latest.external_id)) {
+    return 'legacy operator maintenance SHIP is not current merge-group evidence';
   }
   const latestIsOperatorPassthrough = isOperatorPassthroughReviewExternalId(latest.external_id);
   const allowOperatorPassthrough = operatorReceipt !== undefined;
