@@ -214,6 +214,27 @@ describe('publishingWorkerConfig', () => {
     } }) }, transport)).toThrow(/review policy could not be parsed/u);
   });
 
+  it.each(['chill', 'balanced', 'assertive'] as const)(
+    'marks the %s advisory profile applied only when composed uses severity v2', (profile) => {
+      const transport = { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' };
+      const v2 = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+        personas: 'security', profile, review_engine: 'composed', severity_policy: 'review-yeti-severity.v2',
+      } }) }, transport);
+      const legacy = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+        personas: 'security', profile, review_engine: 'composed',
+      } }) }, transport);
+
+      expect(v2.review_configuration_receipt?.effective.profile).toMatchObject({ value: profile, applied: true });
+      expect(legacy.review_configuration_receipt?.effective.profile).toMatchObject({
+        value: profile, applied: false,
+        reason: 'The composed advisory profile is inactive under legacy severity because P2 findings remain blocking.',
+      });
+      expect(v2.composed).toEqual(legacy.composed);
+      expect(v2.default_max_turns).toBe(legacy.default_max_turns);
+      expect(v2.reviewer_effort).toBe(legacy.reviewer_effort);
+    },
+  );
+
   it('projects a truthful versioned effective receipt for the central composed policy', () => {
     const config = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
       personas: 'architecture,security,documentation',
@@ -242,7 +263,10 @@ describe('publishingWorkerConfig', () => {
       },
       effective: {
         review_engine: 'composed', severity_policy: 'review-yeti-severity.v2',
-        profile: { value: 'balanced', applied: false },
+        profile: {
+          value: 'balanced', applied: true,
+          reason: 'The composed engine applies this profile to advisory breadth under severity v2; blocker evidence and coverage remain profile-independent.',
+        },
         provider: {
           id: 'bifrost', model: 'test-model', requested_effort: 'medium',
           upstream_observed_model: 'unknown', upstream_observed_effort: 'unknown',
