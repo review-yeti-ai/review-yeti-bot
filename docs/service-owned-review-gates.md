@@ -332,6 +332,39 @@ remove persisted CRD fields or infer that a skipped workflow is a safe replaceme
   consumer waiters. API-3211 owns durable CI admission, API-3213 protected pilot
   migration, and API-3215 independent zero-runner-wait acceptance.
 
+## Public Actions controller pause and reconciliation
+
+The public `Review Bot` workflow has a separate base-owned controller path and
+uses the GitHub Actions App (`15368`) check `Execute AI Review Pipeline`; it is
+not the private GitHub App (`4385771`) service-owned ledger above. On
+`pull_request_target`, the controller resolves and verifies the current open,
+non-draft PR on the default branch. With `REVIEW_YETI_PASSTHROUGH=true`, it
+publishes a transparent `SHIP — operator waiver` check with
+`review-mode: passthrough`, zero lanes, and explicit no-review/no-model/no-
+findings metadata. No paid panel or normal verdict-enforcement job runs.
+
+For `repository_dispatch`, pause-off preserves the existing external-target
+review path. While paused, only a payload naming this same repository and a
+current open, non-draft default-branch PR can receive the local waiver. An
+external, unknown, closed, draft, or malformed target receives an
+acknowledgment without a check or SHIP. `workflow_dispatch` is a trusted
+reconciliation path on the default branch; it accepts a PR number, reads that
+PR from GitHub, and follows the current run's pause-mode snapshot. When pause
+is disabled, a normal controller run first retires only exact same-repository,
+same-PR, same-head App 15368 waiver checks, then creates the fresh normal check
+before review begins. Other Apps, check names, and ordinary reviews are not
+modified.
+
+Changing the repository variable does not itself start a workflow. After
+disabling pause, run `Review Bot`'s manual reconciliation for each PR that must
+resume normal review. Start and finish compare the mode supplied to that run;
+that context is not an independent live variable read. The controller receipt
+artifact `review-controller-receipt-<run>-<attempt>` contains `receipt.json`
+and binds the completed check ID, App/name/external ID, PR repository/head/base,
+workflow source SHA, run/attempt and event type. A paused same-repository
+dispatch receipt also records the validated target repository. The workflow
+source SHA is distinct from the PR candidate head and base SHAs.
+
 ## Focused verification
 
 The unit tests exercise the GitHub transport, immutable identity, eligibility
