@@ -26,7 +26,7 @@ const raw = fs.readFileSync(workflowPath, 'utf8');
  */
 describe('review verdict enforcement (REL-580, REL-585)', () => {
   const workflow = yaml.load(raw) as any;
-  const steps = workflow.jobs.review.steps as Array<{ name?: string; run?: string; env?: Record<string, string> }>;
+  const steps = workflow.jobs.review.steps as Array<{ name?: string; if?: string; run?: string; env?: Record<string, string> }>;
   const enforce = steps.find((s) => s.name === 'Enforce Verdict');
 
   it('has a step that enforces, not merely reports, the verdict', () => {
@@ -79,7 +79,8 @@ describe('review verdict enforcement (REL-580, REL-585)', () => {
   });
 
   it('still runs when the review step failed, so a crashed review cannot skip the gate', () => {
-    expect(enforce!).toMatchObject({ if: 'always()' } as any);
+    expect(enforce!.if).toContain('always()');
+    expect(enforce!.if).toContain("steps.mode.outputs.mode != 'operator-waiver'");
   });
 
   describe('behavioral matrix (extracted script execution)', () => {
