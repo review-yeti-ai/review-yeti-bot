@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as appAuth from '../../src/github/appAuth';
 import { getBoundedRepositoryInstallationId, MAX_APP_TOKEN_RESPONSE_BYTES, validateGitHubAppApiBaseUrl } from '../../src/github/boundedAppToken';
+import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError } from '../../src/github/authoritativeReadFailure';
 
 const { privateKey } = generateKeyPairSync('rsa', {
   modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' },
@@ -14,6 +15,26 @@ async function redacted(pending: Promise<unknown>) {
   const error = await pending.then(() => undefined, (reason: unknown) => reason);
   expect(error).toBeInstanceOf(Error);
   expect((error as Error).message).toBe('Repository App installation is unavailable');
+  expect((error as Error).cause).toBeUndefined();
+  expect((error as Error).stack).not.toContain(marker);
+  expect((error as Error).stack).not.toContain(privateKey);
+}
+
+async function dependencyUnavailable(pending: Promise<unknown>) {
+  const error = await pending.then(() => undefined, (reason: unknown) => reason);
+  expect(error).toBeInstanceOf(InternalGitHubDependencyUnavailableError);
+  expect(error).toMatchObject({ name: 'InternalGitHubDependencyUnavailableError',
+    message: 'Internal GitHub authority dependency is unavailable' });
+  expect((error as Error).cause).toBeUndefined();
+  expect((error as Error).stack).not.toContain(marker);
+  expect((error as Error).stack).not.toContain(privateKey);
+}
+
+async function transient(pending: Promise<unknown>, kind: string) {
+  const error = await pending.then(() => undefined, (reason: unknown) => reason);
+  expect(error).toBeInstanceOf(TransientAuthoritativeReadError);
+  expect(error).toMatchObject({ name: 'TransientAuthoritativeReadError', kind,
+    message: 'Authoritative source read is temporarily unavailable' });
   expect((error as Error).cause).toBeUndefined();
   expect((error as Error).stack).not.toContain(marker);
   expect((error as Error).stack).not.toContain(privateKey);
@@ -49,10 +70,17 @@ describe('bounded repository installation lookup', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it.each([{ owner: '.' }, { repo: '..' }, { repo: 'another/repo' }, { appId: '0' }, { privateKey: marker }])
+  it.each([{ owner: '.' }, { repo: '..' }, { repo: 'another/repo' }, { appId: '0' }])
   ('rejects invalid config before transport: %j', async (override) => {
     const fetcher = vi.fn<typeof fetch>();
     await redacted(getBoundedRepositoryInstallationId({ ...config, ...override }, { fetchImplementation: fetcher }));
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('classifies a malformed service-owned signing key as an internal dependency outage', async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    await dependencyUnavailable(getBoundedRepositoryInstallationId({ ...config, privateKey: marker },
+      { fetchImplementation: fetcher }));
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -77,11 +105,25 @@ describe('bounded repository installation lookup', () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
-  it.each([301, 302, 307, 308, 401, 403, 404, 429, 500])('cancels HTTP %s without consuming diagnostics or retrying', async (status) => {
+  it.each([301, 302, 307, 308, 404])('redacts HTTP %s without consuming diagnostics or retrying', async (status) => {
     const cancel = vi.fn();
     const pull = vi.fn();
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(new ReadableStream({ cancel, pull }, { highWaterMark: 0 }), { status }));
     await redacted(getBoundedRepositoryInstallationId(config, { fetchImplementation: fetcher }));
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(pull).not.toHaveBeenCalled();
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [401, 'internal'], [403, 'internal'], [429, 'rate_limit'], [500, 'retryable_server'],
+  ] as const)('classifies HTTP %s as %s without consuming diagnostics or retrying', async (status, expected) => {
+    const cancel = vi.fn();
+    const pull = vi.fn();
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(new ReadableStream({ cancel, pull }, { highWaterMark: 0 }), { status }));
+    const pending = getBoundedRepositoryInstallationId(config, { fetchImplementation: fetcher });
+    if (expected === 'internal') await dependencyUnavailable(pending);
+    else await transient(pending, expected);
     expect(cancel).toHaveBeenCalledOnce();
     expect(pull).not.toHaveBeenCalled();
     expect(fetcher).toHaveBeenCalledOnce();
@@ -113,7 +155,7 @@ describe('bounded repository installation lookup', () => {
     }) } } as unknown as Response;
     const fetcher = vi.fn<typeof fetch>().mockImplementation(() => stage === 'body' ? Promise.resolve(remote) : new Promise(() => undefined));
     if (stage === 'factory') vi.spyOn(appAuth, 'getGitHubAppInstallationIdForRepository').mockImplementation(() => new Promise(() => undefined));
-    const pending = redacted(getBoundedRepositoryInstallationId(config, { timeoutMs: 250, fetchImplementation: fetcher }));
+    const pending = transient(getBoundedRepositoryInstallationId(config, { timeoutMs: 250, fetchImplementation: fetcher }), 'deadline');
     await vi.advanceTimersByTimeAsync(250);
     await pending;
     expect(fetcher).toHaveBeenCalledTimes(stage === 'factory' ? 0 : 1);
@@ -123,7 +165,7 @@ describe('bounded repository installation lookup', () => {
   it('cancels a late fetch without reading it', async () => {
     let deliver!: (response: Response) => void;
     const fetcher = vi.fn<typeof fetch>().mockImplementation(() => new Promise((resolve) => { deliver = resolve; }));
-    const pending = redacted(getBoundedRepositoryInstallationId(config, { timeoutMs: 250, fetchImplementation: fetcher }));
+    const pending = transient(getBoundedRepositoryInstallationId(config, { timeoutMs: 250, fetchImplementation: fetcher }), 'deadline');
     await vi.advanceTimersByTimeAsync(250);
     await pending;
     const cancel = vi.fn();
