@@ -171,7 +171,7 @@ describe('trigger_review governed admission', () => {
 
     const result = await tool.execute(request);
     const output = JSON.parse((result.content[0] as any).text);
-    expect(output).toMatchObject({
+    expect(output).toStrictEqual({
       dispatched: false,
       job_crd_created: false,
       status: 'passthrough',
@@ -192,7 +192,6 @@ describe('trigger_review governed admission', () => {
       merge_eligible: true,
       message: expect.stringContaining('0 review lanes ran'),
     });
-    expect(output).not.toHaveProperty('attempt_id');
     expect(resolvePullRequest).toHaveBeenCalledOnce();
     expect(resolvePolicy).toHaveBeenCalledOnce();
     expect(query).not.toHaveBeenCalled();
@@ -260,10 +259,24 @@ describe('trigger_review governed admission', () => {
     });
     const output = JSON.parse((result.content[0] as any).text);
 
-    expect(output).toMatchObject({
+    expect(output).toStrictEqual({
+      dispatched: false,
+      job_crd_created: false,
       status: 'passthrough', reason: 'operator_global_passthrough', verdict: 'SHIP',
-      expected_lanes: 0, completed_lanes: 0, publication_state: 'pending', merge_eligible: false,
-      review_check_id: null, gate_check_id: null, review_started: false,
+      review_started: false,
+      owner: 'exampleorg',
+      repo: 'example-api',
+      pull_number: 73,
+      head_sha: HEAD_SHA,
+      expected_lanes: 0,
+      completed_lanes: 0,
+      publication_id: 'f'.repeat(64),
+      audit_digest: 'e'.repeat(64),
+      publication_state: 'pending',
+      review_check_id: null,
+      gate_check_id: null,
+      merge_eligible: false,
+      message: expect.stringContaining('0 review lanes ran'),
     });
     expect(resolve).toHaveBeenCalledOnce();
     expect(recordOperatorPassthrough).toHaveBeenCalledOnce();

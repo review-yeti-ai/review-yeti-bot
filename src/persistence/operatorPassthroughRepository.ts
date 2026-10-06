@@ -421,6 +421,10 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
       return 0;
     }
     let requested = 0;
+    // Keep one transaction per PR so no sweep holds multiple shared admission
+    // locks at once. The bounded cursor advances past pending retirements and
+    // retries skipped candidates after wrap, preserving progress without
+    // changing the publisher's PR-before-row lock order.
     for (const row of candidates.rows) {
       const candidate = { repositoryId: POSITIVE(row.repository_id),
         prNumber: POSITIVE(row.pr_number), headSha: String(row.head_sha) };

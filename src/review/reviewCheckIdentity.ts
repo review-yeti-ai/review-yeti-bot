@@ -162,6 +162,7 @@ export interface ReviewGateCheck {
 
 const OPERATOR_REVIEW_EXTERNAL_ID_PREFIX = 'review-yeti-operator-passthrough:v1:';
 const OPERATOR_GATE_EXTERNAL_ID_PREFIX = 'review-yeti-gate:operator-v1:';
+const LEGACY_OPERATOR_MAINTENANCE_REVIEW_EXTERNAL_ID = /^review-yeti-maintenance:v1:[a-f0-9]{64}:raw$/u;
 
 /** Derive a service-owned check identity when only the durable publication receipt is available. */
 export function deriveOperatorPassthroughExternalId(
@@ -180,6 +181,11 @@ export function deriveOperatorPassthroughExternalId(
 /** Identify the operator-owned namespace without copying its wire prefix into consumers. */
 export function isOperatorPassthroughReviewExternalId(value: unknown): value is string {
   return typeof value === 'string' && value.startsWith(OPERATOR_REVIEW_EXTERNAL_ID_PREFIX);
+}
+
+/** Recognize the deployed v1 maintenance worker identity so it cannot masquerade as normal review evidence. */
+export function isLegacyOperatorMaintenanceReviewExternalId(value: unknown): value is string {
+  return typeof value === 'string' && LEGACY_OPERATOR_MAINTENANCE_REVIEW_EXTERNAL_ID.test(value);
 }
 
 const GITHUB_NAME = /^[A-Za-z0-9_.-]+$/u;

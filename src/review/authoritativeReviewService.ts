@@ -211,6 +211,9 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
             || !/^[a-f0-9]{64}$/u.test(admission.admittedPolicyDigest)
             || expectedAppIdFor(admission) <= 0) continue;
           try {
+            // Refresh the admitted row to the current open, non-draft PR head
+            // before resolving policy; the stored run head is only a catch-up
+            // locator and may be stale.
             const current = await resolver.readCurrentCandidate({ repositoryId: admission.repositoryId,
               owner: admission.owner, repo: admission.repo, prNumber: admission.prNumber });
             if (!current.open || current.draft) continue;
@@ -220,6 +223,9 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
             const digest = sha256(canonicalJson({ version: 'OperatorPassthroughExistingAdmission.v1',
               runId: admission.runId, admittedPolicyDigest: admission.admittedPolicyDigest,
               requested, currentPolicyDigest: resolved.prepared.policy.effectivePolicyDigest }));
+            // recordOperatorPassthrough repeats exact-current resolution at
+            // the durable admission boundary; the check here is not persisted
+            // as evidence and cannot authorize publication by itself.
             await recordOperatorPassthrough({
               requested,
               event: { transport: 'service-reconciler', eventName: 'existing-admission',

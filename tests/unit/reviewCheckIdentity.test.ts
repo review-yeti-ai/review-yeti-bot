@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   deriveOperatorPassthroughExternalId,
+  isLegacyOperatorMaintenanceReviewExternalId,
   isOperatorPassthroughReviewExternalId,
   REVIEW_GATE_CHECK_NAME,
   REVIEW_WORKER_CHECK_NAME,
@@ -27,5 +28,14 @@ describe('operator passthrough Review check identity', () => {
     ['non-string value', null],
   ])('rejects %s as a worker passthrough ID', (_label, value) => {
     expect(isOperatorPassthroughReviewExternalId(value)).toBe(false);
+  });
+
+  it('recognizes only the deployed legacy raw maintenance identity shape', () => {
+    const digest = 'c'.repeat(64);
+    expect(isLegacyOperatorMaintenanceReviewExternalId(`review-yeti-maintenance:v1:${digest}:raw`)).toBe(true);
+    expect(isLegacyOperatorMaintenanceReviewExternalId(`review-yeti-maintenance:v1:${digest}:gate`)).toBe(false);
+    expect(isLegacyOperatorMaintenanceReviewExternalId(`review-yeti-maintenance:v1:${'C'.repeat(64)}:raw`)).toBe(false);
+    expect(isLegacyOperatorMaintenanceReviewExternalId(`review-yeti-maintenance:v2:${digest}:raw`)).toBe(false);
+    expect(isLegacyOperatorMaintenanceReviewExternalId(null)).toBe(false);
   });
 });
