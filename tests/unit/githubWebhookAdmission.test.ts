@@ -518,7 +518,7 @@ describe('native GitHub App webhook admission', () => {
     expect(mergeGroupGate).toHaveBeenCalledOnce();
     expect(mergeGroupGate.mock.calls[0][0]).toEqual(body);
     expect(mergeGroupGate.mock.calls[0][1]).toMatchObject({ deliveryId: auth.delivery,
-      deliveryDigest: expect.stringMatching(/^[a-f0-9]{64}$/u) });
+      deliveryDigest: createHash('sha256').update(auth.raw).digest('hex') });
   });
 
   it('marks only an authoritative composed ready_for_review webhook as continuation provenance', async () => {

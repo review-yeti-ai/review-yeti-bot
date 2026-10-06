@@ -311,6 +311,27 @@ describe('DOKS Action dispatch client', () => {
     expect(output).not.toContain('run_');
   });
 
+  it('writes pending operator publication as SHIP intent without merge eligibility', async () => {
+    const { buildDispatchRequest, writeDispatchOutputs } = await import(modulePath);
+    const request = buildDispatchRequest(environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' }));
+    const pending = actionPassthroughReceipt(request, {
+      publicationState: 'pending', reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+    });
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-doks-pending-passthrough-'));
+    const outputPath = path.join(directory, 'output');
+
+    writeDispatchOutputs(outputPath, pending);
+    const output = fs.readFileSync(outputPath, 'utf8');
+
+    expect(output).toContain('verdict=SHIP');
+    expect(output).toContain('review-status=OPERATOR_EXEMPTION_PENDING');
+    expect(output).toContain('gate-decision=SHIP_OPERATOR_EXEMPTION');
+    expect(output).toContain('merge-eligible=false');
+    expect(output).toContain('publication pending;');
+    expect(output).not.toContain('OPERATOR_EXEMPTION_PUBLISHED');
+    expect(output).not.toContain('merge-eligible=true');
+  });
+
   it.each([
     ['delivery id', { deliveryId: 'actions:other-run:2:12345:42:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }],
     ['repository id', { repositoryId: 54321 }],

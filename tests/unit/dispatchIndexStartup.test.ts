@@ -444,6 +444,21 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.pool.query).not.toHaveBeenCalled();
   });
 
+  it('passes an explicitly enabled operator pause into the authoritative service', async () => {
+    mocks.serviceConfig.mockReturnValue(authoritativeConfig());
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+
+    await start();
+
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(mocks.authoritative).toHaveBeenCalledOnce();
+    expect(mocks.authoritative.mock.calls[0][0]).toMatchObject({
+      passthroughEnabled: true,
+      operatorPassthroughRepository: { pool: mocks.pool },
+      listPausedAdmissions: expect.any(Function),
+    });
+  });
+
   it('wires exact immutable identity into the production generation-recovery reader', async () => {
     mocks.serviceConfig.mockReturnValue(authoritativeConfig());
     await start();
