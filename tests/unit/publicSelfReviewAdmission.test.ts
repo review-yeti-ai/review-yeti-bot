@@ -10,11 +10,11 @@ type Step = { name?: string; id?: string; uses?: string; if?: string; with?: Rec
 type Workflow = {
   on: { pull_request?: { types: string[] }; pull_request_target?: { types: string[] }; repository_dispatch?: { types: string[] } };
   permissions?: Record<string, string>;
-  jobs: Record<string, { name?: string; if?: string; steps: Step[] }>;
+  jobs: Record<string, { name?: string; if?: string; needs?: string | string[]; permissions?: Record<string, string>; outputs?: Record<string, string>; steps: Step[] }>;
 };
 const workflow = yaml.load(source) as Workflow;
 
-type Event = { name: string; action: string; draft?: boolean; state?: string; baseRef?: string; defaultBranch?: string };
+type Event = { name: string; action: string; draft?: boolean; state?: string; baseRef?: string; defaultBranch?: string; controllerMode?: string; startResult?: string };
 
 function admitted(event: Event, candidate: Workflow = workflow): boolean {
   const selector = event.name === 'pull_request_target' ? candidate.on.pull_request_target
@@ -28,9 +28,12 @@ function admitted(event: Event, candidate: Workflow = workflow): boolean {
   // semantics. Whitelist the entire expression before using the isolated VM:
   // no functions, arbitrary properties, paid action, network or child process.
   const expression = guard.replace(/^\s*\$\{\{\s*|\s*\}\}\s*$/gu, '');
-  const tokens = expression.match(/\s+|github\.event_name|github\.event\.pull_request\.(?:state|draft|base\.ref)|github\.event\.repository\.default_branch|'(?:[^'\\]|\\.)*'|true|false|==|!=|\|\||&&|[!()]/gu) ?? [];
+  const tokens = expression.match(/\s+|github\.event_name|github\.event\.pull_request\.(?:state|draft|base\.ref)|github\.event\.repository\.default_branch|needs\.start-self-review\.(?:result|outputs\.mode)|always\(\)|'(?:[^'\\]|\\.)*'|true|false|==|!=|\|\||&&|[!()]/gu) ?? [];
   if (tokens.join('') !== expression) throw new Error('Unsupported workflow guard syntax');
-  return Boolean(vm.runInNewContext(expression, {
+  const executable = tokens.map(token => token.startsWith('needs.')
+    ? `needs["start-self-review"]${token.slice('needs.start-self-review'.length + 1).split('.').map(key => `[${JSON.stringify(key)}]`).join('')}` : token)
+    .join('');
+  return Boolean(vm.runInNewContext(executable, {
     github: {
       event_name: event.name,
       event: {
@@ -39,6 +42,8 @@ function admitted(event: Event, candidate: Workflow = workflow): boolean {
           ? { state: event.state, draft: event.draft, base: { ref: event.baseRef ?? 'main' } } : undefined,
       },
     },
+    needs: { 'start-self-review': { result: event.startResult ?? 'success', outputs: { mode: event.controllerMode ?? 'review' } } },
+    always: () => true,
   }, { timeout: 100 }));
 }
 
@@ -98,33 +103,43 @@ describe('public native self-review admission', () => {
     expect(admitted(event)).toBe(false);
   });
 
+  it('scopes check-write permission to the two base-owned PR controller jobs', () => {
+    expect(workflow.permissions?.checks).toBeUndefined();
+    expect(workflow.jobs.review.permissions).toEqual({ contents: 'read', 'id-token': 'write', 'pull-requests': 'write' });
+    expect(workflow.jobs.review.permissions?.checks).toBeUndefined();
+    expect(workflow.jobs['start-self-review'].permissions).toEqual({ contents: 'read', checks: 'write', 'pull-requests': 'read' });
+    expect(workflow.jobs['finish-self-review'].permissions).toEqual({ contents: 'read', checks: 'write', 'pull-requests': 'read' });
+  });
+
   it('keeps the required check name on a base-owned controller and explicitly selects its existing local engine', () => {
     expect(workflow.jobs.review.name).toBe('Review Bot PR Controller');
     const panel = workflow.jobs.review.steps.filter(step => step.uses === './');
     expect(panel).toHaveLength(1);
     expect(panel[0].with?.['execution-backend']).toBe('local');
-    expect(panel[0].if).toContain("steps.mode.outputs.mode != 'operator-waiver'");
-    expect(workflow.jobs.review.steps.find(step => step.id === 'start-check')?.run).toContain('self-review-check-run.mjs start');
-    expect(workflow.jobs.review.steps.find(step => step.id === 'finish-check')?.run).toContain('self-review-check-run.mjs finish');
-    expect(workflow.jobs.review.steps.find(step => step.id === 'finish-check')?.if).toContain('always()');
-    expect(workflow.permissions?.checks).toBe('write');
+    expect(panel[0].if).toContain("needs.start-self-review.outputs.mode != 'operator-waiver'");
+    expect(workflow.jobs['start-self-review'].steps.find(step => step.id === 'start-check')?.run).toContain('self-review-check-run.mjs start');
+    expect(workflow.jobs['finish-self-review'].steps.find(step => step.id === 'finish-check')?.run).toContain('self-review-check-run.mjs finish');
+    expect(workflow.jobs['finish-self-review'].if).toContain('always()');
     const checkout = workflow.jobs.review.steps.find(step => step.uses?.startsWith('actions/checkout@'));
     expect(checkout?.with?.ref).toBe('${{ github.sha }}');
     expect(checkout?.with?.['persist-credentials']).toBe(false);
     expect(checkout?.with?.ref).not.toContain('head.sha');
-    const node = workflow.jobs.review.steps.find(step => step.name === 'Set up Node for the trusted controller');
+    const node = workflow.jobs['start-self-review'].steps.find(step => step.name === 'Set up Node for the trusted controller');
     expect(node?.uses).toMatch(/^actions\/setup-node@[a-f0-9]{40}$/u);
     expect(node?.with?.['node-version']).toBe('24');
-    expect(workflow.jobs.review.steps.indexOf(node!)).toBeLessThan(workflow.jobs.review.steps.findIndex(step => step.id === 'mode'));
-    expect(workflow.jobs.review.steps.find(step => step.id === 'mode')?.env?.REVIEW_YETI_PASSTHROUGH).toBe('${{ vars.REVIEW_YETI_PASSTHROUGH }}');
+    expect(workflow.jobs['start-self-review'].steps.indexOf(node!)).toBeLessThan(workflow.jobs['start-self-review'].steps.findIndex(step => step.id === 'mode'));
+    expect(workflow.jobs['start-self-review'].steps.find(step => step.id === 'mode')?.env?.REVIEW_YETI_PASSTHROUGH).toBe('${{ vars.REVIEW_YETI_PASSTHROUGH }}');
   });
 
   it('keeps the PR waiver out of repository_dispatch and skips only verdict enforcement for that mode', () => {
     const panel = workflow.jobs.review.steps.find(step => step.uses === './');
     expect(panel?.if).toContain("github.event_name == 'repository_dispatch'");
-    expect(panel?.if).toContain("steps.mode.outputs.mode != 'operator-waiver'");
-    expect(workflow.jobs.review.steps.find(step => step.name === 'Enforce Verdict')?.if).toContain("steps.mode.outputs.mode != 'operator-waiver'");
-    expect(workflow.jobs.review.steps.find(step => step.id === 'finish-check')?.if).toContain("github.event_name == 'pull_request_target'");
+    expect(panel?.if).toContain("needs.start-self-review.outputs.mode != 'operator-waiver'");
+    expect(workflow.jobs.review.steps.find(step => step.name === 'Enforce Verdict')?.if).toContain("needs.start-self-review.outputs.mode != 'operator-waiver'");
+    expect(workflow.jobs['start-self-review'].if).toContain("github.event_name == 'pull_request_target'");
+    expect(workflow.jobs['finish-self-review'].if).toContain("github.event_name == 'pull_request_target'");
+    expect(admitted({ name: 'pull_request_target', action: 'opened', state: 'open', draft: false, controllerMode: 'operator-waiver' })).toBe(false);
+    expect(admitted({ name: 'repository_dispatch', action: 'review-requested', controllerMode: 'operator-waiver' })).toBe(true);
   });
 
   it('retires the prohibited internal caller instead of granting it public credentials', () => {
