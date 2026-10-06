@@ -63,9 +63,20 @@ export class OperatorPassthroughPublisher {
     if (!claim) return { status: 'idle' };
     try {
       const result = await this.options.repository.publishLocked(claim, async (current) => {
-        if (!current.retiring && this.options.candidateIsCurrent
-          && !await this.options.candidateIsCurrent(current)) {
-          return { kind: 'retire-required', reason: 'candidate-changed', retryDelayMs: this.retryDelayMs };
+        if (!current.retiring && this.options.candidateIsCurrent) {
+          let candidateIsCurrent: boolean;
+          try { candidateIsCurrent = await this.options.candidateIsCurrent(current); }
+          catch {
+            // This read happens before client creation or any GitHub POST. A
+            // failed first preflight is known not-started and may reset its
+            // reservation; an uncertain earlier create remains reconcile-only.
+            return current.mayCreate
+              ? { kind: 'not-started', retryDelayMs: this.retryDelayMs } satisfies OperatorPassthroughPublicationNotStarted
+              : { kind: 'reconcile-pending', retryDelayMs: this.retryDelayMs } satisfies OperatorPassthroughReconcilePending;
+          }
+          if (!candidateIsCurrent) {
+            return { kind: 'retire-required', reason: 'candidate-changed', retryDelayMs: this.retryDelayMs };
+          }
         }
         let client: Client;
         try { client = await this.options.clientFor(current); }

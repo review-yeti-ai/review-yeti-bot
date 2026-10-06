@@ -243,9 +243,11 @@ function operatorPassthroughReceipt(
     publicationId: publication.publicationId,
     auditDigest: publication.auditDigest,
     publicationState: publication.publicationState,
+    publicationReceiptAvailable: publication.publicationReceiptAvailable,
     reviewCheckId: publication.reviewCheckId,
     gateCheckId: publication.gateCheckId,
     mergeEligible: publication.mergeEligible,
+    message: publication.message,
   };
   logger.info('GitHub App delivery admitted as an operator SHIP exemption', {
     repositoryId: receipt.repositoryId, prNumber: receipt.prNumber, headSha: receipt.headSha,

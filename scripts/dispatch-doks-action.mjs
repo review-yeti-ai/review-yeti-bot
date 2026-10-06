@@ -319,6 +319,37 @@ function validateReceipt(body) {
 }
 
 function parsePassthroughReceipt(body) {
+  const publicationIdValid = typeof body?.publicationId === 'string'
+    && /^[a-f0-9]{64}$/u.test(body.publicationId);
+  const auditDigestValid = typeof body?.auditDigest === 'string'
+    && /^[a-f0-9]{64}$/u.test(body.auditDigest);
+  const receiptIdentityValid = publicationIdValid && auditDigestValid;
+  const hasExplicitReceiptAvailability = body?.publicationReceiptAvailable === true
+    || body?.publicationReceiptAvailable === false || body?.publicationReceiptAvailable === null;
+  const legacyKnownReceipt = body?.publicationReceiptAvailable === undefined
+    && ['pending', 'published', 'retiring', 'retired'].includes(body?.publicationState)
+    && receiptIdentityValid;
+  const publicationReceiptAvailable = hasExplicitReceiptAvailability
+    ? body.publicationReceiptAvailable : legacyKnownReceipt ? true : undefined;
+  const hasReceiptAvailability = hasExplicitReceiptAvailability || legacyKnownReceipt;
+  const noReceiptIdentity = body?.publicationId === null && body?.auditDigest === null;
+  const reviewCheckIdValid = body?.reviewCheckId === null
+    || (Number.isSafeInteger(body?.reviewCheckId) && body.reviewCheckId > 0);
+  const gateCheckIdValid = body?.gateCheckId === null
+    || (Number.isSafeInteger(body?.gateCheckId) && body.gateCheckId > 0);
+  const checkIdsAbsent = body?.reviewCheckId === null && body?.gateCheckId === null;
+  const publicationStateValid = body?.publicationState === 'published'
+    ? publicationReceiptAvailable === true && receiptIdentityValid && body.mergeEligible === true
+      && Number.isSafeInteger(body.reviewCheckId) && body.reviewCheckId > 0
+      && Number.isSafeInteger(body.gateCheckId) && body.gateCheckId > 0
+    : body?.publicationState === 'unavailable'
+      ? body.mergeEligible === false && checkIdsAbsent
+        && (publicationReceiptAvailable === true ? receiptIdentityValid : noReceiptIdentity)
+      : body?.publicationState === 'pending'
+        ? publicationReceiptAvailable === true && receiptIdentityValid
+          && body.mergeEligible === false && body.gateCheckId === null
+        : ['retiring', 'retired'].includes(body?.publicationState)
+        && publicationReceiptAvailable === true && receiptIdentityValid && body.mergeEligible === false;
   const valid = body?.version === 'ActionDispatchPassthrough.v1'
     && body.status === 'passthrough'
     && body.reason === 'operator_global_passthrough'
@@ -342,18 +373,12 @@ function parsePassthroughReceipt(body) {
     && body.verdict === 'SHIP'
     && body.expectedLanes === 0
     && body.completedLanes === 0
-    && typeof body.publicationId === 'string'
-    && /^[a-f0-9]{64}$/u.test(body.publicationId)
-    && typeof body.auditDigest === 'string'
-    && /^[a-f0-9]{64}$/u.test(body.auditDigest)
-    && ['pending', 'published', 'retiring', 'retired'].includes(body.publicationState)
+    && hasReceiptAvailability
+    && publicationStateValid
+    && reviewCheckIdValid
+    && gateCheckIdValid
     && typeof body.mergeEligible === 'boolean'
-    && (body.reviewCheckId === null || (Number.isSafeInteger(body.reviewCheckId) && body.reviewCheckId > 0))
-    && (body.gateCheckId === null || (Number.isSafeInteger(body.gateCheckId) && body.gateCheckId > 0))
-    && ((body.publicationState === 'published') === body.mergeEligible)
-    && (!body.mergeEligible || (body.publicationState === 'published'
-      && Number.isSafeInteger(body.reviewCheckId) && body.reviewCheckId > 0
-      && Number.isSafeInteger(body.gateCheckId) && body.gateCheckId > 0));
+    && (publicationReceiptAvailable === true || checkIdsAbsent);
   if (!valid) throw new Error('DOKS dispatch returned an invalid passthrough receipt');
   return {
     version: body.version,
@@ -372,6 +397,7 @@ function parsePassthroughReceipt(body) {
     verdict: body.verdict,
     expectedLanes: body.expectedLanes,
     completedLanes: body.completedLanes,
+    publicationReceiptAvailable,
     publicationId: body.publicationId,
     auditDigest: body.auditDigest,
     publicationState: body.publicationState,
@@ -466,18 +492,26 @@ export async function dispatchAction(environment = process.env, fetchImpl = fetc
 
 export function writeDispatchOutputs(outputPath, receipt) {
   const valid = validateDispatchOutputReceipt(receipt);
+  const unavailableRationale = valid.publicationReceiptAvailable === true
+    ? 'a durable publication receipt is known, but its official check status could not be confirmed'
+    : valid.publicationReceiptAvailable === false
+      ? 'no durable publication receipt is available'
+      : 'durable publication receipt availability could not be confirmed';
   const lines = valid.version === 'ActionDispatchPassthrough.v1'
     ? [
       'verdict=SHIP',
       'findings-count=0',
-      `review-status=${valid.publicationState === 'published' ? 'OPERATOR_EXEMPTION_PUBLISHED' : 'OPERATOR_EXEMPTION_PENDING'}`,
+      `review-status=${valid.publicationState === 'unavailable' ? 'OPERATOR_EXEMPTION_UNAVAILABLE'
+        : valid.publicationState === 'published' ? 'OPERATOR_EXEMPTION_PUBLISHED' : 'OPERATOR_EXEMPTION_PENDING'}`,
       'gate-decision=SHIP_OPERATOR_EXEMPTION',
       `merge-eligible=${valid.mergeEligible}`,
       'total-findings=0',
       'p0-count=0',
       'p1-count=0',
       'p2-count=0',
-      `rationale=Operator pause authorized a SHIP exemption for ${valid.owner}/${valid.repo}#${valid.prNumber} at ${valid.headSha}; 0 review lanes ran; publication ${valid.publicationState}; audit ${valid.auditDigest}.`,
+      valid.publicationState === 'unavailable'
+        ? `rationale=Operator pause authorizes SHIP with zero review lanes; official check publication is unavailable; ${unavailableRationale}; protected merge eligibility is false.`
+        : `rationale=Operator pause authorized a SHIP exemption for ${valid.owner}/${valid.repo}#${valid.prNumber} at ${valid.headSha}; 0 review lanes ran; publication ${valid.publicationState}; audit ${valid.auditDigest}.`,
       '',
     ]
     : [

@@ -350,6 +350,59 @@ describe('OperatorPassthroughPublisher', () => {
     expect(f.callbackResults).toEqual([{ kind: 'retire-required', reason: 'candidate-changed', retryDelayMs: 5_000 }]);
   });
 
+  it.each([
+    ['review', true, { kind: 'not-started', retryDelayMs: 5_000 }],
+    ['gate', true, { kind: 'not-started', retryDelayMs: 5_000 }],
+    ['review', false, { kind: 'reconcile-pending', retryDelayMs: 5_000 }],
+  ] as const)('keeps a transient candidate read failure safe for %s with mayCreate=%s', async (stage, mayCreate, expected) => {
+    const publication = claim({ stage, mayCreate,
+      ...(stage === 'gate' ? { reviewCheckId: 8_001, reviewCreationState: 'bound' as const } : {}) });
+    const f = repositoryFor([publication]);
+    const candidateIsCurrent = vi.fn(async () => { throw new Error(`resolver unavailable: ${TOKEN}`); });
+    const clientFor = vi.fn(async () => { throw new Error('must not prepare client'); });
+    const publisher = publisherFor(f.repository, clientFor, { candidateIsCurrent });
+
+    await expect(publisher.runOnce(publication.publicationId)).resolves.toMatchObject({ status: 'retry' });
+
+    expect(candidateIsCurrent).toHaveBeenCalledOnce();
+    expect(clientFor).not.toHaveBeenCalled();
+    expect(f.callbackResults).toEqual([expected]);
+    expect(f.retryPublication).not.toHaveBeenCalled();
+  });
+
+  it('keeps an uncertain POST reconcile-only when the next candidate preflight read fails', async () => {
+    const first = claim({ stage: 'review', mayCreate: true });
+    const retry = { ...first, mayCreate: false };
+    const f = repositoryFor([first, retry]);
+    const api = apiForPublication(first, { failPost: true });
+    const candidateIsCurrent = vi.fn().mockResolvedValueOnce(true)
+      .mockRejectedValueOnce(new Error(`resolver unavailable: ${TOKEN}`));
+    const clientFor = vi.fn(async () => api.client);
+    const publisher = publisherFor(f.repository, clientFor, { candidateIsCurrent });
+
+    await publisher.runOnce(first.publicationId);
+    await publisher.runOnce(first.publicationId);
+
+    const methods = api.fetchImplementation.mock.calls.map(([, init]) => init?.method ?? 'GET');
+    expect(methods.filter((method) => method === 'POST')).toHaveLength(1);
+    expect(f.callbackResults).toEqual([{ kind: 'reconcile-pending', retryDelayMs: 5_000 }]);
+    expect(clientFor).toHaveBeenCalledOnce();
+  });
+
+  it('retires a Gate reservation when an exact candidate read explicitly reports stale', async () => {
+    const publication = claim({ stage: 'gate', reviewCheckId: 8_001, reviewCreationState: 'bound',
+      gateCreationState: 'creating' });
+    const f = repositoryFor([publication]);
+    const candidateIsCurrent = vi.fn(async () => false);
+    const clientFor = vi.fn(async () => { throw new Error('must not prepare a client'); });
+    const publisher = publisherFor(f.repository, clientFor, { candidateIsCurrent });
+
+    await expect(publisher.runOnce(publication.publicationId)).resolves.toMatchObject({ status: 'retry' });
+
+    expect(clientFor).not.toHaveBeenCalled();
+    expect(f.callbackResults).toEqual([{ kind: 'retire-required', reason: 'candidate-changed', retryDelayMs: 5_000 }]);
+  });
+
   it('retires an existing check when pause is disabled without evaluating it as a current paused candidate', async () => {
     const publication = claim({
       stage: 'review',

@@ -13,11 +13,27 @@ import { sha256 } from './reviewCore';
 import { canonicalJson } from './reviewCore';
 import { GitHubReviewGateClient, REVIEW_GATE_CHECK_NAME, REVIEW_WORKER_CHECK_NAME } from '../github/reviewGateClient';
 import { OperatorPassthroughPublisher } from './operatorPassthroughPublisher';
-import type { OperatorPassthroughAdmissionRequest, OperatorPassthroughPublicationRepository,
-  OperatorPassthroughReconcileAdmission, OperatorPassthroughReconcileCursor } from './operatorPassthrough';
+import { operatorPassthroughIdentity, OperatorPassthroughDeliveryIdentityConflictError,
+  type OperatorPassthroughAdmissionReceipt, type OperatorPassthroughAdmissionRequest,
+  type OperatorPassthroughPublicationRepository, type OperatorPassthroughPublicationSnapshot,
+  type OperatorPassthroughRecordResult, type OperatorPassthroughReconcileAdmission,
+  type OperatorPassthroughReconcileCursor } from './operatorPassthrough';
 import { logger } from '../utils/logger';
 
 const OPERATOR_PASSTHROUGH_CATCH_UP_BATCH_SIZE = 10;
+
+function unavailableOperatorPassthroughReceipt(publicationId: string | null, auditDigest: string | null,
+  publicationReceiptAvailable: boolean | null,
+  status: OperatorPassthroughAdmissionReceipt['status'] = 'accepted'): OperatorPassthroughAdmissionReceipt {
+  return {
+    status, verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
+    publicationId, auditDigest, publicationState: 'unavailable', publicationReceiptAvailable,
+    reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+    message: publicationReceiptAvailable === true
+      ? `Operator pause authorizes SHIP with zero review lanes; the durable receipt is available for check-publication retry, but publication status is unavailable. Protected merge eligibility is false.`
+      : `Operator pause authorizes SHIP with zero review lanes; official check publication is unavailable and durable publication retry could not be confirmed. Protected merge eligibility is false.`,
+  };
+}
 
 export interface AuthoritativeReviewServiceOptions {
   config: AuthoritativeServiceConfig;
@@ -142,24 +158,63 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
       const resolved = await resolver.resolve(requested);
       const expectedAppId = expectedAppIdFor(requested);
       const candidate = { ...requested, policyDigest: resolved.prepared.policy.effectivePolicyDigest };
-      const recorded = await operatorRepository.record({ candidate, expectedAppId, event: input.event });
+      const recordInput = { candidate, expectedAppId, event: input.event };
+      // Keep caller/event and exact candidate validation outside the persistence
+      // fallback. Only a storage failure after these checks is eligible for a
+      // bounded same-delivery retry or an unavailable logical-SHIP response.
+      operatorPassthroughIdentity(recordInput);
+      let recorded: OperatorPassthroughRecordResult;
+      try {
+        recorded = await operatorRepository.record(recordInput);
+      } catch (error) {
+        if (error instanceof OperatorPassthroughDeliveryIdentityConflictError) throw error;
+        let current;
+        try { current = await resolver.resolve(requested); }
+        catch (resolveError) {
+          if (resolveError instanceof AuthoritativeCandidateChangedError) throw resolveError;
+          // The initial exact-current resolution already authorized this
+          // logical pause response. A transient read failure cannot turn that
+          // SHIP verdict into PENDING, but it does prevent claiming a retry.
+          return unavailableOperatorPassthroughReceipt(null, null, null);
+        }
+        if (current.prepared.policy.effectivePolicyDigest !== candidate.policyDigest) {
+          throw new AuthoritativeCandidateChangedError();
+        }
+        try {
+          // Reuse the exact delivery identity. If the first COMMIT succeeded
+          // but its acknowledgement was lost, the repository returns duplicate.
+          recorded = await operatorRepository.record(recordInput);
+        } catch (retryError) {
+          if (retryError instanceof OperatorPassthroughDeliveryIdentityConflictError) throw retryError;
+          return unavailableOperatorPassthroughReceipt(null, null, null);
+        }
+      }
       // Event transports get immediate bounded publication. The deterministic
       // service reconciler records first and lets the ordinary durable outbox
       // cadence publish, so a large catch-up batch does not issue unbounded API
       // calls inside one tick.
       if (input.event.transport !== 'service-reconciler') {
-        await operatorPublisher.runOnce(recorded.publicationId);
-        await operatorPublisher.runOnce(recorded.publicationId);
+        await operatorPublisher.runOnce(recorded.publicationId).catch(() => undefined);
+        await operatorPublisher.runOnce(recorded.publicationId).catch(() => undefined);
       }
-      const publication = await operatorRepository.getPublication(recorded.publicationId);
-      if (!publication) throw new Error('Operator passthrough publication receipt is unavailable');
+      let publication: OperatorPassthroughPublicationSnapshot | null;
+      try { publication = await operatorRepository.getPublication(recorded.publicationId); }
+      catch { return unavailableOperatorPassthroughReceipt(recorded.publicationId,
+        recorded.auditDigest, true, recorded.status); }
+      if (!publication) return unavailableOperatorPassthroughReceipt(recorded.publicationId,
+        recorded.auditDigest, true, recorded.status);
+      if (publication.retirementReason === 'candidate-changed') throw new AuthoritativeCandidateChangedError();
       const publicationState = publication.retirementRequestedAt !== null
         ? publication.retiredAt !== null ? 'retired' as const : 'retiring' as const
         : publication.readyForShip ? 'published' as const : 'pending' as const;
       return { status: recorded.status, verdict: 'SHIP' as const, expectedLanes: 0 as const, completedLanes: 0 as const,
         publicationId: publication.publicationId, auditDigest: publication.auditDigest, publicationState,
+        publicationReceiptAvailable: true,
         reviewCheckId: publication.reviewCheckId, gateCheckId: publication.gateCheckId,
-        mergeEligible: publication.readyForShip };
+        mergeEligible: publication.readyForShip,
+        message: publication.readyForShip
+          ? 'Operator pause authorizes SHIP with zero review lanes; both official checks are durably published.'
+          : 'Operator pause authorizes SHIP with zero review lanes; official check publication is pending and protected merge is not eligible.' };
     } : undefined;
   const resolveCompletion = createAuthoritativeCompletionContext({
     getStoredPrepared: options.getStoredPrepared,

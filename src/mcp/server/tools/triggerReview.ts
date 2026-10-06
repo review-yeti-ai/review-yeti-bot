@@ -199,10 +199,11 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
           publication_id: exemption.publicationId,
           audit_digest: exemption.auditDigest,
           publication_state: exemption.publicationState,
+          publication_receipt_available: exemption.publicationReceiptAvailable,
           review_check_id: exemption.reviewCheckId,
           gate_check_id: exemption.gateCheckId,
           merge_eligible: exemption.mergeEligible,
-          message: `Operator pause authorized an explicit SHIP exemption for ${owner}/${repo}#${pull_number}; 0 review lanes ran; official check publication is ${exemption.publicationState}.`,
+          message: exemption.message ?? `Operator pause authorizes SHIP with zero review lanes; official check publication is ${exemption.publicationState}. Protected merge eligibility is ${exemption.mergeEligible ? 'available' : 'false'}.`,
         } satisfies TriggerReviewOutput);
       }
 

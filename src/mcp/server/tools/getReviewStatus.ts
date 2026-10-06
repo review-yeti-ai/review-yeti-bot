@@ -22,6 +22,9 @@ import {
 import { normalizeOperationalTelemetry, type OperationalTelemetry } from '../../../review/workerCompletion';
 import { operatorPassthroughReadyForShip } from '../../../review/operatorPassthrough';
 import { REVIEW_DISPATCH_OUTBOX_STATUS } from '../../../persistence/reviewDispatchStatus';
+import { expectedReviewAppIdFor } from '../../../auth/repositoryReviewAuthority';
+import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
+import { AuthoritativeCandidateChangedError } from '../../../review/authoritativePublishingResolver';
 
 export interface ReviewStatusDbClient {
   query(sql: string, values?: unknown[]): Promise<{ rows: any[] }>;
@@ -214,7 +217,7 @@ async function readOperationalTelemetry(db: ReviewStatusDbClient, row: any): Pro
 
 export const getReviewStatusDefinition: ToolDefinition = {
   name: 'get_review_status',
-  description: 'Retrieve versioned ReviewStatus.v2 real-time status, verdict, phase, check-runs, and explicit Pod-or-Job worker identity without GitHub scraping.',
+  description: 'Retrieve versioned ReviewStatus.v2 status, verdict, phase, exact check-runs, and worker identity from durable control-plane records and current candidate authority.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -230,9 +233,68 @@ export const getReviewStatusDefinition: ToolDefinition = {
 
 export interface GetReviewStatusOptions {
   passthroughEnabled?: boolean;
+  authoritativePublishing?: Pick<AuthoritativeReviewAdmission,
+    'expectedAppId' | 'expectedAppIdFor' | 'repositoryIds' | 'resolver'>;
+  resolveGitHubPullRequest?: (owner: string, repo: string, pullNumber: number) => Promise<{
+    headSha: string; baseSha?: string; repositoryId?: number;
+  }>;
 }
 
-function validateOperatorPublicationRow(row: any, input: GetReviewStatusInput): boolean {
+interface ResolvedPauseCandidateBase {
+  repositoryId: number;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  headSha: string;
+  baseSha: string;
+  requestedHeadPrefix: string | null;
+  expectedAppId: number;
+}
+type ResolvedPauseCandidate = ResolvedPauseCandidateBase &
+  ({ current: true; policyDigest: string } | { current: false; policyDigest: null });
+
+async function resolveOperatorPauseCandidate(input: GetReviewStatusInput,
+  options: GetReviewStatusOptions): Promise<ResolvedPauseCandidate> {
+  const admission = options.authoritativePublishing;
+  if (!admission || !options.resolveGitHubPullRequest) {
+    throw new Error('Operator SHIP status requires current authoritative candidate resolution');
+  }
+  const snapshot = await options.resolveGitHubPullRequest(input.owner, input.repo, input.pull_number);
+  if (!Number.isSafeInteger(snapshot.repositoryId) || Number(snapshot.repositoryId) <= 0
+    || typeof snapshot.headSha !== 'string' || !/^[a-f0-9]{40}$/iu.test(snapshot.headSha)
+    || typeof snapshot.baseSha !== 'string' || !/^[a-f0-9]{40}$/iu.test(snapshot.baseSha)) {
+    throw new Error('Current pull request identity is unavailable');
+  }
+  const headSha = snapshot.headSha.toLowerCase();
+  const baseSha = snapshot.baseSha.toLowerCase();
+  const repositoryId = Number(snapshot.repositoryId);
+  if (!admission.repositoryIds.includes(repositoryId)) {
+    throw new Error('Operator SHIP status is outside authoritative repository admission');
+  }
+  const requested = { repositoryId, owner: input.owner, repo: input.repo,
+    prNumber: input.pull_number, headSha, baseSha };
+  const expectedAppId = expectedReviewAppIdFor(admission, requested);
+  const result: ResolvedPauseCandidate = { ...requested, requestedHeadPrefix: input.head_sha?.toLowerCase() ?? null,
+    policyDigest: null, expectedAppId, current: false };
+  if (input.head_sha && !headSha.startsWith(input.head_sha.toLowerCase())) return result;
+  try {
+    const resolved = await admission.resolver.resolve(requested);
+    const policyDigest = resolved.prepared.policy.effectivePolicyDigest;
+    if (resolved.current.headSha !== headSha || resolved.current.baseSha !== baseSha) {
+      throw new AuthoritativeCandidateChangedError();
+    }
+    if (typeof policyDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(policyDigest)) {
+      throw new Error('Current policy identity is unavailable');
+    }
+    return { ...result, policyDigest, current: true };
+  } catch (error) {
+    if (error instanceof AuthoritativeCandidateChangedError) return result;
+    throw error;
+  }
+}
+
+function validateOperatorPublicationRow(row: any, input: GetReviewStatusInput,
+  candidate: ResolvedPauseCandidate): boolean {
   return row?.owner === input.owner && row?.repo === input.repo
     && Number(row?.pr_number) === input.pull_number
     && typeof row?.publication_id === 'string' && /^[a-f0-9]{64}$/u.test(row.publication_id)
@@ -241,6 +303,8 @@ function validateOperatorPublicationRow(row: any, input: GetReviewStatusInput): 
     && typeof row?.base_sha === 'string' && /^[a-f0-9]{40}$/u.test(row.base_sha)
     && typeof row?.policy_digest === 'string' && /^[a-f0-9]{64}$/u.test(row.policy_digest)
     && Number.isSafeInteger(Number(row?.expected_app_id)) && Number(row.expected_app_id) > 0
+    && row.head_sha === candidate.headSha && row.base_sha === candidate.baseSha
+    && row.policy_digest === candidate.policyDigest && Number(row.expected_app_id) === candidate.expectedAppId
     && (row?.review_check_id == null || Number.isSafeInteger(Number(row.review_check_id)) && Number(row.review_check_id) > 0)
     && (row?.gate_check_id == null || Number.isSafeInteger(Number(row.gate_check_id)) && Number(row.gate_check_id) > 0)
     && (row?.review_creation_state === 'bound' || row?.review_creation_state === 'creating'
@@ -250,40 +314,115 @@ function validateOperatorPublicationRow(row: any, input: GetReviewStatusInput): 
     && row?.retirement_requested_at == null && row?.retired_at == null;
 }
 
-async function operatorPassthroughStatus(db: ReviewStatusDbClient, input: GetReviewStatusInput): Promise<ToolResult | null> {
+function historicalUnavailableStatus(candidate: ResolvedPauseCandidate, message: string): ToolResult {
+  return buildToolResultJson({ schema_version: 'ReviewStatus.v2', found: false, verdict: 'PENDING',
+    attempt_id: null, head_sha: candidate.requestedHeadPrefix ?? candidate.headSha, phase: 'unknown',
+    check_run: null, active_worker: null, active_projection: null, message } satisfies ReviewStatusOutput);
+}
+
+function validateHistoricalOperatorPublicationRow(row: any, input: GetReviewStatusInput,
+  candidate: ResolvedPauseCandidate): boolean {
+  const requestedHead = candidate.requestedHeadPrefix ?? candidate.headSha;
+  return row?.owner === input.owner && row?.repo === input.repo
+    && Number(row?.pr_number) === input.pull_number
+    && typeof row?.publication_id === 'string' && /^[a-f0-9]{64}$/u.test(row.publication_id)
+    && typeof row?.audit_digest === 'string' && /^[a-f0-9]{64}$/u.test(row.audit_digest)
+    && typeof row?.head_sha === 'string' && /^[a-f0-9]{40}$/u.test(row.head_sha)
+    && row.head_sha.startsWith(requestedHead)
+    && typeof row?.base_sha === 'string' && /^[a-f0-9]{40}$/u.test(row.base_sha)
+    && typeof row?.policy_digest === 'string' && /^[a-f0-9]{64}$/u.test(row.policy_digest)
+    && Number(row?.expected_app_id) === candidate.expectedAppId
+    && (row?.review_check_id == null || Number.isSafeInteger(Number(row.review_check_id)) && Number(row.review_check_id) > 0)
+    && (row?.gate_check_id == null || Number.isSafeInteger(Number(row.gate_check_id)) && Number(row.gate_check_id) > 0)
+    && (row?.review_creation_state === 'bound' || row?.review_creation_state === 'creating'
+      || row?.review_creation_state === 'reserved' || row?.review_creation_state === 'not-created')
+    && (row?.gate_creation_state === 'bound' || row?.gate_creation_state === 'creating'
+      || row?.gate_creation_state === 'reserved' || row?.gate_creation_state === 'not-created')
+    && row?.retirement_requested_at == null && row?.retired_at == null;
+}
+
+async function historicalOperatorPassthroughStatus(db: ReviewStatusDbClient | undefined,
+  input: GetReviewStatusInput, candidate: ResolvedPauseCandidate): Promise<ToolResult> {
+  if (!db) return historicalUnavailableStatus(candidate,
+    'This candidate is no longer current; publication history is unavailable and no current SHIP exemption is asserted.');
+  const requestedHead = candidate.requestedHeadPrefix ?? candidate.headSha;
+  let rows: any[];
+  try {
+    rows = (await db.query(`SELECT ${OPERATOR_PASSTHROUGH_STATUS_COLUMNS}
+      FROM review_operator_passthrough_publications
+      WHERE owner=$1 AND repo=$2 AND pr_number=$3 AND retirement_requested_at IS NULL AND retired_at IS NULL
+        AND head_sha LIKE ($4 || '%')
+      ORDER BY publication_sequence DESC,created_at DESC LIMIT 2`,
+    [input.owner, input.repo, input.pull_number, requestedHead])).rows;
+  } catch {
+    return historicalUnavailableStatus(candidate,
+      'This candidate is no longer current; publication history could not be read and no current SHIP exemption is asserted.');
+  }
+  if (rows.length === 0 || rows.length > 1 && rows[0].head_sha !== rows[1].head_sha
+    || !validateHistoricalOperatorPublicationRow(rows[0], input, candidate)) {
+    return historicalUnavailableStatus(candidate,
+      'This candidate is no longer current; no unambiguous durable pause receipt is available, so no current SHIP exemption is asserted.');
+  }
+  const row = rows[0];
+  const published = operatorPassthroughReadyForShip({ reviewCreationState: row.review_creation_state,
+    reviewCheckId: row.review_check_id, gateCreationState: row.gate_creation_state,
+    gateCheckId: row.gate_check_id, retirementRequestedAt: row.retirement_requested_at, retiredAt: row.retired_at });
+  const gateCheckId = row.gate_check_id == null ? null : Number(row.gate_check_id);
+  return buildToolResultJson({ schema_version: 'ReviewStatus.v2', found: true, verdict: 'SHIP', attempt_id: null,
+    head_sha: row.head_sha, phase: 'completed', check_run: gateCheckId === null ? null : {
+      id: gateCheckId, url: `https://github.com/${input.owner}/${input.repo}/runs/${gateCheckId}`,
+      conclusion: published ? 'success' : null,
+    }, active_worker: null, active_projection: null,
+    operator_exemption: { publication_id: row.publication_id, audit_digest: row.audit_digest,
+      base_sha: row.base_sha, policy_digest: row.policy_digest, expected_app_id: Number(row.expected_app_id),
+      expected_lanes: 0, completed_lanes: 0, review_started: false,
+      publication_state: published ? 'published' : 'pending', publication_receipt_available: true,
+      review_check_id: row.review_check_id == null ? null : Number(row.review_check_id),
+      gate_check_id: gateCheckId, merge_eligible: false },
+    message: published
+      ? 'This historical candidate has a durable zero-lane SHIP receipt and successful official checks; it is not eligible for the current merge.'
+      : 'This historical candidate has a durable zero-lane SHIP receipt; official check publication is pending and it is not eligible for the current merge.',
+  } satisfies ReviewStatusOutput);
+}
+
+function unavailableOperatorStatus(candidate: ResolvedPauseCandidate & { current: true },
+  publicationReceiptAvailable: boolean | null): ToolResult {
+  const receiptText = publicationReceiptAvailable === true
+    ? 'A durable publication receipt exists and can be retried by the service.'
+    : publicationReceiptAvailable === false
+      ? 'No active durable publication receipt is available for retry.'
+      : 'Durable publication receipt availability could not be confirmed.';
+  return buildToolResultJson({
+    schema_version: 'ReviewStatus.v2', found: true, verdict: 'SHIP', attempt_id: null,
+    head_sha: candidate.headSha, phase: 'completed', check_run: null, active_worker: null,
+    active_projection: null,
+    operator_exemption: { publication_id: null, audit_digest: null, base_sha: candidate.baseSha,
+      policy_digest: candidate.policyDigest, expected_app_id: candidate.expectedAppId,
+      expected_lanes: 0, completed_lanes: 0, review_started: false,
+      publication_state: 'unavailable', publication_receipt_available: publicationReceiptAvailable,
+      review_check_id: null, gate_check_id: null, merge_eligible: false },
+    message: `Operator pause authorizes SHIP with zero review lanes. Official check publication is unavailable. ${receiptText} Protected merge eligibility is false.`,
+  } satisfies ReviewStatusOutput);
+}
+
+async function operatorPassthroughStatus(db: ReviewStatusDbClient | undefined, input: GetReviewStatusInput,
+  candidate: ResolvedPauseCandidate & { current: true }): Promise<ToolResult> {
+  if (!db) return unavailableOperatorStatus(candidate, null);
   let result: { rows: any[] };
   try {
-    const resultSet = input.head_sha
-      ? await db.query(`SELECT ${OPERATOR_PASSTHROUGH_STATUS_COLUMNS}
+    const resultSet = await db.query(`SELECT ${OPERATOR_PASSTHROUGH_STATUS_COLUMNS}
         FROM review_operator_passthrough_publications
         WHERE owner=$1 AND repo=$2 AND pr_number=$3 AND retirement_requested_at IS NULL AND retired_at IS NULL
-          AND (head_sha=$4 OR head_sha LIKE ($4 || '%'))
+          AND head_sha=$4
         ORDER BY publication_sequence DESC,created_at DESC LIMIT 1`,
-      [input.owner, input.repo, input.pull_number, input.head_sha])
-      : await db.query(`SELECT ${OPERATOR_PASSTHROUGH_STATUS_COLUMNS}
-        FROM review_operator_passthrough_publications
-        WHERE owner=$1 AND repo=$2 AND pr_number=$3 AND retirement_requested_at IS NULL AND retired_at IS NULL
-        ORDER BY publication_sequence DESC,created_at DESC LIMIT 1`,
-      [input.owner, input.repo, input.pull_number]);
+      [input.owner, input.repo, input.pull_number, candidate.headSha]);
     result = resultSet;
   } catch {
-    // The table is part of the authoritative startup migration. If its receipt
-    // cannot be read, do not substitute an ordinary run or claim SHIP.
-    return buildToolResultJson({
-      schema_version: 'ReviewStatus.v2', found: false, verdict: 'PENDING', attempt_id: null,
-      head_sha: input.head_sha ?? null, phase: 'unknown', check_run: null, active_worker: null,
-      active_projection: null, message: 'Operator SHIP publication is unavailable',
-    } satisfies ReviewStatusOutput);
+    return unavailableOperatorStatus(candidate, null);
   }
   const row = result.rows[0];
-  if (!row) return null;
-  if (!validateOperatorPublicationRow(row, input)) {
-    return buildToolResultJson({
-      schema_version: 'ReviewStatus.v2', found: false, verdict: 'PENDING', attempt_id: null,
-      head_sha: input.head_sha ?? null, phase: 'unknown', check_run: null, active_worker: null,
-      active_projection: null, message: 'Operator SHIP publication identity is unavailable',
-    } satisfies ReviewStatusOutput);
-  }
+  if (!row) return unavailableOperatorStatus(candidate, false);
+  if (!validateOperatorPublicationRow(row, input, candidate)) return unavailableOperatorStatus(candidate, null);
   const mergeEligible = operatorPassthroughReadyForShip({
     reviewCreationState: row.review_creation_state,
     reviewCheckId: row.review_check_id,
@@ -307,11 +446,12 @@ async function operatorPassthroughStatus(db: ReviewStatusDbClient, input: GetRev
       base_sha: row.base_sha, policy_digest: row.policy_digest, expected_app_id: Number(row.expected_app_id),
       expected_lanes: 0, completed_lanes: 0, review_started: false,
       publication_state: mergeEligible ? 'published' : 'pending',
+      publication_receipt_available: true,
       review_check_id: reviewCheckId, gate_check_id: gateCheckId, merge_eligible: mergeEligible,
     },
     message: mergeEligible
       ? 'Operator pause is enabled; this exact candidate has an auditable SHIP exemption and both official checks succeeded with zero review lanes.'
-      : 'Operator pause is enabled; this exact candidate has an auditable SHIP exemption with zero review lanes, but official check publication is still pending.',
+      : 'Operator pause authorizes SHIP for this exact candidate with zero review lanes; official check publication is still pending and protected merge is not eligible.',
   } satisfies ReviewStatusOutput);
 }
 
@@ -326,6 +466,12 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient, options: Ge
       }
       const { owner, repo, pull_number, head_sha } = parsed.data;
 
+      if (options.passthroughEnabled === true) {
+        const candidate = await resolveOperatorPauseCandidate(parsed.data, options);
+        if (!candidate.current) return historicalOperatorPassthroughStatus(db, parsed.data, candidate);
+        return operatorPassthroughStatus(db, parsed.data, candidate);
+      }
+
       if (!db) {
         return buildToolResultJson({
           schema_version: 'ReviewStatus.v2',
@@ -339,11 +485,6 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient, options: Ge
           active_projection: null,
           message: 'Database service is unavailable',
         } satisfies ReviewStatusOutput);
-      }
-
-      if (options.passthroughEnabled === true) {
-        const passthrough = await operatorPassthroughStatus(db, parsed.data);
-        if (passthrough) return passthrough;
       }
 
       let result: { rows: any[] };

@@ -176,7 +176,11 @@ export function createDefaultToolRegistry(options?: {
   const db = options?.db;
   const modelClient = options?.modelClient;
 
-  registry.registerTool(createGetReviewStatusTool(db, { passthroughEnabled: options?.passthroughEnabled }));
+  registry.registerTool(createGetReviewStatusTool(db, {
+    passthroughEnabled: options?.passthroughEnabled,
+    authoritativePublishing: options?.triggerDeps?.authoritativePublishing,
+    resolveGitHubPullRequest: options?.triggerDeps?.resolveGitHubPullRequest,
+  }));
   registry.registerTool(createGetReviewFindingsTool(db));
   registry.registerTool(createGetModelMatrixTool(options?.matrixBuilder));
   registry.registerTool(createTriggerReviewTool({

@@ -45,6 +45,14 @@ export interface OperatorPassthroughAdmissionRequest {
   event: OperatorPassthroughEvent;
 }
 
+/** A reused transport delivery identity is an authority conflict, not a storage outage. */
+export class OperatorPassthroughDeliveryIdentityConflictError extends Error {
+  constructor() {
+    super('Operator passthrough delivery identity conflict');
+    this.name = 'OperatorPassthroughDeliveryIdentityConflictError';
+  }
+}
+
 export interface OperatorPassthroughReconcileAdmission extends Omit<OperatorPassthroughCandidate, 'policyDigest'> {
   runId: string;
   admittedPolicyDigest: string;
@@ -60,12 +68,15 @@ export interface OperatorPassthroughAdmissionReceipt {
   verdict: 'SHIP';
   expectedLanes: 0;
   completedLanes: 0;
-  publicationId: string;
-  auditDigest: string;
-  publicationState: 'pending' | 'published' | 'retiring' | 'retired';
+  publicationId: string | null;
+  auditDigest: string | null;
+  publicationState: 'pending' | 'published' | 'retiring' | 'retired' | 'unavailable';
+  /** Whether an active durable receipt was observed; null means storage could not confirm it. */
+  publicationReceiptAvailable: boolean | null;
   reviewCheckId: number | null;
   gateCheckId: number | null;
   mergeEligible: boolean;
+  message: string;
 }
 
 export interface StoredOperatorPassthroughPublication {

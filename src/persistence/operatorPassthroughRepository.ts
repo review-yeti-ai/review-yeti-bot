@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { canonicalJson, sha256 } from '../review/reviewCore';
 import {
+  OperatorPassthroughDeliveryIdentityConflictError,
   operatorPassthroughIdentity,
   operatorPassthroughIdentityForCandidate,
   operatorPassthroughReadyForShip,
@@ -158,8 +159,9 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
       const result = await operation(client);
       await client.query('COMMIT');
       return result;
-    } catch {
+    } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
+      if (error instanceof OperatorPassthroughDeliveryIdentityConflictError) throw error;
       throw new Error('Operator passthrough persistence operation failed');
     } finally { client.release(); }
   }
@@ -189,7 +191,7 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
       if (existingEvent) {
         if (existingEvent.transport !== recordInput.event.transport || existingEvent.event_name !== recordInput.event.eventName
           || existingEvent.delivery_digest !== recordInput.event.deliveryDigest) {
-          throw new Error('Operator passthrough delivery identity conflict');
+          throw new OperatorPassthroughDeliveryIdentityConflictError();
         }
         const existingPublication = (await client.query(
           'SELECT * FROM review_operator_passthrough_publications WHERE publication_id=$1', [existingEvent.publication_id],
@@ -199,7 +201,7 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
           || !same(stored.coordinates, { ...recordInput.candidate, kind: 'operator-passthrough',
             publicationId: stored.publicationId, publicationSequence: stored.publicationSequence,
             auditDigest: stored.auditDigest })) {
-          throw new Error('Operator passthrough delivery identity conflict');
+          throw new OperatorPassthroughDeliveryIdentityConflictError();
         }
         if (recordInput.event.transport !== 'service-reconciler' || stored.retiredAt === null) {
           return { status: 'duplicate', publicationId: stored.publicationId,
@@ -227,7 +229,7 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
             if (alreadyRecorded) {
               if (alreadyRecorded.publication_id !== latestStored.publicationId
                 || alreadyRecorded.event_audit_digest !== eventAuditDigestFor(latestStored.publicationId, cycleEvent)) {
-                throw new Error('Operator passthrough delivery identity conflict');
+                throw new OperatorPassthroughDeliveryIdentityConflictError();
               }
             } else {
               await this.insertEvent(client, { ...recordInput, event: cycleEvent }, latestStored.publicationId,
@@ -252,7 +254,7 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
           if (priorCycle.transport !== cycleEvent.transport || priorCycle.event_name !== cycleEvent.eventName
             || priorCycle.delivery_digest !== cycleEvent.deliveryDigest
             || priorCycle.event_audit_digest !== eventAuditDigestFor(priorPublication.publicationId, cycleEvent)) {
-            throw new Error('Operator passthrough delivery identity conflict');
+            throw new OperatorPassthroughDeliveryIdentityConflictError();
           }
           if (priorPublication.retiredAt === null) {
             return { status: 'duplicate', publicationId: priorPublication.publicationId,

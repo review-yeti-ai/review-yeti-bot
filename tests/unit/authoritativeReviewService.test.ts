@@ -11,6 +11,7 @@ import { createAuthoritativeReviewService, type AuthoritativeReviewServiceOption
 import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
 import type { ReviewAdmissionInput } from '../../src/review/reviewRun';
 import type { OperatorPassthroughPublicationRepository, OperatorPassthroughReconcileAdmission } from '../../src/review/operatorPassthrough';
+import { OperatorPassthroughDeliveryIdentityConflictError } from '../../src/review/operatorPassthrough';
 
 const mocks = vi.hoisted(() => ({
   publisherConstructor: vi.fn(), resolverConstructor: vi.fn(),
@@ -413,6 +414,129 @@ describe('authoritative reconciliation tick', () => {
     expect(mocks.reap).toHaveBeenCalledTimes(2);
     expect(mocks[step]).toHaveBeenCalledTimes(2);
     expect(mocks.publish).toHaveBeenCalled();
+  });
+});
+
+describe('authoritative operator-pause admission responses', () => {
+  const request = () => ({ requested: {
+    repositoryId: candidate.repositoryId, owner: candidate.owner, repo: candidate.repo,
+    prNumber: candidate.prNumber, headSha: candidate.headSha, baseSha: candidate.baseSha,
+  }, event: { transport: 'mcp' as const, eventName: 'trigger_review', deliveryId: 'mcp:pause-test',
+    deliveryDigest: 'a'.repeat(64) } });
+
+  function operatorRepository(overrides: Record<string, unknown> = {}) {
+    return {
+      record: vi.fn(), getPublication: vi.fn(), claimPublication: vi.fn().mockResolvedValue(null),
+      publishLocked: vi.fn(), retryPublication: vi.fn(), requestRetirement: vi.fn(),
+      retireInTransaction: vi.fn(), requestAllRetirements: vi.fn(), ...overrides,
+    } as unknown as OperatorPassthroughPublicationRepository;
+  }
+
+  it('retries one uncertain record with the same delivery identity and returns its verified pending receipt', async () => {
+    const f = fixture();
+    const id = 'f'.repeat(64);
+    const digest = 'd'.repeat(64);
+    const repo = operatorRepository({
+      record: vi.fn().mockRejectedValueOnce(new Error('commit acknowledgement was lost'))
+        .mockResolvedValueOnce({ status: 'duplicate', publicationId: id, auditDigest: digest,
+          verdict: 'SHIP', expectedLanes: 0, completedLanes: 0 }),
+      getPublication: vi.fn().mockResolvedValue({ publicationId: id, auditDigest: digest,
+        reviewCheckId: null, reviewCreationState: 'reserved', gateCheckId: null, gateCreationState: 'reserved',
+        retirementRequestedAt: null, retiredAt: null, readyForShip: false }),
+    });
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+
+    const result = await service.admission.recordOperatorPassthrough!(request());
+
+    expect(repo.record).toHaveBeenCalledTimes(2);
+    expect((repo.record as any).mock.calls[0][0]).toEqual((repo.record as any).mock.calls[1][0]);
+    expect(result).toMatchObject({ status: 'duplicate', verdict: 'SHIP', expectedLanes: 0,
+      completedLanes: 0, publicationId: id, auditDigest: digest, publicationState: 'pending',
+      reviewCheckId: null, gateCheckId: null, mergeEligible: false });
+  });
+
+  it('returns logical SHIP with explicit unavailable publication when record cannot be confirmed', async () => {
+    const f = fixture();
+    const record = vi.fn().mockRejectedValue(new Error('database unavailable'));
+    const repo = operatorRepository({ record });
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+
+    const result = await service.admission.recordOperatorPassthrough!(request());
+
+    expect(record).toHaveBeenCalledTimes(2);
+    expect(record.mock.calls[0]?.[0]).toEqual(record.mock.calls[1]?.[0]);
+    expect(repo.claimPublication).not.toHaveBeenCalled();
+    expect(repo.getPublication).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
+      publicationId: null, auditDigest: null, publicationState: 'unavailable',
+      reviewCheckId: null, gateCheckId: null, mergeEligible: false });
+    expect(result.message).toContain('durable publication retry could not be confirmed');
+  });
+
+  it('keeps known receipt identity but reports unavailable when immediate publication and read fail', async () => {
+    const f = fixture();
+    const id = 'f'.repeat(64);
+    const digest = 'd'.repeat(64);
+    const repo = operatorRepository({
+      record: vi.fn().mockResolvedValue({ status: 'accepted', publicationId: id, auditDigest: digest,
+        verdict: 'SHIP', expectedLanes: 0, completedLanes: 0 }),
+      claimPublication: vi.fn().mockRejectedValue(new Error('outbox unavailable')),
+      getPublication: vi.fn().mockRejectedValue(new Error('receipt read unavailable')),
+    });
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+
+    const result = await service.admission.recordOperatorPassthrough!(request());
+
+    expect(result).toMatchObject({ verdict: 'SHIP', publicationId: id, auditDigest: digest,
+      publicationState: 'unavailable', reviewCheckId: null, gateCheckId: null, mergeEligible: false });
+    expect(result.message).toContain('receipt is available for check-publication retry');
+    expect(repo.getPublication).toHaveBeenCalledOnce();
+  });
+
+  it('does not convert a candidate change discovered before the record retry into SHIP', async () => {
+    const f = fixture();
+    const record = vi.fn().mockRejectedValue(new Error('database unavailable'));
+    const repo = operatorRepository({ record });
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    mocks.currentCandidate.mockResolvedValueOnce(candidate).mockResolvedValueOnce(candidate)
+      .mockResolvedValueOnce({ ...candidate, headSha: 'c'.repeat(40) });
+
+    await expect(service.admission.recordOperatorPassthrough!(request()))
+      .rejects.toThrow('Authoritative publishing candidate changed');
+    expect(record).toHaveBeenCalledOnce();
+  });
+
+  it('keeps logical SHIP when the storage retry preflight is transiently unavailable', async () => {
+    const f = fixture();
+    const record = vi.fn().mockRejectedValue(new Error('database unavailable'));
+    const repo = operatorRepository({ record });
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    mocks.currentCandidate.mockResolvedValueOnce(candidate).mockResolvedValueOnce(candidate)
+      .mockRejectedValueOnce(new Error('transient GitHub read failure'));
+
+    const result = await service.admission.recordOperatorPassthrough!(request());
+
+    expect(record).toHaveBeenCalledOnce();
+    expect(repo.claimPublication).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ verdict: 'SHIP', publicationId: null, auditDigest: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null, mergeEligible: false });
+  });
+
+  it('preserves a conflicting transport delivery identity instead of returning pause SHIP', async () => {
+    const f = fixture();
+    const record = vi.fn().mockRejectedValue(new OperatorPassthroughDeliveryIdentityConflictError());
+    const repo = operatorRepository({ record });
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+
+    await expect(service.admission.recordOperatorPassthrough!(request()))
+      .rejects.toThrow('Operator passthrough delivery identity conflict');
+    expect(record).toHaveBeenCalledOnce();
   });
 });
 

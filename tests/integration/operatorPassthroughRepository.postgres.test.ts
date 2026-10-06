@@ -12,6 +12,7 @@ import type {
   OperatorPassthroughReconcileCursor,
   OperatorPassthroughRecordInput,
 } from '../../src/review/operatorPassthrough';
+import { OperatorPassthroughDeliveryIdentityConflictError } from '../../src/review/operatorPassthrough';
 import type { ReviewGateCheck } from '../../src/review/reviewCheckIdentity';
 import {
   describeWithPostgres as describeWithPostgresShared,
@@ -283,7 +284,8 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
       ...input,
       event: { ...input.event, deliveryDigest: 'f'.repeat(64) },
     };
-    await expect(repository.record(conflictingReplay, NOW + 3)).rejects.toThrow();
+    await expect(repository.record(conflictingReplay, NOW + 3))
+      .rejects.toBeInstanceOf(OperatorPassthroughDeliveryIdentityConflictError);
 
     const counts = await pool!.query(`SELECT
       (SELECT count(*)::int FROM review_operator_passthrough_publications) AS publications,

@@ -15,6 +15,7 @@ import {
   McpAuthError,
 } from '../../src/mcp/server/mcpAuthenticator';
 import { buildToolResultText, buildToolResultJson, MCP_ERRORS } from '../../src/mcp/server/mcpTypes';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
 
 describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', () => {
   let app: express.Express;
@@ -209,6 +210,32 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
     expect(cancelActiveRunsForPullRequest).toHaveBeenCalledWith(expect.objectContaining({
       owner: 'exampleorg', repo: 'example-api', prNumber: 45, gateReason: 'operator-cancelled',
     }));
+  });
+
+  it('wires paused get_review_status through current GitHub and enrolled policy authority', async () => {
+    const requested = { repositoryId: 123, owner: 'exampleorg', repo: 'example-api', prNumber: 46,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) };
+    const resolve = vi.fn(async () => ({ current: { ...requested, open: true, draft: false },
+      prepared: { policy: { effectivePolicyDigest: 'c'.repeat(64) } } }));
+    const resolveGitHubPullRequest = vi.fn(async () => ({ headSha: requested.headSha,
+      baseSha: requested.baseSha, repositoryId: requested.repositoryId }));
+    const query = vi.fn(async () => ({ rows: [] }));
+    const registry = createDefaultToolRegistry({ db: { query }, passthroughEnabled: true,
+      triggerDeps: { authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
+        repositoryIds: [requested.repositoryId], resolver: { resolve } }, resolveGitHubPullRequest } });
+
+    const result = await registry.getTool('get_review_status')!.execute({
+      owner: requested.owner, repo: requested.repo, pull_number: requested.prNumber,
+    }, {} as any) as any;
+    const output = JSON.parse((result.content[0] as any).text);
+
+    expect(output).toMatchObject({ found: true, verdict: 'SHIP', head_sha: requested.headSha,
+      operator_exemption: { publication_state: 'unavailable', publication_receipt_available: false,
+        expected_app_id: AUTHORITATIVE_REVIEW_APP_ID, expected_lanes: 0, completed_lanes: 0,
+        review_started: false, merge_eligible: false } });
+    expect(resolveGitHubPullRequest).toHaveBeenCalledExactlyOnceWith(requested.owner, requested.repo, requested.prNumber);
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(requested);
+    expect(query).toHaveBeenCalledOnce();
   });
 
   describe('Protocol Negotiation', () => {

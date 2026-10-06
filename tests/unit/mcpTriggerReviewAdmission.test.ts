@@ -153,7 +153,8 @@ describe('trigger_review governed admission', () => {
     const recordOperatorPassthrough = vi.fn(async (_input: any) => ({
       status: 'accepted' as const, verdict: 'SHIP' as const, expectedLanes: 0 as const, completedLanes: 0 as const,
       publicationId: 'f'.repeat(64), auditDigest: 'e'.repeat(64), publicationState: 'published' as const,
-      reviewCheckId: 5001, gateCheckId: 5002, mergeEligible: true,
+      publicationReceiptAvailable: true, reviewCheckId: 5001, gateCheckId: 5002, mergeEligible: true,
+      message: 'Operator pause authorizes SHIP with zero review lanes; both official checks are durably published.',
     }));
     const tool = createTriggerReviewTool({
       passthroughEnabled: true,
@@ -187,10 +188,11 @@ describe('trigger_review governed admission', () => {
       publication_id: 'f'.repeat(64),
       audit_digest: 'e'.repeat(64),
       publication_state: 'published',
+      publication_receipt_available: true,
       review_check_id: 5001,
       gate_check_id: 5002,
       merge_eligible: true,
-      message: expect.stringContaining('0 review lanes ran'),
+      message: 'Operator pause authorizes SHIP with zero review lanes; both official checks are durably published.',
     });
     expect(resolvePullRequest).toHaveBeenCalledOnce();
     expect(resolvePolicy).toHaveBeenCalledOnce();
@@ -233,8 +235,9 @@ describe('trigger_review governed admission', () => {
     const resolve = vi.fn(async () => ({ identity, prepared: { policy: { effectivePolicyDigest: POLICY_DIGEST } } }));
     const recordOperatorPassthrough = vi.fn(async () => ({
       status: 'accepted' as const, verdict: 'SHIP' as const, expectedLanes: 0 as const, completedLanes: 0 as const,
-      publicationId: 'f'.repeat(64), auditDigest: 'e'.repeat(64), publicationState: 'pending' as const,
-      reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+      publicationId: null, auditDigest: null, publicationState: 'unavailable' as const,
+      publicationReceiptAvailable: null, reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+      message: 'Operator pause authorizes SHIP with zero review lanes; official check publication is unavailable.',
     }));
     const tool = createTriggerReviewTool({
       passthroughEnabled: true,
@@ -270,13 +273,14 @@ describe('trigger_review governed admission', () => {
       head_sha: HEAD_SHA,
       expected_lanes: 0,
       completed_lanes: 0,
-      publication_id: 'f'.repeat(64),
-      audit_digest: 'e'.repeat(64),
-      publication_state: 'pending',
+      publication_id: null,
+      audit_digest: null,
+      publication_state: 'unavailable',
+      publication_receipt_available: null,
       review_check_id: null,
       gate_check_id: null,
       merge_eligible: false,
-      message: expect.stringContaining('0 review lanes ran'),
+      message: 'Operator pause authorizes SHIP with zero review lanes; official check publication is unavailable.',
     });
     expect(resolve).toHaveBeenCalledOnce();
     expect(recordOperatorPassthrough).toHaveBeenCalledOnce();

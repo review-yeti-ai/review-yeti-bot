@@ -83,7 +83,9 @@ const centralManualTarget = {
 const operatorPassthroughReceipt = {
   status: 'accepted', verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
   publicationId: 'f'.repeat(64), auditDigest: 'e'.repeat(64), publicationState: 'published',
+  publicationReceiptAvailable: true,
   reviewCheckId: 5001, gateCheckId: 5002, mergeEligible: true,
+  message: 'Operator pause authorizes SHIP with zero review lanes; both official checks are durably published.',
 } as const;
 
 function app(overrides: Record<string, any> = {}) {
@@ -232,7 +234,9 @@ describe('POST /api/dispatch/action', () => {
       expectedLanes: 0,
       completedLanes: 0,
       publicationState: 'published',
+      publicationReceiptAvailable: true,
       mergeEligible: true,
+      message: 'Operator pause authorizes SHIP with zero review lanes; both official checks are durably published.',
       deliveryId: body.deliveryId,
       eventName: body.caller.eventName,
       repositoryId: body.repositoryId,
@@ -255,6 +259,30 @@ describe('POST /api/dispatch/action', () => {
       event: { transport: 'github-actions-oidc', eventName: 'workflow_dispatch',
         deliveryId: `github-actions-oidc:${body.deliveryId}`, deliveryDigest: expect.stringMatching(/^[a-f0-9]{64}$/u) },
     });
+  });
+
+  it('returns logical SHIP with unavailable publication when no durable receipt can be confirmed', async () => {
+    const recordOperatorPassthrough = vi.fn(async () => ({
+      status: 'accepted' as const, verdict: 'SHIP' as const, expectedLanes: 0 as const, completedLanes: 0 as const,
+      publicationId: null, auditDigest: null, publicationState: 'unavailable' as const,
+      publicationReceiptAvailable: null, reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+      message: 'Operator pause authorizes SHIP with zero review lanes; durable publication receipt availability could not be confirmed.',
+    }));
+    const admission = { admit: vi.fn(async () => { throw new Error('must not admit'); }) };
+    const fixture = app({ passthroughEnabled: true, allowAppGate: true, admission,
+      authoritativePublishing: { expectedAppId: 789, repositoryIds: [123], acceptNewRequests: false,
+        resolver: { resolve: vi.fn() }, recordOperatorPassthrough } });
+    const response = await request(fixture.instance).post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token')
+      .send({ ...body, publishMode: 'app-gate', expectedGeneration: 999 });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ version: 'ActionDispatchPassthrough.v1', status: 'passthrough',
+      verdict: 'SHIP', expectedLanes: 0, completedLanes: 0, publicationId: null, auditDigest: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null, reviewCheckId: null,
+      gateCheckId: null, mergeEligible: false, message: expect.stringContaining('availability could not be confirmed') });
+    expect(admission.admit).not.toHaveBeenCalled();
+    expect(recordOperatorPassthrough).toHaveBeenCalledOnce();
   });
 
   it('does not compare or consume the authenticated central generation during paused SHIP', async () => {

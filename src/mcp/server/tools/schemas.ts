@@ -122,15 +122,16 @@ export interface ReviewStatusOutput {
   operational_telemetry?: OperationalTelemetry;
   /** Service-owned pause exemption, separate from any real run/attempt identity. */
   operator_exemption?: {
-    publication_id: string;
-    audit_digest: string;
+    publication_id: string | null;
+    audit_digest: string | null;
     base_sha: string;
     policy_digest: string;
     expected_app_id: number;
     expected_lanes: 0;
     completed_lanes: 0;
     review_started: false;
-    publication_state: 'pending' | 'published';
+    publication_state: 'pending' | 'published' | 'unavailable';
+    publication_receipt_available: boolean | null;
     review_check_id: number | null;
     gate_check_id: number | null;
     merge_eligible: boolean;
@@ -277,9 +278,10 @@ export type TriggerReviewOutput = {
   verdict: 'SHIP';
   expected_lanes: 0;
   completed_lanes: 0;
-  publication_id: string;
-  audit_digest: string;
-  publication_state: 'pending' | 'published' | 'retiring' | 'retired';
+  publication_id: string | null;
+  audit_digest: string | null;
+  publication_state: 'pending' | 'published' | 'retiring' | 'retired' | 'unavailable';
+  publication_receipt_available: boolean | null;
   review_check_id: number | null;
   gate_check_id: number | null;
   merge_eligible: boolean;
