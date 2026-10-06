@@ -10,7 +10,7 @@ type Job = { name?: string; if?: string; needs?: string | string[]; permissions?
 type Workflow = { on: Record<string, { branches?: string[]; types?: string[] } | null | unknown[]>;
   concurrency?: { group?: string; 'cancel-in-progress'?: string | boolean };
   permissions?: Record<string, string>; jobs: Record<string, Job> };
-type Event = { name: string; action?: string; base?: string; baseRef?: string; defaultBranch?: string; ref?: string; draft?: boolean; state?: string; subject?: string; controllerMode?: string; startResult?: string; checkRunId?: string; reviewResult?: string };
+type Event = { name: string; action?: string; base?: string; baseRef?: string; defaultBranch?: string; ref?: string; draft?: boolean; state?: string; subject?: string; controllerMode?: string; passthroughEnabled?: boolean; startResult?: string; checkRunId?: string; reviewResult?: string };
 type Need = { result: string; outputs: Record<string, string> };
 const root = path.resolve(__dirname, '../..');
 const ci = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/ci-cd.yaml'), 'utf8')) as Workflow;
@@ -44,7 +44,7 @@ function eventRegistered(event: Event, workflow: Workflow): boolean {
 function evaluateGuard(guard: string | undefined, event: Event, dependencies: Record<string, Need>): boolean {
   if (!guard) return true;
   const expression = guard.replace(/^\s*\$\{\{\s*|\s*\}\}\s*$/gu, '');
-  const tokens = expression.match(/\s+|github\.(?:event_name|ref|event\.action|event\.head_commit\.message|event\.repository\.default_branch|event\.pull_request\.(?:draft|state|base\.ref))|needs\.[a-z-]+\.(?:result|outputs\.[a-z-]+)|always\(\)|startsWith|'(?:[^'\\]|\\.)*'|true|false|==|!=|\|\||&&|[!(),]/gu) ?? [];
+  const tokens = expression.match(/\s+|github\.(?:event_name|ref|event\.action|event\.head_commit\.message|event\.repository\.default_branch|event\.pull_request\.(?:draft|state|base\.ref))|needs\.[a-z-]+\.(?:result|outputs\.[a-z-]+)|vars\.REVIEW_YETI_PASSTHROUGH|always\(\)|startsWith|format|'(?:[^'\\]|\\.)*'|true|false|==|!=|\|\||&&|[!(),]/gu) ?? [];
   if (tokens.join('') !== expression) throw new Error('Unsupported workflow condition syntax');
   const executable = tokens.map(token => token.startsWith('needs.')
     ? 'needs' + token.slice(6).split('.').map(key => `[${JSON.stringify(key)}]`).join('') : token).join('');
@@ -55,6 +55,8 @@ function evaluateGuard(guard: string | undefined, event: Event, dependencies: Re
       pull_request: { draft: event.draft, state: event.state, base: { ref: event.baseRef ?? 'main' } },
     } }, needs: dependencies, always: () => true,
     startsWith: (value: string, prefix: string) => value.toLowerCase().startsWith(prefix.toLowerCase()),
+    format: (template: string, value: string) => template.replace('{0}', value),
+    vars: { REVIEW_YETI_PASSTHROUGH: event.passthroughEnabled ? 'true' : 'false' },
   }, { timeout: 2000 }));
 }
 
@@ -65,8 +67,8 @@ function admitted(id: string, event: Event, workflow = ci, dependencies = needs(
   const effectiveDependencies = workflow === paid ? {
     ...dependencies,
     'start-self-review': {
-      result: event.startResult ?? (event.name === 'repository_dispatch' ? 'skipped' : 'success'),
-      outputs: { mode: event.controllerMode ?? 'review', 'check-run-id': event.checkRunId ?? '9001' },
+      result: event.startResult ?? 'success',
+      outputs: { mode: event.controllerMode ?? (event.name === 'repository_dispatch' ? 'dispatch-review' : 'review'), 'check-run-id': event.checkRunId ?? '9001' },
     },
     review: { result: event.reviewResult ?? (event.controllerMode === 'operator-waiver' ? 'skipped' : 'success'), outputs: {} },
   } : dependencies;
@@ -170,7 +172,7 @@ describe('public draft quality admission', () => {
   });
 
   it('retains the exact paid readiness guard, public engine, and retired internal boundary', () => {
-    expect(paid.jobs.review.if).toBe("${{ always() && (github.event_name == 'repository_dispatch' || (github.event_name == 'pull_request_target' && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.mode != 'operator-waiver' && github.event.pull_request.state == 'open' && !github.event.pull_request.draft && github.event.pull_request.base.ref == github.event.repository.default_branch)) }}");
+    expect(paid.jobs.review.if).toBe("${{ always() && ((github.event_name == 'repository_dispatch' && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.mode == 'dispatch-review' && vars.REVIEW_YETI_PASSTHROUGH != 'true') || ((github.event_name == 'pull_request_target' && github.event.pull_request.state == 'open' && !github.event.pull_request.draft && github.event.pull_request.base.ref == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.mode == 'review' && vars.REVIEW_YETI_PASSTHROUGH != 'true')) }}");
     expect(paid.on.pull_request).toBeUndefined();
     expect(paid.on.pull_request_target).toEqual({ types: actions });
     expect(paid.jobs.review.name).toBe('Review Bot PR Controller');
@@ -184,11 +186,16 @@ describe('public draft quality admission', () => {
       expect(admitted('finish-self-review', { ...paidDraft, action, draft: false, controllerMode: 'operator-waiver', reviewResult: 'skipped' }, paid)).toBe(true);
     }
     expect(admitted('review', { name: 'repository_dispatch', action: 'review-requested' }, paid)).toBe(true);
+    expect(admitted('review', { name: 'repository_dispatch', action: 'review-requested', controllerMode: 'operator-waiver' }, paid)).toBe(false);
+    expect(admitted('review', { name: 'repository_dispatch', action: 'review-requested', passthroughEnabled: true }, paid)).toBe(false);
+    expect(admitted('review', { name: 'workflow_dispatch', ref: 'refs/heads/main' }, paid)).toBe(true);
+    expect(admitted('review', { name: 'workflow_dispatch', ref: 'refs/heads/main', controllerMode: 'operator-waiver' }, paid)).toBe(false);
+    expect(admitted('review', { name: 'workflow_dispatch', ref: 'refs/heads/main', passthroughEnabled: true }, paid)).toBe(false);
     expect(admitted('review', { ...paidDraft, draft: false, startResult: 'failure' }, paid)).toBe(false);
     expect(admitted('finish-self-review', { ...paidDraft, draft: false, startResult: 'failure', checkRunId: '9001' }, paid)).toBe(false);
     expect(admitted('finish-self-review', { ...paidDraft, draft: false, checkRunId: '' }, paid)).toBe(false);
-    expect(paid.jobs['finish-self-review'].if).toBe("${{ always() && github.event_name == 'pull_request_target' && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.check-run-id != '' }}");
-    expect(admitted('start-self-review', { name: 'repository_dispatch', action: 'review-requested' }, paid)).toBe(false);
+    expect(paid.jobs['finish-self-review'].if).toBe("${{ always() && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.check-run-id != '' }}");
+    expect(admitted('start-self-review', { name: 'repository_dispatch', action: 'review-requested' }, paid)).toBe(true);
     expect(paid.jobs.review.permissions?.checks).toBeUndefined();
     expect(paid.permissions?.checks).toBeUndefined();
     expect(paid.jobs['start-self-review'].permissions?.checks).toBe('write');
