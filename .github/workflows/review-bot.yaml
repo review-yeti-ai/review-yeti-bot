@@ -15,6 +15,12 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   repository_dispatch:
     types: [review-requested, re-review-requested, dispatch-review]
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Open, non-draft pull request number to reconcile against the current pause mode
+        required: true
+        type: number
 
 permissions:
   contents: read
@@ -22,13 +28,13 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: review-${{ github.event.client_payload.target_repo || github.repository }}-${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
+  group: review-${{ github.event.client_payload.target_repo || github.repository }}-${{ github.event.client_payload.pr_number || github.event.pull_request.number || github.event.inputs.pull_request_number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   start-self-review:
     name: Start base-owned self-review check
-    if: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.state == 'open' && !github.event.pull_request.draft && github.event.pull_request.base.ref == github.event.repository.default_branch }}
+    if: ${{ (github.event_name == 'pull_request_target' && github.event.pull_request.state == 'open' && !github.event.pull_request.draft && github.event.pull_request.base.ref == github.event.repository.default_branch) || github.event_name == 'repository_dispatch' || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -36,8 +42,12 @@ jobs:
       checks: write
       pull-requests: read
     outputs:
-      mode: ${{ steps.mode.outputs.mode }}
+      mode: ${{ steps.start-check.outputs.mode }}
       check-run-id: ${{ steps.start-check.outputs.check-run-id }}
+      identity: ${{ steps.start-check.outputs.identity }}
+      pull-request-number: ${{ steps.start-check.outputs.pull-request-number }}
+      event-name: ${{ steps.start-check.outputs.event-name }}
+      dispatch-target-repository: ${{ steps.start-check.outputs.dispatch-target-repository }}
     steps:
       - name: Checkout Review Runner (this repository)
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -63,6 +73,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REVIEW_MODE: ${{ steps.mode.outputs.mode }}
+          GITHUB_REPOSITORY_ID: ${{ github.event.repository.id }}
         run: node scripts/self-review-check-run.mjs start
 
   review:
@@ -83,7 +94,7 @@ jobs:
     # The target event uses base-owned code and admits only the repository's default branch.
     # Idle draft edits prepare a candidate; a ready PR admits normal review unless the
     # repository operator has explicitly set REVIEW_YETI_PASSTHROUGH=true.
-    if: ${{ always() && (github.event_name == 'repository_dispatch' || (github.event_name == 'pull_request_target' && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.mode != 'operator-waiver' && github.event.pull_request.state == 'open' && !github.event.pull_request.draft && github.event.pull_request.base.ref == github.event.repository.default_branch)) }}
+    if: ${{ always() && ((github.event_name == 'repository_dispatch' && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.mode == 'dispatch-review' && vars.REVIEW_YETI_PASSTHROUGH != 'true') || ((github.event_name == 'pull_request_target' && github.event.pull_request.state == 'open' && !github.event.pull_request.draft && github.event.pull_request.base.ref == github.event.repository.default_branch || github.event_name == 'workflow_dispatch') && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.mode == 'review' && vars.REVIEW_YETI_PASSTHROUGH != 'true')) }}
     runs-on: ubuntu-latest
     # Caller-side hard backstop: no direct self-review or repository-dispatch path may run
     # longer than the central 20-minute evidence + 5-minute closeout contract.
@@ -98,7 +109,7 @@ jobs:
           persist-credentials: false
 
       - name: Join the tailnet
-        if: ${{ (github.event_name != 'pull_request_target' || needs.start-self-review.outputs.mode != 'operator-waiver') && (env.TS_AUTHKEY != '' || vars.TS_OIDC_CLIENT_ID != '') }}
+        if: ${{ ((github.event_name == 'repository_dispatch' && needs.start-self-review.outputs.mode == 'dispatch-review') || needs.start-self-review.outputs.mode == 'review') && vars.REVIEW_YETI_PASSTHROUGH != 'true' && (env.TS_AUTHKEY != '' || vars.TS_OIDC_CLIENT_ID != '') }}
         continue-on-error: true
         uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4
         with:
@@ -113,7 +124,7 @@ jobs:
       # above ~1,000 bytes. A smaller tunnel MTU makes TLS certificate flights
       # complete; the gateway probe must pass before starting paid review lanes.
       - name: Verify gateway Tailnet TLS
-        if: ${{ (github.event_name != 'pull_request_target' || needs.start-self-review.outputs.mode != 'operator-waiver') && contains(vars.OPENROUTER_BASE_URL, '.ts.net') }}
+        if: ${{ ((github.event_name == 'repository_dispatch' && needs.start-self-review.outputs.mode == 'dispatch-review') || needs.start-self-review.outputs.mode == 'review') && vars.REVIEW_YETI_PASSTHROUGH != 'true' && contains(vars.OPENROUTER_BASE_URL, '.ts.net') }}
         env:
           GATEWAY_BASE_URL: ${{ vars.OPENROUTER_BASE_URL }}
         run: |
@@ -131,7 +142,7 @@ jobs:
       # file." On the dispatch path the workspace holds this repository, so the target's override
       # is fetched in. On the pull_request path the workspace is already the repo under review.
       - name: Fetch Target Repository Override Config
-        if: github.event_name == 'repository_dispatch'
+        if: ${{ github.event_name == 'repository_dispatch' && needs.start-self-review.outputs.mode == 'dispatch-review' && vars.REVIEW_YETI_PASSTHROUGH != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
           TARGET_REPO: ${{ github.event.client_payload.target_repo }}
@@ -149,7 +160,7 @@ jobs:
       - name: Assert the review transport configuration is consistent
         id: transport
         shell: bash
-        if: github.event_name != 'pull_request_target' || needs.start-self-review.outputs.mode != 'operator-waiver'
+        if: ${{ ((github.event_name == 'repository_dispatch' && needs.start-self-review.outputs.mode == 'dispatch-review') || needs.start-self-review.outputs.mode == 'review') && vars.REVIEW_YETI_PASSTHROUGH != 'true' }}
         env:
           REVIEW_BASE_URL: ${{ vars.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1' }}
           OPENCODE_KEY_PRESENT: ${{ secrets.CT_REVIEW_OPENCODE_API_KEY != '' }}
@@ -160,14 +171,14 @@ jobs:
 
       - name: Execute AI Review Panel
         id: review
-        if: github.event_name == 'repository_dispatch' || needs.start-self-review.outputs.mode != 'operator-waiver'
+        if: ${{ ((github.event_name == 'repository_dispatch' && needs.start-self-review.outputs.mode == 'dispatch-review') || needs.start-self-review.outputs.mode == 'review') && vars.REVIEW_YETI_PASSTHROUGH != 'true' }}
         uses: ./
         with:
           # Keep the public repository on its existing public-side engine even
           # if a future action release changes its default backend.
           execution-backend: local
           repo: ${{ github.event.client_payload.target_repo || github.repository }}
-          pr-number: ${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
+          pr-number: ${{ needs.start-self-review.outputs.pull-request-number || github.event.client_payload.pr_number || github.event.pull_request.number || github.event.inputs.pull_request_number }}
           personas: ${{ vars.ACTIVE_PERSONAS }}
           model: ${{ vars.OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash-0731' }}
           # Use only role-scoped review keys (CT_REVIEW_*); generic provider secrets such as a
@@ -229,7 +240,7 @@ jobs:
           doks-publish-mode: 'app-gate'
 
       - name: Report Verdict
-        if: ${{ always() && (github.event_name != 'pull_request_target' || needs.start-self-review.outputs.mode != 'operator-waiver') }}
+        if: ${{ always() && (((github.event_name == 'repository_dispatch' && needs.start-self-review.outputs.mode == 'dispatch-review') || needs.start-self-review.outputs.mode == 'review') && vars.REVIEW_YETI_PASSTHROUGH != 'true') }}
         run: |
           echo "Verdict: ${{ steps.review.outputs.verdict }}"
           echo "Findings: ${{ steps.review.outputs.findings-count }} (P0: ${{ steps.review.outputs.p0-count }}, P1: ${{ steps.review.outputs.p1-count }}, P2: ${{ steps.review.outputs.p2-count }})"
@@ -275,7 +286,7 @@ jobs:
       # obvious action instead of hunting for findings that do not exist.
       - name: Enforce Verdict
         id: enforce
-        if: ${{ always() && (github.event_name != 'pull_request_target' || needs.start-self-review.outputs.mode != 'operator-waiver') }}
+        if: ${{ always() && (((github.event_name == 'repository_dispatch' && needs.start-self-review.outputs.mode == 'dispatch-review') || needs.start-self-review.outputs.mode == 'review') && vars.REVIEW_YETI_PASSTHROUGH != 'true') }}
         env:
           VERDICT: ${{ steps.review.outputs.verdict }}
           REVIEW_STATUS: ${{ steps.review.outputs.review-status }}
@@ -344,7 +355,7 @@ jobs:
   finish-self-review:
     name: Complete base-owned self-review check
     needs: [start-self-review, review]
-    if: ${{ always() && github.event_name == 'pull_request_target' && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.check-run-id != '' }}
+    if: ${{ always() && needs.start-self-review.result == 'success' && needs.start-self-review.outputs.check-run-id != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -369,6 +380,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REVIEW_MODE: ${{ needs.start-self-review.outputs.mode }}
           CHECK_RUN_ID: ${{ needs.start-self-review.outputs.check-run-id }}
+          STARTED_IDENTITY_JSON: ${{ needs.start-self-review.outputs.identity }}
+          REVIEW_EVENT_NAME: ${{ needs.start-self-review.outputs.event-name }}
+          DISPATCH_TARGET_REPOSITORY: ${{ needs.start-self-review.outputs.dispatch-target-repository }}
+          REVIEW_YETI_PASSTHROUGH: ${{ vars.REVIEW_YETI_PASSTHROUGH }}
           ACTION_OUTCOME: ${{ needs.review.outputs.action-outcome }}
           ENFORCE_OUTCOME: ${{ needs.review.outputs.enforce-outcome }}
           REVIEW_STATUS: ${{ needs.review.outputs.review-status }}
@@ -377,3 +392,13 @@ jobs:
           MERGE_ELIGIBLE: ${{ needs.review.outputs.merge-eligible }}
           FILES_OMITTED: ${{ needs.review.outputs.files-omitted }}
         run: node scripts/self-review-check-run.mjs finish
+
+      - name: Upload Controller Receipt
+        id: upload-controller-receipt
+        if: ${{ always() && steps.finish-check.outputs.receipt-path != '' }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: review-controller-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.finish-check.outputs.receipt-path }}
+          if-no-files-found: error
+          retention-days: 14
