@@ -77,4 +77,28 @@ describe('get_review_status operator-passthrough projection', () => {
     expect(value).toMatchObject({ found: false, verdict: 'PENDING', phase: 'unknown', check_run: null });
     expect(value).not.toHaveProperty('operator_exemption');
   });
+
+  it('falls through to ordinary review status when no active operator receipt exists', async () => {
+    const normalRun = {
+      run_id: 'run_1234567890abcdef1234567890abcdef', owner: candidate.owner, repo: candidate.repo,
+      pr_number: candidate.pr_number, head_sha: candidate.head_sha, run_status: 'running', run_stage: 'review',
+      attempt: 1, lease_owner: null, lease_expires_at: null, created_at: new Date('2026-10-05T12:00:00.000Z'),
+      updated_at: new Date('2026-10-05T12:00:01.000Z'), attempt_id: 'attempt-1', check_id: null,
+      desired_state: 'queued', decision: null, current_attempt: true,
+    };
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [normalRun] })
+      .mockResolvedValue({ rows: [] });
+    const result = await createGetReviewStatusTool({ query }, { passthroughEnabled: true })
+      .execute({ owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number, head_sha: candidate.head_sha });
+    const value = JSON.parse((result.content[0] as { text: string }).text);
+
+    expect(value).toMatchObject({ schema_version: 'ReviewStatus.v2', found: true, verdict: 'PENDING',
+      phase: 'evaluating_personas', check_run: null, head_sha: candidate.head_sha, attempt_id: 'attempt-1' });
+    expect(value).not.toHaveProperty('operator_exemption');
+    expect(query).toHaveBeenCalledTimes(4);
+    expect(query.mock.calls[0][0]).toContain('review_operator_passthrough_publications');
+    expect(query.mock.calls[1][0]).toContain('FROM review_runs r');
+  });
 });

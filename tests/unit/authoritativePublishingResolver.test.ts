@@ -94,6 +94,45 @@ describe('AuthoritativePublishingResolver', () => {
     expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
+  it('reads the bounded reconciliation seed from the exact requested repository and PR', async () => {
+    const f = fixture();
+    const seed = { repositoryId: requested.repositoryId, owner: requested.owner,
+      repo: requested.repo, prNumber: requested.prNumber };
+
+    await expect(f.resolver.readCurrentCandidate(seed)).resolves.toEqual(current);
+
+    expect(f.candidateReaderFactory).toHaveBeenCalledExactlyOnceWith(
+      { repositoryId: requested.repositoryId, owner: requested.owner, repo: requested.repo }, expect.any(AbortSignal));
+    expect(f.currentCandidate).toHaveBeenCalledExactlyOnceWith(seed, expect.any(AbortSignal));
+    expect(f.policyReaderFactory).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { repositoryId: 999 }, { owner: 'different' }, { repo: 'different' }, { prNumber: 43 },
+  ])('rejects a reconciliation seed returned for a different identity %j', async (change) => {
+    const f = fixture();
+    const seed = { repositoryId: requested.repositoryId, owner: requested.owner,
+      repo: requested.repo, prNumber: requested.prNumber };
+    f.currentCandidate.mockResolvedValueOnce({ ...current, ...change });
+
+    expectRedacted(await rejection(f.resolver.readCurrentCandidate(seed)));
+    expect(f.policyReaderFactory).not.toHaveBeenCalled();
+  });
+
+  it('redacts and bounds a reconciliation seed read that exceeds the resolver deadline', async () => {
+    const f = fixture();
+    f.currentCandidate.mockImplementationOnce(() => new Promise<CurrentReviewCandidate>(() => undefined));
+    const seed = { repositoryId: requested.repositoryId, owner: requested.owner,
+      repo: requested.repo, prNumber: requested.prNumber };
+    const timedOut = rejection(f.resolver.readCurrentCandidate(seed));
+
+    await vi.advanceTimersByTimeAsync(250);
+
+    expectRedacted(await timedOut);
+    expect(f.candidateReaderFactory).toHaveBeenCalledOnce();
+    expect(f.policyReaderFactory).not.toHaveBeenCalled();
+  });
+
   it('uses the GitHub-verified candidate identity to select a trusted severity canary', async () => {
     const target = { ...requested, owner: 'exampleorg', repo: 'review-yeti-canary' };
     const f = fixture();
