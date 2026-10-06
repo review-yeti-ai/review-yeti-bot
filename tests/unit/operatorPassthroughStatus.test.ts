@@ -78,6 +78,23 @@ describe('get_review_status operator-passthrough projection', () => {
     expect(value).not.toHaveProperty('operator_exemption');
   });
 
+  it('fails closed on a malformed durable receipt without falling through to ordinary status', async () => {
+    const malformedRow = { ...candidate, publication_id: 'not-a-publication-digest' };
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: [malformedRow] })
+      .mockResolvedValue({ rows: [{ run_id: 'run_should_not_be_read', status: 'running' }] });
+    const result = await createGetReviewStatusTool({ query }, { passthroughEnabled: true })
+      .execute({ owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number, head_sha: candidate.head_sha });
+    const value = JSON.parse((result.content[0] as { text: string }).text);
+
+    expect(value).toMatchObject({ found: false, verdict: 'PENDING', phase: 'unknown', check_run: null,
+      head_sha: candidate.head_sha, attempt_id: null,
+      message: 'Operator SHIP publication identity is unavailable' });
+    expect(value).not.toHaveProperty('operator_exemption');
+    expect(query).toHaveBeenCalledOnce();
+    expect(query.mock.calls[0][0]).toContain('review_operator_passthrough_publications');
+  });
+
   it('falls through to ordinary review status when no active operator receipt exists', async () => {
     const normalRun = {
       run_id: 'run_1234567890abcdef1234567890abcdef', owner: candidate.owner, repo: candidate.repo,
