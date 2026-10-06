@@ -188,6 +188,8 @@ export interface ComposedReviewOptions {
   progress?: PublishingProgressReporter;
   /** Publisher-owned shadow execution stays serial so its provider footprint does not grow. */
   publisherShadow?: boolean;
+  /** Publisher reserves these calls from the existing total-turn budget for independent verification. */
+  verificationReserveTurns?: number;
   jobId?: string;
   requestPolicy?: PanelRequestPolicy;
   isCurrentHead?: () => boolean;
@@ -313,6 +315,18 @@ export function resolveComposedEngineMaxTurns(
     return Math.min(configuredMaxTurnsTotal as number, COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS);
   }
   return COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS;
+}
+
+/** Keep one shared total-call ceiling while reserving a bounded tail for independent review. */
+export function resolveComposedEngineWorkBudget(
+  env: NodeJS.ProcessEnv = process.env,
+  configuredMaxTurnsTotal?: number,
+  verificationReserveTurns = 0,
+): { totalTurns: number; verificationReserveTurns: number } {
+  const configuredTotal = resolveComposedEngineMaxTurns(env, configuredMaxTurnsTotal);
+  const reserve = Number.isSafeInteger(verificationReserveTurns) && verificationReserveTurns > 0
+    ? Math.min(verificationReserveTurns, Math.max(0, configuredTotal - 1)) : 0;
+  return { totalTurns: configuredTotal - reserve, verificationReserveTurns: reserve };
 }
 
 /** Ceiling for total findings collected across composed tasks before early finalization. */
@@ -1967,7 +1981,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       },
     ];
 
-    const totalTurnBudget = resolveComposedEngineMaxTurns(process.env, config.composed?.max_turns_total);
+    const workBudget = resolveComposedEngineWorkBudget(process.env, config.composed?.max_turns_total,
+      options.verificationReserveTurns);
+    const totalTurnBudget = workBudget.totalTurns;
+    span.setAttribute('review_yeti.composed.verification_reserved_turns', workBudget.verificationReserveTurns);
     const maxFindings = resolveComposedEngineMaxFindings(process.env, config.composed?.max_findings_total);
     span.setAttribute('review_yeti.composed.max_findings', maxFindings);
     let totalTurnsUsed = 0;

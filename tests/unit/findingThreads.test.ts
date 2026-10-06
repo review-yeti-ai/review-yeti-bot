@@ -16,6 +16,7 @@ import { deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerRevi
 import { findingThreadsRequestSchema } from '../../src/review/findingThreadsContract';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { savePreparedPublishingPolicy } from '../../src/persistence/preparedReviewRepository';
+import { groundedFixtureReceipt } from '../support/groundedReviewFixture';
 
 // ADR 0002: finding threads are how a required P2 is recognised on a later head and how an author
 // closes one with a stated reason.
@@ -270,7 +271,7 @@ describe('POST /finding-threads (service)', () => {
     const coordinates = { runId: RUN, repositoryId: 123, owner: 'o', repo: 'r', prNumber: 7,
       headSha: HEAD, baseSha: 'c'.repeat(40), policyDigest: prepared.policy.effectivePolicyDigest,
       configDigest: prepared.policy.effectiveConfigDigest, executionAttempt: 2 };
-    const suppliedEvidence = options.workerEvidence?.(coordinates);
+    const suppliedEvidence = await options.workerEvidence?.(coordinates);
     const decision = suppliedEvidence?.reviewDecision ?? createReviewDecisionV2({
       schemaVersion: 'review-yeti-decision.v2', policyVersion: REVIEW_SEVERITY_POLICY_V2,
       policyDigest: prepared.policy.effectivePolicyDigest, coverageComplete: true, quorumSatisfied: true,
@@ -470,8 +471,8 @@ describe('POST /finding-threads (service)', () => {
     const verified = { ...advisory, severity: 'P1' as const, line: 3,
       body: 'An unauthenticated request reaches the profile lookup and returns private account data.', blockerEvidence };
     const changedFiles = [{ path: 'src/mod.ts', patch: '@@ -1,0 +1,3 @@\n+first();\n+second();\n+return profile;' }];
-    const workerEvidence = (coordinates: any) => {
-      const personas = [
+    const workerEvidence = async (coordinates: any) => {
+      const personas: any[] = [
         { id: 'security', decision: 'FINDINGS', findings: [advisory] },
         { id: 'testing', decision: 'FINDINGS', findings: [verified] },
       ];
@@ -497,6 +498,12 @@ describe('POST /finding-threads (service)', () => {
           reviewDecision,
         },
       };
+      const verifierFindings = personas.flatMap((persona) => persona.findings) as unknown as Record<string, unknown>[];
+      completion.result.groundedReview = await groundedFixtureReceipt({
+        findings: verifierFindings, changedFiles,
+        owner: coordinates.owner, repo: coordinates.repo, headSha: coordinates.headSha, baseSha: coordinates.baseSha,
+        severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+      });
       const derived = deriveCanonicalWorkerReviewEvidence(completion as any, {
         expectedCoordinates: coordinates,
         expectedPersonaIds: ['security', 'testing'],

@@ -97,7 +97,7 @@ function prior(overrides: Partial<PriorReviewRecord> = {}): PriorReviewRecord {
   return {
     runId: PRIOR_RUN, executionAttempt: 1, repositoryId: 42, prNumber: 7,
     headSha: PREV_HEAD, baseSha: PREV_BASE, policyDigest: POLICY, configDigest: CONFIG,
-    completionDigest: 'e'.repeat(64), ageMs: 60_000, shipComplete: true,
+    completionDigest: 'e'.repeat(64), ageMs: 60_000, coverageComplete: true, shipComplete: true,
     findingPaths: ['src/open.ts'],
     ...overrides,
   };
@@ -183,8 +183,7 @@ describe('REVIEW_YETI_INCREMENTAL flag', () => {
 /**
  * A prior completion shaped like the authoritative worker's: it carries NO `verdict` field
  * (`src/cli/publishingReview.ts` never sets it). A test passes `verdict` only to prove the
- * optional field is ignored. REL-1084: the old default of `verdict: 'SHIP'` hid that every
- * production prior read as `prior-not-ship-complete`.
+ * optional field is ignored. Coverage eligibility remains separate from the Gate's SHIP decision.
  */
 function priorCompletion(overrides: { personas?: unknown[]; verdict?: string; coverageComplete?: boolean } = {}) {
   return parseWorkerReviewCompletion({
@@ -247,6 +246,22 @@ describe('prior review record', () => {
     expect(priorReviewRecordFromRows(rows(priorCompletion({ coverageComplete: false })))?.shipComplete).toBe(false);
     expect(priorReviewRecordFromRows(rows(priorCompletion({ personas: [{ id: 'documentation-only', decision: 'APPROVE',
       status: 'COMPLETE', findings: [] }] }), { expectedPersonaIds: ['documentation-only'] }))?.shipComplete).toBe(false);
+  });
+
+  it('retains complete coverage separately from failed approval so blockers remain repair context', async () => {
+    const completion = priorCompletion({ personas: [
+      { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE',
+        findings: [{ severity: 'P1', path: 'src/open.ts', line: 11, title: 'Unchecked input', body: 'b' }] },
+      { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+    ] });
+    const record = priorReviewRecordFromRows(rows(completion));
+    expect(record).toMatchObject({ coverageComplete: true, shipComplete: false, findingPaths: ['src/open.ts'] });
+    const decision = await decide({ priorRecord: record });
+    expect(decision).toMatchObject({ mode: 'incremental', openFindingPaths: ['src/open.ts'] });
+    expect(decision.mode === 'incremental' && decision.carriedForwardPaths).not.toContain('src/open.ts');
+
+    const incomplete = { ...prior(), coverageComplete: false, shipComplete: false } as unknown as PriorReviewRecord;
+    expect(await decide({ priorRecord: incomplete })).toEqual({ mode: 'full', reason: 'prior-coverage-incomplete' });
   });
 
   it('retains the path of a satisfied P2 from a SHIP-complete review (ADR 0002)', () => {
@@ -563,9 +578,10 @@ describe('incremental decision', () => {
     expect(await decide({ priorRecord: prior({ ageMs: 3_600_000 }), maxAgeMs: 3_600_000 })).toMatchObject({ mode: 'incremental' });
   });
 
-  it('falls back when there is no prior review, it is not SHIP-complete, or it reviewed this same head', async () => {
+  it('falls back when there is no prior review, coverage is incomplete, or it reviewed this same head', async () => {
     expect(await decide({ priorRecord: null })).toEqual({ mode: 'full', reason: 'no-prior-review' });
-    expect(await decide({ priorRecord: prior({ shipComplete: false }) })).toEqual({ mode: 'full', reason: 'prior-not-ship-complete' });
+    expect(await decide({ priorRecord: prior({ coverageComplete: false, shipComplete: false }) }))
+      .toEqual({ mode: 'full', reason: 'prior-coverage-incomplete' });
     expect(await decide({ priorRecord: prior({ headSha: HEAD }) })).toEqual({ mode: 'full', reason: 'same-head' });
     expect(await decide({ priorRecord: prior({ prNumber: 8 }) })).toEqual({ mode: 'full', reason: 'prior-identity-mismatch' });
   });
@@ -911,6 +927,15 @@ describe('publishing worker wiring', () => {
       panelRunner: panelRunner as never,
       client: {} as never,
       repoFileProviderFactory: (() => ({ readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []) })) as never,
+      prLifecycleHistory: { read: vi.fn(async () => ({ status: 'complete' as const,
+        snapshotId: '00000000-0000-4000-8000-000000000001', contextDigest: 'f'.repeat(64),
+        events: [], findings: [{ findingEventId: '00000000-0000-4000-8000-000000000002', fingerprint: 'fp1_000000000000000000000000',
+          path: 'src/open.ts', firstSeenHead: PREV_HEAD, lastSeenHead: PREV_HEAD, affectedContextDigest: 'a'.repeat(64),
+          sourceSeverity: 'P1', effectiveSeverity: 'P1', disposition: 'current', blocking: true,
+          verificationStatus: 'confirmed' as const, evidenceDigest: 'b'.repeat(64) }],
+        eventCount: 0, findingCount: 1, loadedEventCount: 0, loadedFindingCount: 1, eventOmittedCount: 0,
+        findingOmittedCount: 0, legacyOmittedCount: 0, eventsDigest: 'c'.repeat(64), findingsDigest: 'd'.repeat(64), omissions: [] })),
+        recordVerification: vi.fn(async () => true) },
       incrementalBase,
       incrementalCompareReader: reader(comparisons),
     });
@@ -944,10 +969,10 @@ describe('publishing worker wiring', () => {
 
   it('names the refusing check in the plan log and the check summary, and only for a refused prior', async () => {
     const info = vi.spyOn(logger, 'info');
-    const refused = prior({ shipComplete: false, shipIncompleteReason: 'gate-not-clean' });
+    const refused = prior({ coverageComplete: false, shipComplete: false, shipIncompleteReason: 'gate-not-clean' });
     const { summary } = await runWorker(workerEnv({ REVIEW_YETI_INCREMENTAL: 'acme/app' }), world(), refused);
     expect(info).toHaveBeenCalledWith('Incremental re-review planned', expect.objectContaining({
-      mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'gate-not-clean' }));
+      mode: 'full', reason: 'prior-coverage-incomplete', priorRefusal: 'gate-not-clean' }));
     expect(summary).toContain('(`gate-not-clean`: the gate did not pass it as a clean review)');
     info.mockClear();
     await runWorker(workerEnv({ REVIEW_YETI_INCREMENTAL: 'acme/app' }), world({ [`${PREV_HEAD}...${HEAD}`]: comparison('diverged', []) }));
@@ -1002,7 +1027,8 @@ describe('trusted verification of a carry-forward claim', () => {
   it('refuses a claim after a force-push, a stale record, or on a retry attempt', async () => {
     expect(await verify({ comparisons: world({ [`${PREV_HEAD}...${HEAD}`]: comparison('diverged', []) }) }))
       .toEqual({ verified: false, reason: 'not-ancestor' });
-    expect(await verify({ record: prior({ shipComplete: false }) })).toEqual({ verified: false, reason: 'prior-not-ship-complete' });
+    expect(await verify({ record: prior({ coverageComplete: false, shipComplete: false }) }))
+      .toEqual({ verified: false, reason: 'prior-coverage-incomplete' });
     expect(await verify({ attempt: 2 })).toEqual({ verified: false, reason: 'retry-attempt' });
   });
 

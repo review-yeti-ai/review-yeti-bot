@@ -107,6 +107,30 @@ function usageClient(calls: Array<[string, string, number, number]>) {
 }
 
 function deps(over: Record<string, unknown> = {}) {
+  const defaultRepoFileProviderFactory = (input: { owner: string; repo: string; headSha: string; baseSha: string;
+    changedFiles: Array<{ path: string; patch?: string }> }) => ({
+    findFiles: vi.fn(async () => []),
+    readFile: vi.fn(async () => 'function fixture() { return true; }'),
+    readFileAt: vi.fn(async (_path: string, side: 'head' | 'base' | 'merge-base') => ({
+      content: 'function fixture() { return true; }', sha: side === 'head' ? input.headSha : input.baseSha,
+    })),
+    readDiff: (path: string) => {
+      const file = input.changedFiles.find((candidate) => candidate.path === path);
+      return file?.patch ? { patch: file.patch, identity: { repository: `${input.owner}/${input.repo}`,
+        headSha: input.headSha, baseSha: input.baseSha } } : null;
+    },
+  });
+  const defaultGroundedClient = {
+    complete: vi.fn(async (request: { messages?: Array<{ content: unknown }> }) => {
+      const prompt = String(request.messages?.[1]?.content ?? '');
+      const match = /<claim>(\{[\s\S]*?\})<\/claim>/u.exec(prompt);
+      const claim = match ? JSON.parse(match[1]) as { path: string } : { path: 'src/a.ts' };
+      return { model: 'grounded-test-model', content: JSON.stringify({ status: 'confirmed',
+        violatedInvariant: 'A required invariant is violated.', failurePath: 'The changed branch reaches the violating operation.',
+        benignCheck: 'No current guard prevents the failure.', changeConnection: 'The current diff introduces the path.',
+        citations: [`head:${claim.path}`, `base:${claim.path}`, `diff:${claim.path}`] }), usage: null, costUSD: null, raw: {} };
+    }),
+  };
   return {
     checkClient: checkClient(),
     currentPullRequestVerifier: vi.fn(async () => undefined),
@@ -120,6 +144,8 @@ function deps(over: Record<string, unknown> = {}) {
       arbiter: { verdict: 'SHIP' },
     })) as never,
     client: {} as never,
+    groundedVerifierClient: defaultGroundedClient as never,
+    repoFileProviderFactory: defaultRepoFileProviderFactory as never,
     ...over,
   };
 }
@@ -202,6 +228,44 @@ describe('qualification source arguments', () => {
     expect(panelRunner).toHaveBeenCalledTimes(1);
     const arg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
     expect(arg.requestPolicy).toEqual({ responseFormat: { type: 'json_object' } });
+  });
+});
+
+describe('grounded evidence call order', () => {
+  it('loads the fixed service history before incremental planning and review generation', async () => {
+    const order: string[] = [];
+    const digest = 'e'.repeat(64);
+    const history = {
+      read: vi.fn(async () => {
+        order.push('history');
+        return { status: 'complete' as const, snapshotId: randomUUID(), contextDigest: digest,
+          events: [], findings: [], eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
+          eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+          eventsDigest: digest, findingsDigest: digest, omissions: [] };
+      }),
+      recordVerification: vi.fn(async () => true),
+    };
+    const sourceLoader = vi.fn(async () => { order.push('diff'); return { diff: DIFF, githubReads: 1 }; });
+    const incrementalBase = { read: vi.fn(async () => {
+      order.push('incremental-base'); return { prior: null, maxAgeMs: 1 };
+    }) };
+    const panelRunner = vi.fn(async () => {
+      order.push('panel');
+      return { applicablePersonaIds: ['sec-lane'], personas: [{ id: 'sec-lane', findings: [] }], optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true }, arbiter: { verdict: 'SHIP' } };
+    });
+    const receipt = await runPublishingReviewWorker(env({ REVIEW_YETI_INCREMENTAL: 'true' }), deps({
+      sourceLoader: sourceLoader as never, prLifecycleHistory: history as never,
+      incrementalBase: incrementalBase as never, panelRunner: panelRunner as never,
+    }) as never);
+
+    expect(order.indexOf('diff')).toBeLessThan(order.indexOf('history'));
+    expect(order.indexOf('history')).toBeLessThan(order.indexOf('incremental-base'));
+    expect(order.indexOf('incremental-base')).toBeLessThan(order.indexOf('panel'));
+    expect(receipt.groundedReview?.history).toMatchObject({
+      status: 'complete', eventCount: 0, findingCount: 0, eventsDigest: digest, findingsDigest: digest,
+      memorySources: { honcho: 'unavailable', mcp: 'unavailable' },
+    });
   });
 });
 
@@ -2662,7 +2726,8 @@ describe('full-repository grounding (repoFileProvider)', () => {
 
     expect(repoFileProviderFactory).toHaveBeenCalledTimes(1);
     expect(repoFileProviderFactory).toHaveBeenCalledWith({
-      token: 'ghs_test', owner: 'exampleorg', repo: 'example-meta', headSha: HEAD,
+      token: 'ghs_test', owner: 'exampleorg', repo: 'example-meta', headSha: HEAD, baseSha: BASE,
+      changedFiles: [{ path: 'src/a.ts', patch: DIFF }],
     });
     const arg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
     expect(arg.repoFileProvider).toBe(stubProvider);
@@ -3303,7 +3368,7 @@ describe('telemetry integration with protected composed closeout', () => {
       satisfiedFindingRecheckIds: [requestId] });
   });
 
-  it.each(['resolved', 'rejected'] as const)('captures native timeout observations once and preserves the validated finding after late %s cancellation', async (settlement) => {
+  it.each(['resolved', 'rejected'] as const)('keeps a potential blocker incomplete after late %s cancellation without independent proof', async (settlement) => {
     vi.useFakeTimers(); vi.setSystemTime(Date.parse('2026-10-01T00:00:00Z'));
     const f = fixture(); const factory = publishingProgress.createPublishingProgress;
     let reporter!: ReturnType<typeof factory>;
@@ -3329,11 +3394,13 @@ describe('telemetry integration with protected composed closeout', () => {
       sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
     try {
       await started; await vi.advanceTimersByTimeAsync(100);
-      expect(await task).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 1, failureClass: 'timeout' });
+      expect(await task).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 0, failureClass: 'timeout' });
       expect(write).toHaveBeenCalledOnce(); expect(f.reportReviewResult).toHaveBeenCalledOnce();
       const event = f.reportReviewResult.mock.calls[0][0];
       expect(event.result).toMatchObject({ coverageComplete: false, quorumSatisfied: false,
-        personas: [expect.objectContaining({ id: 'security-auth', findings: [expect.objectContaining({ title: f.finding.title })] })],
+        personas: [expect.objectContaining({ id: 'security-auth', findings: [] })],
+        groundedReview: { verification: { coverageComplete: false,
+          outcomes: [expect.objectContaining({ severity: 'P1', status: 'insufficient' })] } },
         failureDiagnostics: { reason: 'review_evidence_deadline', recoverableIncompletePanel: false,
           operationalTelemetry: { cause: 'unknown', providerCalls: { started: 2, completed: 1, aborted: 1, inflight: 0 },
             responseUsage: { availability: 'known', responses: 1, totals: { totalTokens: 18, cachedTokens: 6 } },
@@ -3349,7 +3416,7 @@ describe('telemetry integration with protected composed closeout', () => {
     } finally { spy.mockRestore(); vi.useRealTimers(); }
   });
 
-  it.each(['missing', 'malformed', 'throwing'] as const)('omits %s optional observations without changing graceful findings or INCOMPLETE', async (kind) => {
+  it.each(['missing', 'malformed', 'throwing'] as const)('omits %s optional observations without changing grounded incompleteness', async (kind) => {
     vi.useFakeTimers();
     vi.setSystemTime(Date.parse('2026-10-01T00:00:00Z'));
     try {
@@ -3361,11 +3428,13 @@ describe('telemetry integration with protected composed closeout', () => {
         const result = await runPublishingReviewWorker(f.input, deps({ composedReviewRunner: vi.fn(async () => f.partial),
           reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
           sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
-        expect(result).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 1, failureClass: 'timeout' });
+        expect(result).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 0, failureClass: 'timeout' });
         expect(f.reportReviewResult).toHaveBeenCalledOnce();
         const event = f.reportReviewResult.mock.calls[0][0];
         expect(event.result).toMatchObject({ coverageComplete: false, quorumSatisfied: false,
-          personas: [expect.objectContaining({ id: 'security-auth', findings: [expect.objectContaining({ title: f.finding.title })] })],
+          personas: [expect.objectContaining({ id: 'security-auth', findings: [] })],
+          groundedReview: { verification: { coverageComplete: false,
+            outcomes: [expect.objectContaining({ severity: 'P1', status: 'insufficient' })] } },
           failureDiagnostics: { reason: 'review_evidence_deadline', recoverableIncompletePanel: false } });
         expect(event.result.failureDiagnostics).not.toHaveProperty('operationalTelemetry');
       } finally { spy.mockRestore(); }

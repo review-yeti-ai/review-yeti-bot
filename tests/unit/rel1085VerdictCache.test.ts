@@ -147,7 +147,7 @@ function source(overrides: Partial<Omit<VerdictCacheSource, 'prior'>> & { prior?
     prior: {
       runId: SOURCE_RUN, executionAttempt: 1, repositoryId: REPO_ID, prNumber: 7, headSha: SOURCE_HEAD, baseSha: SOURCE_BASE,
       policyDigest: POLICY, configDigest: CONFIG, completionDigest: 'e'.repeat(64), ageMs: 60_000, shipComplete: true,
-      findingPaths: ['src/open.ts'],
+      coverageComplete: true, findingPaths: ['src/open.ts'],
       ...prior,
     },
     laneKeys: { ...LANE_KEYS },
@@ -294,7 +294,7 @@ function sourceCompletion(overrides: { personas?: unknown[]; verdictCache?: unkn
         { id: 'sec-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
         { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
       ],
-      coverageComplete: true, quorumSatisfied: true,
+      roster: ['sec-lane', 'arch-lane'], coverageComplete: true, quorumSatisfied: true,
       ...(overrides.verdictCache === null ? {} : {
         verdictCache: overrides.verdictCache ?? { version: 'VerdictCache.v1', laneKeys: LANE_KEYS, entries: [entry('src/same.ts')] },
       }),
@@ -897,6 +897,12 @@ describe('publishing worker wiring', () => {
       panelRunner: panelRunner as never,
       client: {} as never,
       repoFileProviderFactory: (() => ({ readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []) })) as never,
+      prLifecycleHistory: { read: vi.fn(async () => ({ status: 'complete' as const,
+        snapshotId: '00000000-0000-4000-8000-000000000004', contextDigest: 'f'.repeat(64),
+        events: [], findings: [], eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
+        eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+        eventsDigest: 'a'.repeat(64), findingsDigest: 'b'.repeat(64), omissions: [] })),
+        recordVerification: vi.fn(async () => true) },
       verdictCacheBase,
       verdictCacheCompareReader: contentReader(contentWorld()),
     });
@@ -974,6 +980,12 @@ describe('publishing worker wiring', () => {
       panelRunner: panelRunner as never,
       client: {} as never,
       repoFileProviderFactory: (() => ({ readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []) })) as never,
+      prLifecycleHistory: { read: vi.fn(async () => ({ status: 'complete' as const,
+        snapshotId: '00000000-0000-4000-8000-000000000005', contextDigest: 'e'.repeat(64),
+        events: [], findings: [], eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
+        eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+        eventsDigest: 'a'.repeat(64), findingsDigest: 'b'.repeat(64), omissions: [] })),
+        recordVerification: vi.fn(async () => true) },
       verdictCacheBase: { read: vi.fn(async () => ({ source: stored, maxAgeMs: MAX_AGE })) },
       verdictCacheCompareReader: contentReader(contentWorld()),
     });

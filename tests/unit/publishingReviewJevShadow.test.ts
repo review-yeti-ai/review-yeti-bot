@@ -4,6 +4,7 @@ import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 import { JEV_TRIAGE_LOG, laneQuestionKey } from '../../src/review/jevTriageShadow';
 import type { JevAskRequest, JevAsker, JevOutcome } from '../../src/gateway/jevClient';
 import { createFailingJevStub } from '../support/jevStub';
+import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
 import { logger } from '../../src/utils/logger';
 
 /**
@@ -124,7 +125,8 @@ function harness(kind: 'clean' | 'advisory' | 'blocking', extra: Record<string, 
       reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
       reportReviewEvidence: vi.fn(async (_event: unknown) => {}),
     },
-    repoFileProviderFactory: vi.fn(() => ({ marker: 'repo-files' })),
+    repoFileProviderFactory: vi.fn((input: any) => groundedFixtureProvider(input)),
+    groundedVerifierClient: groundedFixtureClient as never,
     client: { marker: 'model-client' },
     now: () => FIXED_NOW,
     ...extra,
