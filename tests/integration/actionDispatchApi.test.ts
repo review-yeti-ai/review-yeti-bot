@@ -212,7 +212,7 @@ describe('POST /api/dispatch/action', () => {
       resolveInstallationId,
       admission,
       authoritativePublishing: {
-        expectedAppId: 789,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [123],
         acceptNewRequests: false,
         resolver: { resolve },
@@ -270,7 +270,7 @@ describe('POST /api/dispatch/action', () => {
     }));
     const admission = { admit: vi.fn(async () => { throw new Error('must not admit'); }) };
     const fixture = app({ passthroughEnabled: true, allowAppGate: true, admission,
-      authoritativePublishing: { expectedAppId: 789, repositoryIds: [123], acceptNewRequests: false,
+      authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [123], acceptNewRequests: false,
         resolver: { resolve: vi.fn() }, recordOperatorPassthrough } });
     const response = await request(fixture.instance).post('/api/dispatch/action')
       .set('Authorization', 'Bearer signed-oidc-token')
