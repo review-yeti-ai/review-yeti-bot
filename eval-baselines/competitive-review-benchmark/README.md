@@ -12,7 +12,7 @@ AACR-Bench annotates review comments. Its “correct” comments are not an exha
 
 `competitive-review-benchmark.mjs` has no synthetic provider fallback. `run-verification` calls the production falsification stage and refuses to run without one explicitly selected credentialed transport. The preparer emits a local input file containing only an opaque case id, the review hypothesis, source snapshot data, and source identity. Scoring labels and annotation ids are regenerated from the pinned dataset only by `score-verification`; neither is sent to the model.
 
-The `prepare-*` commands check the pinned public source. The `run-*` commands consume the caller-supplied local JSON and do not re-fetch or independently attest its snapshot contents. Each run receipt records the SHA-256 of the exact prepared-file bytes and marks source verification as preparation-stage-only; preserve that digest with any comparison and assume the local artifact was left unchanged after preparation.
+The `prepare-*` commands check the pinned public source. The `run-*` commands consume caller-supplied local JSON and record the SHA-256 of its exact bytes; the digest identifies the artifact but does not attest who produced it. For Git-backed discovery inputs, `run-discovery` checks the explicit local cache's Git origin, exact base/head commits, changed paths, patches, and any supplied head contents before entering the model-backed worker. Its `sourceCachePreflight` receipt records that result. For API-backed prepared snapshots, the run trusts the digest-bound local artifact and records `immutableSourceRechecked: false`; it does not independently re-fetch the complete prepared snapshot. Preserve the prepared-file digest and per-case preflight receipt with any comparison.
 
 The verifier-only lane proves only comment verification. It does not qualify persona coverage, composed discovery, default engine selection, durable history, or end-to-end publication. A qualifying discovery run must exercise `runPublishingReviewWorker` after WS3 integration is accepted, so the source diff is planned against the effective base policy, the resolved engine is recorded, and coverage, quorum, verifier, history, and review-decision receipts are retained. Each result must identify adapter-only source/dependency seams. A direct `reviewWithModel` call is a lane test only.
 
@@ -66,6 +66,7 @@ node scripts/competitive-review-benchmark.mjs score-verification \
 node scripts/competitive-review-benchmark.mjs run-discovery \
   --runtime-root /path/to/runtime-checkout \
   --cases /tmp/review-yeti-aacr-discovery-input.json \
+  --cache /tmp/review-yeti-aacr-public-repos \
   --purpose smoke \
   --max-cases 1 \
   --max-tasks 2 \
@@ -84,6 +85,7 @@ node scripts/competitive-review-benchmark.mjs run-discovery \
   --runtime-root /path/to/runtime-at-e70749fd4b14cb284b1497974306975cbce2d47a \
   --expected-runtime-sha e70749fd4b14cb284b1497974306975cbce2d47a \
   --cases /tmp/review-yeti-aacr-discovery-input.json \
+  --cache /tmp/review-yeti-aacr-public-repos \
   --case-ids "$CASE_IDS" \
   --purpose baseline \
   --policy-file eval-baselines/competitive-review-benchmark/policy-projections/yeti-v1-native-omitted.json \
@@ -96,6 +98,7 @@ node scripts/competitive-review-benchmark.mjs run-discovery \
   --runtime-root /path/to/accepted-revised-runtime \
   --expected-runtime-sha <accepted-40-character-runtime-sha> \
   --cases /tmp/review-yeti-aacr-discovery-input.json \
+  --cache /tmp/review-yeti-aacr-public-repos \
   --case-ids "$CASE_IDS" \
   --purpose qualification \
   --policy-file eval-baselines/competitive-review-benchmark/policy-projections/yeti-v1-medium.json \
