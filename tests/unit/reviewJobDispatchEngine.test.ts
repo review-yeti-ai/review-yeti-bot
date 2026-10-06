@@ -62,13 +62,24 @@ function fixture(overrides: Record<string, any> = {}) {
 }
 
 describe('ReviewJobDispatchEngine', () => {
-  it('does not claim or project already-queued work while the trusted global pause is active', async () => {
-    const { engine, repository, projector } = fixture({ isDispatchPaused: () => true });
+  it('does not claim queued app-gate work while operator pause is enabled, then resumes after it is cleared', async () => {
+    let paused = true;
+    const claimNext = vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const }));
+    const { engine, projector, repository } = fixture({
+      isDispatchPaused: () => paused,
+      repository: { claimNext },
+    });
 
     await expect(engine.runOnce()).resolves.toEqual({ status: 'idle' });
-    expect(repository.claimNext).not.toHaveBeenCalled();
+    expect(claimNext).not.toHaveBeenCalled();
     expect(projector.ensure).not.toHaveBeenCalled();
-    expect(repository.markProjected).not.toHaveBeenCalled();
+
+    paused = false;
+    await expect(engine.runOnce()).resolves.toEqual({
+      status: 'projected', runId: claim.runId, projectionName: `ct-review-${'1'.repeat(32)}`,
+    });
+    expect(claimNext).toHaveBeenCalledOnce();
+    expect(repository.markProjected).toHaveBeenCalledOnce();
   });
 
   it('claims one row, builds the fail-closed contract, and records the deterministic projection', async () => {

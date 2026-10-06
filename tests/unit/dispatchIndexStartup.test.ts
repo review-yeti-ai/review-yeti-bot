@@ -49,7 +49,7 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock('../../src/auth/githubActionsOidc', () => ({
-  githubActionsOidcPolicyFromEnv: () => ({ allowAppGate: true, repositoryIds: new Set(['123']), ownerIds: new Set(['99']) }),
+  githubActionsOidcPolicyFromEnv: () => ({ allowAppGate: true }),
   GitHubActionsOidcVerifier: class {},
 }));
 vi.mock('../../src/dispatchServer', () => ({ createActionDispatchApp: mocks.createApp }));
@@ -232,32 +232,6 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.listen).toHaveBeenCalledOnce();
   });
 
-  it('composes the durable marked-maintenance publisher and authenticated merge-group recovery verifier', async () => {
-    mocks.serviceConfig.mockReturnValue(authoritativeConfig());
-    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
-    vi.stubEnv('GITHUB_APP_WEBHOOK_ENABLED', 'true');
-    vi.stubEnv('GITHUB_APP_WEBHOOK_ADMISSION_ENABLED', 'true');
-    vi.stubEnv('GITHUB_WEBHOOK_SECRET', 'synthetic-webhook-secret-value-32');
-    vi.stubEnv('GITHUB_APP_WEBHOOK_REPOSITORY_IDS', '123');
-    vi.stubEnv('GITHUB_APP_WEBHOOK_OWNER_IDS', '99');
-
-    await start();
-
-    expect(mocks.authoritative).toHaveBeenCalledOnce();
-    const options = mocks.authoritative.mock.calls[0][0];
-    expect(options.passthroughEnabled).toBe(true);
-    expect(options.operatorMaintenanceRepository).toBeDefined();
-    expect(options.verifyMergeGroupCurrent).toEqual(expect.any(Function));
-    expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({
-      githubWebhook: expect.objectContaining({ onEvent: expect.any(Function) }),
-      authoritativePublishing: expect.any(Object),
-    }));
-    expect(mocks.authoritative.mock.results[0].value.runOnce).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(1);
-    await vi.advanceTimersByTimeAsync(authoritativeConfig().tickMs);
-    expect(mocks.authoritative.mock.results[0].value.runOnce).toHaveBeenCalledOnce();
-  });
-
   it('wires only the exact configured self-hosted central-dispatch target', async () => {
     vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-bot');
     vi.stubEnv('REVIEW_YETI_PUBLIC_TARGET_APP_ID', String(PUBLIC_REVIEW_APP_ID));
@@ -428,12 +402,17 @@ describe('Action dispatch startup transport and admission wiring', () => {
       config, repository: mocks.gateStorage, getStoredPrepared: expect.any(Function), appId: String(AUTHORITATIVE_REVIEW_APP_ID),
       privateKey: 'synthetic-startup-private-key', baseUrl: 'https://api.github.com',
       workerId: 'authoritative-review-startup-test',
-      passthroughEnabled: false,
       // ADR 0002: resolves the review App's bot login for finding-thread author verification.
       findingThreadAuthor: expect.any(Function),
+      operatorPassthroughRepository: { pool: mocks.pool },
+      passthroughEnabled: false,
+      listPausedAdmissions: expect.any(Function),
     });
     const options = mocks.authoritative.mock.calls[0][0];
     expect(options.repository).toBe(mocks.gateStorage);
+    expect(options.operatorPassthroughRepository).toMatchObject({ pool: mocks.pool });
+    expect(options.passthroughEnabled).toBe(false);
+    expect(options.listPausedAdmissions).toEqual(expect.any(Function));
     expect(mocks.getPrepared).not.toHaveBeenCalled();
     const digest = 'a'.repeat(64);
     await expect(options.getStoredPrepared(digest, new AbortController().signal)).resolves.toBeNull();
@@ -443,6 +422,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.repository).toHaveBeenCalledExactlyOnceWith(mocks.pool, undefined, {
       lifecycleEvents: 'enabled',
       resolveGenerationRecovery: expect.any(Function),
+      retireOperatorPassthroughInTransaction: expect.any(Function),
       validateAuthoritativeAdmission: mocks.validateAdmission,
       requireExpectedGeneration: false,
     });
@@ -462,6 +442,21 @@ describe('Action dispatch startup transport and admission wiring', () => {
     await vi.advanceTimersByTimeAsync(1_000);
     expect(service.runOnce).toHaveBeenCalledOnce();
     expect(mocks.pool.query).not.toHaveBeenCalled();
+  });
+
+  it('passes an explicitly enabled operator pause into the authoritative service', async () => {
+    mocks.serviceConfig.mockReturnValue(authoritativeConfig());
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'true');
+
+    await start();
+
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(mocks.authoritative).toHaveBeenCalledOnce();
+    expect(mocks.authoritative.mock.calls[0][0]).toMatchObject({
+      passthroughEnabled: true,
+      operatorPassthroughRepository: { pool: mocks.pool },
+      listPausedAdmissions: expect.any(Function),
+    });
   });
 
   it('wires exact immutable identity into the production generation-recovery reader', async () => {

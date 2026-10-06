@@ -13,7 +13,7 @@ import {
   type TriggerReviewInput,
   type TriggerReviewOutput,
 } from './schemas';
-import { sha256 } from '../../../review/reviewCore';
+import { canonicalJson, sha256 } from '../../../review/reviewCore';
 import { buildReviewRunIdentity, deriveReviewRunId } from '../../../review/reviewAdmission';
 import type { AuthoritativePublishingResolver } from '../../../review/authoritativePublishingResolver';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
@@ -70,6 +70,8 @@ export interface TriggerReviewDependencies {
   now?: () => number;
 }
 
+// Production tool dispatch is behind remoteMcpRouter authentication and exact owner/repo RBAC;
+// both normal admission and the pause-SHIP branch below rely on that trusted transport boundary.
 export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
   const nowFn = deps.now || Date.now;
 
@@ -138,7 +140,7 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
         throw new Error('trigger_review requires authoritative publishing admission');
       }
       if (incomplete_p2_recovery === true
-        && (authoritative?.acceptNewRequests !== true
+        && ((authoritative?.acceptNewRequests !== true && deps.passthroughEnabled !== true)
           || !authoritative.repositoryIds?.includes(repositoryId))) {
         throw new Error('Incomplete P2 recovery requires an active authoritative repository admission');
       }
@@ -171,32 +173,16 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
       const resolvedRunId = deriveReviewRunId(resolvedIdentity);
 
       if (deps.passthroughEnabled === true) {
-        const authorizedRepository = context?.authorizedRepository;
-        if (context?.authenticatedByConfiguredAuthenticator !== true || !authorizedRepository
-          || authorizedRepository.owner.toLowerCase() !== owner.toLowerCase()
-          || authorizedRepository.repo.toLowerCase() !== repo.toLowerCase()) {
-          throw new Error('Operator passthrough requires configured MCP authentication and exact repository authorization');
+        if (!resolved || !authoritative?.recordOperatorPassthrough) {
+          throw new Error('Operator SHIP publication requires current authoritative candidate resolution');
         }
-        if (!resolved?.current || !resolved.current.open || resolved.current.draft !== false
-          || resolved.current.repositoryId !== repositoryId || resolved.current.owner !== owner
-          || resolved.current.repo !== repo || resolved.current.prNumber !== pull_number
-          || resolved.current.headSha !== headSha || resolved.current.baseSha !== baseSha) {
-          throw new Error('Operator passthrough requires the exact current open pull request');
-        }
-        const maintenance = (authoritative as (typeof authoritative & {
-          maintenance?: { request(input: { source: 'mcp-trigger'; candidate: typeof requested }):
-            Promise<{ status: 'published' | 'pending'; receipt: unknown }> };
-        }) | undefined)?.maintenance;
-        if (!maintenance) throw new Error('Operator maintenance publication is unavailable');
-        const publication = await maintenance.request({ source: 'mcp-trigger', candidate: requested });
-        if (publication.status !== 'published') {
-          return buildToolResultJson({
-            dispatched: false, job_crd_created: false, status: 'maintenance_pending',
-            reason: 'operator_global_passthrough', review_started: false,
-            owner, repo, pull_number, head_sha: headSha, maintenance: publication,
-            message: 'Maintenance SHIP publication is pending reconciliation.',
-          });
-        }
+        const deliveryId = `mcp:${randomUUID()}`;
+        const exemption = await authoritative.recordOperatorPassthrough({
+          requested,
+          event: { transport: 'mcp', eventName: 'trigger_review', deliveryId,
+            deliveryDigest: sha256(canonicalJson({ deliveryId, repositoryId, owner, repo, pull_number,
+              headSha, baseSha, caller: context?.identity ?? 'configured-authenticator' })) },
+        });
         return buildToolResultJson({
           dispatched: false,
           job_crd_created: false,
@@ -207,9 +193,17 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
           repo,
           pull_number,
           head_sha: headSha,
-          message: 'Review request acknowledged; operator passthrough is enabled, so no review was started.',
-          maintenance: publication,
-        });
+          verdict: exemption.verdict,
+          expected_lanes: exemption.expectedLanes,
+          completed_lanes: exemption.completedLanes,
+          publication_id: exemption.publicationId,
+          audit_digest: exemption.auditDigest,
+          publication_state: exemption.publicationState,
+          review_check_id: exemption.reviewCheckId,
+          gate_check_id: exemption.gateCheckId,
+          merge_eligible: exemption.mergeEligible,
+          message: `Operator pause authorized an explicit SHIP exemption for ${owner}/${repo}#${pull_number}; 0 review lanes ran; official check publication is ${exemption.publicationState}.`,
+        } satisfies TriggerReviewOutput);
       }
 
       // 2. Active Run Conflict Detection

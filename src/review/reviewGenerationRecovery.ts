@@ -1,4 +1,4 @@
-import { isRecoverableFailureTitle, REVIEW_GATE_CHECK_NAME } from './reviewCheckIdentity';
+import { isRecoverableFailureTitle, REVIEW_GATE_CHECK_NAME, REVIEW_WORKER_CHECK_NAME } from './reviewCheckIdentity';
 import {
   formatIncompleteRosterGateSummary,
   parseGracefulComposedSummary,
@@ -6,7 +6,7 @@ import {
 } from './incompleteRosterSummary';
 
 export const MAX_RECOVERABLE_REVIEW_GENERATION = 3;
-export const REVIEW_WORKER_CHECK_NAME = 'Review Yeti';
+export { REVIEW_WORKER_CHECK_NAME };
 export const REVIEW_WORKER_APP_SLUG = 'ct-review-bot';
 export const RECOVERABLE_WORKER_CONCLUSIONS: ReadonlySet<string> = new Set([
   'failure',

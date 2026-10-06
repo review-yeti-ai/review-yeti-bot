@@ -14,6 +14,7 @@ import { getGitHubAppBotLogin } from './github/appAuth';
 import { AuthoritativeReviewReader } from './github/authoritativeReviewReader';
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
 import { PostgresReviewGateRepository } from './persistence/reviewGateRepository';
+import { PostgresOperatorPassthroughRepository } from './persistence/operatorPassthroughRepository';
 import { enqueueReviewCiCompletionInTransaction } from './persistence/reviewCiRepository';
 import { getPreparedPublishingPolicy } from './persistence/preparedReviewRepository';
 import { PostgresStore } from './persistence/postgresStore';
@@ -36,8 +37,7 @@ import { PostgresVerdictCacheBaseLookup } from './persistence/verdictCacheSource
 import { verdictCacheMaxAgeMsFrom } from './review/verdictCache';
 import { PROVIDER_CONCURRENCY_ENV, providerLeaseServiceConfigFromEnv } from './config/providerConcurrency';
 import { PostgresProviderLeaseStore } from './persistence/providerConcurrencyLeaseRepository';
-import { PostgresOperatorMaintenanceRepository } from './persistence/operatorMaintenanceRepository';
-import { createMergeGroupMaintenanceQueue } from './review/mergeGroupMaintenanceQueue';
+import { canonicalJson, sha256 } from './review/reviewCore';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
@@ -85,21 +85,24 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       : { appId, privateKey, owner, repo, baseUrl };
   };
   const authoritativeConfig = authoritativeServiceConfigFromEnv(environment, policy, dispatchConfig);
+  const configuredAuthoritativeRepositoryIds = authoritativeConfig
+    ? [...authoritativeConfig.repositoryIds,
+      ...(authoritativeConfig.publicRepository ? [authoritativeConfig.publicRepository.repositoryId] : [])]
+    : [];
+  const configuredAuthoritativeAppIds = authoritativeConfig
+    ? [authoritativeConfig.expectedAppId,
+      ...(authoritativeConfig.publicRepository ? [authoritativeConfig.publicRepository.expectedAppId] : [])]
+    : [];
   // REL-1084: one configured age for both the worker's planning read and trusted verification.
   const incrementalMaxAgeMs = incrementalMaxAgeMsFrom(environment);
   // REL-1085: likewise one configured age for the verdict cache's planning read and verification.
   const verdictCacheMaxAgeMs = verdictCacheMaxAgeMsFrom(environment);
   const webhookConfig = githubWebhookConfigFromEnv(environment, policy);
   const ciConfig = reviewCiConfigFromEnv(environment, authoritativeConfig);
-  const mergeGroupTokenFor = async (owner: string, repo: string) => (await getBoundedRepositoryToken({
-    appId, privateKey, owner, repo, baseUrl,
-  }, 'merge-group')).token;
-  const maintenanceQueue = webhookConfig && dispatchConfig.passthroughEnabled
-    ? createMergeGroupMaintenanceQueue({ config: webhookConfig, tokenFor: mergeGroupTokenFor, baseUrl })
-    : undefined;
   const store = new PostgresStore();
   await store.initialize();
   const pool = store.getPool();
+  const operatorPassthroughRepository = new PostgresOperatorPassthroughRepository(pool);
   // Cross-review provider concurrency. Off unless configured; a malformed value leaves the route
   // unmounted (workers fail open to their local cap) instead of stopping this service.
   const providerLeaseConfig = providerLeaseServiceConfigFromEnv(environment);
@@ -113,9 +116,6 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     : undefined;
   const authoritative = authoritativeConfig ? createAuthoritativeReviewService({
     config: authoritativeConfig, appId, privateKey, baseUrl,
-    passthroughEnabled: dispatchConfig.passthroughEnabled,
-    ...(dispatchConfig.passthroughEnabled ? { operatorMaintenanceRepository: new PostgresOperatorMaintenanceRepository(pool) } : {}),
-    ...(maintenanceQueue ? { verifyMergeGroupCurrent: maintenanceQueue.verifyCurrent } : {}),
     ...(dispatchConfig.centralExternalAppCredentials ? { publicAppCredentials: dispatchConfig.centralExternalAppCredentials } : {}),
     findingThreadAuthor: (selected) => boundedBotLogin(installationCredentialsForRepository(selected.owner, selected.repo)),
     repository: new PostgresReviewGateRepository(pool, { lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000,
@@ -127,6 +127,10 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
         }
       } } : {}),
     }),
+    operatorPassthroughRepository,
+    passthroughEnabled: dispatchConfig.passthroughEnabled,
+    listPausedAdmissions: (limit, after) => operatorPassthroughRepository.listPausedAdmissions(
+      configuredAuthoritativeRepositoryIds, configuredAuthoritativeAppIds, limit, after),
     getStoredPrepared: (policyDigest) => getPreparedPublishingPolicy(pool, policyDigest),
     workerId: `authoritative-review-${environment.HOSTNAME || 'local'}`,
   }) : undefined;
@@ -136,6 +140,11 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   }) : undefined;
   const repository = new PostgresReviewDispatchRepository(pool, undefined, { lifecycleEvents: 'enabled',
     ...(authoritative ? { validateAuthoritativeAdmission: authoritative.validateAdmission } : {}),
+    ...(authoritative ? { retireOperatorPassthroughInTransaction: async (client, input, now) => {
+      await operatorPassthroughRepository.retireInTransaction(client, {
+        repositoryId: input.repositoryId, prNumber: input.identity.prNumber, headSha: input.identity.headSha,
+      }, 'normal-review-admitted', now);
+    } } : {}),
     ...(authoritative ? { resolveGenerationRecovery: async (input) => {
       if (!input.authoritativeGate || input.expectedGeneration === undefined) {
         throw new Error('Authoritative generation recovery identity is unavailable');
@@ -167,14 +176,35 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
         const current = await reader.currentCandidate({ repositoryId, owner, repo, prNumber });
         return { open: current.open };
       },
+      ...(authoritative ? { currentPullRequestForPassthrough: async ({ repositoryId, owner, repo, prNumber }) =>
+        authoritative.resolver.readCurrentCandidate({ repositoryId, owner, repo, prNumber }) } : {}),
       ...(authoritative ? { authoritativePublishing: authoritative.admission } : {}),
       mergeGroupGate: createMergeGroupGate({
         config: webhookConfig,
         repository: new PostgresMergeGroupGateRepository(pool),
-        ...(authoritative?.admission.maintenance ? { operatorMaintenance: authoritative.admission.maintenance } : {}),
-        ...(maintenanceQueue ? { maintenanceQueue } : {}),
         baseUrl,
-        tokenFor: mergeGroupTokenFor,
+        tokenFor: async (owner, repo) => (await getBoundedRepositoryToken({
+          appId, privateKey, owner, repo, baseUrl,
+        }, 'merge-group')).token,
+        ...(dispatchConfig.passthroughEnabled === true && authoritative?.admission.recordOperatorPassthrough
+          ? { ensureOperatorPassthrough: async (input) => {
+            const current = await authoritative.resolver.readCurrentCandidate({ repositoryId: input.repositoryId,
+              owner: input.owner, repo: input.repo, prNumber: input.prNumber });
+            if (!current.open || current.draft || current.headSha !== input.headSha) return null;
+            const requested = { repositoryId: current.repositoryId, owner: current.owner, repo: current.repo,
+              prNumber: current.prNumber, headSha: current.headSha, baseSha: current.baseSha };
+            const resolved = await authoritative.resolver.resolve(requested);
+            const audit = { version: 'MergeGroupOperatorAdmission.v1', queueSnapshotDigest: input.queueSnapshotDigest,
+              sourceDeliveryDigest: input.deliveryDigest, requested,
+              currentPolicyDigest: resolved.prepared.policy.effectivePolicyDigest };
+            const deliveryDigest = sha256(canonicalJson(audit));
+            const deliveryPrefix = sha256(input.deliveryId).slice(0, 24);
+            const publication = await authoritative.admission.recordOperatorPassthrough!({ requested,
+              event: { transport: 'github-app', eventName: 'merge_group',
+                deliveryId: `github-app:merge-group:${deliveryPrefix}:${input.prNumber}:${input.headSha}:${resolved.prepared.policy.effectivePolicyDigest}`,
+                deliveryDigest } });
+            return publication;
+          } } : {}),
       }),
     }),
   } : undefined;
@@ -198,6 +228,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
 
     mcpRouter = createRemoteMcpRouter({
       db: pool,
+      passthroughEnabled: dispatchConfig.passthroughEnabled,
       admissionRepository: repository,
       modelClient,
       triggerDeps: {

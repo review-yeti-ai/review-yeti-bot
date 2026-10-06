@@ -6,7 +6,7 @@ import { sha256 } from './reviewCore';
 import type { IncrementalVerificationInput } from './incrementalReview';
 import type { VerdictCacheVerificationInput } from './verdictCache';
 import type { ReviewAuthorityRepository } from '../auth/repositoryReviewAuthority';
-import type { OperatorMaintenancePublisher } from './operatorMaintenancePublisher';
+import type { OperatorPassthroughAdmissionReceipt, OperatorPassthroughAdmissionRequest } from './operatorPassthrough';
 
 export interface WorkerCompletionVerifier {
   verify(token: string, event: WorkerTerminalFailure | WorkerTerminalSuccess | WorkerReviewCompletion | WorkerReviewEvidence): Promise<WorkerCompletionProof>;
@@ -16,10 +16,9 @@ export interface AuthoritativeReviewAdmission {
   expectedAppIdFor?: (repository: ReviewAuthorityRepository) => number;
   acceptNewRequests?: boolean;
   repositoryIds: readonly number[];
-  resolver: Pick<AuthoritativePublishingResolver, 'resolve'>
-    & Partial<Pick<AuthoritativePublishingResolver, 'resolveCurrent'>>;
-  /** Available only when the trusted process-wide maintenance setting is enabled. */
-  maintenance?: Pick<OperatorMaintenancePublisher, 'request'>;
+  resolver: Pick<AuthoritativePublishingResolver, 'resolve'>;
+  /** Present only when the startup process independently confirms the pause flag. */
+  recordOperatorPassthrough?: (input: OperatorPassthroughAdmissionRequest) => Promise<OperatorPassthroughAdmissionReceipt>;
 }
 export interface AuthoritativeReviewCompletion {
   verifier: WorkerCompletionVerifier;

@@ -338,7 +338,22 @@ function parsePassthroughReceipt(body) {
     && SHA_PATTERN.test(body.baseSha)
     && typeof body.eventName === 'string'
     && typeof body.callerKind === 'string'
-    && (body.callerKind === 'direct' || body.callerKind === 'central');
+    && (body.callerKind === 'direct' || body.callerKind === 'central')
+    && body.verdict === 'SHIP'
+    && body.expectedLanes === 0
+    && body.completedLanes === 0
+    && typeof body.publicationId === 'string'
+    && /^[a-f0-9]{64}$/u.test(body.publicationId)
+    && typeof body.auditDigest === 'string'
+    && /^[a-f0-9]{64}$/u.test(body.auditDigest)
+    && ['pending', 'published', 'retiring', 'retired'].includes(body.publicationState)
+    && typeof body.mergeEligible === 'boolean'
+    && (body.reviewCheckId === null || (Number.isSafeInteger(body.reviewCheckId) && body.reviewCheckId > 0))
+    && (body.gateCheckId === null || (Number.isSafeInteger(body.gateCheckId) && body.gateCheckId > 0))
+    && ((body.publicationState === 'published') === body.mergeEligible)
+    && (!body.mergeEligible || (body.publicationState === 'published'
+      && Number.isSafeInteger(body.reviewCheckId) && body.reviewCheckId > 0
+      && Number.isSafeInteger(body.gateCheckId) && body.gateCheckId > 0));
   if (!valid) throw new Error('DOKS dispatch returned an invalid passthrough receipt');
   return {
     version: body.version,
@@ -354,6 +369,15 @@ function parsePassthroughReceipt(body) {
     baseSha: body.baseSha,
     eventName: body.eventName,
     callerKind: body.callerKind,
+    verdict: body.verdict,
+    expectedLanes: body.expectedLanes,
+    completedLanes: body.completedLanes,
+    publicationId: body.publicationId,
+    auditDigest: body.auditDigest,
+    publicationState: body.publicationState,
+    reviewCheckId: body.reviewCheckId,
+    gateCheckId: body.gateCheckId,
+    mergeEligible: body.mergeEligible,
   };
 }
 
@@ -444,16 +468,16 @@ export function writeDispatchOutputs(outputPath, receipt) {
   const valid = validateDispatchOutputReceipt(receipt);
   const lines = valid.version === 'ActionDispatchPassthrough.v1'
     ? [
-      'verdict=NO_VERDICT',
+      'verdict=SHIP',
       'findings-count=0',
-      'review-status=SKIPPED',
-      'gate-decision=SKIPPED',
-      'merge-eligible=false',
+      `review-status=${valid.publicationState === 'published' ? 'OPERATOR_EXEMPTION_PUBLISHED' : 'OPERATOR_EXEMPTION_PENDING'}`,
+      'gate-decision=SHIP_OPERATOR_EXEMPTION',
+      `merge-eligible=${valid.mergeEligible}`,
       'total-findings=0',
       'p0-count=0',
       'p1-count=0',
       'p2-count=0',
-      `rationale=Operator global passthrough skipped review for ${valid.deliveryId}; no verdict was produced.`,
+      `rationale=Operator pause authorized a SHIP exemption for ${valid.owner}/${valid.repo}#${valid.prNumber} at ${valid.headSha}; 0 review lanes ran; publication ${valid.publicationState}; audit ${valid.auditDigest}.`,
       '',
     ]
     : [

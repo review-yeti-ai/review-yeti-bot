@@ -22,7 +22,8 @@ export interface DelegatedFailureCandidateSource {
  * check exists. Publication errors remain pending; no success is synthesized.
  */
 export interface ReaperCheckClient {
-  failAbandonedCheck(run: AbandonedPublishingRun, publisherAppId: number, signal: AbortSignal):
+  failAbandonedCheck(run: AbandonedPublishingRun, publisherAppId: number, signal: AbortSignal,
+    options?: { allowCreate?: boolean }):
     Promise<AbandonedCheckRecoveryOutcome>;
 }
 
@@ -52,6 +53,8 @@ export interface AbandonedRunReaperOptions {
    * to claimAbandonedPublishingRuns).
    */
   delegatedFailureReader?: DelegatedFailureCandidateSource;
+  /** Pause may retain exact-check reconciliation but must not create a late normal failure check. */
+  allowCheckCreation?: () => boolean;
 }
 
 export interface AbandonedRunReaperOutcome {
@@ -127,7 +130,10 @@ export class AbandonedRunReaper {
               throw new Error('reserved Gate publisher App identity mismatch');
             }
             const client = await this.options.checkClientFor(run, bounded);
-            const outcome = await client.failAbandonedCheck(run, publisherAppId, bounded);
+            const outcome = this.options.allowCheckCreation
+              ? await client.failAbandonedCheck(run, publisherAppId, bounded,
+                { allowCreate: this.options.allowCheckCreation() })
+              : await client.failAbandonedCheck(run, publisherAppId, bounded);
             bounded.throwIfAborted();
             return outcome;
           },
