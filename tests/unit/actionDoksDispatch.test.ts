@@ -240,6 +240,13 @@ describe('DOKS Action dispatch client', () => {
     }
   });
 
+  it('fails with a clear error when the caller supplies no dispatch endpoint', async () => {
+    const { dispatchAction } = await import(modulePath);
+    const fetchMock = vi.fn();
+    await expect(dispatchAction(environment({ DOKS_DISPATCH_URL: '' }), fetchMock)).rejects.toThrow(/DOKS_DISPATCH_URL is required/u);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('rejects mutable action refs and unsupported publication modes', async () => {
     const { buildDispatchRequest } = await import(modulePath);
     expect(() => buildDispatchRequest(environment({ ACTION_SHA: 'v1' }))).toThrow(/action sha/i);

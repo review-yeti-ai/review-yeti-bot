@@ -164,6 +164,8 @@ describe('Milestone 2 Empirical Challenger Stress Suite: UI Filtering, Fallback 
 
       // The catalog only exposes the native swarm model, which is not a
       // third-party provider and is therefore never listed by provider state.
+      // The catalog itself is exactly the native swarm model, so a stale third-party entry cannot hide behind an empty result.
+      expect(AVAILABLE_MODEL_OPTIONS.map((o) => o.value)).toEqual(['reviewyeti-ai/yeti-pr-reviewer']);
       expect(enabledValues).not.toContain('synthetic/hf:zai-org/GLM-5.2');
       expect(enabledValues).not.toContain('synthetic/hf:moonshotai/Kimi-K3');
     });

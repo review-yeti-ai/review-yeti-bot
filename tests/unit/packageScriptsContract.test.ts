@@ -9,8 +9,11 @@ const root = path.resolve(__dirname, '../..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> };
 
 function npmRunTargets(text: string): string[] {
+  // Join shell line continuations first, then allow the common flags between `run` and the script name.
   // Dots are legal in npm script names; a trailing dot is sentence punctuation, not part of the name.
-  return [...text.matchAll(/npm run(?: -s| --silent)? ([A-Za-z0-9:_.-]+)/gu)].map((match) => match[1].replace(/\.+$/u, ''));
+  const joined = text.replace(/\\\r?\n\s*/gu, ' ');
+  return [...joined.matchAll(/npm run(?:\s+(?:-s|--silent|--if-present|--no-progress))*\s+([A-Za-z0-9:_.-]+)/gu)]
+    .map((match) => match[1].replace(/\.+$/u, ''));
 }
 
 describe('package.json script contract', () => {
@@ -34,5 +37,10 @@ describe('package.json script contract', () => {
 
   it('extracts dotted script names whole and ignores trailing sentence punctuation', () => {
     expect(npmRunTargets('npm run build.backend && npm run lint.fix.')).toEqual(['build.backend', 'lint.fix']);
+  });
+
+  it('sees targets after flags and across line continuations', () => {
+    expect(npmRunTargets('RUN npm run --if-present build:a && npm run -s --silent lint')).toEqual(['build:a', 'lint']);
+    expect(npmRunTargets('RUN npm run \\\n    build:backend')).toEqual(['build:backend']);
   });
 });

@@ -324,3 +324,6 @@ export function deriveReviewGateExternalId(coordinates: ReviewGateCoordinates): 
 export function deriveReviewCiCheckExternalId(coordinates: ReviewCiCheckCoordinates): string {
   return deriveReviewCheckExternalId(coordinates, REVIEW_CI_CHECK_NAME);
 }
+
+/** The engine repository itself: the default target when a phase is given no repository (not an identity authority). */
+export const DEFAULT_ENGINE_REPOSITORY = 'review-yeti-ai/review-yeti-bot';

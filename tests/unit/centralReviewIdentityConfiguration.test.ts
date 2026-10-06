@@ -96,4 +96,21 @@ describe('central review identity is deployment configuration', () => {
       /does not match the verified GitHub OIDC claims/u,
     );
   });
+
+  it('treats the central owner case-insensitively, as GitHub does', async () => {
+    const sha = 'a'.repeat(40);
+    const claims = { repository: CENTRAL, repository_id: '22', run_id: '777', run_attempt: '1', event_name: 'repository_dispatch' };
+    const request = (owner: string) => ({
+      version: 'ActionDispatch.v1', deliveryId: `actions:777:1:11:5:${sha}`, repositoryId: 11, owner, repo: 'target',
+      prNumber: 5, headSha: sha, baseSha: 'b'.repeat(40), actionSha: 'c'.repeat(40), publishMode: 'app-gate',
+      requestedAt: '2026-10-02T00:00:00.000Z', caller: { runId: '777', runAttempt: 1, eventName: 'repository_dispatch' },
+    });
+    vi.stubEnv('REVIEW_YETI_CENTRAL_REPOSITORY', CENTRAL);
+    vi.resetModules();
+    const mod = await import('../../src/review/actionDispatch');
+    for (const owner of ['example-org', 'Example-Org', 'EXAMPLE-ORG']) {
+      expect(mod.assertActionDispatchMatchesClaims(request(owner) as never, claims as never)).toBe('central');
+    }
+    expect(() => mod.assertActionDispatchMatchesClaims(request('other-org') as never, claims as never)).toThrow();
+  });
 });

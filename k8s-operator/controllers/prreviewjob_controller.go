@@ -17,6 +17,7 @@ limitations under the License.
 package controllers
 
 import (
+	"os"
 	"context"
 	"fmt"
 	"strconv"
@@ -416,7 +417,7 @@ func (r *PRReviewJobReconciler) buildJob(job *reviewv1alpha1.PRReviewJob, jobNam
 					Containers: []corev1.Container{
 						{
 							Name:            "reviewer-worker",
-							Image:           "ghcr.io/review-yeti-ai/review-yeti-worker:latest",
+							Image:           os.Getenv("REVIEW_YETI_WORKER_IMAGE"), // deployment supplies an immutable digest; there is no floating default
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							VolumeMounts: []corev1.VolumeMount{
 								{
