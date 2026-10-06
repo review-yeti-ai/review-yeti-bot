@@ -84,6 +84,26 @@ describe('authoritativeServiceConfigFromEnv', () => {
     expect(() => authoritativeServiceConfigFromEnv(env(), { ...policy, repositoryIds: new Set(['*']) })).toThrow(error);
   });
 
+  it('accepts an optional exact name-to-ID map only for already enrolled private repository IDs', () => {
+    const identities = [
+      { repositoryId: 123, owner: 'exampleorg', repo: 'example-api' },
+      { repositoryId: 456, owner: 'exampleorg', repo: 'example-meta' },
+    ];
+    expect(authoritativeServiceConfigFromEnv(env({
+      AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES: JSON.stringify(identities),
+    }), policy)!.repositoryIdentities).toEqual(identities);
+    expect(() => authoritativeServiceConfigFromEnv(env({
+      AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES: JSON.stringify([
+        ...identities, { repositoryId: 789, owner: 'exampleorg', repo: 'un-enrolled' },
+      ]),
+    }), policy)).toThrow(error);
+    expect(() => authoritativeServiceConfigFromEnv(env({
+      AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES: JSON.stringify([
+        identities[0], { repositoryId: 456, owner: 'EXAMPLEORG', repo: 'example-api' },
+      ]),
+    }), policy)).toThrow(error);
+  });
+
   it.each([undefined, '', '{}', 'null', '[]', '{', ' '.repeat(8_193)])('requires bounded policy-source JSON %j', (value) => {
     expect(() => authoritativeServiceConfigFromEnv(env({ AUTHORITATIVE_REVIEW_POLICY_SOURCE: value }), policy)).toThrow(error);
   });

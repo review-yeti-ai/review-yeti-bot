@@ -6,6 +6,8 @@ import { deriveReviewRunId } from '../../src/review/reviewAdmission';
 import { AuthoritativePublishingResolver } from '../../src/review/authoritativePublishingResolver';
 import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
+import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError } from '../../src/github/authoritativeReadFailure';
+import { getBoundedRepositoryToken } from '../../src/github/boundedAppToken';
 
 const HEAD_SHA = 'a'.repeat(40);
 const BASE_SHA = 'b'.repeat(40);
@@ -149,11 +151,14 @@ describe('trigger_review governed admission', () => {
     const resolvePullRequest = vi.fn(async () => ({
       headSha: HEAD_SHA, baseSha: BASE_SHA, repositoryId: 101, installationId: 22,
     }));
+    const readCurrentCandidate = vi.fn(async () => ({ repositoryId: 101, owner: 'exampleorg', repo: 'example-api',
+      prNumber: 73, headSha: HEAD_SHA, baseSha: BASE_SHA, open: true, draft: false }));
     const resolvePolicy = vi.fn(async () => ({ identity, prepared }));
     const recordOperatorPassthrough = vi.fn(async (_input: any) => ({
       status: 'accepted' as const, verdict: 'SHIP' as const, expectedLanes: 0 as const, completedLanes: 0 as const,
       publicationId: 'f'.repeat(64), auditDigest: 'e'.repeat(64), publicationState: 'published' as const,
-      reviewCheckId: 5001, gateCheckId: 5002, mergeEligible: true,
+      publicationReceiptAvailable: true, reviewCheckId: 5001, gateCheckId: 5002, mergeEligible: true,
+      message: 'Operator pause authorizes SHIP with zero review lanes; both official checks are durably published.',
     }));
     const tool = createTriggerReviewTool({
       passthroughEnabled: true,
@@ -161,15 +166,17 @@ describe('trigger_review governed admission', () => {
       admissionRepository: { admit } as any,
       resolveGitHubPullRequest: resolvePullRequest,
       authoritativePublishing: {
-        expectedAppId: 42,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [101],
+        repositoryIdentities: [{ repositoryId: 101, owner: 'exampleorg', repo: 'example-api' }],
         acceptNewRequests: false,
-        resolver: { resolve: resolvePolicy },
+        resolver: { readCurrentCandidate, resolve: resolvePolicy },
         recordOperatorPassthrough,
       },
     } as any);
 
-    const result = await tool.execute(request);
+    const result = await tool.execute(request, { authenticatedByConfiguredAuthenticator: true,
+      authorizedRepository: { owner: 'exampleorg', repo: 'example-api' } });
     const output = JSON.parse((result.content[0] as any).text);
     expect(output).toStrictEqual({
       dispatched: false,
@@ -177,6 +184,7 @@ describe('trigger_review governed admission', () => {
       status: 'passthrough',
       reason: 'operator_global_passthrough',
       review_started: false,
+      candidate_state: 'current',
       owner: 'exampleorg',
       repo: 'example-api',
       pull_number: 73,
@@ -187,12 +195,14 @@ describe('trigger_review governed admission', () => {
       publication_id: 'f'.repeat(64),
       audit_digest: 'e'.repeat(64),
       publication_state: 'published',
+      publication_receipt_available: true,
       review_check_id: 5001,
       gate_check_id: 5002,
       merge_eligible: true,
-      message: expect.stringContaining('0 review lanes ran'),
+      message: 'Operator pause authorizes SHIP with zero review lanes; both official checks are durably published.',
     });
-    expect(resolvePullRequest).toHaveBeenCalledOnce();
+    expect(resolvePullRequest).not.toHaveBeenCalled();
+    expect(readCurrentCandidate).toHaveBeenCalledOnce();
     expect(resolvePolicy).toHaveBeenCalledOnce();
     expect(query).not.toHaveBeenCalled();
     expect(admit).not.toHaveBeenCalled();
@@ -221,6 +231,156 @@ describe('trigger_review governed admission', () => {
     expect(admit).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['absent', ''],
+    ['malformed-present', 'malformed service-owned PEM'],
+  ])('maps an %s internal App signing credential to unavailable SHIP without starting work', async (_label, privateKey) => {
+    const admit = vi.fn();
+    const recordOperatorPassthrough = vi.fn();
+    const resolvePullRequest = vi.fn();
+    const readCurrentCandidate = vi.fn(() => getBoundedRepositoryToken({ appId: String(AUTHORITATIVE_REVIEW_APP_ID),
+      privateKey, owner: 'exampleorg', repo: 'example-api' }, 'read'));
+    const tool = createTriggerReviewTool({
+      passthroughEnabled: true,
+      admissionRepository: { admit } as any,
+      resolveGitHubPullRequest: resolvePullRequest,
+      authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [101],
+        repositoryIdentities: [{ repositoryId: 101, owner: 'exampleorg', repo: 'example-api' }],
+        resolver: { readCurrentCandidate, resolve: vi.fn() }, recordOperatorPassthrough },
+    } as any);
+
+    const result = await tool.execute(request, { authenticatedByConfiguredAuthenticator: true,
+      authorizedRepository: { owner: 'exampleorg', repo: 'example-api' } });
+    const output = JSON.parse((result.content[0] as any).text);
+
+    expect(output).toMatchObject({ candidate_state: 'unavailable', verdict: 'SHIP', expected_lanes: 0,
+      completed_lanes: 0, publication_state: 'unavailable', publication_id: null, audit_digest: null,
+      review_check_id: null, gate_check_id: null, merge_eligible: false });
+    expect(readCurrentCandidate).toHaveBeenCalledOnce();
+    expect(resolvePullRequest).not.toHaveBeenCalled();
+    expect(recordOperatorPassthrough).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('does not fall open before configured caller authentication, even when App authority is unavailable', async () => {
+    const readCurrentCandidate = vi.fn().mockRejectedValue(new InternalGitHubDependencyUnavailableError());
+    const tool = createTriggerReviewTool({
+      passthroughEnabled: true,
+      authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [101],
+        repositoryIdentities: [{ repositoryId: 101, owner: 'exampleorg', repo: 'example-api' }],
+        resolver: { readCurrentCandidate, resolve: vi.fn() } },
+    } as any);
+
+    await expect(tool.execute(request)).rejects.toThrow(/verified caller authentication/);
+    expect(readCurrentCandidate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['transient source outage', new TransientAuthoritativeReadError('retryable_server')],
+    ['internal App credential/permission outage', new InternalGitHubDependencyUnavailableError()],
+  ] as const)('returns logical SHIP without current coordinates when a mapped candidate read has %s', async (_label, failure) => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    const admit = vi.fn();
+    const resolvePullRequest = vi.fn();
+    const resolve = vi.fn();
+    const readCurrentCandidate = vi.fn().mockRejectedValue(failure);
+    const recordOperatorPassthrough = vi.fn();
+    const tool = createTriggerReviewTool({
+      passthroughEnabled: true,
+      queryableDatabase: { query },
+      admissionRepository: { admit } as any,
+      resolveGitHubPullRequest: resolvePullRequest,
+      authoritativePublishing: {
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [101], acceptNewRequests: false,
+        repositoryIdentities: [{ repositoryId: 101, owner: 'exampleorg', repo: 'example-api' }],
+        resolver: { readCurrentCandidate, resolve }, recordOperatorPassthrough,
+      },
+    } as any);
+
+    const result = await tool.execute(request, { authenticatedByConfiguredAuthenticator: true,
+      authorizedRepository: { owner: 'exampleorg', repo: 'example-api' } });
+    const output = JSON.parse((result.content[0] as any).text);
+
+    expect(output).toStrictEqual({
+      dispatched: false, job_crd_created: false, status: 'passthrough',
+      reason: 'operator_global_passthrough', review_started: false, candidate_state: 'unavailable',
+      owner: 'exampleorg', repo: 'example-api', pull_number: 73, head_sha: null,
+      verdict: 'SHIP', expected_lanes: 0, completed_lanes: 0,
+      publication_id: null, audit_digest: null, publication_state: 'unavailable',
+      publication_receipt_available: null, review_check_id: null, gate_check_id: null,
+      merge_eligible: false,
+      message: expect.stringContaining('Current candidate and policy authority could not be confirmed'),
+    });
+    expect(readCurrentCandidate).toHaveBeenCalledOnce();
+    expect(resolvePullRequest).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(recordOperatorPassthrough).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('does not convert the internal App dependency failure into SHIP when pause is off', async () => {
+    const admit = vi.fn();
+    const resolve = vi.fn().mockRejectedValue(new InternalGitHubDependencyUnavailableError());
+    const tool = createTriggerReviewTool({
+      admissionRepository: { admit } as any,
+      resolveGitHubPullRequest: vi.fn(async () => ({ headSha: HEAD_SHA, baseSha: BASE_SHA,
+        repositoryId: 101, installationId: 22 })),
+      authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [101],
+        acceptNewRequests: true, repositoryIdentities: [{ repositoryId: 101, owner: 'exampleorg', repo: 'example-api' }],
+        resolver: { resolve } },
+    } as any);
+
+    await expect(tool.execute(request)).rejects.toBeInstanceOf(InternalGitHubDependencyUnavailableError);
+    expect(resolve).toHaveBeenCalledOnce();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing', [] as { repositoryId: number; owner: string; repo: string }[]],
+    ['ambiguous', [
+      { repositoryId: 101, owner: 'exampleorg', repo: 'example-api' },
+      { repositoryId: 102, owner: 'exampleorg', repo: 'example-api' },
+    ]],
+  ] as const)('rejects a %s paused local repository-name mapping before GitHub lookup', async (_label, repositoryIdentities) => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    const admit = vi.fn();
+    const resolvePullRequest = vi.fn(async () => ({ headSha: HEAD_SHA, baseSha: BASE_SHA,
+      repositoryId: 101, installationId: 22 }));
+    const readCurrentCandidate = vi.fn();
+    const resolve = vi.fn();
+    const tool = createTriggerReviewTool({
+      passthroughEnabled: true,
+      queryableDatabase: { query },
+      admissionRepository: { admit } as any,
+      resolveGitHubPullRequest: resolvePullRequest,
+      authoritativePublishing: {
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [101, 102], acceptNewRequests: false,
+        repositoryIdentities, resolver: { readCurrentCandidate, resolve },
+      },
+    } as any);
+
+    await expect(tool.execute(request, { authenticatedByConfiguredAuthenticator: true,
+      authorizedRepository: { owner: 'exampleorg', repo: 'example-api' } })).rejects.toThrow();
+    expect(resolvePullRequest).not.toHaveBeenCalled();
+    expect(readCurrentCandidate).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
+  });
+
+  it('does not turn a known stale or malformed mapped candidate into pause SHIP', async () => {
+    const readCurrentCandidate = vi.fn(async () => ({ repositoryId: 101, owner: 'exampleorg', repo: 'example-api',
+      prNumber: 73, headSha: 'f'.repeat(40), baseSha: BASE_SHA, open: true, draft: false }));
+    const tool = createTriggerReviewTool({ passthroughEnabled: true,
+      authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, repositoryIds: [101],
+        repositoryIdentities: [{ repositoryId: 101, owner: 'exampleorg', repo: 'example-api' }],
+        resolver: { readCurrentCandidate, resolve: vi.fn() } },
+    } as any);
+    await expect(tool.execute(request, { authenticatedByConfiguredAuthenticator: true,
+      authorizedRepository: { owner: 'exampleorg', repo: 'example-api' } })).rejects.toThrow(/conflicts with the authenticated request/);
+  });
+
   it('allows an authorized incomplete-P2 recovery request to receive paused SHIP without ordinary recovery admission', async () => {
     const identity = {
       owner: 'exampleorg', repo: 'example-api', prNumber: 73,
@@ -231,23 +391,27 @@ describe('trigger_review governed admission', () => {
     const query = vi.fn(async () => ({ rows: [] }));
     const admit = vi.fn(async () => { throw new Error('paused recovery must not create a normal attempt'); });
     const resolve = vi.fn(async () => ({ identity, prepared: { policy: { effectivePolicyDigest: POLICY_DIGEST } } }));
+    const readCurrentCandidate = vi.fn(async () => ({ repositoryId: 101, owner: 'exampleorg', repo: 'example-api',
+      prNumber: 73, headSha: HEAD_SHA, baseSha: BASE_SHA, open: true, draft: false }));
+    const resolvePullRequest = vi.fn(async () => ({ headSha: HEAD_SHA, baseSha: BASE_SHA,
+      repositoryId: 101, installationId: 22 }));
     const recordOperatorPassthrough = vi.fn(async () => ({
       status: 'accepted' as const, verdict: 'SHIP' as const, expectedLanes: 0 as const, completedLanes: 0 as const,
-      publicationId: 'f'.repeat(64), auditDigest: 'e'.repeat(64), publicationState: 'pending' as const,
-      reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+      publicationId: null, auditDigest: null, publicationState: 'unavailable' as const,
+      publicationReceiptAvailable: null, reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+      message: 'Operator pause authorizes SHIP with zero review lanes; official check publication is unavailable.',
     }));
     const tool = createTriggerReviewTool({
       passthroughEnabled: true,
       queryableDatabase: { query },
       admissionRepository: { admit } as any,
-      resolveGitHubPullRequest: vi.fn(async () => ({
-        headSha: HEAD_SHA, baseSha: BASE_SHA, repositoryId: 101, installationId: 22,
-      })),
+      resolveGitHubPullRequest: resolvePullRequest,
       authoritativePublishing: {
-        expectedAppId: 42,
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
         repositoryIds: [101],
+        repositoryIdentities: [{ repositoryId: 101, owner: 'exampleorg', repo: 'example-api' }],
         acceptNewRequests: false,
-        resolver: { resolve },
+        resolver: { readCurrentCandidate, resolve },
         recordOperatorPassthrough,
       },
     } as any);
@@ -263,22 +427,25 @@ describe('trigger_review governed admission', () => {
       dispatched: false,
       job_crd_created: false,
       status: 'passthrough', reason: 'operator_global_passthrough', verdict: 'SHIP',
-      review_started: false,
+      review_started: false, candidate_state: 'current',
       owner: 'exampleorg',
       repo: 'example-api',
       pull_number: 73,
       head_sha: HEAD_SHA,
       expected_lanes: 0,
       completed_lanes: 0,
-      publication_id: 'f'.repeat(64),
-      audit_digest: 'e'.repeat(64),
-      publication_state: 'pending',
+      publication_id: null,
+      audit_digest: null,
+      publication_state: 'unavailable',
+      publication_receipt_available: null,
       review_check_id: null,
       gate_check_id: null,
       merge_eligible: false,
-      message: expect.stringContaining('0 review lanes ran'),
+      message: 'Operator pause authorizes SHIP with zero review lanes; official check publication is unavailable.',
     });
     expect(resolve).toHaveBeenCalledOnce();
+    expect(readCurrentCandidate).toHaveBeenCalledOnce();
+    expect(resolvePullRequest).not.toHaveBeenCalled();
     expect(recordOperatorPassthrough).toHaveBeenCalledOnce();
     expect(query).not.toHaveBeenCalled();
     expect(admit).not.toHaveBeenCalled();

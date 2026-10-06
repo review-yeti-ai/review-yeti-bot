@@ -7,6 +7,8 @@ import {
 import {
   APP_TOKEN_TIMEOUT_LIMITS, isGitHubInstallationToken, PUBLIC_GITHUB_API_BASE_URL,
 } from './githubTransportPolicy';
+import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError,
+  internalGitHubDependencyUnavailableForStatus, transientAuthoritativeReadForStatus } from './authoritativeReadFailure';
 
 export const MAX_APP_TOKEN_RESPONSE_BYTES = 64 * 1024;
 
@@ -60,7 +62,10 @@ export async function getBoundedRepositoryInstallationId(
 ): Promise<number> {
   try {
     return await withBoundedRepositoryTransport(config, options, false, getGitHubAppInstallationIdForRepository);
-  } catch { throw new Error('Repository App installation is unavailable'); }
+  } catch (error) {
+    if (error instanceof TransientAuthoritativeReadError || error instanceof InternalGitHubDependencyUnavailableError) throw error;
+    throw new Error('Repository App installation is unavailable');
+  }
 }
 
 async function withBoundedRepositoryTransport<T>(
@@ -73,6 +78,8 @@ async function withBoundedRepositoryTransport<T>(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let cleanupBody: (() => void) | undefined;
   let onAbort: (() => void) | undefined;
+  let onDeadline: (() => void) | undefined;
+  let termination: 'caller-cancelled' | 'deadline' | undefined;
   const signal = options.signal;
   try {
     const timeoutMs = options.timeoutMs ?? 10_000;
@@ -81,24 +88,45 @@ async function withBoundedRepositoryTransport<T>(
       || signal?.aborted) throw unavailable();
     const deadline = performance.now() + timeoutMs;
     const checkDeadline = () => {
-      if (controller.signal.aborted || signal?.aborted || performance.now() >= deadline) throw unavailable();
+      if (termination === 'caller-cancelled' || signal?.aborted
+        || (controller.signal.aborted && termination !== 'deadline')) throw unavailable();
+      if (termination === 'deadline' || performance.now() >= deadline) {
+        throw new TransientAuthoritativeReadError('deadline');
+      }
+      if (controller.signal.aborted) throw unavailable();
     };
     const selected = { appId: config.appId, privateKey: config.privateKey, owner: config.owner, repo: config.repo,
       baseUrl: config.baseUrl ?? PUBLIC_GITHUB_API_BASE_URL };
     if (typeof selected.appId !== 'string' || !/^[1-9][0-9]*$/u.test(selected.appId)
-      || !Number.isSafeInteger(Number(selected.appId)) || typeof selected.privateKey !== 'string' || !selected.privateKey
+      || !Number.isSafeInteger(Number(selected.appId))
       || [selected.owner, selected.repo].some((value) => typeof value !== 'string'
         || !/^[A-Za-z0-9_.-]{1,100}$/u.test(value) || value === '.' || value === '..')) throw unavailable();
     selected.baseUrl = validateGitHubAppApiBaseUrl(selected.baseUrl);
+    // Keep malformed static request identity/configuration as a rejection.
+    // Only the service-owned key's absent state is dependency unavailability.
+    if (typeof selected.privateKey !== 'string' || selected.privateKey.length === 0) {
+      throw new InternalGitHubDependencyUnavailableError();
+    }
     const api = new URL(selected.baseUrl);
     const installationUrl = `${selected.baseUrl}/repos/${encodeURIComponent(selected.owner)}/${encodeURIComponent(selected.repo)}/installation`;
     const tokenPrefix = `${selected.baseUrl}/app/installations/`;
     const fetcher = options.fetchImplementation ?? globalThis.fetch;
     if (typeof fetcher !== 'function') throw unavailable();
     const expired = new Promise<never>((_, reject) => {
-      onAbort = () => { controller.abort(); reject(unavailable()); };
+      onAbort = () => {
+        if (termination !== undefined) return;
+        termination = 'caller-cancelled';
+        controller.abort();
+        reject(unavailable());
+      };
+      onDeadline = () => {
+        if (termination !== undefined) return;
+        termination = 'deadline';
+        controller.abort();
+        reject(new TransientAuthoritativeReadError('deadline'));
+      };
       signal?.addEventListener('abort', onAbort, { once: true });
-      timer = setTimeout(onAbort, Math.max(0, deadline - performance.now()));
+      timer = setTimeout(onDeadline, Math.max(0, deadline - performance.now()));
     });
     const boundedFetch: typeof fetch = async (input, init) => {
       checkDeadline();
@@ -109,11 +137,24 @@ async function withBoundedRepositoryTransport<T>(
         || !((input === installationUrl && init?.method === 'GET')
           || (allowTokenMint && /^[1-9][0-9]*\/access_tokens$/u.test(tokenSuffix)
             && Number.isSafeInteger(Number(tokenSuffix.split('/')[0])) && init?.method === 'POST'))) throw unavailable();
-      const response = await fetcher(input, { ...init, redirect: 'error', signal: controller.signal });
-      if (controller.signal.aborted) { cancel(response.body); throw unavailable(); }
+      let response: Response;
+      try { response = await fetcher(input, { ...init, redirect: 'error', signal: controller.signal }); }
+      catch {
+        checkDeadline();
+        throw new TransientAuthoritativeReadError('network');
+      }
+      if (controller.signal.aborted) { cancel(response.body); checkDeadline(); throw unavailable(); }
       cleanupBody = () => cancel(response.body);
       checkDeadline();
-      if (!response.ok || response.redirected || !response.body) throw unavailable();
+      if (!response.ok) {
+        cancel(response.body);
+        const transient = transientAuthoritativeReadForStatus(response.status, response.headers);
+        if (transient) throw transient;
+        const dependencyUnavailable = internalGitHubDependencyUnavailableForStatus(response.status, response.headers);
+        if (dependencyUnavailable) throw dependencyUnavailable;
+        throw unavailable();
+      }
+      if (response.redirected || !response.body) throw unavailable();
       const reader = response.body.getReader();
       let cleaned = false;
       const cleanup = () => {
@@ -127,7 +168,12 @@ async function withBoundedRepositoryTransport<T>(
         const chunks: Uint8Array[] = [];
         let bytes = 0;
         while (true) {
-          const chunk = await reader.read();
+          let chunk: Awaited<ReturnType<typeof reader.read>>;
+          try { chunk = await reader.read(); }
+          catch {
+            checkDeadline();
+            throw new TransientAuthoritativeReadError('network');
+          }
           checkDeadline();
           if (chunk.done) break;
           if (!(chunk.value instanceof Uint8Array)) throw unavailable();
@@ -148,10 +194,15 @@ async function withBoundedRepositoryTransport<T>(
       return result;
     };
     return await Promise.race([run(), expired]);
-  } catch { throw unavailable(); }
+  } catch (error) {
+    if (signal?.aborted || termination === 'caller-cancelled') throw unavailable();
+    if (error instanceof TransientAuthoritativeReadError || error instanceof InternalGitHubDependencyUnavailableError) throw error;
+    throw unavailable();
+  }
   finally {
     if (timer !== undefined) clearTimeout(timer);
     if (onAbort) signal?.removeEventListener('abort', onAbort);
+    if (onDeadline) clearTimeout(timer);
     controller.abort();
     try { cleanupBody?.(); } catch { /* Do not replace the redacted outcome. */ }
   }

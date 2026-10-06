@@ -6,6 +6,7 @@ import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebh
 import { createMergeGroupGate, MergeGroupGateInProgressError } from '../../src/review/mergeGroupGate';
 import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/reviewAdmission';
 import { renderIncompleteInfrastructureTitle } from '../../src/review/publicationFailurePolicy';
+import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError } from '../../src/github/authoritativeReadFailure';
 
 const SECRET = 'webhook-secret-with-at-least-thirty-two-bytes';
 const NOW = Date.parse('2026-09-10T12:00:00.000Z');
@@ -80,10 +81,16 @@ function closedPayload(overrides: Record<string, unknown> = {}) {
 
 function fixture(admissionEnabled = true, passthroughEnabled = false) {
   const admit = vi.fn(async () => ({ status: 'accepted', run: { runId: `run_${'1'.repeat(32)}` } }));
-  const recordOperatorPassthrough = vi.fn(async () => ({ status: 'accepted' as const, verdict: 'SHIP' as const,
+  const recordOperatorPassthrough = vi.fn(async () => ({ status: 'accepted' as const, candidateState: 'current' as const, verdict: 'SHIP' as const,
     expectedLanes: 0 as const, completedLanes: 0 as const, publicationId: 'd'.repeat(64),
     auditDigest: 'e'.repeat(64), publicationState: 'published' as const,
     reviewCheckId: 17, gateCheckId: 18, mergeEligible: true }));
+  const reportOperatorPassthroughUnavailable = vi.fn(async () => ({ status: 'unavailable' as const,
+    candidateState: 'unavailable' as const, verdict: 'SHIP' as const, expectedLanes: 0 as const,
+    completedLanes: 0 as const, publicationId: null, auditDigest: null,
+    publicationState: 'unavailable' as const, publicationReceiptAvailable: null,
+    reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+    message: 'Operator pause preserves logical SHIP; current authority and receipt are unavailable.' }));
   const resolveAuthoritative = vi.fn(async (requested: Parameters<typeof buildReviewRunIdentity>[0]) => ({
     identity: buildReviewRunIdentity(requested), prepared: { policy: { effectivePolicyDigest: 'f'.repeat(64) } },
   }));
@@ -96,7 +103,7 @@ function fixture(admissionEnabled = true, passthroughEnabled = false) {
     ...(passthroughEnabled ? {
       authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796],
         resolver: { resolve: resolveAuthoritative },
-        recordOperatorPassthrough,
+        recordOperatorPassthrough, reportOperatorPassthroughUnavailable,
       } as any,
       currentPullRequestForPassthrough: async ({ repositoryId, owner, repo, prNumber }: any) => ({
         repositoryId, owner, repo, prNumber, headSha: HEAD, baseSha: BASE, open: true, draft: false,
@@ -110,7 +117,7 @@ function fixture(admissionEnabled = true, passthroughEnabled = false) {
     resolveInstallationId: vi.fn(), databaseReady: vi.fn(async () => true),
     allowAppGate: true, githubWebhook: { secret: SECRET, onEvent },
   });
-  return { instance, admit, recordOperatorPassthrough };
+  return { instance, admit, recordOperatorPassthrough, reportOperatorPassthroughUnavailable, resolveAuthoritative };
 }
 
 function signed(body: unknown, delivery = 'delivery-123') {
@@ -149,6 +156,8 @@ function issueCommentPayload(comment = '/review') {
 
 function issueCommentPassthroughFixture(options: {
   passthroughEnabled?: boolean;
+  currentReadError?: Error;
+  repositoryConfigError?: Error;
   current?: Partial<{
     repositoryId: number; owner: string; repo: string; prNumber: number;
     headSha: string; baseSha: string; open: boolean; draft: boolean;
@@ -156,13 +165,14 @@ function issueCommentPassthroughFixture(options: {
   repositoryConfig?: { auto_review?: { enabled?: boolean; triggers?: readonly string[] } };
 } = {}) {
   const admit = vi.fn();
-  const recordOperatorPassthrough = vi.fn(async () => ({ status: 'accepted' as const, verdict: 'SHIP' as const,
+  const recordOperatorPassthrough = vi.fn(async () => ({ status: 'accepted' as const, candidateState: 'current' as const, verdict: 'SHIP' as const,
     expectedLanes: 0 as const, completedLanes: 0 as const, publicationId: 'd'.repeat(64), auditDigest: 'e'.repeat(64),
     publicationState: 'published' as const, reviewCheckId: 17, gateCheckId: 18, mergeEligible: true }));
   const resolveAuthoritative = vi.fn(async (requested: Parameters<typeof buildReviewRunIdentity>[0]) => ({
     identity: buildReviewRunIdentity(requested), prepared: { policy: { effectivePolicyDigest: 'f'.repeat(64) } },
   }));
   const resolveRepositoryConfig = vi.fn(async () => {
+    if (options.repositoryConfigError) throw options.repositoryConfigError;
     const configured = options.repositoryConfig?.auto_review;
     return configured
       ? { auto_review: { enabled: configured.enabled, triggers: configured.triggers ? [...configured.triggers] : undefined } }
@@ -170,8 +180,17 @@ function issueCommentPassthroughFixture(options: {
   });
   const currentPullRequestForPassthrough = vi.fn(async ({ repositoryId, owner, repo, prNumber }: {
     repositoryId: number; owner: string; repo: string; prNumber: number;
-  }) => ({ repositoryId, owner, repo, prNumber, headSha: HEAD, baseSha: BASE, open: true, draft: false,
-    ...options.current }));
+  }) => {
+    if (options.currentReadError) throw options.currentReadError;
+    return { repositoryId, owner, repo, prNumber, headSha: HEAD, baseSha: BASE, open: true, draft: false,
+      ...options.current };
+  });
+  const reportOperatorPassthroughUnavailable = vi.fn(async () => ({ status: 'unavailable' as const,
+    candidateState: 'unavailable' as const, verdict: 'SHIP' as const, expectedLanes: 0 as const,
+    completedLanes: 0 as const, publicationId: null, auditDigest: null,
+    publicationState: 'unavailable' as const, publicationReceiptAvailable: null,
+    reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+    message: 'Operator pause preserves logical SHIP; current authority and receipt are unavailable.' }));
   const handler = createGitHubWebhookAdmissionHandler({
     config: {
       secret: SECRET, admissionEnabled: true, passthroughEnabled: options.passthroughEnabled ?? true,
@@ -180,15 +199,39 @@ function issueCommentPassthroughFixture(options: {
     admission: { admit } as any,
     resolveRepositoryConfig,
     authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796],
-      resolver: { resolve: resolveAuthoritative }, recordOperatorPassthrough } as any,
+      resolver: { resolve: resolveAuthoritative }, recordOperatorPassthrough,
+      reportOperatorPassthroughUnavailable } as any,
     currentPullRequestForPassthrough,
   });
   return { handler, admit, recordOperatorPassthrough, resolveAuthoritative,
-    resolveRepositoryConfig, currentPullRequestForPassthrough };
+    reportOperatorPassthroughUnavailable, resolveRepositoryConfig, currentPullRequestForPassthrough };
 }
 
 function issueCommentEvent(deliveryId: string, body = issueCommentPayload()) {
   return { eventName: 'issue_comment', deliveryId, rawBody: Buffer.from(JSON.stringify(body)), body };
+}
+
+function pausedRepositoryConfigOutageFixture(resolveRepositoryConfig: () => Promise<{
+  auto_review?: { enabled?: boolean; triggers?: string[] };
+} | null | undefined>) {
+  const admit = vi.fn();
+  const resolver = { resolve: vi.fn() };
+  const recordOperatorPassthrough = vi.fn();
+  const reportOperatorPassthroughUnavailable = vi.fn(async () => ({ status: 'unavailable' as const,
+    candidateState: 'unavailable' as const, verdict: 'SHIP' as const, expectedLanes: 0 as const,
+    completedLanes: 0 as const, publicationId: null, auditDigest: null,
+    publicationState: 'unavailable' as const, publicationReceiptAvailable: null,
+    reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+    message: 'Operator pause preserves logical SHIP; current authority and receipt are unavailable.' }));
+  const handler = createGitHubWebhookAdmissionHandler({
+    config: { secret: SECRET, admissionEnabled: true, passthroughEnabled: true,
+      repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+    admission: { admit } as any,
+    authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796],
+      resolver, recordOperatorPassthrough, reportOperatorPassthroughUnavailable } as any,
+    resolveRepositoryConfig,
+  });
+  return { handler, admit, resolver, recordOperatorPassthrough, reportOperatorPassthroughUnavailable };
 }
 
 function closedFixture(terminalizedRunIds: string[] = [`run_${'1'.repeat(32)}`],
@@ -273,6 +316,29 @@ describe('native GitHub App webhook admission', () => {
     expect(f.admit).not.toHaveBeenCalled();
   });
 
+  it('returns SHIP without current coordinates when initial authoritative reads are unavailable', async () => {
+    const f = fixture(false, true);
+    f.recordOperatorPassthrough.mockResolvedValueOnce({
+      status: 'unavailable', candidateState: 'unavailable', verdict: 'SHIP', expectedLanes: 0,
+      completedLanes: 0, publicationId: null, auditDigest: null, publicationState: 'unavailable',
+      publicationReceiptAvailable: null, reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+      message: 'Operator pause preserves logical SHIP; source authority and receipt are unavailable.',
+    } as any);
+    const body = payload({ action: 'opened' });
+    const auth = signed(body, 'delivery-passthrough-source-unavailable');
+    const response = await postWebhook(f.instance, body, auth.delivery);
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ status: 'unavailable', verdict: 'SHIP', candidateState: 'unavailable',
+      reviewStarted: false, headSha: null, baseSha: null, expectedLanes: 0, completedLanes: 0,
+      publicationId: null, auditDigest: null, publicationState: 'unavailable',
+      publicationReceiptAvailable: null, reviewCheckId: null, gateCheckId: null, mergeEligible: false });
+    expect(f.resolveAuthoritative).not.toHaveBeenCalled();
+    expect(f.recordOperatorPassthrough).toHaveBeenCalledExactlyOnceWith(
+      expectedOperatorPassthroughInput('pull_request', auth.delivery, auth.raw));
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
   it('passes through an authorized exact-head refresh without advancing its generation', async () => {
     const f = fixture(true, true);
     const body = refreshPayload();
@@ -288,12 +354,38 @@ describe('native GitHub App webhook admission', () => {
       expectedOperatorPassthroughInput('check_run', auth.delivery, auth.raw));
   });
 
+  it.each([
+    ['transient source outage', new TransientAuthoritativeReadError('retryable_server')],
+    ['internal App credential/permission outage', new InternalGitHubDependencyUnavailableError()],
+  ] as const)('returns candidate-less SHIP for a signed refresh when authority has %s', async (_label, failure) => {
+    const f = fixture(false, true);
+    f.resolveAuthoritative.mockRejectedValueOnce(failure);
+    const body = refreshPayload();
+    const auth = signed(body, 'delivery-refresh-authority-unavailable');
+    const response = await postWebhook(f.instance, body, auth.delivery, 'check_run');
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ status: 'unavailable', verdict: 'SHIP',
+      candidateState: 'unavailable', reviewStarted: false, headSha: null, baseSha: null,
+      expectedLanes: 0, completedLanes: 0, publicationId: null, auditDigest: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null,
+      reviewCheckId: null, gateCheckId: null, mergeEligible: false });
+    expect(f.reportOperatorPassthroughUnavailable).toHaveBeenCalledOnce();
+    expect((f.reportOperatorPassthroughUnavailable.mock.calls as unknown as any[])[0]?.[0]).toMatchObject({
+      repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
+      event: { transport: 'github-app', eventName: 'check_run',
+        deliveryId: `github-app:${auth.delivery}`, deliveryDigest: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+    });
+    expect(f.recordOperatorPassthrough).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
   it('resolves a headless /review comment to the current exact candidate before publishing SHIP', async () => {
     const admit = vi.fn();
     const advanceDebounceAvailableAt = vi.fn();
     const resolveRepositoryConfig = vi.fn();
     const resolveAuthoritative = vi.fn();
-    const recordOperatorPassthrough = vi.fn(async () => ({ status: 'accepted' as const, verdict: 'SHIP' as const,
+    const recordOperatorPassthrough = vi.fn(async () => ({ status: 'accepted' as const, candidateState: 'current' as const, verdict: 'SHIP' as const,
       expectedLanes: 0 as const, completedLanes: 0 as const, publicationId: 'd'.repeat(64), auditDigest: 'e'.repeat(64),
       publicationState: 'published' as const, reviewCheckId: 17, gateCheckId: 18, mergeEligible: true }));
     const handler = createGitHubWebhookAdmissionHandler({
@@ -324,7 +416,7 @@ describe('native GitHub App webhook admission', () => {
       completedLanes: 0, publicationState: 'published', mergeEligible: true,
       repositoryId: 614653796, repository: 'exampleorg/dashboard', prNumber: 42, headSha: HEAD, baseSha: BASE });
     expect(resolveRepositoryConfig).toHaveBeenCalledOnce();
-    expect(resolveAuthoritative).toHaveBeenCalledOnce();
+    expect(resolveAuthoritative).not.toHaveBeenCalled();
     expect(recordOperatorPassthrough).toHaveBeenCalledExactlyOnceWith(
       expectedOperatorPassthroughInput('issue_comment', 'delivery-headless-comment', rawBody.toString('utf8')));
     expect(advanceDebounceAvailableAt).not.toHaveBeenCalled();
@@ -348,6 +440,42 @@ describe('native GitHub App webhook admission', () => {
       repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard', headSha: HEAD,
     });
     expect(f.resolveAuthoritative).not.toHaveBeenCalled();
+    expect(f.recordOperatorPassthrough).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['current PR lookup', { currentReadError: new TransientAuthoritativeReadError('retryable_server') }],
+    ['repository trigger lookup', { repositoryConfigError: new TransientAuthoritativeReadError('rate_limit') }],
+  ] as const)('returns unavailable logical SHIP for a signed/enrolled comment when %s has a typed transient outage', async (_label, options) => {
+    const f = issueCommentPassthroughFixture(options);
+    const event = issueCommentEvent(`delivery-comment-${_label.replaceAll(' ', '-')}`);
+
+    await expect(f.handler(event)).resolves.toMatchObject({
+      status: 'unavailable', reason: 'operator_global_passthrough', candidateState: 'unavailable',
+      reviewStarted: false, eventName: 'issue_comment', deliveryId: event.deliveryId,
+      repositoryId: 614653796, repository: 'exampleorg/dashboard', prNumber: 42,
+      headSha: null, baseSha: null, verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
+      publicationId: null, auditDigest: null, publicationState: 'unavailable',
+      publicationReceiptAvailable: null, reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+    });
+    expect(f.reportOperatorPassthroughUnavailable).toHaveBeenCalledOnce();
+    expect((f.reportOperatorPassthroughUnavailable.mock.calls as unknown as any[])[0]?.[0]).toMatchObject({
+      repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
+      event: { transport: 'github-app', eventName: 'issue_comment',
+        deliveryId: `github-app:${event.deliveryId}`, deliveryDigest: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+    });
+    expect(f.recordOperatorPassthrough).not.toHaveBeenCalled();
+    expect(f.resolveAuthoritative).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('does not turn an untyped issue-comment lookup error into the paused SHIP fallback', async () => {
+    const f = issueCommentPassthroughFixture({ currentReadError: new Error('GitHub returned 401') });
+    const event = issueCommentEvent('delivery-comment-untyped-auth-error');
+
+    await expect(f.handler(event)).rejects.toThrow('GitHub returned 401');
+    expect(f.reportOperatorPassthroughUnavailable).not.toHaveBeenCalled();
     expect(f.recordOperatorPassthrough).not.toHaveBeenCalled();
     expect(f.admit).not.toHaveBeenCalled();
   });
@@ -396,7 +524,7 @@ describe('native GitHub App webhook admission', () => {
   ] as const)('passes through %s review triggers before debounce or admission', async (action, label, triggers) => {
     const admit = vi.fn();
     const advanceDebounceAvailableAt = vi.fn(async () => ({ advanced: true, runId: 'run_existing' }));
-    const recordOperatorPassthrough = vi.fn(async () => ({ status: 'accepted' as const, verdict: 'SHIP' as const,
+    const recordOperatorPassthrough = vi.fn(async () => ({ status: 'accepted' as const, candidateState: 'current' as const, verdict: 'SHIP' as const,
       expectedLanes: 0 as const, completedLanes: 0 as const, publicationId: 'd'.repeat(64), auditDigest: 'e'.repeat(64),
       publicationState: 'published' as const, reviewCheckId: 17, gateCheckId: 18, mergeEligible: true }));
     const handler = createGitHubWebhookAdmissionHandler({
@@ -428,6 +556,55 @@ describe('native GitHub App webhook admission', () => {
       expectedOperatorPassthroughInput('pull_request', `delivery-${action}-passthrough`, JSON.stringify(body)));
     expect(advanceDebounceAvailableAt).not.toHaveBeenCalled();
     expect(admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['opt-in label', payload({ action: 'labeled', label: { name: 'review-yeti' },
+      pull_request: { ...payload().pull_request, labels: [] } })],
+    ['opt-out label removal', payload({ action: 'unlabeled', label: { name: 'wip' },
+      pull_request: { ...payload().pull_request, labels: [] } })],
+    ['main pull-request trigger', payload({ action: 'opened' })],
+  ] as const)('returns unavailable logical SHIP when paused %s trigger eligibility has a typed transient config outage', async (label, body) => {
+    const resolveRepositoryConfig = vi.fn(async () => {
+      throw new TransientAuthoritativeReadError('rate_limit');
+    });
+    const f = pausedRepositoryConfigOutageFixture(resolveRepositoryConfig);
+    const deliveryId = `delivery-${label.replaceAll(' ', '-')}`;
+    const event = { eventName: 'pull_request', deliveryId,
+      rawBody: Buffer.from(JSON.stringify(body)), body };
+
+    await expect(f.handler(event)).resolves.toMatchObject({
+      status: 'unavailable', reason: 'operator_global_passthrough', candidateState: 'unavailable',
+      reviewStarted: false, eventName: 'pull_request', deliveryId,
+      repositoryId: 614653796, repository: 'exampleorg/dashboard', prNumber: 42,
+      headSha: null, baseSha: null, verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
+      publicationId: null, auditDigest: null, publicationState: 'unavailable',
+      publicationReceiptAvailable: null, reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+    });
+    expect(resolveRepositoryConfig).toHaveBeenCalledOnce();
+    expect(f.reportOperatorPassthroughUnavailable).toHaveBeenCalledOnce();
+    expect(f.recordOperatorPassthrough).not.toHaveBeenCalled();
+    expect(f.resolver.resolve).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
+  });
+
+  it('does not return paused SHIP for a malformed opt-in label candidate when config is unavailable', async () => {
+    const resolveRepositoryConfig = vi.fn(async () => {
+      throw new TransientAuthoritativeReadError('retryable_server');
+    });
+    const f = pausedRepositoryConfigOutageFixture(resolveRepositoryConfig);
+    const body = payload({ action: 'labeled', label: { name: 'review-yeti' }, pull_request: {
+      ...payload().pull_request, head: { sha: 'malformed' }, labels: [],
+    } });
+
+    await expect(f.handler({ eventName: 'pull_request', deliveryId: 'delivery-malformed-label',
+      rawBody: Buffer.from(JSON.stringify(body)), body })).resolves.toEqual({
+      status: 'ignored', reason: 'invalid_review_trigger_identity', deliveryId: 'delivery-malformed-label',
+    });
+    expect(resolveRepositoryConfig).not.toHaveBeenCalled();
+    expect(f.reportOperatorPassthroughUnavailable).not.toHaveBeenCalled();
+    expect(f.recordOperatorPassthrough).not.toHaveBeenCalled();
+    expect(f.admit).not.toHaveBeenCalled();
   });
 
   it('keeps human opt-out cancellation active during global passthrough', async () => {

@@ -177,6 +177,16 @@ function isOfficialReviewCheck(run: any): boolean {
     && run?.app?.slug === AUTHORITATIVE_REVIEW_APP_SLUG;
 }
 
+type DurableOperatorReceipt = Pick<OperatorPassthroughAdmissionReceipt,
+  'publicationId' | 'auditDigest' | 'mergeEligible'> & { publicationId: string; auditDigest: string };
+
+function isDurableOperatorReceipt(receipt: Pick<OperatorPassthroughAdmissionReceipt,
+  'publicationId' | 'auditDigest' | 'mergeEligible'>): receipt is DurableOperatorReceipt {
+  return receipt.mergeEligible && typeof receipt.publicationId === 'string'
+    && /^[a-f0-9]{64}$/u.test(receipt.publicationId)
+    && typeof receipt.auditDigest === 'string' && /^[a-f0-9]{64}$/u.test(receipt.auditDigest);
+}
+
 function exactReviewFailure(checks: any, expectedHead: string,
   operatorReceipt?: Pick<OperatorPassthroughAdmissionReceipt, 'publicationId' | 'auditDigest' | 'mergeEligible'>): string | undefined {
   if (!Number.isSafeInteger(checks?.total_count) || !Array.isArray(checks?.check_runs)
@@ -195,9 +205,7 @@ function exactReviewFailure(checks: any, expectedHead: string,
   }
   const latestIsOperatorPassthrough = isOperatorPassthroughReviewExternalId(latest.external_id);
   const allowOperatorPassthrough = operatorReceipt !== undefined;
-  if (allowOperatorPassthrough && (!operatorReceipt.mergeEligible
-    || !/^[a-f0-9]{64}$/u.test(operatorReceipt.publicationId)
-    || !/^[a-f0-9]{64}$/u.test(operatorReceipt.auditDigest))) {
+  if (operatorReceipt && !isDurableOperatorReceipt(operatorReceipt)) {
     return 'current operator SHIP publication is not durably ready';
   }
   const expectedReviewExternalId = operatorReceipt

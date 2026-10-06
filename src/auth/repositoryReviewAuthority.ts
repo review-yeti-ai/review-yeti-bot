@@ -13,6 +13,8 @@ export interface ReviewAuthorityAdmission {
   expectedAppId: number;
   expectedAppIdFor?: (repository: ReviewAuthorityRepository) => number;
   repositoryIds: readonly number[];
+  /** Optional source-configured map for authenticated callers without a numeric repository claim. */
+  repositoryIdentities?: readonly ReviewAuthorityRepository[];
 }
 
 /** A configured credential never grants another repository this App's authority. */
@@ -40,4 +42,24 @@ export function expectedReviewAppIdFor(admission: ReviewAuthorityAdmission,
     throw new Error('Repository review App authority is invalid');
   }
   return appId;
+}
+
+/** Resolve only an already-enrolled locally configured repository name. */
+export function authoritativeRepositoryForName(admission: ReviewAuthorityAdmission,
+  owner: string, repo: string): ReviewAuthorityRepository | undefined {
+  const requestedName = `${owner}/${repo}`.toLowerCase();
+  if (requestedName === PUBLIC_REVIEW_REPOSITORY.toLowerCase()) {
+    const fixed = { repositoryId: PUBLIC_REVIEW_REPOSITORY_ID,
+      owner: PUBLIC_REVIEW_REPOSITORY.split('/')[0], repo: PUBLIC_REVIEW_REPOSITORY.split('/')[1] };
+    if (!admission.repositoryIds.includes(fixed.repositoryId)) return undefined;
+    expectedReviewAppIdFor(admission, fixed);
+    return fixed;
+  }
+  const matches = (admission.repositoryIdentities || []).filter((identity) =>
+    `${identity.owner}/${identity.repo}`.toLowerCase() === requestedName);
+  if (matches.length !== 1) return undefined;
+  const identity = matches[0];
+  if (!admission.repositoryIds.includes(identity.repositoryId)) return undefined;
+  expectedReviewAppIdFor(admission, identity);
+  return { repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repo };
 }

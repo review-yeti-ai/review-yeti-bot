@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { isPublicReviewRepository } from '../auth/repositoryReviewAuthority';
 import type { AuthoritativeReviewReader, ReviewRepositoryIdentity } from '../github/authoritativeReviewReader';
+import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError } from '../github/authoritativeReadFailure';
 import { buildAuthoritativeReviewIdentity, reviewPolicySourceSchema,
   type AuthoritativeReviewRunIdentity, type CurrentReviewCandidate } from './authoritativeReviewIdentity';
 import { preparePublishingPolicy, type PreparedPublishingPolicy } from './preparedPublishingPolicy';
@@ -91,8 +92,15 @@ export class AuthoritativePublishingResolver {
   async resolve(requested: RequestedReviewCandidate, signal?: AbortSignal): Promise<AuthoritativePublishingResolution> {
     const abort = new AbortController();
     const deadline = performance.now() + this.timeoutMs;
+    let termination: 'caller-cancelled' | 'deadline' | undefined;
     const checkDeadline = () => {
-      if (abort.signal.aborted || performance.now() >= deadline) throw unavailable();
+      // Caller cancellation always wins if it is already observable, even if
+      // the timer callback and AbortSignal fire in the same event-loop turn.
+      if (signal?.aborted || termination === 'caller-cancelled'
+        || (abort.signal.aborted && termination !== 'deadline')) throw unavailable();
+      if (termination === 'deadline' || performance.now() >= deadline) {
+        throw new TransientAuthoritativeReadError('deadline');
+      }
     };
     const step = async <T>(read: () => Promise<T>): Promise<T> => {
       checkDeadline();
@@ -102,10 +110,22 @@ export class AuthoritativePublishingResolver {
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
     let onAbort: (() => void) | undefined;
+    let onDeadline: (() => void) | undefined;
     const expired = new Promise<never>((_, reject) => {
-      onAbort = () => { abort.abort(); reject(unavailable()); };
+      onAbort = () => {
+        if (termination !== undefined) return;
+        termination = 'caller-cancelled';
+        abort.abort();
+        reject(unavailable());
+      };
+      onDeadline = () => {
+        if (termination !== undefined) return;
+        termination = 'deadline';
+        abort.abort();
+        reject(new TransientAuthoritativeReadError('deadline'));
+      };
       signal?.addEventListener('abort', onAbort, { once: true });
-      timer = setTimeout(onAbort, this.timeoutMs);
+      timer = setTimeout(onDeadline, this.timeoutMs);
       if (signal?.aborted) onAbort();
     });
     const resolve = async (): Promise<AuthoritativePublishingResolution> => {
@@ -137,11 +157,14 @@ export class AuthoritativePublishingResolver {
     } catch (error) {
       // Never attach a cause or echo reader/factory errors, tokens, request
       // values, policy contents or transport response bodies.
+      if (signal?.aborted) throw unavailable();
       if (error instanceof AuthoritativeCandidateChangedError) throw error;
+      if (error instanceof TransientAuthoritativeReadError || error instanceof InternalGitHubDependencyUnavailableError) throw error;
       throw unavailable();
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       if (onAbort) signal?.removeEventListener('abort', onAbort);
+      if (onDeadline) clearTimeout(timer);
       abort.abort();
     }
   }
@@ -153,30 +176,57 @@ export class AuthoritativePublishingResolver {
     const target = repositorySchema.extend({ prNumber: z.number().int().positive().safe() }).parse(seed);
     const abort = new AbortController();
     const deadline = performance.now() + this.timeoutMs;
+    let termination: 'caller-cancelled' | 'deadline' | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let onAbort: (() => void) | undefined;
+    let onDeadline: (() => void) | undefined;
     const expired = new Promise<never>((_, reject) => {
-      onAbort = () => { abort.abort(); reject(unavailable()); };
+      onAbort = () => {
+        if (termination !== undefined) return;
+        termination = 'caller-cancelled';
+        abort.abort();
+        reject(unavailable());
+      };
+      onDeadline = () => {
+        if (termination !== undefined) return;
+        termination = 'deadline';
+        abort.abort();
+        reject(new TransientAuthoritativeReadError('deadline'));
+      };
       signal?.addEventListener('abort', onAbort, { once: true });
-      timer = setTimeout(onAbort, this.timeoutMs);
+      timer = setTimeout(onDeadline, this.timeoutMs);
       if (signal?.aborted) onAbort();
     });
+    const checkReadState = () => {
+      if (signal?.aborted || termination === 'caller-cancelled'
+        || (abort.signal.aborted && termination !== 'deadline')) throw unavailable();
+      if (termination === 'deadline' || performance.now() >= deadline) {
+        throw new TransientAuthoritativeReadError('deadline');
+      }
+    };
     const read = async (): Promise<CurrentReviewCandidate> => {
-      if (abort.signal.aborted || performance.now() >= deadline) throw unavailable();
+      checkReadState();
       const reader = await this.candidateReaderFactory({ repositoryId: target.repositoryId,
         owner: target.owner, repo: target.repo }, abort.signal);
+      checkReadState();
       const current = currentSchema.parse(await reader.currentCandidate({ ...target }, abort.signal));
+      checkReadState();
       if (current.repositoryId !== target.repositoryId || current.owner !== target.owner
-        || current.repo !== target.repo || current.prNumber !== target.prNumber || performance.now() >= deadline) {
+        || current.repo !== target.repo || current.prNumber !== target.prNumber) {
         throw unavailable();
       }
       return current;
     };
     try { return await Promise.race([read(), expired]); }
-    catch { throw unavailable(); }
+    catch (error) {
+      if (signal?.aborted) throw unavailable();
+      if (error instanceof TransientAuthoritativeReadError || error instanceof InternalGitHubDependencyUnavailableError) throw error;
+      throw unavailable();
+    }
     finally {
       if (timer !== undefined) clearTimeout(timer);
       if (onAbort) signal?.removeEventListener('abort', onAbort);
+      if (onDeadline) clearTimeout(timer);
       abort.abort();
     }
   }

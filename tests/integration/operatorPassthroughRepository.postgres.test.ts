@@ -1,17 +1,24 @@
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Pool } from 'pg';
+import { GitHubReviewGateClient } from '../../src/github/reviewGateClient';
+import { createGetReviewStatusTool } from '../../src/mcp/server/tools/getReviewStatus';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
 import {
   PostgresOperatorPassthroughRepository,
 } from '../../src/persistence/operatorPassthroughRepository';
 import { OPERATOR_PASSTHROUGH_SCHEMA_SQL } from '../../src/persistence/operatorPassthroughSchema';
 import { reviewDispatchPrLockKey } from '../../src/persistence/reviewCiPersistence';
+import { OperatorPassthroughPublisher } from '../../src/review/operatorPassthroughPublisher';
 import type {
   OperatorPassthroughCandidate,
+  OperatorPassthroughOperationScope,
   OperatorPassthroughPublicationClaim,
   OperatorPassthroughReconcileCursor,
   OperatorPassthroughRecordInput,
 } from '../../src/review/operatorPassthrough';
+import { OperatorPassthroughDeliveryIdentityConflictError, OperatorPassthroughOperationDeadlineExceededError,
+  withOperatorPassthroughReceiptBudget } from '../../src/review/operatorPassthrough';
 import type { ReviewGateCheck } from '../../src/review/reviewCheckIdentity';
 import {
   describeWithPostgres as describeWithPostgresShared,
@@ -139,6 +146,44 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
     expect(statusIndex.rows[0].indexdef).toContain('retired_at IS NULL');
   });
 
+  it('bounds a paused status read with a read-only statement deadline and discards only its blocked client', async () => {
+    const owner = 'exampleorg';
+    const repo = 'example-repo';
+    const repositoryId = randomInt(1_100_000_000, 2_000_000_000);
+    const current = { repositoryId, owner, repo, prNumber: 42, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) };
+    const policyDigest = 'c'.repeat(64);
+    const options = {
+      passthroughEnabled: true,
+      authoritativePublishing: {
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
+        repositoryIds: [repositoryId],
+        repositoryIdentities: [{ repositoryId, owner, repo }],
+        resolver: {
+          readCurrentCandidate: async () => current,
+          resolve: async () => ({ current, prepared: { policy: { effectivePolicyDigest: policyDigest } } }),
+        },
+      },
+    } as any;
+    const blocker = await pool!.connect();
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query('LOCK TABLE review_operator_passthrough_publications IN ACCESS EXCLUSIVE MODE');
+      const started = performance.now();
+      const result = await createGetReviewStatusTool(pool!, options).execute({ owner, repo, pull_number: 42 });
+      const elapsedMs = performance.now() - started;
+      const value = JSON.parse((result.content[0] as { text: string }).text);
+      expect(elapsedMs).toBeLessThan(4_000);
+      expect(value).toMatchObject({ found: true, verdict: 'SHIP', head_sha: current.headSha,
+        operator_exemption: { candidate_state: 'current', publication_id: null,
+          publication_state: 'unavailable', publication_receipt_available: null,
+          merge_eligible: false, review_check_id: null, gate_check_id: null } });
+    } finally {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+    }
+    await expect(pool!.query('SELECT 1 AS reusable')).resolves.toMatchObject({ rows: [{ reusable: 1 }] });
+  });
+
   it('claims the next due publication when the optional publication ID filter is omitted', async () => {
     const recorded = await repository.record(inputFor(), NOW);
 
@@ -149,6 +194,89 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
         mayCreate: true,
         retiring: false,
       });
+  });
+
+  it('applies the receipt budget to blocked publication reads and releases the timed-out connection', async () => {
+    const recorded = await repository.record(inputFor(), NOW);
+    const blocker = await pool!.connect();
+    await blocker.query('BEGIN');
+    await blocker.query('LOCK TABLE review_operator_passthrough_publications IN ACCESS EXCLUSIVE MODE');
+    try {
+      const pending = withOperatorPassthroughReceiptBudget(
+        (scope: OperatorPassthroughOperationScope) => repository.getPublication(recorded.publicationId, scope), 100);
+      await expect(pending).rejects.toBeInstanceOf(OperatorPassthroughOperationDeadlineExceededError);
+    } finally {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+    }
+
+    await expect(repository.getPublication(recorded.publicationId)).resolves.toMatchObject({
+      publicationId: recorded.publicationId, readyForShip: false,
+    });
+  });
+
+  it('bounds the candidate-less delivery conflict lookup with a read-only transaction', async () => {
+    const input = inputFor();
+    const blocker = await pool!.connect();
+    await blocker.query('BEGIN');
+    await blocker.query('LOCK TABLE review_operator_passthrough_events IN ACCESS EXCLUSIVE MODE');
+    try {
+      const pending = withOperatorPassthroughReceiptBudget(
+        (scope: OperatorPassthroughOperationScope) => repository.assertDeliveryIdentity(input.event, scope), 100);
+      await expect(pending).rejects.toBeInstanceOf(OperatorPassthroughOperationDeadlineExceededError);
+    } finally {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+    }
+
+    await expect(repository.assertDeliveryIdentity(input.event)).resolves.toBeUndefined();
+  });
+
+  it('rolls back a record whose scoped source-identity query outlives the receipt budget', async () => {
+    const input = inputFor();
+    const blocker = await pool!.connect();
+    await blocker.query('BEGIN');
+    await blocker.query('LOCK TABLE review_operator_passthrough_events IN ACCESS EXCLUSIVE MODE');
+    try {
+      const pending = withOperatorPassthroughReceiptBudget(
+        (scope: OperatorPassthroughOperationScope) => repository.record(input, NOW, scope), 100);
+      await expect(pending).rejects.toBeInstanceOf(OperatorPassthroughOperationDeadlineExceededError);
+    } finally {
+      await blocker.query('ROLLBACK');
+      blocker.release();
+    }
+
+    const counts = await pool!.query(`SELECT
+      (SELECT count(*)::int FROM review_operator_passthrough_publications) AS publications,
+      (SELECT count(*)::int FROM review_operator_passthrough_events) AS events`);
+    expect(counts.rows[0]).toEqual({ publications: 0, events: 0 });
+    await expect(repository.record(input, NOW + 1)).resolves.toMatchObject({
+      status: 'accepted', verdict: 'SHIP', expectedLanes: 0,
+    });
+  });
+
+  it('keeps an ambiguously timed-out publisher claim creating and reconcile-only', async () => {
+    const recorded = await repository.record(inputFor(), NOW);
+    const firstClaim = await repository.claimPublication('publisher-timeout', NOW, 10_000, recorded.publicationId);
+    expect(firstClaim).toMatchObject({ mayCreate: true, reviewCreationState: 'creating' });
+    const latePublisher = Promise.withResolvers<ReviewGateCheck>();
+    let createWasIssued = false;
+    const publishLocked = withOperatorPassthroughReceiptBudget((scope) => repository.publishLocked(firstClaim!, async () => {
+      createWasIssued = true;
+      return latePublisher.promise;
+    }, () => NOW + 1, scope), 100);
+    await expect(publishLocked).rejects.toBeInstanceOf(OperatorPassthroughOperationDeadlineExceededError);
+    expect(createWasIssued).toBe(true);
+
+    latePublisher.resolve(checkForClaim(firstClaim!, 7_801));
+    await Promise.resolve();
+    await pool!.query(`UPDATE review_operator_passthrough_publications
+      SET lease_expires_at=to_timestamp($2/1000.0) WHERE publication_id=$1`, [recorded.publicationId, NOW + 2]);
+    await expect(repository.getPublication(recorded.publicationId)).resolves.toMatchObject({
+      reviewCreationState: 'creating', reviewCheckId: null, readyForShip: false,
+    });
+    await expect(repository.claimPublication('publisher-reconcile-only', NOW + 3, 10_000, recorded.publicationId))
+      .resolves.toMatchObject({ mayCreate: false, reviewCreationState: 'creating', reviewCheckId: null });
   });
 
   it('lists only configured app-gate admissions and advances by repository/PR keyset', async () => {
@@ -283,7 +411,8 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
       ...input,
       event: { ...input.event, deliveryDigest: 'f'.repeat(64) },
     };
-    await expect(repository.record(conflictingReplay, NOW + 3)).rejects.toThrow();
+    await expect(repository.record(conflictingReplay, NOW + 3))
+      .rejects.toBeInstanceOf(OperatorPassthroughDeliveryIdentityConflictError);
 
     const counts = await pool!.query(`SELECT
       (SELECT count(*)::int FROM review_operator_passthrough_publications) AS publications,
@@ -322,6 +451,113 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
       { stage: 'review', mayCreate: true, externalId: firstClaim!.reviewExternalId },
       { stage: 'review', mayCreate: false, externalId: firstClaim!.reviewExternalId },
     ]);
+  });
+
+  it('releases a failed preflight read for one safe create retry and binds its terminal check once', async () => {
+    const candidateInput = inputFor();
+    const recorded = await repository.record(candidateInput, NOW);
+    let now = NOW;
+    let failPreflightRead = true;
+    let currentCheck: Record<string, unknown> | undefined;
+    const id = 7_901;
+    const fetchImplementation = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(String(input));
+      const method = init?.method ?? 'GET';
+
+      if (method === 'GET' && url.pathname.endsWith(`/commits/${candidateInput.candidate.headSha}/check-runs`)) {
+        if (failPreflightRead) {
+          failPreflightRead = false;
+          throw new Error('preflight read failed');
+        }
+        const checks = currentCheck ? [currentCheck] : [];
+        return new Response(JSON.stringify({ total_count: checks.length, check_runs: checks }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      if (method === 'POST' && url.pathname.endsWith('/check-runs')) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        currentCheck = {
+          id,
+          name: body.name,
+          app: { id: EXPECTED_APP_ID },
+          head_sha: body.head_sha,
+          external_id: body.external_id,
+          status: body.status,
+          conclusion: null,
+        };
+        return new Response(JSON.stringify(currentCheck), {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      if (url.pathname.endsWith(`/check-runs/${id}`) && method === 'GET' && currentCheck) {
+        return new Response(JSON.stringify(currentCheck), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      if (url.pathname.endsWith(`/check-runs/${id}`) && method === 'PATCH' && currentCheck) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        currentCheck = { ...currentCheck, status: body.status, conclusion: body.conclusion };
+        return new Response(JSON.stringify(currentCheck), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+
+      throw new Error(`unexpected GitHub request ${method} ${url.pathname}`);
+    });
+    const client = new GitHubReviewGateClient({
+      token: 'ghs_operator_passthrough_test_token',
+      expectedAppId: EXPECTED_APP_ID,
+      checkName: 'Review Yeti',
+      baseUrl: 'https://github.test/api/v3',
+      fetchImplementation,
+      timeoutMs: 1_000,
+      reconcileTimeoutMs: 1_000,
+    });
+    const publisher = new OperatorPassthroughPublisher({
+      repository,
+      clientFor: async () => client,
+      workerId: 'postgres-preflight-recovery',
+      now: () => now,
+      retryDelayMs: 5_000,
+    });
+
+    await expect(publisher.runOnce(recorded.publicationId)).resolves.toMatchObject({ status: 'retry' });
+    await expect(repository.getPublication(recorded.publicationId)).resolves.toMatchObject({
+      reviewCreationState: 'reserved',
+      reviewCheckId: null,
+      gateCreationState: 'reserved',
+      readyForShip: false,
+    });
+    const afterPreflightFailure = await pool!.query(`SELECT review_creation_state,review_check_id,lease_owner,
+      last_error_class,(extract(epoch FROM available_at)*1000)::bigint AS available_at_ms
+      FROM review_operator_passthrough_publications WHERE publication_id=$1`, [recorded.publicationId]);
+    expect(afterPreflightFailure.rows[0]).toMatchObject({
+      review_creation_state: 'reserved',
+      review_check_id: null,
+      lease_owner: null,
+      last_error_class: 'client-preparation',
+      available_at_ms: String(NOW + 5_000),
+    });
+
+    now += 5_001;
+    await expect(publisher.runOnce(recorded.publicationId)).resolves.toMatchObject({ status: 'published' });
+    await expect(repository.getPublication(recorded.publicationId)).resolves.toMatchObject({
+      reviewCreationState: 'bound',
+      reviewCheckId: id,
+      gateCreationState: 'reserved',
+      readyForShip: false,
+    });
+    expect(fetchImplementation.mock.calls.map(([, init]) => init?.method ?? 'GET'))
+      .toEqual(['GET', 'GET', 'POST', 'GET', 'PATCH']);
+    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(currentCheck).toMatchObject({ status: 'completed', conclusion: 'success' });
   });
 
   it('reclaims only a proven not-started create and rejects that result after an uncertain create', async () => {

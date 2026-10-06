@@ -6,7 +6,8 @@ import { sha256 } from './reviewCore';
 import type { IncrementalVerificationInput } from './incrementalReview';
 import type { VerdictCacheVerificationInput } from './verdictCache';
 import type { ReviewAuthorityRepository } from '../auth/repositoryReviewAuthority';
-import type { OperatorPassthroughAdmissionReceipt, OperatorPassthroughAdmissionRequest } from './operatorPassthrough';
+import type { OperatorPassthroughAdmissionReceipt, OperatorPassthroughAdmissionRequest,
+  OperatorPassthroughUnavailableRequest } from './operatorPassthrough';
 
 export interface WorkerCompletionVerifier {
   verify(token: string, event: WorkerTerminalFailure | WorkerTerminalSuccess | WorkerReviewCompletion | WorkerReviewEvidence): Promise<WorkerCompletionProof>;
@@ -16,9 +17,13 @@ export interface AuthoritativeReviewAdmission {
   expectedAppIdFor?: (repository: ReviewAuthorityRepository) => number;
   acceptNewRequests?: boolean;
   repositoryIds: readonly number[];
-  resolver: Pick<AuthoritativePublishingResolver, 'resolve'>;
+  repositoryIdentities?: readonly ReviewAuthorityRepository[];
+  resolver: Pick<AuthoritativePublishingResolver, 'resolve'>
+    & Partial<Pick<AuthoritativePublishingResolver, 'readCurrentCandidate'>>;
   /** Present only when the startup process independently confirms the pause flag. */
   recordOperatorPassthrough?: (input: OperatorPassthroughAdmissionRequest) => Promise<OperatorPassthroughAdmissionReceipt>;
+  /** Read-only same-delivery conflict check for a typed authority outage before any current tuple exists. */
+  reportOperatorPassthroughUnavailable?: (input: OperatorPassthroughUnavailableRequest) => Promise<OperatorPassthroughAdmissionReceipt>;
 }
 export interface AuthoritativeReviewCompletion {
   verifier: WorkerCompletionVerifier;

@@ -410,6 +410,24 @@ describe('GitHubReviewGateClient hard request bounds', () => {
     expect(fetcher.mock.lastCall?.[1]?.signal?.aborted).toBe(true);
   });
 
+  it('aborts an in-flight pause request when its caller budget expires', async () => {
+    const parent = new AbortController();
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(() => new Promise(() => undefined));
+    const gate = new GitHubReviewGateClient({ token, expectedAppId: appId, checkName: REVIEW_WORKER_CHECK_NAME,
+      baseUrl: 'https://github.test/api/v3', fetchImplementation: fetcher, timeoutMs: 1_000, signal: parent.signal });
+    const pending = rejection(gate.createOperatorPending({ ...coordinates, kind: 'operator-passthrough',
+      publicationId: 'f'.repeat(64), publicationSequence: 1, auditDigest: 'd'.repeat(64) }));
+    await vi.advanceTimersByTimeAsync(100);
+    parent.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    const abortedByParent = fetcher.mock.lastCall?.[1]?.signal?.aborted;
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect((await pending).message).toBe('GitHub Review Yeti gate request timed out');
+    expect(abortedByParent).toBe(true);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it('cancels a late fetch body without reading it or continuing to PATCH', async () => {
     let deliver!: (response: Response) => void;
     const fetcher = vi.fn<typeof fetch>().mockImplementation(() => new Promise((resolve) => { deliver = resolve; }));

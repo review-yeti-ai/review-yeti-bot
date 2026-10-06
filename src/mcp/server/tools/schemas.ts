@@ -122,19 +122,20 @@ export interface ReviewStatusOutput {
   operational_telemetry?: OperationalTelemetry;
   /** Service-owned pause exemption, separate from any real run/attempt identity. */
   operator_exemption?: {
-    publication_id: string;
-    audit_digest: string;
-    base_sha: string;
-    policy_digest: string;
-    expected_app_id: number;
+    publication_id: string | null;
+    audit_digest: string | null;
     expected_lanes: 0;
     completed_lanes: 0;
     review_started: false;
-    publication_state: 'pending' | 'published';
+    publication_state: 'pending' | 'published' | 'unavailable';
+    publication_receipt_available: boolean | null;
     review_check_id: number | null;
     gate_check_id: number | null;
     merge_eligible: boolean;
-  };
+  } & (
+    { candidate_state: 'current' | 'historical'; base_sha: string; policy_digest: string; expected_app_id: number }
+    | { candidate_state: 'unavailable'; base_sha: null; policy_digest: null; expected_app_id: null }
+  );
   message?: string;
 }
 
@@ -273,18 +274,21 @@ export type TriggerReviewOutput = {
   owner: string;
   repo: string;
   pull_number: number;
-  head_sha: string;
   verdict: 'SHIP';
   expected_lanes: 0;
   completed_lanes: 0;
-  publication_id: string;
-  audit_digest: string;
-  publication_state: 'pending' | 'published' | 'retiring' | 'retired';
+  publication_id: string | null;
+  audit_digest: string | null;
+  publication_state: 'pending' | 'published' | 'retiring' | 'retired' | 'unavailable';
+  publication_receipt_available: boolean | null;
   review_check_id: number | null;
   gate_check_id: number | null;
   merge_eligible: boolean;
   message: string;
-};
+} & (
+  { candidate_state: 'current'; head_sha: string }
+  | { candidate_state: 'unavailable'; head_sha: null }
+);
 
 // =============================================================================
 // 5. cancel_review

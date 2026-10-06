@@ -1,9 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { canonicalJson, sha256 } from '../review/reviewCore';
 import {
+  OperatorPassthroughDeliveryIdentityConflictError,
+  OperatorPassthroughOperationDeadlineExceededError,
+  OperatorPassthroughPersistenceUnavailableError,
+  OperatorPassthroughPreflightResetUnconfirmedError,
+  assertOperatorPassthroughOperationActive,
+  awaitOperatorPassthroughOperation,
+  operatorPassthroughOperationRemainingMs,
   operatorPassthroughIdentity,
   operatorPassthroughIdentityForCandidate,
   operatorPassthroughReadyForShip,
+  validateOperatorPassthroughEvent,
   type OperatorPassthroughCandidate,
   type OperatorPassthroughCheckStage,
   type OperatorPassthroughCheckState,
@@ -17,13 +25,14 @@ import {
   type OperatorPassthroughRetireRequired,
   type OperatorPassthroughRecordInput,
   type OperatorPassthroughRecordResult,
+  type OperatorPassthroughOperationScope,
   type StoredOperatorPassthroughPublication,
 } from '../review/operatorPassthrough';
 import type { OperatorPassthroughCheckCoordinates, ReviewGateCheck } from '../review/reviewCheckIdentity';
 import { reviewDispatchPrLockKey } from './reviewCiPersistence';
 
 interface Queryable { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
-interface Client extends Queryable { release(): void }
+interface Client extends Queryable { release(error?: Error): void }
 interface Pool extends Queryable { connect(): Promise<Client> }
 
 const RETIREMENT_SWEEP_BATCH_SIZE = 25;
@@ -150,21 +159,133 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
 
   constructor(private readonly pool: Pool) {}
 
-  private async transaction<T>(operation: (client: Client) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect();
+  private async connectWithinScope(scope: OperatorPassthroughOperationScope): Promise<Client> {
+    assertOperatorPassthroughOperationActive(scope);
+    const connecting = this.pool.connect();
     try {
-      await client.query('BEGIN');
-      await client.query("SET LOCAL lock_timeout = '5s'");
-      const result = await operation(client);
-      await client.query('COMMIT');
-      return result;
-    } catch {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw new Error('Operator passthrough persistence operation failed');
-    } finally { client.release(); }
+      return await awaitOperatorPassthroughOperation(() => connecting, scope);
+    } catch (error) {
+      // Pool acquisition cannot be cancelled by node-postgres. If it completes
+      // after the admission deadline, immediately return the unused client.
+      void connecting.then((client) => client.release(new Error('Operator pause receipt deadline expired')),
+        () => undefined);
+      throw error;
+    }
   }
 
-  async record(input: OperatorPassthroughRecordInput, now = Date.now()): Promise<OperatorPassthroughRecordResult> {
+  private async rawQueryWithinScope(client: Client, sql: string, values: unknown[] | undefined,
+    scope: OperatorPassthroughOperationScope): Promise<{ rows: any[] }> {
+    try {
+      return await awaitOperatorPassthroughOperation(() => client.query(sql, values), scope);
+    } catch (error) {
+      const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined;
+      if (code === '57014' || code === '55P03') {
+        throw new OperatorPassthroughOperationDeadlineExceededError();
+      }
+      throw error;
+    }
+  }
+
+  private async beginWithinScope(client: Client, scope: OperatorPassthroughOperationScope,
+    readOnly = false): Promise<void> {
+    await this.rawQueryWithinScope(client, readOnly ? 'BEGIN READ ONLY' : 'BEGIN', undefined, scope);
+    const remaining = Math.max(1, Math.floor(operatorPassthroughOperationRemainingMs(scope)));
+    await this.rawQueryWithinScope(client, `SET LOCAL statement_timeout = '${remaining}ms'`, undefined, scope);
+    await this.rawQueryWithinScope(client, `SET LOCAL lock_timeout = '${Math.min(5_000, remaining)}ms'`, undefined, scope);
+  }
+
+  private async queryWithinScope(client: Client, sql: string, values: unknown[] | undefined,
+    scope: OperatorPassthroughOperationScope): Promise<{ rows: any[] }> {
+    assertOperatorPassthroughOperationActive(scope);
+    const remaining = Math.max(1, Math.floor(operatorPassthroughOperationRemainingMs(scope)));
+    // Refresh both server-side limits for each query. The service deadline is
+    // still the authority; the client race below destroys a connection if a
+    // statement cannot stop promptly after PostgreSQL's scoped cancellation.
+    await this.rawQueryWithinScope(client, `SET LOCAL statement_timeout = '${remaining}ms'`, undefined, scope);
+    const lockTimeout = Math.min(5_000, Math.max(1, Math.floor(operatorPassthroughOperationRemainingMs(scope))));
+    await this.rawQueryWithinScope(client, `SET LOCAL lock_timeout = '${lockTimeout}ms'`, undefined, scope);
+    return this.rawQueryWithinScope(client, sql, values, scope);
+  }
+
+  private scopedClient(client: Client, scope: OperatorPassthroughOperationScope): Client {
+    return {
+      query: (sql, values) => this.queryWithinScope(client, sql, values, scope),
+      release: (error) => client.release(error),
+    };
+  }
+
+  private async transaction<T>(operation: (client: Client) => Promise<T>,
+    scope?: OperatorPassthroughOperationScope, readOnly = false): Promise<T> {
+    const client = scope ? await this.connectWithinScope(scope) : await this.pool.connect();
+    let released = false;
+    const release = (error?: Error) => {
+      if (!released) {
+        released = true;
+        client.release(error);
+      }
+    };
+    try {
+      if (scope) await this.beginWithinScope(client, scope, readOnly);
+      else {
+        await client.query(readOnly ? 'BEGIN READ ONLY' : 'BEGIN');
+        await client.query("SET LOCAL lock_timeout = '5s'");
+      }
+      const transactionClient = scope ? this.scopedClient(client, scope) : client;
+      const result = scope
+        ? await awaitOperatorPassthroughOperation(() => operation(transactionClient), scope)
+        : await operation(transactionClient);
+      if (scope) await transactionClient.query('COMMIT');
+      else await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      const deadline = scope && (error instanceof OperatorPassthroughOperationDeadlineExceededError
+        || scope.signal.aborted || operatorPassthroughOperationRemainingMs(scope) <= 0);
+      if (deadline) {
+        // Releasing with an error makes node-postgres discard the connection,
+        // which cancels an in-flight query and rolls back an open transaction.
+        release(new Error('Operator pause receipt deadline expired'));
+        throw new OperatorPassthroughOperationDeadlineExceededError();
+      }
+      try {
+        if (scope) await this.rawQueryWithinScope(client, 'ROLLBACK', undefined, scope);
+        else await client.query('ROLLBACK');
+      } catch {
+        release(new Error('Operator pause receipt transaction could not be rolled back'));
+      }
+      if (error instanceof OperatorPassthroughDeliveryIdentityConflictError
+        || error instanceof OperatorPassthroughOperationDeadlineExceededError
+        || error instanceof OperatorPassthroughPersistenceUnavailableError) throw error;
+      throw new Error('Operator passthrough persistence operation failed');
+    } finally { release(); }
+  }
+
+  async assertDeliveryIdentity(event: OperatorPassthroughRecordInput['event'],
+    scope?: OperatorPassthroughOperationScope): Promise<void> {
+    validateOperatorPassthroughEvent(event);
+    try {
+      const read = async (client: Queryable) => (await client.query(
+        'SELECT transport,event_name,delivery_digest FROM review_operator_passthrough_events WHERE delivery_id=$1 LIMIT 1',
+        [event.deliveryId],
+      )).rows[0];
+      const existing = scope
+        ? await this.transaction((client) => read(client), scope, true)
+        : (await this.pool.query(
+          'SELECT transport,event_name,delivery_digest FROM review_operator_passthrough_events WHERE delivery_id=$1 LIMIT 1',
+          [event.deliveryId],
+        )).rows[0];
+      if (existing && (existing.transport !== event.transport || existing.event_name !== event.eventName
+        || existing.delivery_digest !== event.deliveryDigest)) {
+        throw new OperatorPassthroughDeliveryIdentityConflictError();
+      }
+    } catch (error) {
+      if (error instanceof OperatorPassthroughDeliveryIdentityConflictError
+        || error instanceof OperatorPassthroughOperationDeadlineExceededError) throw error;
+      throw new OperatorPassthroughPersistenceUnavailableError();
+    }
+  }
+
+  async record(input: OperatorPassthroughRecordInput, now = Date.now(),
+    scope?: OperatorPassthroughOperationScope): Promise<OperatorPassthroughRecordResult> {
     clock(now);
     // Validate external and bounded internal reconciler provenance at the
     // repository boundary before either immutable publication or event writes.
@@ -189,7 +310,7 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
       if (existingEvent) {
         if (existingEvent.transport !== recordInput.event.transport || existingEvent.event_name !== recordInput.event.eventName
           || existingEvent.delivery_digest !== recordInput.event.deliveryDigest) {
-          throw new Error('Operator passthrough delivery identity conflict');
+          throw new OperatorPassthroughDeliveryIdentityConflictError();
         }
         const existingPublication = (await client.query(
           'SELECT * FROM review_operator_passthrough_publications WHERE publication_id=$1', [existingEvent.publication_id],
@@ -199,7 +320,7 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
           || !same(stored.coordinates, { ...recordInput.candidate, kind: 'operator-passthrough',
             publicationId: stored.publicationId, publicationSequence: stored.publicationSequence,
             auditDigest: stored.auditDigest })) {
-          throw new Error('Operator passthrough delivery identity conflict');
+          throw new OperatorPassthroughDeliveryIdentityConflictError();
         }
         if (recordInput.event.transport !== 'service-reconciler' || stored.retiredAt === null) {
           return { status: 'duplicate', publicationId: stored.publicationId,
@@ -227,7 +348,7 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
             if (alreadyRecorded) {
               if (alreadyRecorded.publication_id !== latestStored.publicationId
                 || alreadyRecorded.event_audit_digest !== eventAuditDigestFor(latestStored.publicationId, cycleEvent)) {
-                throw new Error('Operator passthrough delivery identity conflict');
+                throw new OperatorPassthroughDeliveryIdentityConflictError();
               }
             } else {
               await this.insertEvent(client, { ...recordInput, event: cycleEvent }, latestStored.publicationId,
@@ -252,7 +373,7 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
           if (priorCycle.transport !== cycleEvent.transport || priorCycle.event_name !== cycleEvent.eventName
             || priorCycle.delivery_digest !== cycleEvent.deliveryDigest
             || priorCycle.event_audit_digest !== eventAuditDigestFor(priorPublication.publicationId, cycleEvent)) {
-            throw new Error('Operator passthrough delivery identity conflict');
+            throw new OperatorPassthroughDeliveryIdentityConflictError();
           }
           if (priorPublication.retiredAt === null) {
             return { status: 'duplicate', publicationId: priorPublication.publicationId,
@@ -291,7 +412,7 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
       }
       return { status: resultStatus, publicationId: identity.publicationId,
         auditDigest: identity.auditDigest, verdict: 'SHIP', expectedLanes: 0, completedLanes: 0 };
-    });
+    }, scope);
   }
 
   private async insertPublicationAndEvent(client: Client, input: OperatorPassthroughRecordInput,
@@ -320,9 +441,13 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
     ]);
   }
 
-  async getPublication(publicationId: string): Promise<OperatorPassthroughPublicationSnapshot | null> {
+  async getPublication(publicationId: string,
+    scope?: OperatorPassthroughOperationScope): Promise<OperatorPassthroughPublicationSnapshot | null> {
     if (!/^[a-f0-9]{64}$/u.test(publicationId)) throw new Error('Invalid operator passthrough publication id');
-    const result = await this.pool.query('SELECT * FROM review_operator_passthrough_publications WHERE publication_id=$1', [publicationId]);
+    const result = scope
+      ? await this.transaction((client) => client.query(
+        'SELECT * FROM review_operator_passthrough_publications WHERE publication_id=$1', [publicationId]), scope, true)
+      : await this.pool.query('SELECT * FROM review_operator_passthrough_publications WHERE publication_id=$1', [publicationId]);
     if (!result.rows[0]) return null;
     const stored = storedFromRow(result.rows[0]);
     return { ...stored, readyForShip: operatorPassthroughReadyForShip(stored) };
@@ -435,7 +560,8 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
     return requested;
   }
 
-  async claimPublication(workerId: string, now: number, leaseMs = 60_000, publicationId?: string): Promise<OperatorPassthroughPublicationClaim | null> {
+  async claimPublication(workerId: string, now: number, leaseMs = 60_000, publicationId?: string,
+    scope?: OperatorPassthroughOperationScope): Promise<OperatorPassthroughPublicationClaim | null> {
     clock(now);
     if (!/^[A-Za-z0-9_.:-]{1,100}$/u.test(workerId) || !Number.isSafeInteger(leaseMs) || leaseMs < 1_000 || leaseMs > 120_000) {
       throw new Error('Invalid operator passthrough lease');
@@ -503,55 +629,73 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
           retiring: publication.retirementRequestedAt !== null };
       }
       return null;
-    });
+    }, scope);
   }
 
   async publishLocked(claim: OperatorPassthroughPublicationClaim,
     publish: (claim: OperatorPassthroughPublicationClaim) => Promise<ReviewGateCheck
       | OperatorPassthroughPublicationNotStarted | OperatorPassthroughReconcilePending | OperatorPassthroughRetireRequired>,
-    now: () => number = Date.now): Promise<'published' | 'stale-claim' | 'retry'> {
+    now: () => number = Date.now, scope?: OperatorPassthroughOperationScope): Promise<'published' | 'stale-claim' | 'retry'> {
     clock(now());
-    const client = await this.pool.connect();
+    const client = scope ? await this.connectWithinScope(scope) : await this.pool.connect();
+    let released = false;
+    const release = (error?: Error) => {
+      if (!released) {
+        released = true;
+        client.release(error);
+      }
+    };
     try {
-      await client.query('BEGIN');
-      await client.query("SET LOCAL lock_timeout = '5s'");
-      await prLock(client, claim.coordinates.repositoryId, claim.coordinates.prNumber);
-      const row = (await client.query(`SELECT * FROM review_operator_passthrough_publications
+      if (scope) await this.beginWithinScope(client, scope);
+      else {
+        await client.query('BEGIN');
+        await client.query("SET LOCAL lock_timeout = '5s'");
+      }
+      const db = scope ? this.scopedClient(client, scope) : client;
+      await prLock(db, claim.coordinates.repositoryId, claim.coordinates.prNumber);
+      const row = (await db.query(`SELECT * FROM review_operator_passthrough_publications
         WHERE publication_id=$1 AND lease_owner=$2 AND lease_token=$3
           AND lease_expires_at > to_timestamp($4/1000.0) FOR UPDATE`,
       [claim.publicationId, claim.leaseOwner, claim.leaseToken, now()])).rows[0];
-      if (!row) { await client.query('COMMIT'); return 'stale-claim'; }
+      if (!row) { await db.query('COMMIT'); return 'stale-claim'; }
       const publication = storedFromRow(row);
       if (!same(publication.coordinates, claim.coordinates) || publication.expectedAppId !== claim.expectedAppId
         || publication.auditDigest !== claim.auditDigest || publication.retirementRequestedAt !== claim.retirementRequestedAt) {
-        await client.query('COMMIT'); return 'stale-claim';
+        await db.query('COMMIT'); return 'stale-claim';
       }
       const selected = stageState(publication, claim.stage);
       const mayCreate = claim.mayCreate && publication.retirementRequestedAt === null
         && selected.state === 'creating' && selected.checkId === null;
-      const result = await publish({ ...publication, leaseOwner: claim.leaseOwner, leaseToken: claim.leaseToken,
-        stage: claim.stage, mayCreate, retiring: publication.retirementRequestedAt !== null });
+      const result = scope
+        ? await awaitOperatorPassthroughOperation(() => publish({ ...publication,
+          leaseOwner: claim.leaseOwner, leaseToken: claim.leaseToken, stage: claim.stage, mayCreate,
+          retiring: publication.retirementRequestedAt !== null }), scope)
+        : await publish({ ...publication, leaseOwner: claim.leaseOwner, leaseToken: claim.leaseToken,
+          stage: claim.stage, mayCreate, retiring: publication.retirementRequestedAt !== null });
+      let notStartedReset = false;
       if ('kind' in result) {
         if (!Number.isSafeInteger(result.retryDelayMs) || result.retryDelayMs < 1_000 || result.retryDelayMs > 300_000) {
           throw new Error('Invalid operator passthrough retry delay');
         }
         if (result.kind === 'not-started') {
           if (!mayCreate) throw new Error('Operator passthrough cannot reset an uncertain create');
-          await client.query(`UPDATE review_operator_passthrough_publications SET
+          notStartedReset = true;
+          try { await db.query(`UPDATE review_operator_passthrough_publications SET
             ${claim.stage === 'review' ? 'review_creation_state' : 'gate_creation_state'}='reserved',
             lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
             available_at=to_timestamp(($2::double precision+$3::double precision)/1000.0),last_error_class='client-preparation',updated_at=to_timestamp($2/1000.0)
-            WHERE publication_id=$1`, [claim.publicationId, now(), result.retryDelayMs]);
+            WHERE publication_id=$1`, [claim.publicationId, now(), result.retryDelayMs]); }
+          catch { throw new OperatorPassthroughPreflightResetUnconfirmedError(); }
         } else if (result.kind === 'reconcile-pending') {
           if (selected.state !== 'creating' || selected.checkId !== null) throw new Error('Operator passthrough reconcile state is invalid');
-          await client.query(`UPDATE review_operator_passthrough_publications SET lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
+          await db.query(`UPDATE review_operator_passthrough_publications SET lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
             available_at=to_timestamp(($2::double precision+$3::double precision)/1000.0),last_error_class='unknown-create',updated_at=to_timestamp($2/1000.0)
             WHERE publication_id=$1`, [claim.publicationId, now(), result.retryDelayMs]);
         } else {
           if (result.reason !== 'candidate-changed' || publication.retirementRequestedAt !== null) {
             throw new Error('Operator passthrough retirement transition is invalid');
           }
-          await client.query(`UPDATE review_operator_passthrough_publications SET
+          await db.query(`UPDATE review_operator_passthrough_publications SET
             retirement_requested_at=to_timestamp($2/1000.0),retirement_reason='candidate-changed',
             review_creation_state=CASE WHEN review_creation_state='reserved'
               OR ($3 AND $4='review' AND review_creation_state='creating' AND review_check_id IS NULL)
@@ -575,7 +719,12 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
             updated_at=to_timestamp($2/1000.0) WHERE publication_id=$1`,
           [claim.publicationId, now(), mayCreate, claim.stage, result.retryDelayMs]);
         }
-        await client.query('COMMIT'); return 'retry';
+        try { await db.query('COMMIT'); }
+        catch {
+          if (notStartedReset) throw new OperatorPassthroughPreflightResetUnconfirmedError();
+          throw new Error('Operator passthrough retry transaction commit failed');
+        }
+        return 'retry';
       }
       const expectedName = claim.stage === 'review' ? 'Review Yeti' : 'Review Yeti Gate';
       const expectedConclusion = publication.retirementRequestedAt === null ? 'success' : 'failure';
@@ -586,7 +735,7 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
         throw new Error('Operator passthrough check publication identity/state mismatch');
       }
       const stageColumn = claim.stage === 'review' ? 'review' : 'gate';
-      await client.query(`UPDATE review_operator_passthrough_publications SET
+      await db.query(`UPDATE review_operator_passthrough_publications SET
         ${stageColumn}_check_id=$2,${stageColumn}_creation_state='bound',
         ${stageColumn}_retired_at=CASE WHEN $3 THEN to_timestamp($4/1000.0) ELSE ${stageColumn}_retired_at END,
         retired_at=CASE WHEN $3 AND (
@@ -596,22 +745,53 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
         lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,last_error_class=NULL,updated_at=to_timestamp($4/1000.0)
         WHERE publication_id=$1`, [claim.publicationId, result.id, publication.retirementRequestedAt !== null,
         now(), claim.stage === 'review', claim.stage === 'gate']);
-      await client.query('COMMIT');
+      await db.query('COMMIT');
       return 'published';
     } catch (error) {
-      await client.query('ROLLBACK').catch(() => undefined);
+      const deadline = scope && (error instanceof OperatorPassthroughOperationDeadlineExceededError
+        || scope.signal.aborted || operatorPassthroughOperationRemainingMs(scope) <= 0);
+      if (error instanceof OperatorPassthroughPreflightResetUnconfirmedError) {
+        if (deadline) release(new Error('Operator pause receipt deadline expired'));
+        else {
+          try {
+            if (scope) await this.rawQueryWithinScope(client, 'ROLLBACK', undefined, scope);
+            else await client.query('ROLLBACK');
+          } catch {
+            release(new Error('Operator passthrough reset transaction could not be rolled back'));
+          }
+        }
+        throw error;
+      }
+      if (deadline) {
+        // An in-flight GitHub request may have an unknown outcome. Dropping the
+        // transaction preserves its committed `creating` state for reconcile-only recovery.
+        release(new Error('Operator pause receipt deadline expired'));
+        throw new OperatorPassthroughOperationDeadlineExceededError();
+      }
+      try {
+        if (scope) await this.rawQueryWithinScope(client, 'ROLLBACK', undefined, scope);
+        else await client.query('ROLLBACK');
+      } catch {
+        release(new Error('Operator pause publication transaction could not be rolled back'));
+      }
+      if (error instanceof OperatorPassthroughOperationDeadlineExceededError) throw error;
       throw new Error('Operator passthrough check publication failed');
-    } finally { client.release(); }
+    } finally { release(); }
   }
 
-  async retryPublication(claim: OperatorPassthroughPublicationClaim, now: number, delayMs: number): Promise<boolean> {
+  async retryPublication(claim: OperatorPassthroughPublicationClaim, now: number, delayMs: number,
+    scope?: OperatorPassthroughOperationScope): Promise<boolean> {
     clock(now);
     if (!Number.isSafeInteger(delayMs) || delayMs < 1_000 || delayMs > 300_000) throw new Error('Invalid operator passthrough retry delay');
-    const result = await this.pool.query(`UPDATE review_operator_passthrough_publications SET
+    const sql = `UPDATE review_operator_passthrough_publications SET
       lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,available_at=to_timestamp(($4::double precision+$5::double precision)/1000.0),
       last_error_class='transport',updated_at=to_timestamp($4/1000.0)
       WHERE publication_id=$1 AND lease_owner=$2 AND lease_token=$3 AND lease_expires_at > to_timestamp($4/1000.0)
-      RETURNING publication_id`, [claim.publicationId, claim.leaseOwner, claim.leaseToken, now, delayMs]);
+      RETURNING publication_id`;
+    const values = [claim.publicationId, claim.leaseOwner, claim.leaseToken, now, delayMs];
+    const result = scope
+      ? await this.transaction((client) => client.query(sql, values), scope)
+      : await this.pool.query(sql, values);
     return result.rows.length === 1;
   }
 }

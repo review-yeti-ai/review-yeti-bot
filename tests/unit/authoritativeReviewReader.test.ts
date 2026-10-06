@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthoritativeReviewReader, MAX_AUTHORITATIVE_DIFF_BYTES } from '../../src/github/authoritativeReviewReader';
+import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError } from '../../src/github/authoritativeReadFailure';
 import { renderFindingMarker } from '../../src/review/findingConvergence';
 
 const TOKEN = 'ghs_authoritative-reader.header_segment.signature-with-dash';
@@ -548,7 +549,7 @@ describe('AuthoritativeReviewReader', () => {
   });
 
   describe('transport bounds, redaction and cleanup', () => {
-    it.each([301, 401, 403, 404, 429, 500])('rejects HTTP %s without retries or leaking the response', async (status) => {
+    it.each([301, 404])('rejects HTTP %s without retries or leaking the response', async (status) => {
       const { reader, fetcher } = fixture(new Response(`${PRIVATE_BODY} ${TOKEN}`, { status, headers: { Location: 'https://other.example.invalid' } }));
       const error = await rejected(reader.currentCandidate(PR));
       expect(error.message).toBe('Review reader request unavailable');
@@ -558,11 +559,55 @@ describe('AuthoritativeReviewReader', () => {
       expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true);
     });
 
+    it.each([500, 502, 503, 504])('classifies HTTP %s as a redacted retryable server read failure', async (status) => {
+      const { reader, fetcher } = fixture(new Response(`${PRIVATE_BODY} ${TOKEN}`, { status }));
+      const error = await rejected(reader.currentCandidate(PR));
+      expect(error).toBeInstanceOf(TransientAuthoritativeReadError);
+      expect((error as TransientAuthoritativeReadError).kind).toBe('retryable_server');
+      expect(error.message).toBe('Authoritative source read is temporarily unavailable');
+      expectRedacted(error);
+      expect(fetcher).toHaveBeenCalledOnce();
+    });
+
+    it('treats an explicit GitHub rate-limit response as transient but a bare 403 as authorization failure', async () => {
+      const rateReader = fixture(new Response(`${PRIVATE_BODY} ${TOKEN}`, { status: 403,
+        headers: { 'x-ratelimit-remaining': '0' } })).reader;
+      const error = await rejected(rateReader.currentCandidate(PR));
+      expect(error).toBeInstanceOf(TransientAuthoritativeReadError);
+      expect((error as TransientAuthoritativeReadError).kind).toBe('rate_limit');
+
+      const { reader } = fixture(new Response(`${PRIVATE_BODY} ${TOKEN}`, { status: 403 }));
+      const forbidden = await rejected(reader.currentCandidate(PR));
+      expect(forbidden).toBeInstanceOf(InternalGitHubDependencyUnavailableError);
+      expect(forbidden.message).toBe('Internal GitHub authority dependency is unavailable');
+      expectRedacted(forbidden);
+    });
+
+    it.each([401, 403])('marks internal authoritative-reader HTTP %s as a typed dependency authorization outage', async (status) => {
+      const { reader, fetcher } = fixture(new Response(`${PRIVATE_BODY} ${TOKEN}`, { status }));
+      const error = await rejected(reader.currentCandidate(PR));
+
+      expect(error).toMatchObject({ name: 'InternalGitHubDependencyUnavailableError' });
+      expect(error.message).not.toContain(PRIVATE_BODY);
+      expect(error.message).not.toContain(TOKEN);
+      expectRedacted(error);
+      expect(fetcher).toHaveBeenCalledOnce();
+    });
+
+    it('classifies HTTP 429 as rate limit', async () => {
+      const { reader } = fixture(new Response(`${PRIVATE_BODY} ${TOKEN}`, { status: 429 }));
+      const error = await rejected(reader.currentCandidate(PR));
+      expect(error).toBeInstanceOf(TransientAuthoritativeReadError);
+      expect((error as TransientAuthoritativeReadError).kind).toBe('rate_limit');
+    });
+
     it('redacts thrown transport details and never retries', async () => {
       const { reader, fetcher } = fixture();
       fetcher.mockRejectedValue(new Error(`${PRIVATE_BODY} token=${TOKEN}`));
       const error = await rejected(reader.currentCandidate(PR));
-      expect(error.message).toBe('Review reader request unavailable');
+      expect(error).toBeInstanceOf(TransientAuthoritativeReadError);
+      expect((error as TransientAuthoritativeReadError).kind).toBe('network');
+      expect(error.message).toBe('Authoritative source read is temporarily unavailable');
       expectRedacted(error);
       expect(fetcher).toHaveBeenCalledOnce();
     });
@@ -619,6 +664,8 @@ describe('AuthoritativeReviewReader', () => {
       const body = new ReadableStream<Uint8Array>({ pull(controller) { controller.error(new Error(`${PRIVATE_BODY} ${TOKEN}`)); } });
       const { reader, fetcher } = fixture(new Response(body));
       const error = await rejected(reader.currentCandidate(PR));
+      expect(error).toBeInstanceOf(TransientAuthoritativeReadError);
+      expect((error as TransientAuthoritativeReadError).kind).toBe('network');
       expectRedacted(error);
       expect(body.locked).toBe(false);
       expect(fetcher).toHaveBeenCalledOnce();
@@ -633,7 +680,8 @@ describe('AuthoritativeReviewReader', () => {
       expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
       const error = await result;
-      expect(error.message).toBe('Review reader request unavailable');
+      expect(error).toBeInstanceOf(TransientAuthoritativeReadError);
+      expect((error as TransientAuthoritativeReadError).kind).toBe('deadline');
       expectRedacted(error);
       expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true);
       expect(fetcher).toHaveBeenCalledOnce();
@@ -653,7 +701,8 @@ describe('AuthoritativeReviewReader', () => {
         expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false);
         await vi.advanceTimersByTimeAsync(1);
         const error = await result;
-        expect(error.message).toBe('Review reader request unavailable');
+        expect(error).toBeInstanceOf(TransientAuthoritativeReadError);
+        expect((error as TransientAuthoritativeReadError).kind).toBe('deadline');
         expectRedacted(error);
         expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(true);
         expect(fetcher).toHaveBeenCalledOnce();

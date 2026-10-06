@@ -67,6 +67,8 @@ export interface ReviewGateClientOptions {
   timeoutMs?: number;
   /** The complete reconcile operation is bounded independently of page count. */
   reconcileTimeoutMs?: number;
+  /** Optional request-scoped cancellation used by the operator pause receipt budget. */
+  signal?: AbortSignal;
 }
 
 export interface ReviewGateCheckMetadata {
@@ -276,6 +278,7 @@ export class GitHubReviewGateClient {
   private readonly timeoutMs: number;
   private readonly reconcileTimeoutMs: number;
   private readonly fetchImplementation: typeof fetch;
+  private readonly signal?: AbortSignal;
 
   constructor(options: ReviewGateClientOptions) {
     this.checkName = options.checkName ?? REVIEW_GATE_CHECK_NAME;
@@ -302,9 +305,11 @@ export class GitHubReviewGateClient {
       throw new Error(`GitHub Review Yeti gate reconcile timeout must be between ${MIN_REQUEST_TIMEOUT_MS}ms and ${MAX_RECONCILE_TIMEOUT_MS}ms`);
     }
     this.fetchImplementation = options.fetchImplementation ?? options.fetch ?? globalThis.fetch;
+    this.signal = options.signal;
   }
 
-  private async request<T>(path: string, init: RequestInit = {}, timeoutMs = this.timeoutMs): Promise<T> {
+  private async request<T>(path: string, init: RequestInit = {}, timeoutMs = this.timeoutMs,
+    requestSignal: AbortSignal | undefined = this.signal): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set('Accept', 'application/vnd.github+json');
     headers.set('Authorization', `Bearer ${this.token}`);
@@ -320,9 +325,21 @@ export class GitHubReviewGateClient {
     };
     let cleanupBody: (() => void) | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let removeCallerAbort: () => void = () => {};
     const expired = new Promise<never>((_, reject) => {
       timer = setTimeout(() => { controller.abort(); reject(timedOut()); }, timeoutMs);
     });
+    const callerExpired = requestSignal ? new Promise<never>((_resolve, reject) => {
+      const abortForCaller = () => {
+        controller.abort();
+        reject(timedOut());
+      };
+      if (requestSignal.aborted) abortForCaller();
+      else {
+        requestSignal.addEventListener('abort', abortForCaller, { once: true });
+        removeCallerAbort = () => requestSignal.removeEventListener('abort', abortForCaller);
+      }
+    }) : undefined;
     const execute = async (): Promise<T> => {
       let response: Response;
       try {
@@ -381,15 +398,17 @@ export class GitHubReviewGateClient {
       }
     };
     try {
-      return await Promise.race([execute(), expired]);
+      return await Promise.race(callerExpired ? [execute(), expired, callerExpired] : [execute(), expired]);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
+      removeCallerAbort();
       controller.abort();
       cleanupBody?.();
     }
   }
 
-  private async listCheckRuns(coordinates: ReviewCheckCoordinates, deadline: number): Promise<unknown[]> {
+  private async listCheckRuns(coordinates: ReviewCheckCoordinates, deadline: number,
+    requestSignal?: AbortSignal): Promise<unknown[]> {
     const result: unknown[] = [];
     const seenCheckIds = new Set<number>();
     let totalCount: number | undefined;
@@ -400,6 +419,7 @@ export class GitHubReviewGateClient {
         `/repos/${encodeURIComponent(coordinates.owner)}/${encodeURIComponent(coordinates.repo)}/commits/${encodeURIComponent(coordinates.headSha)}/check-runs?check_name=${encodeURIComponent(this.checkName)}&filter=all&per_page=${CHECK_RUN_PAGE_SIZE}&page=${page}`,
         { method: 'GET' },
         Math.min(this.timeoutMs, remainingMs),
+        requestSignal,
       );
       const body = record(data);
       const checkRuns = body?.check_runs;
@@ -453,12 +473,13 @@ export class GitHubReviewGateClient {
    * not proof that a prior uncertain create was absent, and never authorizes a
    * follow-up create by this client.
    */
-  private async reconcileCheck(coordinates: ReviewCheckCoordinates): Promise<ReviewGateCheck | null> {
+  private async reconcileCheck(coordinates: ReviewCheckCoordinates,
+    requestSignal?: AbortSignal): Promise<ReviewGateCheck | null> {
     const normalizedCoordinates = validateReviewCheckCoordinates(coordinates, this.checkName);
     const externalId = deriveReviewCheckExternalId(normalizedCoordinates, this.checkName);
     const deadline = Date.now() + this.reconcileTimeoutMs;
     const matches: ReviewGateCheck[] = [];
-    for (const candidate of await this.listCheckRuns(normalizedCoordinates, deadline)) {
+    for (const candidate of await this.listCheckRuns(normalizedCoordinates, deadline, requestSignal)) {
       if (!hasExactIdentity(candidate, normalizedCoordinates, this.expectedAppId, externalId, this.checkName)) continue;
       const check = checkRunFrom(candidate, this.checkName);
       if (!check) throw new Error('GitHub Review Yeti gate matching check identity was invalid');
@@ -477,8 +498,9 @@ export class GitHubReviewGateClient {
     return this.reconcileCheck(coordinates);
   }
 
-  async reconcileOperator(coordinates: OperatorPassthroughCheckCoordinates): Promise<ReviewGateCheck | null> {
-    return this.reconcileCheck(coordinates);
+  async reconcileOperator(coordinates: OperatorPassthroughCheckCoordinates,
+    requestSignal?: AbortSignal): Promise<ReviewGateCheck | null> {
+    return this.reconcileCheck(coordinates, requestSignal);
   }
 
   async reconcileCi(coordinates: ReviewCiCheckCoordinates): Promise<ReviewGateCheck | null> {

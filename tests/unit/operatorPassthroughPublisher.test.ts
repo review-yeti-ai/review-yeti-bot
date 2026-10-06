@@ -10,8 +10,13 @@ import {
 } from '../../src/review/reviewCheckIdentity';
 import {
   isOperatorPassthroughCheckOutput,
+  awaitOperatorPassthroughOperation,
   operatorPassthroughCheckMetadata,
   operatorPassthroughIdentityForCandidate,
+  OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS,
+  OperatorPassthroughOperationDeadlineExceededError,
+  OperatorPassthroughPreflightResetUnconfirmedError,
+  withOperatorPassthroughReceiptBudget,
   type OperatorPassthroughPublicationClaim,
   type OperatorPassthroughPublicationRepository,
 } from '../../src/review/operatorPassthrough';
@@ -66,12 +71,13 @@ function checkNameFor(stage: OperatorPassthroughPublicationClaim['stage']) {
 function apiForPublication(
   publication: OperatorPassthroughPublicationClaim,
   options: { failPost?: boolean; failPatch?: boolean; responseAppId?: number;
-    existingChecks?: Record<string, unknown>[] } = {},
+    failPreflightRead?: boolean; existingChecks?: Record<string, unknown>[] } = {},
 ) {
   const name = checkNameFor(publication.stage);
   const id = publication.stage === 'review'
     ? publication.reviewCheckId ?? 7_901
     : publication.gateCheckId ?? 7_902;
+  let failPreflightRead = options.failPreflightRead ?? false;
   let currentCheck: Record<string, unknown> = {
     id,
     name,
@@ -85,6 +91,10 @@ function apiForPublication(
     const url = new URL(String(input));
     const method = init?.method ?? 'GET';
     if (method === 'GET' && url.pathname.endsWith(`/commits/${publication.coordinates.headSha}/check-runs`)) {
+      if (failPreflightRead) {
+        failPreflightRead = false;
+        throw new Error(`preflight read failed before create: ${TOKEN}`);
+      }
       const existingChecks = options.existingChecks ?? [];
       return response({ total_count: existingChecks.length, check_runs: existingChecks });
     }
@@ -138,6 +148,33 @@ function repositoryFor(claims: OperatorPassthroughPublicationClaim[]) {
   return { repository, claimPublication, publishLocked, retryPublication, callbackResults };
 }
 
+function repositoryForCreateRecovery(publication: OperatorPassthroughPublicationClaim) {
+  let creationState: 'reserved' | 'creating' | 'bound' = 'reserved';
+  const claims: OperatorPassthroughPublicationClaim[] = [];
+  const claimPublication = vi.fn(async () => {
+    if (creationState === 'bound') return null;
+    const checkId = publication.stage === 'review' ? publication.reviewCheckId : publication.gateCheckId;
+    const current = { ...publication, mayCreate: creationState === 'reserved' && checkId === null };
+    if (current.mayCreate) creationState = 'creating';
+    claims.push(current);
+    return current;
+  });
+  const publishLocked = vi.fn(async (current: OperatorPassthroughPublicationClaim, publish: Publish) => {
+    const result = await publish(current);
+    if ('kind' in result) {
+      if (result.kind === 'not-started' && current.mayCreate && creationState === 'creating') {
+        creationState = 'reserved';
+      }
+      return 'retry' as const;
+    }
+    creationState = 'bound';
+    return 'published' as const;
+  });
+  const retryPublication = vi.fn(async () => true);
+  const repository = { claimPublication, publishLocked, retryPublication } as unknown as OperatorPassthroughPublicationRepository;
+  return { repository, claimPublication, publishLocked, retryPublication, claims };
+}
+
 function publisherFor(
   repository: OperatorPassthroughPublicationRepository,
   clientFor: (claim: OperatorPassthroughPublicationClaim) => Promise<Pick<ReviewGateClient,
@@ -157,6 +194,37 @@ function publisherFor(
 }
 
 describe('OperatorPassthroughPublisher', () => {
+  it('does not start queued work after its signal aborts before the operation microtask', async () => {
+    const controller = new AbortController();
+    const operation = vi.fn(async () => 'started');
+    const pending = awaitOperatorPassthroughOperation(operation, {
+      deadlineAtMs: performance.now() + 1_000,
+      signal: controller.signal,
+    });
+    controller.abort();
+    await Promise.resolve();
+
+    await expect(pending).rejects.toBeInstanceOf(OperatorPassthroughOperationDeadlineExceededError);
+    expect(operation).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the monotonic deadline inside the queued operation microtask', async () => {
+    const clock = vi.spyOn(performance, 'now')
+      .mockReturnValueOnce(100)
+      .mockReturnValue(102);
+    const operation = vi.fn(async () => 'started');
+    try {
+      const pending = awaitOperatorPassthroughOperation(operation, {
+        deadlineAtMs: 101,
+        signal: new AbortController().signal,
+      });
+      await expect(pending).rejects.toBeInstanceOf(OperatorPassthroughOperationDeadlineExceededError);
+      expect(operation).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('shares the authoritative review identity and output contract with merge-group verification', () => {
     expect(REVIEW_WORKER_CHECK_NAME).toBe(AUTHORITATIVE_REVIEW_CHECK_NAME);
     const publication = claim();
@@ -314,27 +382,53 @@ describe('OperatorPassthroughPublisher', () => {
     });
   });
 
-  it('keeps an uncertain create reconcile-only on retry instead of issuing a second POST', async () => {
-    const first = claim({ stage: 'review', mayCreate: true });
-    const retry = { ...first, mayCreate: false };
-    const f = repositoryFor([first, retry]);
-    const api = apiForPublication(first, { failPost: true });
-    const clientFor = vi.fn(async () => api.client);
-    const publisher = publisherFor(f.repository, clientFor);
+  it.each(['review', 'gate'] as const)(
+    'retries a preflight read failure as not-started and recovers the %s check', async (stage) => {
+      const publication = claim({ stage, mayCreate: true });
+      const f = repositoryForCreateRecovery(publication);
+      const api = apiForPublication(publication, { failPreflightRead: true });
+      const clientFor = vi.fn(async () => api.client);
+      const publisher = publisherFor(f.repository, clientFor);
 
-    const firstResult = await publisher.runOnce(first.publicationId);
-    const secondResult = await publisher.runOnce(first.publicationId);
-    expect(firstResult).toMatchObject({ status: 'retry' });
-    expect(secondResult).toMatchObject({ status: 'retry' });
+      const firstResult = await publisher.runOnce(publication.publicationId);
+      expect(firstResult).toMatchObject({ status: 'retry' });
+      expect(f.retryPublication).not.toHaveBeenCalled();
+      expect(api.fetchImplementation.mock.calls.map(([, init]) => init?.method ?? 'GET')).toEqual(['GET']);
+      const secondResult = await publisher.runOnce(publication.publicationId);
 
-    const methods = api.fetchImplementation.mock.calls.map(([, init]) => init?.method ?? 'GET');
-    expect(methods.filter((method) => method === 'POST')).toHaveLength(1);
-    expect(methods.filter((method) => method === 'GET')).toHaveLength(2);
-    expect(methods.filter((method) => method === 'PATCH')).toHaveLength(0);
-    expect(clientFor).toHaveBeenCalledTimes(2);
-    expect(f.retryPublication).toHaveBeenCalledOnce();
-    expect(JSON.stringify([firstResult, secondResult])).not.toContain(TOKEN);
-  });
+      expect(secondResult).toMatchObject({ status: 'published' });
+      expect(f.claims.map((entry) => entry.mayCreate)).toEqual([true, true]);
+      const methods = api.fetchImplementation.mock.calls.map(([, init]) => init?.method ?? 'GET');
+      expect(methods).toEqual(['GET', 'GET', 'POST', 'GET', 'PATCH']);
+      expect(methods.filter((method) => method === 'POST')).toHaveLength(1);
+      expect(JSON.stringify([firstResult, secondResult])).not.toContain(TOKEN);
+    },
+  );
+
+  it.each(['review', 'gate'] as const)(
+    'keeps an uncertain %s create reconcile-only on retry instead of issuing a second POST', async (stage) => {
+      const first = claim({ stage, mayCreate: true });
+      const retry = { ...first, mayCreate: false };
+      const f = repositoryFor([first, retry]);
+      const api = apiForPublication(first, { failPost: true });
+      const clientFor = vi.fn(async () => api.client);
+      const publisher = publisherFor(f.repository, clientFor);
+
+      const firstResult = await publisher.runOnce(first.publicationId);
+      const secondResult = await publisher.runOnce(first.publicationId);
+      expect(firstResult).toMatchObject({ status: 'retry' });
+      expect(secondResult).toMatchObject({ status: 'retry' });
+
+      const methods = api.fetchImplementation.mock.calls.map(([, init]) => init?.method ?? 'GET');
+      expect(methods.filter((method) => method === 'POST')).toHaveLength(1);
+      expect(methods.filter((method) => method === 'GET')).toHaveLength(2);
+      expect(methods.filter((method) => method === 'PATCH')).toHaveLength(0);
+      expect(clientFor).toHaveBeenCalledTimes(2);
+      expect(f.retryPublication).toHaveBeenCalledOnce();
+      expect(f.callbackResults.at(-1)).toEqual({ kind: 'reconcile-pending', retryDelayMs: 5_000 });
+      expect(JSON.stringify([firstResult, secondResult])).not.toContain(TOKEN);
+    },
+  );
 
   it('stops before client preparation or GitHub calls when the candidate has changed', async () => {
     const publication = claim();
@@ -345,7 +439,60 @@ describe('OperatorPassthroughPublisher', () => {
 
     await expect(publisher.runOnce(publication.publicationId)).resolves.toMatchObject({ status: 'retry' });
 
-    expect(candidateIsCurrent).toHaveBeenCalledWith(publication);
+    expect(candidateIsCurrent).toHaveBeenCalledWith(publication, undefined);
+    expect(clientFor).not.toHaveBeenCalled();
+    expect(f.callbackResults).toEqual([{ kind: 'retire-required', reason: 'candidate-changed', retryDelayMs: 5_000 }]);
+  });
+
+  it.each([
+    ['review', true, { kind: 'not-started', retryDelayMs: 5_000 }],
+    ['gate', true, { kind: 'not-started', retryDelayMs: 5_000 }],
+    ['review', false, { kind: 'reconcile-pending', retryDelayMs: 5_000 }],
+  ] as const)('keeps a transient candidate read failure safe for %s with mayCreate=%s', async (stage, mayCreate, expected) => {
+    const publication = claim({ stage, mayCreate,
+      ...(stage === 'gate' ? { reviewCheckId: 8_001, reviewCreationState: 'bound' as const } : {}) });
+    const f = repositoryFor([publication]);
+    const candidateIsCurrent = vi.fn(async () => { throw new Error(`resolver unavailable: ${TOKEN}`); });
+    const clientFor = vi.fn(async () => { throw new Error('must not prepare client'); });
+    const publisher = publisherFor(f.repository, clientFor, { candidateIsCurrent });
+
+    await expect(publisher.runOnce(publication.publicationId)).resolves.toMatchObject({ status: 'retry' });
+
+    expect(candidateIsCurrent).toHaveBeenCalledOnce();
+    expect(clientFor).not.toHaveBeenCalled();
+    expect(f.callbackResults).toEqual([expected]);
+    expect(f.retryPublication).not.toHaveBeenCalled();
+  });
+
+  it('keeps an uncertain POST reconcile-only when the next candidate preflight read fails', async () => {
+    const first = claim({ stage: 'review', mayCreate: true });
+    const retry = { ...first, mayCreate: false };
+    const f = repositoryFor([first, retry]);
+    const api = apiForPublication(first, { failPost: true });
+    const candidateIsCurrent = vi.fn().mockResolvedValueOnce(true)
+      .mockRejectedValueOnce(new Error(`resolver unavailable: ${TOKEN}`));
+    const clientFor = vi.fn(async () => api.client);
+    const publisher = publisherFor(f.repository, clientFor, { candidateIsCurrent });
+
+    await publisher.runOnce(first.publicationId);
+    await publisher.runOnce(first.publicationId);
+
+    const methods = api.fetchImplementation.mock.calls.map(([, init]) => init?.method ?? 'GET');
+    expect(methods.filter((method) => method === 'POST')).toHaveLength(1);
+    expect(f.callbackResults).toEqual([{ kind: 'reconcile-pending', retryDelayMs: 5_000 }]);
+    expect(clientFor).toHaveBeenCalledOnce();
+  });
+
+  it('retires a Gate reservation when an exact candidate read explicitly reports stale', async () => {
+    const publication = claim({ stage: 'gate', reviewCheckId: 8_001, reviewCreationState: 'bound',
+      gateCreationState: 'creating' });
+    const f = repositoryFor([publication]);
+    const candidateIsCurrent = vi.fn(async () => false);
+    const clientFor = vi.fn(async () => { throw new Error('must not prepare a client'); });
+    const publisher = publisherFor(f.repository, clientFor, { candidateIsCurrent });
+
+    await expect(publisher.runOnce(publication.publicationId)).resolves.toMatchObject({ status: 'retry' });
+
     expect(clientFor).not.toHaveBeenCalled();
     expect(f.callbackResults).toEqual([{ kind: 'retire-required', reason: 'candidate-changed', retryDelayMs: 5_000 }]);
   });
@@ -407,6 +554,115 @@ describe('OperatorPassthroughPublisher', () => {
     expect(JSON.stringify(result)).not.toContain(TOKEN);
     expect(f.callbackResults).toEqual([{ kind: 'not-started', retryDelayMs: 5_000 }]);
     expect(f.retryPublication).not.toHaveBeenCalled();
+  });
+
+  it('keeps a timed-out create reconcile-only after its late response arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const publication = claim({ mayCreate: true });
+      const f = repositoryFor([publication, claim({ mayCreate: false })]);
+      const lateCreate = Promise.withResolvers<ReviewGateCheck>();
+      const client = {
+        reconcileOperator: vi.fn(async () => null),
+        createOperatorPending: vi.fn(() => lateCreate.promise),
+        updateOperatorExisting: vi.fn(),
+      };
+      const publisher = publisherFor(f.repository, async () => client);
+      const pending = withOperatorPassthroughReceiptBudget(
+        (scope) => publisher.runOnce(publication.publicationId, scope), OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS);
+      const timeoutAssertion = expect(pending).rejects.toBeInstanceOf(OperatorPassthroughOperationDeadlineExceededError);
+      await vi.advanceTimersByTimeAsync(OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS + 1);
+      await timeoutAssertion;
+      expect(client.createOperatorPending).toHaveBeenCalledOnce();
+      expect(client.updateOperatorExisting).not.toHaveBeenCalled();
+      expect(f.retryPublication).not.toHaveBeenCalled();
+
+      lateCreate.resolve({ id: 7_901, name: REVIEW_WORKER_CHECK_NAME, appId: APP_ID,
+        headSha: publication.coordinates.headSha, externalId: publication.reviewExternalId,
+        status: 'in_progress', conclusion: null });
+      await vi.advanceTimersByTimeAsync(0);
+      await expect(publisher.runOnce(publication.publicationId)).resolves.toMatchObject({ status: 'retry' });
+      expect(client.reconcileOperator).toHaveBeenCalledTimes(2);
+      expect(client.createOperatorPending).toHaveBeenCalledOnce();
+      expect(client.updateOperatorExisting).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resets a conclusively pre-POST reservation when the preflight budget expires', async () => {
+    vi.useFakeTimers();
+    try {
+      const publication = claim({ mayCreate: true });
+      const f = repositoryFor([publication]);
+      const latePreflight = Promise.withResolvers<ReviewGateCheck | null>();
+      const client = {
+        reconcileOperator: vi.fn(() => latePreflight.promise),
+        createOperatorPending: vi.fn(),
+        updateOperatorExisting: vi.fn(),
+      };
+      const publisher = publisherFor(f.repository, async () => client);
+      const pending = withOperatorPassthroughReceiptBudget(
+        (scope) => publisher.runOnce(publication.publicationId, scope), OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS);
+      await vi.advanceTimersByTimeAsync(OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS - 300 + 1);
+      await expect(pending).resolves.toMatchObject({ status: 'retry', publicationId: publication.publicationId });
+      expect(f.callbackResults).toEqual([{ kind: 'not-started', retryDelayMs: 5_000 }]);
+      expect(client.createOperatorPending).not.toHaveBeenCalled();
+      expect(client.updateOperatorExisting).not.toHaveBeenCalled();
+
+      latePreflight.resolve(null);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.createOperatorPending).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a preflight timeout on an uncertain create reconcile-only', async () => {
+    vi.useFakeTimers();
+    try {
+      const publication = claim({ mayCreate: false, reviewCreationState: 'creating' });
+      const f = repositoryFor([publication]);
+      const lateReconcile = Promise.withResolvers<ReviewGateCheck | null>();
+      const client = {
+        reconcileOperator: vi.fn(() => lateReconcile.promise),
+        createOperatorPending: vi.fn(),
+        updateOperatorExisting: vi.fn(),
+      };
+      const publisher = publisherFor(f.repository, async () => client);
+      const pending = withOperatorPassthroughReceiptBudget(
+        (scope) => publisher.runOnce(publication.publicationId, scope), OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS);
+      await vi.advanceTimersByTimeAsync(OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS - 300 + 1);
+      await expect(pending).resolves.toMatchObject({ status: 'retry', publicationId: publication.publicationId });
+      expect(f.callbackResults).toEqual([{ kind: 'reconcile-pending', retryDelayMs: 5_000 }]);
+      expect(client.createOperatorPending).not.toHaveBeenCalled();
+      expect(client.updateOperatorExisting).not.toHaveBeenCalled();
+
+      lateReconcile.resolve(null);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.createOperatorPending).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports an unconfirmed pre-POST reset without retrying or creating another check', async () => {
+    const publication = claim({ mayCreate: true });
+    const retryPublication = vi.fn(async () => true);
+    const repository = {
+      claimPublication: vi.fn(async () => publication),
+      publishLocked: vi.fn(async () => { throw new OperatorPassthroughPreflightResetUnconfirmedError(); }),
+      retryPublication,
+    } as unknown as OperatorPassthroughPublicationRepository;
+    const clientFor = vi.fn(async () => ({
+      reconcileOperator: vi.fn(), createOperatorPending: vi.fn(), updateOperatorExisting: vi.fn(),
+    }));
+    const publisher = publisherFor(repository, clientFor);
+
+    await expect(publisher.runOnce(publication.publicationId)).resolves.toEqual({ status: 'retry',
+      publicationId: publication.publicationId, preflightResetUnconfirmed: true });
+    expect(retryPublication).not.toHaveBeenCalled();
+    expect(clientFor).not.toHaveBeenCalled();
   });
 
   it('retries a failed terminal update without exposing transport diagnostics', async () => {
