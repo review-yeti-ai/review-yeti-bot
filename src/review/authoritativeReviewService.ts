@@ -5,15 +5,19 @@ import { createWorkerCompletionVerifier, type AuthoritativeReviewAdmission,
 import { AuthoritativeReviewReader, type ReviewRepositoryIdentity } from '../github/authoritativeReviewReader';
 import { getBoundedRepositoryToken } from '../github/boundedAppToken';
 import { trustedGitDiffSource } from '../github/largeDiffSourceWiring';
-import { GitHubReviewGateClient } from '../github/reviewGateClient';
-import { GitHubInstallationClient } from '../github/installationClient';
-import { AuthoritativePublishingResolver } from './authoritativePublishingResolver';
+import { AuthoritativeCandidateChangedError, AuthoritativePublishingResolver } from './authoritativePublishingResolver';
 import { createAuthoritativeCompletionContext, type AuthoritativeCompletionContextOptions } from './authoritativeCompletionContext';
 import { ReviewGatePublisher, type ReviewGatePublisherOptions } from './reviewGatePublisher';
 import type { ReviewAdmissionInput } from './reviewRun';
 import { sha256 } from './reviewCore';
-import { OperatorMaintenancePublisher } from './operatorMaintenancePublisher';
-import type { OperatorMaintenanceIdentity, OperatorMaintenancePolicyResolution, OperatorMaintenanceRepository } from './operatorMaintenanceContracts';
+import { canonicalJson } from './reviewCore';
+import { GitHubReviewGateClient, REVIEW_GATE_CHECK_NAME, REVIEW_WORKER_CHECK_NAME } from '../github/reviewGateClient';
+import { OperatorPassthroughPublisher } from './operatorPassthroughPublisher';
+import type { OperatorPassthroughAdmissionRequest, OperatorPassthroughPublicationRepository,
+  OperatorPassthroughReconcileAdmission, OperatorPassthroughReconcileCursor } from './operatorPassthrough';
+import { logger } from '../utils/logger';
+
+const OPERATOR_PASSTHROUGH_CATCH_UP_BATCH_SIZE = 10;
 
 export interface AuthoritativeReviewServiceOptions {
   config: AuthoritativeServiceConfig;
@@ -32,13 +36,10 @@ export interface AuthoritativeReviewServiceOptions {
   fetchImplementation?: typeof fetch;
   /** ADR 0002: resolves the review App's bot login for finding-thread author verification. */
   findingThreadAuthor?: (repository: ReviewRepositoryIdentity) => Promise<string | undefined>;
-  /** Trusted deployment-wide setting; callers never supply this value. */
+  operatorPassthroughRepository?: OperatorPassthroughPublicationRepository;
   passthroughEnabled?: boolean;
-  /** Durable storage for the separate no-review maintenance lane. */
-  operatorMaintenanceRepository?: OperatorMaintenanceRepository;
-  /** Fresh, App-authenticated queue reconstruction for durable group retries. */
-  verifyMergeGroupCurrent?(identity: OperatorMaintenanceIdentity,
-    policyResolution: OperatorMaintenancePolicyResolution): Promise<void>;
+  /** Authenticated durable app-gate admissions used for bounded post-rollout catch-up. */
+  listPausedAdmissions?: (limit: number, after?: OperatorPassthroughReconcileCursor) => Promise<OperatorPassthroughReconcileAdmission[]>;
 }
 
 /** Additive control-plane wiring. Merely constructing this object does not
@@ -46,6 +47,7 @@ export interface AuthoritativeReviewServiceOptions {
 export function createAuthoritativeReviewService(options: AuthoritativeReviewServiceOptions): {
   admission: AuthoritativeReviewAdmission;
   completion: AuthoritativeReviewCompletion;
+  operatorPassthroughRepository?: OperatorPassthroughPublicationRepository;
   /** Called by persistence while holding its PR admission lock, before writes. */
   validateAdmission(input: ReviewAdmissionInput): Promise<void>;
   runOnce(): Promise<void>;
@@ -91,29 +93,74 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
     policyRepository: config.policyRepository, policyRef: config.policyRef, policyPath: config.policyPath,
     transport: config.transport, candidateReaderFactory: readerFactory, policyReaderFactory,
   });
-  if (options.passthroughEnabled === true && !options.operatorMaintenanceRepository) {
-    throw new Error('Operator maintenance mode requires durable maintenance storage');
+  const passthroughEnabled = options.passthroughEnabled === true;
+  const operatorRepository = options.operatorPassthroughRepository;
+  if (passthroughEnabled && !operatorRepository) {
+    throw new Error('Operator passthrough requires its durable check publication repository');
   }
-  const maintenance = options.passthroughEnabled === true && options.operatorMaintenanceRepository
-    ? new OperatorMaintenancePublisher({
-      enabled: true,
-      expectedAppIdFor: (identity) => expectedAppIdFor(identity),
-      repositoryIds,
-      resolver,
-      repository: options.operatorMaintenanceRepository,
-      ...(options.verifyMergeGroupCurrent ? { verifyMergeGroupCurrent: options.verifyMergeGroupCurrent } : {}),
-      clientFor: async (identity, expectedAppId) => {
-        if (expectedAppId !== expectedAppIdFor(identity)) {
-          throw new Error('Operator maintenance App identity does not match the enrolled repository');
-        }
-        const minted = await getBoundedRepositoryToken(authFor(identity), 'publish', {
-          fetchImplementation: options.fetchImplementation,
-        });
-        return new GitHubInstallationClient({ token: minted.token, baseUrl: options.baseUrl,
-          fetchImplementation: options.fetchImplementation });
-      },
-    })
-    : undefined;
+  const operatorPublisher = operatorRepository ? new OperatorPassthroughPublisher({
+    repository: operatorRepository,
+    workerId: `${options.workerId}:operator-passthrough`,
+    candidateIsCurrent: async (claim) => {
+      try {
+        const current = await resolver.resolve({ repositoryId: claim.coordinates.repositoryId,
+          owner: claim.coordinates.owner, repo: claim.coordinates.repo, prNumber: claim.coordinates.prNumber,
+          headSha: claim.coordinates.headSha, baseSha: claim.coordinates.baseSha });
+        return current.prepared.policy.effectivePolicyDigest === claim.coordinates.policyDigest
+          && expectedAppIdFor(claim.coordinates) === claim.expectedAppId;
+      } catch (error) {
+        if (error instanceof AuthoritativeCandidateChangedError) return false;
+        throw error;
+      }
+    },
+    clientFor: async (claim) => {
+      const selected = claim.coordinates;
+      if (!repositoryIds.includes(selected.repositoryId) || expectedAppIdFor(selected) !== claim.expectedAppId) {
+        throw new Error('Operator passthrough publication is outside the enrolled identity');
+      }
+      const minted = await getBoundedRepositoryToken(authFor(selected), 'publish', {
+        fetchImplementation: options.fetchImplementation,
+      });
+      return new GitHubReviewGateClient({ token: minted.token, expectedAppId: claim.expectedAppId,
+        checkName: claim.stage === 'review' ? REVIEW_WORKER_CHECK_NAME : REVIEW_GATE_CHECK_NAME,
+        baseUrl: options.baseUrl, fetchImplementation: options.fetchImplementation });
+    },
+  }) : undefined;
+  const recordOperatorPassthrough = operatorRepository && passthroughEnabled && operatorPublisher
+    ? async (input: OperatorPassthroughAdmissionRequest) => {
+      const requested = {
+        repositoryId: input.requested.repositoryId,
+        owner: input.requested.owner,
+        repo: input.requested.repo,
+        prNumber: input.requested.prNumber,
+        headSha: input.requested.headSha,
+        baseSha: input.requested.baseSha,
+      };
+      if (!repositoryIds.includes(requested.repositoryId)) {
+        throw new Error('Operator passthrough candidate is outside authoritative admission');
+      }
+      const resolved = await resolver.resolve(requested);
+      const expectedAppId = expectedAppIdFor(requested);
+      const candidate = { ...requested, policyDigest: resolved.prepared.policy.effectivePolicyDigest };
+      const recorded = await operatorRepository.record({ candidate, expectedAppId, event: input.event });
+      // Event transports get immediate bounded publication. The deterministic
+      // service reconciler records first and lets the ordinary durable outbox
+      // cadence publish, so a large catch-up batch does not issue unbounded API
+      // calls inside one tick.
+      if (input.event.transport !== 'service-reconciler') {
+        await operatorPublisher.runOnce(recorded.publicationId);
+        await operatorPublisher.runOnce(recorded.publicationId);
+      }
+      const publication = await operatorRepository.getPublication(recorded.publicationId);
+      if (!publication) throw new Error('Operator passthrough publication receipt is unavailable');
+      const publicationState = publication.retirementRequestedAt !== null
+        ? publication.retiredAt !== null ? 'retired' as const : 'retiring' as const
+        : publication.readyForShip ? 'published' as const : 'pending' as const;
+      return { status: recorded.status, verdict: 'SHIP' as const, expectedLanes: 0 as const, completedLanes: 0 as const,
+        publicationId: publication.publicationId, auditDigest: publication.auditDigest, publicationState,
+        reviewCheckId: publication.reviewCheckId, gateCheckId: publication.gateCheckId,
+        mergeEligible: publication.readyForShip };
+    } : undefined;
   const resolveCompletion = createAuthoritativeCompletionContext({
     getStoredPrepared: options.getStoredPrepared,
     readerFactory, publishingResolver: resolver,
@@ -142,28 +189,77 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
     },
   });
   let active: Promise<void> | undefined;
+  let pausedAdmissionCursor: OperatorPassthroughReconcileCursor | undefined;
   const tick = async (): Promise<void> => {
     await repository.reapTerminalAttempts();
     await repository.advanceProjectedAttempts();
-    let failure: unknown;
-    try { await publisher.runOnce(); } catch (error) { failure = error; }
-    // No pending maintenance receipt may depend on an ingress retry. Reconcile
-    // its raw and Gate stages from the same bounded authoritative timer even
-    // when the ordinary review publisher has an independent transient error.
-    try { await maintenance?.runOnce(); } catch (error) { failure ??= error; }
-    if (failure !== undefined) throw failure;
+    if (operatorRepository && !passthroughEnabled) await operatorRepository.requestAllRetirements('pause-disabled');
+    if (passthroughEnabled && operatorRepository && options.listPausedAdmissions && recordOperatorPassthrough) {
+      try {
+        const pending = await options.listPausedAdmissions(OPERATOR_PASSTHROUGH_CATCH_UP_BATCH_SIZE, pausedAdmissionCursor);
+        if (pending.length > 0) {
+          const last = pending[pending.length - 1];
+          pausedAdmissionCursor = { repositoryId: last.repositoryId, prNumber: last.prNumber };
+        } else {
+          // Wrap on the following tick. A malformed, closed, draft, or transiently
+          // unavailable early row cannot permanently starve later PRs in the keyset.
+          pausedAdmissionCursor = undefined;
+        }
+        for (const admission of pending) {
+          if (!repositoryIds.includes(admission.repositoryId)
+            || !/^run_[a-f0-9]{32}$/u.test(admission.runId)
+            || !/^[a-f0-9]{64}$/u.test(admission.admittedPolicyDigest)
+            || expectedAppIdFor(admission) <= 0) continue;
+          try {
+            // Refresh the admitted row to the current open, non-draft PR head
+            // before resolving policy; the stored run head is only a catch-up
+            // locator and may be stale.
+            const current = await resolver.readCurrentCandidate({ repositoryId: admission.repositoryId,
+              owner: admission.owner, repo: admission.repo, prNumber: admission.prNumber });
+            if (!current.open || current.draft) continue;
+            const requested = { repositoryId: current.repositoryId, owner: current.owner, repo: current.repo,
+              prNumber: current.prNumber, headSha: current.headSha, baseSha: current.baseSha };
+            const resolved = await resolver.resolve(requested);
+            const digest = sha256(canonicalJson({ version: 'OperatorPassthroughExistingAdmission.v1',
+              runId: admission.runId, admittedPolicyDigest: admission.admittedPolicyDigest,
+              requested, currentPolicyDigest: resolved.prepared.policy.effectivePolicyDigest }));
+            // recordOperatorPassthrough repeats exact-current resolution at
+            // the durable admission boundary; the check here is not persisted
+            // as evidence and cannot authorize publication by itself.
+            await recordOperatorPassthrough({
+              requested,
+              event: { transport: 'service-reconciler', eventName: 'existing-admission',
+                deliveryId: `service-reconcile:${digest}`, deliveryDigest: digest },
+            });
+          } catch {
+            // Exact-current resolver, authorization, and durable-record failures
+            // remain unavailable; the bounded loop continues for other heads.
+          }
+        }
+      } catch {
+        logger.warn('Operator passthrough existing-admission reconciliation is unavailable');
+      }
+    }
+    await operatorPublisher?.runOnce();
+    // The operator check is the terminal branch-protection result while paused.
+    // Do not let a pre-pause worker's pending Gate outbox publish a later
+    // findings-based check over the service-owned SHIP exemption.
+    if (!passthroughEnabled) await publisher.runOnce();
   };
   return {
     resolver,
-    admission: { expectedAppId: config.expectedAppId, acceptNewRequests: config.admissionEnabled,
+    admission: { expectedAppId: config.expectedAppId,
+      acceptNewRequests: config.admissionEnabled && !passthroughEnabled,
       repositoryIds, ...(publicAuthority ? { expectedAppIdFor } : {}), resolver,
-      ...(maintenance ? { maintenance } : {}) },
+      ...(recordOperatorPassthrough ? { recordOperatorPassthrough } : {}) },
     completion: { verifier: createWorkerCompletionVerifier(), repository, resolve: resolveCompletion },
+    ...(operatorRepository ? { operatorPassthroughRepository: operatorRepository } : {}),
     validateAdmission: async (input) => {
       // The router's preparation can finish out of order across replicas. Only
       // this fresh read under the shared admission lock may authorize retirement
       // of another candidate. Neither request timestamps nor head ordering do.
-      if (!repositoryIds.includes(input.repositoryId) || !config.admissionEnabled || input.publicationMode !== 'app-gate'
+      if (!repositoryIds.includes(input.repositoryId) || !config.admissionEnabled || passthroughEnabled
+        || input.publicationMode !== 'app-gate'
         || input.authoritativeGate?.expectedAppId !== expectedAppIdFor({ ...input.identity, repositoryId: input.repositoryId })
         || !repositoryIds.includes(input.repositoryId)) {
         throw new Error('Authoritative admission is outside the active identity');

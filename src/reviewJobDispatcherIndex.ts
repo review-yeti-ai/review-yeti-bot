@@ -23,8 +23,8 @@ import { GitHubInstallationClient } from './github/installationClient';
 import { AbandonedRunReaper } from './review/abandonedRunReaper';
 import { DelegatedFailureReader } from './k8s/delegatedFailureReader';
 import { initTelemetry } from './telemetry';
-import { centralExternalTargetConfigFromEnv } from './config/actionDispatchConfig';
 import { reviewYetiPassthroughEnabledFromEnv } from './config/reviewYetiPassthrough';
+import { centralExternalTargetConfigFromEnv } from './config/actionDispatchConfig';
 import {
   closeDispatcherMetricsServer,
   createDispatcherMetricsServer,
@@ -158,6 +158,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     workerId: config.workerId,
     publisherAppId: publisher.id,
     publisherAppIdFor: (run) => publisherAppIdForRepository(run.owner, run.repo),
+    allowCheckCreation: () => !passthroughEnabled,
     // REL-896: defaults to 1 (see f84caf14 -- "One attempt per loop keeps the
     // sweep bounded without starving dispatch"). The reaper is awaited
     // serially before the dispatch engine on every loop, and each reap mints

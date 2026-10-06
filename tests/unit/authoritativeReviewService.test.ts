@@ -10,7 +10,7 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { createAuthoritativeReviewService, type AuthoritativeReviewServiceOptions } from '../../src/review/authoritativeReviewService';
 import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
 import type { ReviewAdmissionInput } from '../../src/review/reviewRun';
-import type { OperatorMaintenanceRepository } from '../../src/review/operatorMaintenanceContracts';
+import type { OperatorPassthroughPublicationRepository, OperatorPassthroughReconcileAdmission } from '../../src/review/operatorPassthrough';
 
 const mocks = vi.hoisted(() => ({
   publisherConstructor: vi.fn(), resolverConstructor: vi.fn(),
@@ -83,7 +83,7 @@ function fixture() {
     claimPublication: vi.fn(), publishLocked: vi.fn(), retryPublication: vi.fn(), recordWorkerResult: vi.fn(),
   };
   const fetchImplementation = vi.fn<typeof fetch>().mockRejectedValue(new Error('No live requests in unit tests'));
-  const options: AuthoritativeReviewServiceOptions = { config, repository, getStoredPrepared: mocks.getPrepared,
+  const options = { config, repository, getStoredPrepared: mocks.getPrepared,
     appId: String(APP_ID), privateKey: 'fake-app-private-key',
     baseUrl: 'https://github.example.invalid/api/v3', workerId: 'authoritative-review-test', fetchImplementation };
   const gate: StoredReviewGate = {
@@ -157,7 +157,7 @@ describe('createAuthoritativeReviewService wiring', () => {
       const input = admissionInput(f);
       const service = createAuthoritativeReviewService(f.options);
       mocks.currentCandidate.mockResolvedValue({ ...candidate, ...change });
-      await expect(service.validateAdmission(input)).rejects.toThrow('Authoritative publishing resolution unavailable');
+      await expect(service.validateAdmission(input)).rejects.toThrow('Authoritative publishing candidate changed');
       expect(publishMints()).toHaveLength(0);
     });
 
@@ -219,19 +219,6 @@ describe('createAuthoritativeReviewService wiring', () => {
       expect(call).not.toHaveBeenCalled();
     }
     expect(f.options.fetchImplementation).not.toHaveBeenCalled();
-  });
-
-  it('runs the bounded maintenance recovery sweep from the authoritative timer even when normal publication fails', async () => {
-    const f = fixture();
-    const listPending = vi.fn(async () => []);
-    f.options.passthroughEnabled = true;
-    f.options.operatorMaintenanceRepository = { listPending } as unknown as OperatorMaintenanceRepository;
-    mocks.publish.mockRejectedValueOnce(new Error('ordinary review publisher unavailable'));
-    const service = createAuthoritativeReviewService(f.options);
-
-    await expect(service.runOnce()).rejects.toThrow('ordinary review publisher unavailable');
-
-    expect(listPending).toHaveBeenCalledExactlyOnceWith(20, undefined);
   });
 
   it('keeps completion and publication active while new admissions are paused for draining', async () => {
@@ -324,6 +311,62 @@ describe('createAuthoritativeReviewService wiring', () => {
 });
 
 describe('authoritative reconciliation tick', () => {
+  it('pages paused-admission catch-up and gives the operator publisher one pass after each bounded page', async () => {
+    const f = fixture();
+    const admissions: OperatorPassthroughReconcileAdmission[] = Array.from({ length: 12 }, (_, index) => ({
+      runId: `run_${String(index + 1).padStart(32, '0')}`,
+      repositoryId: 123,
+      owner: 'example',
+      repo: 'candidate',
+      prNumber: index + 1,
+      headSha: candidate.headSha,
+      baseSha: candidate.baseSha,
+      admittedPolicyDigest: f.prepared.policy.effectivePolicyDigest,
+    }));
+    const recordedPullRequests: number[] = [];
+    const publisherPasses: number[] = [];
+    mocks.currentCandidate.mockImplementation(async (requested) => ({ ...candidate,
+      prNumber: requested.prNumber, open: requested.prNumber > 10 }));
+
+    const listPausedAdmissions = vi.fn(async (limit: number,
+      cursor?: { repositoryId: number; prNumber: number }) => admissions
+      .filter((entry) => !cursor || entry.repositoryId > cursor.repositoryId
+        || (entry.repositoryId === cursor.repositoryId && entry.prNumber > cursor.prNumber))
+      .slice(0, limit));
+    const operatorRepository = {
+      record: vi.fn(async (input: { candidate: { prNumber: number } }) => {
+        recordedPullRequests.push(input.candidate.prNumber);
+        return { status: 'accepted' as const, publicationId: String(input.candidate.prNumber).padStart(64, '0'),
+          auditDigest: 'f'.repeat(64), verdict: 'SHIP' as const, expectedLanes: 0 as const, completedLanes: 0 as const };
+      }),
+      getPublication: vi.fn(async (publicationId: string) => ({
+        publicationId, publicationSequence: 1, coordinates: {} as any, expectedAppId: APP_ID,
+        auditDigest: 'f'.repeat(64), reviewExternalId: 'review', gateExternalId: 'gate',
+        reviewCheckId: null, reviewCreationState: 'reserved' as const,
+        gateCheckId: null, gateCreationState: 'reserved' as const,
+        retirementRequestedAt: null, retirementReason: null, retiredAt: null,
+        reviewRetiredAt: null, gateRetiredAt: null, readyForShip: false,
+      })),
+      requestRetirement: vi.fn(), retireInTransaction: vi.fn(), requestAllRetirements: vi.fn(),
+      claimPublication: vi.fn(async () => { publisherPasses.push(recordedPullRequests.length); return null; }),
+      publishLocked: vi.fn(), retryPublication: vi.fn(),
+    } as unknown as OperatorPassthroughPublicationRepository;
+    const service = createAuthoritativeReviewService({ ...f.options,
+      operatorPassthroughRepository: operatorRepository, passthroughEnabled: true, listPausedAdmissions });
+
+    await service.runOnce();
+    expect(recordedPullRequests).toEqual([]);
+    expect(publisherPasses).toEqual([0]);
+    await service.runOnce();
+    expect(recordedPullRequests).toEqual([11, 12]);
+    expect(publisherPasses).toEqual([0, 2]);
+    expect(listPausedAdmissions.mock.calls).toEqual([
+      [10, undefined],
+      [10, { repositoryId: 123, prNumber: 10 }],
+    ]);
+    expect(mocks.publish).not.toHaveBeenCalled();
+  });
+
   it('awaits reaping, advancement and publication in order and shares one pending tick at every stage', async () => {
     const service = createAuthoritativeReviewService(fixture().options);
     const reaped = Promise.withResolvers<number>();
@@ -422,7 +465,7 @@ describe('gate publication identity and fresh success', () => {
     const f = fixture();
     createAuthoritativeReviewService(f.options);
     mocks.currentCandidate.mockResolvedValueOnce(candidate).mockResolvedValueOnce({ ...candidate, ...changed });
-    await expect(publisherOptions().clientFor(f.gate)).rejects.toThrow('Authoritative publishing resolution unavailable');
+    await expect(publisherOptions().clientFor(f.gate)).rejects.toThrow('Authoritative publishing candidate changed');
     expect(mocks.currentCandidate).toHaveBeenCalledTimes(2);
     expect(publishMints()).toEqual([]);
     expect(mocks.clientConstructor).not.toHaveBeenCalled();

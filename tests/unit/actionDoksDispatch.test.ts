@@ -54,6 +54,15 @@ function actionPassthroughReceipt(request: ActionDispatchRequest, overrides: Rec
     baseSha: request.baseSha,
     eventName: request.caller.eventName,
     callerKind: 'direct',
+    verdict: 'SHIP',
+    expectedLanes: 0,
+    completedLanes: 0,
+    publicationId: 'f'.repeat(64),
+    auditDigest: 'e'.repeat(64),
+    publicationState: 'published',
+    reviewCheckId: 5001,
+    gateCheckId: 5002,
+    mergeEligible: true,
     ...overrides,
   };
 }
@@ -271,15 +280,16 @@ describe('DOKS Action dispatch client', () => {
     expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe(`Bearer signed-github-oidc-${'x'.repeat(32)}`);
   });
 
-  it('accepts an HTTP 200 passthrough receipt only when identity matches and writes honest skipped outputs', async () => {
+  it('accepts an HTTP 200 paused-SHIP receipt only when identity matches and writes truthful SHIP outputs', async () => {
     const { buildDispatchRequest, dispatchAction, writeDispatchOutputs } = await import(modulePath);
-    const request = buildDispatchRequest(environment());
+    const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+    const request = buildDispatchRequest(dispatchEnvironment);
     const passthrough = actionPassthroughReceipt(request);
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(passthrough), { status: 200 }));
 
-    const result = await dispatchAction(environment(), fetchMock);
+    const result = await dispatchAction(dispatchEnvironment, fetchMock);
 
     expect(result).toEqual(passthrough);
     expect(result).not.toHaveProperty('runId');
@@ -292,13 +302,34 @@ describe('DOKS Action dispatch client', () => {
     const outputPath = path.join(directory, 'output');
     writeDispatchOutputs(outputPath, result);
     const output = fs.readFileSync(outputPath, 'utf8');
-    expect(output).toContain('verdict=NO_VERDICT');
-    expect(output).toContain('review-status=SKIPPED');
-    expect(output).toContain('gate-decision=SKIPPED');
-    expect(output).toContain('merge-eligible=false');
-    expect(output).toContain(`rationale=Operator global passthrough skipped review for ${request.deliveryId}; no verdict was produced.`);
+    expect(output).toContain('verdict=SHIP');
+    expect(output).toContain('review-status=OPERATOR_EXEMPTION_PUBLISHED');
+    expect(output).toContain('gate-decision=SHIP_OPERATOR_EXEMPTION');
+    expect(output).toContain('merge-eligible=true');
+    expect(output).toContain(`rationale=Operator pause authorized a SHIP exemption for ${request.owner}/${request.repo}#${request.prNumber} at ${request.headSha}; 0 review lanes ran; publication published; audit ${'e'.repeat(64)}.`);
     expect(output).not.toContain('PENDING');
     expect(output).not.toContain('run_');
+  });
+
+  it('writes pending operator publication as SHIP intent without merge eligibility', async () => {
+    const { buildDispatchRequest, writeDispatchOutputs } = await import(modulePath);
+    const request = buildDispatchRequest(environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' }));
+    const pending = actionPassthroughReceipt(request, {
+      publicationState: 'pending', reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+    });
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-doks-pending-passthrough-'));
+    const outputPath = path.join(directory, 'output');
+
+    writeDispatchOutputs(outputPath, pending);
+    const output = fs.readFileSync(outputPath, 'utf8');
+
+    expect(output).toContain('verdict=SHIP');
+    expect(output).toContain('review-status=OPERATOR_EXEMPTION_PENDING');
+    expect(output).toContain('gate-decision=SHIP_OPERATOR_EXEMPTION');
+    expect(output).toContain('merge-eligible=false');
+    expect(output).toContain('publication pending;');
+    expect(output).not.toContain('OPERATOR_EXEMPTION_PUBLISHED');
+    expect(output).not.toContain('merge-eligible=true');
   });
 
   it.each([
@@ -313,16 +344,21 @@ describe('DOKS Action dispatch client', () => {
     ['caller kind', { callerKind: 'unknown' }],
     ['skip reason', { reason: 'not_authorized' }],
     ['review state', { reviewStarted: true }],
+    ['published state without merge eligibility', { publicationState: 'published', mergeEligible: false }],
+    ['published state without both official check IDs', { mergeEligible: true, gateCheckId: null }],
+    ['merge eligibility without the Review Yeti check ID', { mergeEligible: true, reviewCheckId: null }],
+    ['merge eligibility without published state', { publicationState: 'pending', mergeEligible: true }],
   ] as Array<[string, Record<string, unknown>]>)('rejects passthrough receipts with mismatched %s', async (_field, override) => {
     const { buildDispatchRequest, dispatchAction } = await import(modulePath);
-    const request = buildDispatchRequest(environment());
+    const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+    const request = buildDispatchRequest(dispatchEnvironment);
     const receipt = actionPassthroughReceipt(request, override);
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(receipt), { status: 200 }));
     const sleep = vi.fn(async () => {});
 
-    await expect(dispatchAction(environment(), fetchMock, { sleep }))
+    await expect(dispatchAction(dispatchEnvironment, fetchMock, { sleep }))
       .rejects.toThrow(/invalid passthrough receipt|different Action request/u);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(sleep).not.toHaveBeenCalled();
@@ -330,7 +366,8 @@ describe('DOKS Action dispatch client', () => {
 
   it('accepts passthrough only at HTTP 200 and never treats it as admission', async () => {
     const { buildDispatchRequest, dispatchAction } = await import(modulePath);
-    const request = buildDispatchRequest(environment());
+    const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+    const request = buildDispatchRequest(dispatchEnvironment);
     const passthrough = actionPassthroughReceipt(request);
     const accepted = {
       version: 'ActionDispatchAccepted.v1',
@@ -342,7 +379,7 @@ describe('DOKS Action dispatch client', () => {
       const fetchMock = vi.fn()
         .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
         .mockResolvedValueOnce(new Response(JSON.stringify(body), { status }));
-      await expect(dispatchAction(environment(), fetchMock)).rejects.toThrow(/receipt/u);
+      await expect(dispatchAction(dispatchEnvironment, fetchMock)).rejects.toThrow(/receipt/u);
       expect(fetchMock).toHaveBeenCalledTimes(2);
     }
   });

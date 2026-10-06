@@ -164,7 +164,11 @@ describe('dispatcher preparedReviewFor entrypoint wiring', () => {
     expect(options.isDispatchPaused).toEqual(expect.any(Function));
     expect(options.isDispatchPaused?.()).toBe(true);
     expect(mocks.reaper).toHaveBeenCalledOnce();
-    expect(mocks.reaper.mock.calls[0][0]).toMatchObject({ passthroughEnabled: true });
+    const reaperOptions = mocks.reaper.mock.calls[0][0] as {
+      passthroughEnabled?: boolean; allowCheckCreation?: () => boolean;
+    };
+    expect(reaperOptions.passthroughEnabled).toBe(true);
+    expect(reaperOptions.allowCheckCreation?.()).toBe(false);
     expect(mocks.loop).toHaveBeenCalledOnce();
     expect(mocks.close).toHaveBeenCalledOnce();
   });
@@ -178,7 +182,11 @@ describe('dispatcher preparedReviewFor entrypoint wiring', () => {
     const options = mocks.engine.mock.calls[0][0] as ReviewJobDispatchEngineOptions;
     expect(options.isDispatchPaused?.()).toBe(false);
     expect(mocks.reaper).toHaveBeenCalledOnce();
-    expect(mocks.reaper.mock.calls[0][0]).toMatchObject({ passthroughEnabled: false });
+    const reaperOptions = mocks.reaper.mock.calls[0][0] as {
+      passthroughEnabled?: boolean; allowCheckCreation?: () => boolean;
+    };
+    expect(reaperOptions.passthroughEnabled).toBe(false);
+    expect(reaperOptions.allowCheckCreation?.()).toBe(true);
     expect(mocks.loop).toHaveBeenCalledOnce();
   });
 

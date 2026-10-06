@@ -18,12 +18,12 @@ import { REVIEW_GENERATION_RECOVERY_SCHEMA_SQL } from './reviewGenerationRecover
 import { PREPARED_REVIEW_SCHEMA_SQL } from './preparedReviewRepository';
 import { REVIEW_CI_SCHEMA_SQL } from './reviewCiSchema';
 import { REVIEW_CI_CHECK_SCHEMA_SQL } from './reviewCiCheckSchema';
+import { OPERATOR_PASSTHROUGH_SCHEMA_SQL } from './operatorPassthroughSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from './reviewEventRepository';
 import { REVIEW_EVENT_V2_SCHEMA_SQL } from './reviewEventV2Repository';
 import { REVIEW_HITL_SCHEMA_SQL } from './reviewHitlSchema';
 import { REVIEW_ANALYTICS_SCHEMA_SQL } from './reviewAnalyticsSchema';
 import { PROVIDER_CONCURRENCY_LEASE_SCHEMA_SQL } from './providerConcurrencyLeaseRepository';
-import { OPERATOR_MAINTENANCE_SCHEMA_SQL } from './operatorMaintenanceRepository';
 import { applySchemaOnce, SCHEMA_DDL_LOCK_TIMEOUT, withSchemaLockRetry } from './schemaMigrationGate';
 import { LEGACY_APP_GATE_RECEIPT_BACKFILL_SQL } from './legacyAppGateReceiptPolicy';
 
@@ -254,7 +254,9 @@ export class PostgresStore {
         CREATE TABLE IF NOT EXISTS merge_group_gates (
           repository_id BIGINT NOT NULL,
           head_sha CHAR(40) NOT NULL,
+          snapshot_digest VARCHAR(64),
           check_id BIGINT,
+          check_creation_started BOOLEAN NOT NULL DEFAULT FALSE,
           conclusion TEXT CHECK (conclusion IN ('success', 'failure')),
           claim_token UUID,
           lease_expires_at TIMESTAMP WITH TIME ZONE,
@@ -266,6 +268,25 @@ export class PostgresStore {
         ALTER TABLE merge_group_gates ALTER COLUMN conclusion DROP NOT NULL;
         ALTER TABLE merge_group_gates ADD COLUMN IF NOT EXISTS claim_token UUID;
         ALTER TABLE merge_group_gates ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMP WITH TIME ZONE;
+
+        -- Versioned merge-queue snapshots keep independent durable create
+        -- reservations. A queue/base/mode change must never erase an uncertain
+        -- create intent from an earlier external_id namespace.
+        CREATE TABLE IF NOT EXISTS merge_group_gate_publications (
+          repository_id BIGINT NOT NULL,
+          head_sha CHAR(40) NOT NULL,
+          snapshot_digest CHAR(64) NOT NULL,
+          check_id BIGINT,
+          check_creation_started BOOLEAN NOT NULL DEFAULT FALSE,
+          conclusion TEXT CHECK (conclusion IN ('success', 'failure')),
+          claim_token UUID,
+          lease_expires_at TIMESTAMP WITH TIME ZONE,
+          created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (repository_id, head_sha, snapshot_digest)
+        );
+        CREATE INDEX IF NOT EXISTS merge_group_gate_publications_lease_idx
+          ON merge_group_gate_publications (lease_expires_at) WHERE claim_token IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS review_dispatch_outbox (
           run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id) ON DELETE CASCADE,
@@ -450,12 +471,12 @@ export class PostgresStore {
         PREPARED_REVIEW_SCHEMA_SQL,
         REVIEW_CI_SCHEMA_SQL,
         REVIEW_CI_CHECK_SCHEMA_SQL,
+        OPERATOR_PASSTHROUGH_SCHEMA_SQL,
         REVIEW_EVENT_SCHEMA_SQL,
         REVIEW_EVENT_V2_SCHEMA_SQL,
         REVIEW_HITL_SCHEMA_SQL,
         REVIEW_ANALYTICS_SCHEMA_SQL,
         PROVIDER_CONCURRENCY_LEASE_SCHEMA_SQL,
-        OPERATOR_MAINTENANCE_SCHEMA_SQL,
       ]);
 
       // 2. Check if database tables are empty and seed if initial startup

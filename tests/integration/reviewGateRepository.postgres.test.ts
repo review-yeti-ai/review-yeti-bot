@@ -1274,6 +1274,22 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       expect(current.worker_result_digest).toBe(workerReviewCompletionDigest(event));
     });
 
+    it('does not recast a worker completion as passthrough SHIP when the operator pause is enabled', async () => {
+      const previous = process.env['REVIEW_YETI_PASSTHROUGH'];
+      process.env['REVIEW_YETI_PASSTHROUGH'] = 'true';
+      try {
+        const { id, repository, event, resolve } = await disputedGateCompletionFixture(true, undefined, 'P1');
+        expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).toBe('recorded');
+        const state = await snapshot(id);
+        expect(state.run.status).toBe('failed');
+        expect(state.gates[0].decision).toMatchObject({ status: 'failure', eligible: false, reason: 'blocking-findings' });
+        expect(state.gates[0].decision.reason).not.toBe('passthrough');
+      } finally {
+        if (previous === undefined) delete process.env['REVIEW_YETI_PASSTHROUGH'];
+        else process.env['REVIEW_YETI_PASSTHROUGH'] = previous;
+      }
+    });
+
     function expectTerminalState(
       state: Awaited<ReturnType<typeof snapshot>>,
       event: WorkerReviewCompletion,

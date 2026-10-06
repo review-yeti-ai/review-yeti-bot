@@ -130,6 +130,30 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
     expect(f.client.failAbandonedCheck).not.toHaveBeenCalled();
   });
 
+  it('does not create a raw check when the per-publication pause fence is false', async () => {
+    const f = fixture();
+    const subject = new AbandonedRunReaper({
+      repository: f.repository, checkClientFor: f.checkClientFor, workerId: 'reaper-a', publisherAppId: 4385771,
+      now: () => 902_000, limit: 5, allowCheckCreation: () => false,
+    });
+
+    await subject.runOnce();
+
+    expect(f.client.failAbandonedCheck).toHaveBeenCalledWith(run, 4385771, expect.any(AbortSignal), { allowCreate: false });
+  });
+
+  it('permits normal raw check creation when the per-publication pause fence is true', async () => {
+    const f = fixture();
+    const subject = new AbandonedRunReaper({
+      repository: f.repository, checkClientFor: f.checkClientFor, workerId: 'reaper-a', publisherAppId: 4385771,
+      now: () => 902_000, limit: 5, allowCheckCreation: () => true,
+    });
+
+    await subject.runOnce();
+
+    expect(f.client.failAbandonedCheck).toHaveBeenCalledWith(run, 4385771, expect.any(AbortSignal), { allowCreate: true });
+  });
+
   it('omits retiredNonPublishable from the outcome when nothing was swept', async () => {
     const { subject, repository } = fixture();
     repository.retireExpiredNonPublishableRuns.mockResolvedValueOnce(0);

@@ -113,6 +113,8 @@ export interface McpSessionManager {
 
 export interface RemoteMcpRouterOptions {
   db?: any;
+  /** Read-only status projection for a service-owned global-pause exemption. */
+  passthroughEnabled?: boolean;
   admissionRepository?: any;
   authenticator?: McpAuthenticator | {
     authenticate(req: Request | string): Promise<McpAuthenticatedCaller | { authenticated: boolean; identity?: string; error?: string }>;
@@ -154,6 +156,7 @@ interface ResolvedMcpCaller {
 
 export function createDefaultToolRegistry(options?: {
   db?: any;
+  passthroughEnabled?: boolean;
   admissionRepository?: any;
   matrixBuilder?: any;
   modelClient?: ReviewModelClient;
@@ -173,7 +176,7 @@ export function createDefaultToolRegistry(options?: {
   const db = options?.db;
   const modelClient = options?.modelClient;
 
-  registry.registerTool(createGetReviewStatusTool(db));
+  registry.registerTool(createGetReviewStatusTool(db, { passthroughEnabled: options?.passthroughEnabled }));
   registry.registerTool(createGetReviewFindingsTool(db));
   registry.registerTool(createGetModelMatrixTool(options?.matrixBuilder));
   registry.registerTool(createTriggerReviewTool({

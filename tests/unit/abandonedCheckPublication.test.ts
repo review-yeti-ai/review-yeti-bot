@@ -578,6 +578,13 @@ describe('abandoned check exact App/attempt failure publication', () => {
       external_id: 'run_83c172a7d93c193fdb6dfa62bfa8bfde:a1', status: 'completed', conclusion: 'failure' });
   });
 
+  it('does not create a fresh fail-closed check while operator pause allows SHIP', async () => {
+    const { client, fetchImplementation } = fixture([]);
+    await expect(client.failAbandonedCheck(run, 4385771, signal(), { allowCreate: false }))
+      .resolves.toBe('creation-unconfirmed');
+    expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+  });
+
   it('observes an exact attempt that becomes visible during pre-create backoff without posting', async () => {
     let lookups = 0;
     const fetchImplementation = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {

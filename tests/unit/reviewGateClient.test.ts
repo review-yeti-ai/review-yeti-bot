@@ -8,7 +8,10 @@ import {
 } from '../../src/github/reviewGateClient';
 import {
   REVIEW_GATE_CHECK_NAME,
+  REVIEW_WORKER_CHECK_NAME,
+  deriveReviewCheckExternalId,
   deriveReviewGateExternalId,
+  type ReviewCheckName,
   type ReviewGateCoordinates,
 } from '../../src/review/reviewCheckIdentity';
 
@@ -38,23 +41,24 @@ function response(body: unknown, status = 200): Response {
   });
 }
 
-function exactCheck(overrides: Record<string, unknown> = {}) {
+function exactCheck(overrides: Record<string, unknown> = {}, checkName: ReviewCheckName = REVIEW_GATE_CHECK_NAME) {
   return {
     id: 9876,
-    name: REVIEW_GATE_CHECK_NAME,
+    name: checkName,
     app: { id: appId },
     head_sha: headSha,
-    external_id: deriveReviewGateExternalId(coordinates),
+    external_id: deriveReviewCheckExternalId(coordinates, checkName),
     status: 'queued',
     conclusion: null,
     ...overrides,
   };
 }
 
-function client(fetchImplementation: typeof fetch) {
+function client(fetchImplementation: typeof fetch, checkName: ReviewCheckName = REVIEW_GATE_CHECK_NAME) {
   return new GitHubReviewGateClient({
     token,
     expectedAppId: appId,
+    checkName,
     baseUrl: 'https://github.test/api/v3',
     fetchImplementation,
     timeoutMs: 1_000,
@@ -153,19 +157,24 @@ describe('GitHubReviewGateClient', () => {
     expect(String(fetchImplementation.mock.calls[1][0])).toContain('check_name=Review%20Yeti%20Gate&filter=all');
   });
 
-  it('ignores wrong App, head, and external-id checks and returns only the exact identity', async () => {
+  it.each([
+    ['worker', REVIEW_WORKER_CHECK_NAME],
+    ['Gate', REVIEW_GATE_CHECK_NAME],
+  ] as const)('ignores wrong App, head, and external-id %s checks and returns only the exact identity', async (_label, checkName) => {
     const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(response({
       total_count: 4,
       check_runs: [
-        exactCheck({ id: 1, app: { id: appId + 1 } }),
-        exactCheck({ id: 2, head_sha: 'e'.repeat(40) }),
-        exactCheck({ id: 3, external_id: 'review-yeti-gate:v1:wrong' }),
-        exactCheck({ id: 4 }),
+        exactCheck({ id: 1, app: { id: appId + 1 } }, checkName),
+        exactCheck({ id: 2, head_sha: 'e'.repeat(40) }, checkName),
+        exactCheck({ id: 3, external_id: `${checkName}:wrong` }, checkName),
+        exactCheck({ id: 4 }, checkName),
       ],
     }));
-    const gate = client(fetchImplementation);
+    const gate = client(fetchImplementation, checkName);
 
-    await expect(gate.reconcile(coordinates)).resolves.toMatchObject({ id: 4, appId, headSha, externalId: deriveReviewGateExternalId(coordinates) });
+    await expect(gate.reconcile(coordinates)).resolves.toMatchObject({
+      id: 4, appId, headSha, externalId: deriveReviewCheckExternalId(coordinates, checkName),
+    });
   });
 
   it('fails closed on duplicate exact matches and truncated pagination', async () => {

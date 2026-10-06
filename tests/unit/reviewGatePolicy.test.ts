@@ -31,14 +31,6 @@ describe('service review eligibility policy', () => {
   it('never treats dispatch admission as a completed review', () => {
     expect(evaluateReviewGate({ candidate, current })).toMatchObject({ status: 'pending', eligible: false });
   });
-  it('does not let the legacy global passthrough boolean approve mismatched coordinates', () => {
-    expect(evaluateReviewGate({ candidate, current: { ...current, headSha: 'e'.repeat(40) }, evidence: clean, passthrough: true }))
-      .toMatchObject({ status: 'cancelled', eligible: false, reason: 'candidate-superseded' });
-  });
-  it('does not treat the global passthrough boolean as verified review evidence', () => {
-    expect(evaluateReviewGate({ candidate, current, passthrough: true }))
-      .toMatchObject({ status: 'pending', eligible: false, reason: 'review-pending' });
-  });
   it.each(['headSha', 'baseSha', 'policyDigest', 'repositoryId', 'prNumber'] as const)('fences a changed %s', (field) => {
     const value = typeof current[field] === 'number' ? 321 : 'd'.repeat(String(current[field]).length);
     expect(evaluateReviewGate({ candidate, current: { ...current, [field]: value }, evidence: clean }))
@@ -49,6 +41,10 @@ describe('service review eligibility policy', () => {
     expect(evaluateReviewGate({ candidate, current: { ...current, draft: true }, evidence: clean }))
       .toEqual({ status: 'success', eligible: true, reason: 'clean-review' });
     expect(current.draft).toBe(false);
+  });
+  it('does not let the generic gate policy manufacture a pause SHIP from a boolean', () => {
+    expect(evaluateReviewGate({ candidate, current, passthrough: true } as any))
+      .toMatchObject({ status: 'pending', eligible: false, reason: 'review-pending' });
   });
   it.each([
     { infrastructureFailure: true }, { coverageComplete: false }, { quorumSatisfied: false },
@@ -82,6 +78,17 @@ describe('service review eligibility policy', () => {
     expect(evaluate({ ...evidence, infrastructureFailure: true }).eligible).toBe(false);
     expect(evaluate({ ...evidence, verdict: 'BLOCK' }).eligible).toBe(false);
     expect(evaluate({ ...evidence, p1Count: 1 }).eligible).toBe(false);
+  });
+  it('does not accept a caller-supplied operator passthrough digest as exemption evidence', () => {
+    const exemption = { kind: 'operator-passthrough' as const, auditDigest: 'e'.repeat(64) };
+    const evidence = { ...clean, expectedLanes: 0, completedLanes: 0, exemption };
+    expect(evaluate(evidence as unknown as ReviewGateEvidence)).toMatchObject({ status: 'failure', reason: 'invalid-evidence' });
+    expect(evaluate({ ...evidence, expectedLanes: 1 } as unknown as ReviewGateEvidence)).toMatchObject({ status: 'failure', reason: 'invalid-evidence' });
+    expect(evaluate({ ...evidence, completedLanes: 1 } as unknown as ReviewGateEvidence)).toMatchObject({ status: 'failure', reason: 'invalid-evidence' });
+    expect(evaluate({ ...evidence, exemption: { ...exemption, auditDigest: 'invalid' } } as unknown as ReviewGateEvidence))
+      .toMatchObject({ status: 'failure', reason: 'invalid-evidence' });
+    expect(evaluate({ ...evidence, verdict: 'FIX_FIRST' } as unknown as ReviewGateEvidence)).toMatchObject({ status: 'failure', reason: 'invalid-evidence' });
+    expect(evaluate({ ...evidence, infrastructureFailure: true } as unknown as ReviewGateEvidence)).toMatchObject({ status: 'failure', reason: 'infrastructure-failure' });
   });
   it.each([{ p1Count: -1 }, { expectedLanes: NaN }, { completedAt: 'yesterday' }])('fails closed on malformed evidence: %j', (patch) => {
     expect(evaluate({ ...clean, ...patch })).toMatchObject({ status: 'failure', eligible: false, reason: 'invalid-evidence' });

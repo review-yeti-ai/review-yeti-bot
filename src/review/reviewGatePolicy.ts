@@ -161,9 +161,8 @@ export function evaluateReviewGate(input: {
   current: ReviewGateCandidate & { open: boolean; draft: boolean };
   evidence?: ReviewGateEvidence;
   acceptance?: ReviewRiskAcceptance;
-  passthrough?: boolean;
 }): ReviewGateDecision {
-  const { candidate, current, evidence, acceptance, passthrough } = input;
+  const { candidate, current, evidence, acceptance } = input;
   const invalid = { status: 'failure', eligible: false, reason: 'invalid-evidence' } as const;
   if (!candidateValid(candidate) || !candidateValid(current)
     || typeof current.open !== 'boolean' || typeof current.draft !== 'boolean') return invalid;
