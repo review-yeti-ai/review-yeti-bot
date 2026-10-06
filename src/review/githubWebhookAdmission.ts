@@ -201,6 +201,15 @@ function checkRunRepositoryMatches(
     || (fields.id === expected.id && fields.name === expected.name && fields.url === expected.url);
 }
 
+function issueCommentAutoReviewEligibility(
+  repoConfig: { auto_review?: { triggers?: string[]; enabled?: boolean } } | null | undefined,
+): { disabled: boolean; triggerAllowed: boolean } {
+  return {
+    disabled: repoConfig?.auto_review?.enabled === false,
+    triggerAllowed: isTriggerActionAllowed(repoConfig?.auto_review?.triggers, 'issue_comment', { isCommand: true }),
+  };
+}
+
 function operatorPassthroughReceipt(
   options: GitHubWebhookAdmissionOptions,
   event: GitHubWebhookAdmissionEvent,
@@ -418,8 +427,8 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         }
         const repoConfig = options.resolveRepositoryConfig
           ? await options.resolveRepositoryConfig({ repositoryId, owner, repo, headSha: current.headSha }) : undefined;
-        if (repoConfig?.auto_review?.enabled === false
-          || !isTriggerActionAllowed(repoConfig?.auto_review?.triggers, 'issue_comment', { isCommand: true })) {
+        const eligibility = issueCommentAutoReviewEligibility(repoConfig);
+        if (eligibility.disabled || !eligibility.triggerAllowed) {
           return { status: 'ignored', reason: 'trigger_not_configured', deliveryId: delivery, prNumber };
         }
         const requested = { repositoryId, owner, repo, prNumber, headSha: current.headSha, baseSha: current.baseSha };
@@ -434,10 +443,11 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       const repoConfig = options.resolveRepositoryConfig
         ? await options.resolveRepositoryConfig({ repositoryId, owner, repo, headSha })
         : undefined;
-      if (repoConfig?.auto_review?.enabled === false) {
+      const eligibility = issueCommentAutoReviewEligibility(repoConfig);
+      if (eligibility.disabled) {
         return { status: 'ignored', reason: 'auto_review_disabled', deliveryId: delivery, prNumber };
       }
-      if (!isTriggerActionAllowed(repoConfig?.auto_review?.triggers, 'issue_comment', { isCommand: true })) {
+      if (!eligibility.triggerAllowed) {
         return { status: 'ignored', reason: 'trigger_not_configured', deliveryId: delivery, prNumber };
       }
 

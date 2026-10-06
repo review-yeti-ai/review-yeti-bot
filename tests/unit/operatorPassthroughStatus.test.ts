@@ -46,6 +46,20 @@ describe('get_review_status operator-passthrough projection', () => {
     expect(query.mock.calls[0][0]).toContain('review_operator_passthrough_publications');
   });
 
+  it('uses the same operator-publication projection with and without a head filter', async () => {
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [candidate] }));
+    const tool = createGetReviewStatusTool({ query }, { passthroughEnabled: true });
+    await tool.execute({ owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number, head_sha: candidate.head_sha });
+    await tool.execute({ owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number });
+
+    const projections = query.mock.calls.map(([sql]) => sql.slice(sql.indexOf('SELECT') + 6, sql.indexOf('FROM'))
+      .replace(/\s+/gu, ' ').trim());
+    expect(projections).toHaveLength(2);
+    expect(projections[0]).toBe(projections[1]);
+    expect(projections[0]).toContain('review_creation_state');
+    expect(projections[0]).toContain('retired_at');
+  });
+
   it('shows truthful SHIP intent but not merge eligibility while official checks are unresolved', async () => {
     const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [{ ...candidate, gate_check_id: null, gate_creation_state: 'creating' }] }));
     const result = await createGetReviewStatusTool({ query }, { passthroughEnabled: true })

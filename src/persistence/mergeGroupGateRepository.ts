@@ -22,6 +22,8 @@ interface TransactionClient {
 }
 interface ConnectionPool { connect(): Promise<TransactionClient>; }
 
+const UNRESOLVED_PRIOR_PUBLICATION = "check_creation_started=TRUE AND conclusion IS DISTINCT FROM 'failure'";
+
 export interface MergeGroupGateRepository {
   claim(repositoryId: number, headSha: string, snapshotDigest: string, claimToken: string): Promise<MergeGroupGateClaim>;
   /** Persist a committed create intent. Only the first owner may POST; retries only reconcile. */
@@ -109,7 +111,7 @@ export class PostgresMergeGroupGateRepository implements MergeGroupGateRepositor
       }
       const older = await client.query(`SELECT 1 FROM merge_group_gate_publications
         WHERE repository_id=$1 AND head_sha=$2 AND snapshot_digest<>$3
-          AND check_creation_started=TRUE AND conclusion IS DISTINCT FROM 'failure' LIMIT 1`,
+          AND ${UNRESOLVED_PRIOR_PUBLICATION} LIMIT 1`,
       [repositoryId, headSha, snapshotDigest]);
       if (older.rows.length > 0) {
         await client.query('COMMIT');
@@ -165,7 +167,7 @@ export class PostgresMergeGroupGateRepository implements MergeGroupGateRepositor
       if (current.rows.length !== 1) throw new Error('Merge-group gate claim is no longer owned');
       const selected = await client.query(`SELECT snapshot_digest,check_id,check_creation_started,conclusion
         FROM merge_group_gate_publications WHERE repository_id=$1 AND head_sha=$2
-          AND snapshot_digest<>$3 AND check_creation_started=TRUE AND conclusion IS DISTINCT FROM 'failure'
+          AND snapshot_digest<>$3 AND ${UNRESOLVED_PRIOR_PUBLICATION}
         ORDER BY created_at,snapshot_digest`, [repositoryId, headSha, snapshotDigest]);
       await client.query('COMMIT');
       return selected.rows.map((row) => ({ snapshotDigest: String(row.snapshot_digest).trim(),
@@ -197,7 +199,7 @@ export class PostgresMergeGroupGateRepository implements MergeGroupGateRepositor
         SET check_id=$4,check_creation_started=TRUE,conclusion='failure',claim_token=NULL,
             lease_expires_at=NULL,updated_at=CURRENT_TIMESTAMP
         WHERE repository_id=$1 AND head_sha=$2 AND snapshot_digest=$3
-          AND check_creation_started=TRUE AND conclusion IS DISTINCT FROM 'failure'
+          AND ${UNRESOLVED_PRIOR_PUBLICATION}
           AND (check_id IS NULL OR check_id=$4) RETURNING check_id`,
       [repositoryId, headSha, priorSnapshotDigest, checkId]);
       if (updated.rows.length !== 1) throw new Error('Prior merge-group publication could not be settled');

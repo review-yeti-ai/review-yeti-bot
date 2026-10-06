@@ -5,7 +5,7 @@ import {
 } from '../auth/authoritativeServiceIdentity';
 import {
   deriveOperatorPassthroughExternalId,
-  isOperatorPassthroughExternalId,
+  isOperatorPassthroughReviewExternalId,
   REVIEW_GATE_CHECK_NAME,
   REVIEW_WORKER_CHECK_NAME,
 } from './reviewCheckIdentity';
@@ -191,7 +191,7 @@ function exactReviewFailure(checks: any, expectedHead: string,
   if (latest?.status !== 'completed' || latest?.conclusion !== 'success') {
     return 'latest exact-head Review Yeti check is not successful';
   }
-  const latestIsOperatorPassthrough = isOperatorPassthroughExternalId(latest.external_id);
+  const latestIsOperatorPassthrough = isOperatorPassthroughReviewExternalId(latest.external_id);
   const allowOperatorPassthrough = operatorReceipt !== undefined;
   if (allowOperatorPassthrough && (!operatorReceipt.mergeEligible
     || !/^[a-f0-9]{64}$/u.test(operatorReceipt.publicationId)

@@ -27,6 +27,10 @@ export interface ReviewStatusDbClient {
   query(sql: string, values?: unknown[]): Promise<{ rows: any[] }>;
 }
 
+const OPERATOR_PASSTHROUGH_STATUS_COLUMNS = `publication_id,owner,repo,pr_number,head_sha,base_sha,policy_digest,expected_app_id,
+  audit_digest,review_check_id,review_creation_state,gate_check_id,gate_creation_state,
+  retirement_requested_at,retired_at`;
+
 /**
  * `review_runs`-native timing columns, shared by every query branch.
  *
@@ -250,17 +254,13 @@ async function operatorPassthroughStatus(db: ReviewStatusDbClient, input: GetRev
   let result: { rows: any[] };
   try {
     const resultSet = input.head_sha
-      ? await db.query(`SELECT publication_id,owner,repo,pr_number,head_sha,base_sha,policy_digest,expected_app_id,
-          audit_digest,review_check_id,review_creation_state,gate_check_id,gate_creation_state,
-          retirement_requested_at,retired_at
+      ? await db.query(`SELECT ${OPERATOR_PASSTHROUGH_STATUS_COLUMNS}
         FROM review_operator_passthrough_publications
         WHERE owner=$1 AND repo=$2 AND pr_number=$3 AND retirement_requested_at IS NULL AND retired_at IS NULL
           AND (head_sha=$4 OR head_sha LIKE ($4 || '%'))
         ORDER BY publication_sequence DESC,created_at DESC LIMIT 1`,
       [input.owner, input.repo, input.pull_number, input.head_sha])
-      : await db.query(`SELECT publication_id,owner,repo,pr_number,head_sha,base_sha,policy_digest,expected_app_id,
-          audit_digest,review_check_id,review_creation_state,gate_check_id,gate_creation_state,
-          retirement_requested_at,retired_at
+      : await db.query(`SELECT ${OPERATOR_PASSTHROUGH_STATUS_COLUMNS}
         FROM review_operator_passthrough_publications
         WHERE owner=$1 AND repo=$2 AND pr_number=$3 AND retirement_requested_at IS NULL AND retired_at IS NULL
         ORDER BY publication_sequence DESC,created_at DESC LIMIT 1`,
