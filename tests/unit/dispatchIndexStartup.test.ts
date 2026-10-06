@@ -252,6 +252,10 @@ describe('Action dispatch startup transport and admission wiring', () => {
       githubWebhook: expect.objectContaining({ onEvent: expect.any(Function) }),
       authoritativePublishing: expect.any(Object),
     }));
+    expect(mocks.authoritative.mock.results[0].value.runOnce).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(authoritativeConfig().tickMs);
+    expect(mocks.authoritative.mock.results[0].value.runOnce).toHaveBeenCalledOnce();
   });
 
   it('wires only the exact configured self-hosted central-dispatch target', async () => {
