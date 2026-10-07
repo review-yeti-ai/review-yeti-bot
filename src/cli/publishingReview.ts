@@ -2959,7 +2959,6 @@ export async function runPublishingReviewWorker(
         ...(coverageGaps.length > 0 ? { coverageGaps } : {}),
         blockerFastPath: isBlockerFastPath,
         fileCoverageSatisfied: isFileCoverageQuorum,
-        quorumSatisfied: panelQuorumSatisfied,
         // One composed context is one reviewer: `rawRoster.lanes` there is the planned TASK list,
         // not a count of independent reviewers, so the default `panelSize` derivation (lane count)
         // would let a longer task plan silently raise its own P1 blocking threshold (7 tasks moves

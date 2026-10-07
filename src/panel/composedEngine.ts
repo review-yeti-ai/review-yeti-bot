@@ -975,6 +975,12 @@ function buildStaticPrefix(input: {
       headSha: input.headSha,
       repository: input.repository,
     });
+    const lockfileSummaries = input.effectiveFiles
+      .filter((f) => (f.path.endsWith('-lock.json') || f.path.endsWith('.lock') || f.path === 'package-lock.json' || f.path === 'yarn.lock' || f.path === 'pnpm-lock.yaml') && f.patch)
+      .map((f) => `--- ${f.path} (summarized)\n${f.patch}`);
+    const lockfileSection = lockfileSummaries.length > 0
+      ? `\n\n=== SUMMARIZED LOCKFILES ===\n${lockfileSummaries.join('\n\n')}`
+      : '';
     contextSection = [
       `=== PLAN CONTEXT: WHOLE ADMITTED PULL REQUEST (${input.scopeLabel || 'ALL FILES -- UNSCOPED'}) ===`,
       `=== GIT RANGE ===`,
@@ -982,7 +988,7 @@ function buildStaticPrefix(input: {
       ...(input.baseSha ? [`Base SHA: ${input.baseSha}`] : []),
       `Head SHA: ${input.headSha}`,
       ``,
-      treeOutline.summaryText,
+      treeOutline.summaryText + lockfileSection,
     ].join('\n');
   } else {
     const diffSection = buildDiffSection(input.effectiveFiles, {

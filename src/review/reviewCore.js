@@ -545,8 +545,6 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   let quorumSatisfied;
   if (isBlockerFastPath) {
     quorumSatisfied = true;
-  } else if (typeof options.quorumSatisfied === 'boolean') {
-    quorumSatisfied = options.quorumSatisfied && coverageComplete;
   } else if (isFileCoverageMode) {
     quorumSatisfied = expected > 0 && failedLanes.length === 0 && coverageComplete;
   } else {
