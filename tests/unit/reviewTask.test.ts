@@ -246,12 +246,19 @@ describe('validateTaskPlan', () => {
     expect(result.valid).toBe(true);
   });
 
-  it('allows lockfiles and data files to bypass task plan coverage when reviewable code paths exist', () => {
+  it('rejects uncovered lockfiles and data files in a mixed source diff', () => {
     const result = validateTaskPlan(
       plan([task({ paths: [API_FILE] }), task({ id: 'util-task', dimension: 'testing', paths: [UTIL_FILE] })]),
       ctx({ changedFiles: [API_FILE, UTIL_FILE, 'package-lock.json', 'mix.lock', 'data/seeds.json'] }),
     );
-    expect(result.valid).toBe(true);
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.reason).toBe('coverage_gap');
+      expect(result.uncoveredPaths).toEqual(['package-lock.json', 'mix.lock', 'data/seeds.json']);
+      const corrected = validateTaskPlan(plan([task({ paths: [API_FILE, UTIL_FILE, ...result.uncoveredPaths!] })]),
+        ctx({ changedFiles: [API_FILE, UTIL_FILE, ...result.uncoveredPaths!] }));
+      expect(corrected.valid).toBe(true);
+    }
   });
 
   it('supports the corrective-turn path: a coverage-gap plan re-validates clean once the gap is closed', () => {
@@ -409,6 +416,6 @@ describe('buildPlanDirective -- panel persona task composition', () => {
   it('instructs model not to propose tasks solely for binary files or compressed archives', () => {
     const directive = buildPlanDirective(6, dummyFiles, nonce);
     expect(directive).toContain('Do not propose independent review tasks solely for binary files or compressed archives');
-    expect(directive).toContain('Every non-documentation, non-binary changed file must be covered by at least one task');
+    expect(directive).toContain('Every non-documentation, non-binary changed file, including lockfiles and data/configuration files, must be covered by at least one task');
   });
 });

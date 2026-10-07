@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createAuthoritativeCompletionContext } from '../../src/review/authoritativeCompletionContext';
+import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
+import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
 import { findingClaimType, findingFingerprint, findingFingerprintForClaimType } from '../../src/review/findingConvergence';
 import { createReviewDecisionV2, REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
 import { applyGroundedVerificationToPersonas, buildDeterministicCoverageManifest, groundedAffectedContextDigest, GROUNDED_VERIFICATION_LEGACY_VERSION,
@@ -285,7 +288,7 @@ describe('WorkerReviewCompletion.v1', () => {
     } }, trusted), /unknown persona lane/u);
   });
 
-  it('requires and rebinds current composed resource receipt to prepared config and delivered paths', () => {
+  it('requires and rebinds current composed resource receipt to prepared config and delivered paths', async () => {
     const task = { id: 'task-a', dimension: 'architecture' as const, paths: ['src/example.ts'],
       question: 'Could this change regress behavior?', rationale: 'The source changed.' };
     const patchText = changedFiles[0]!.patch!;
@@ -328,6 +331,39 @@ describe('WorkerReviewCompletion.v1', () => {
     expect(derive(v2, trusted)).toMatchObject({ valid: true, evidence: { reviewEngine: 'composed',
       coverageComplete: true, verdict: 'SHIP' } });
 
+    // Exercise the production service builder rather than hand-supplying its missing authority.
+    const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      review_engine: 'composed', severity_policy: REVIEW_SEVERITY_POLICY_V2, personas: 'security',
+      budget: { max_investigation_turns: 20 },
+    } });
+    const frozen = preparePublishingPolicy({ content, source: {
+      repositoryId: 4321, repository: 'exampleorg/central-policy', sha: 'f'.repeat(40),
+      path: 'policy/review.json', contentDigest: sha256(content),
+    } }, { baseUrl: 'https://gateway.example.invalid', model: 'test-model' });
+    const coordinates = { ...expectedCoordinates, policyDigest: frozen.policy.effectivePolicyDigest,
+      configDigest: frozen.policy.effectiveConfigDigest };
+    const current = { repositoryId: coordinates.repositoryId, owner: coordinates.owner, repo: coordinates.repo,
+      prNumber: coordinates.prNumber, headSha: coordinates.headSha, baseSha: coordinates.baseSha,
+      open: true, draft: false };
+    const context = createAuthoritativeCompletionContext({ getStoredPrepared: async () => frozen,
+      readerFactory: async () => ({ currentCandidate: async () => current,
+        exactCurrentDiff: async () => ({ current, diff: '', expectedFileCount: 1, changedFiles }) }),
+      publishingResolver: { resolve: async () => ({ current, prepared: frozen,
+        identity: buildAuthoritativeReviewIdentity({ requested: current, current, policy: frozen.policy }) }) },
+    });
+    const serviceContext = await context({ coordinates: { ...coordinates,
+      attemptId: `${coordinates.runId}-g0-e2` }, reviewGeneration: 0, expectedAppId: 1234,
+      externalId: 'service-gate', checkId: 456, creationState: 'bound', desiredState: 'in_progress',
+      desiredVersion: 1, publishedVersion: 1, current: true });
+    const serviceCompletion = structuredClone(v2);
+    Object.assign(serviceCompletion, coordinates);
+    serviceCompletion.result.reviewDecision!.policyDigest = coordinates.policyDigest;
+    serviceCompletion.result.composedResources!.configDigest = { value: coordinates.configDigest, unavailableReason: null };
+    serviceCompletion.result.composedResources!.configuration.value = frozen.config.review_configuration_receipt!;
+    expect(derive(serviceCompletion, { ...serviceContext.coverage, expectedCoordinates: coordinates })).toMatchObject({
+      valid: true, evidence: { reviewEngine: 'composed', coverageComplete: true, verdict: 'SHIP' },
+    });
+
     const missing = structuredClone(v2);
     delete missing.result.composedResources;
     expectInvalid(derive(missing, trusted), /missing its worker-stage runtime resource receipt/u);
@@ -335,6 +371,11 @@ describe('WorkerReviewCompletion.v1', () => {
     unbound.result.composedResources!.configDigest = { value: null,
       unavailableReason: 'prepared digest was not available' } as any;
     expectInvalid(derive(unbound, trusted), /not bound to the service-prepared effective configuration/u);
+    expectInvalid(derive(v2, { ...trusted, composedEffectiveConfiguration: undefined }),
+      /not bound to the service-prepared effective configuration/u);
+    const forgedConfiguration = structuredClone(v2);
+    forgedConfiguration.result.composedResources!.configuration.value!.effective.profile.value = 'assertive';
+    expectInvalid(derive(forgedConfiguration, trusted), /not bound to the service-prepared effective configuration/u);
     const forgedCoverage = structuredClone(v2);
     forgedCoverage.result.composedResources!.coverage.investigatedPaths.sha256 = 'f'.repeat(64);
     expectInvalid(derive(forgedCoverage, trusted), /path coverage disagrees with the trusted plan/u);

@@ -1266,7 +1266,7 @@ export function buildPlanDirective(
     // conforming ids; never quote a non-conforming one.
     `Use a short lowercase slug naming what each task examines, for example "security-auth", "perf-hot-path" or "contract-api-shape".`,
     ...buildPlanTaskContractGuidance(expectedNonce, changedFilePaths, securityAuthPaths),
-    `Use at most ${maxTasks} tasks. Every non-documentation, non-binary changed file must be covered by at least one task.`,
+    `Use at most ${maxTasks} tasks. Every non-documentation, non-binary changed file, including lockfiles and data/configuration files, must be covered by at least one task.`,
     ...(deltaRereview ? [
       `INCREMENTAL RE-REVIEW: some files above show only the change since the previously reviewed head (a delta patch), and carried-forward files show a one-line note. Group files that change together into the same task and use as few tasks as the change needs; never split one file across tasks to review its hunks separately. Each task will be given an itemized ledger of open prior findings and delta hunks that it must answer.`,
     ] : []),

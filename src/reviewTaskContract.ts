@@ -25,7 +25,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { classifyDomainLanesByHeuristic, isBypassDiffOnlyPath } from './pathDomainContract';
+import { classifyDomainLanesByHeuristic } from './pathDomainContract';
 
 // ---------------------------------------------------------------------------
 // Task dimensions
@@ -367,10 +367,9 @@ export function validateTaskPlan(
   // classification, never against the model's own account of itself.
   const domainLanes = classifyDomainLanesByHeuristic(context.changedFiles.map((path) => ({ path })));
   const nonDocAssetPaths = context.changedFiles.filter((path) => domainLanes[path] !== 'docs_assets');
-  const reviewableCodePaths = nonDocAssetPaths.filter((path) => !isBypassDiffOnlyPath(path));
-  // If reviewable non-bypass code paths exist, lockfiles and data files bypass required task coverage.
-  // If only bypass files exist, they remain covered by nonDocAssetPaths so a plan covering them is valid.
-  const pathsRequiringCoverage = reviewableCodePaths.length > 0 ? reviewableCodePaths : nonDocAssetPaths;
+  // Match the execution ledger: lockfiles and data still contain reviewable regions
+  // when they accompany code, so planning must expose gaps before tasks start.
+  const pathsRequiringCoverage = nonDocAssetPaths;
   const securityAuthPaths = context.changedFiles.filter((path) => domainLanes[path] === 'security_auth');
 
   // --- Rule 5: security floor ----------------------------------------------
@@ -778,13 +777,13 @@ export function validateFileCoverageQuorum(
     };
   }
 
-  // 2. Classify reviewable files (exempt pure docs, assets, and lockfiles)
+  // 2. Classify reviewable files (exempt pure docs and assets)
   const domainMap = classifyDomainLanesByHeuristic(changedFiles.map((p) => ({ path: p })));
   const reviewableCodePaths = changedFiles.filter(
-    (p) => domainMap[p] !== 'docs_assets' && !isBypassDiffOnlyPath(p)
+    (p) => domainMap[p] !== 'docs_assets'
   );
 
-  // If all files are documentation, assets, or bypass lockfiles, coverage is automatically satisfied
+  // If all files are documentation or assets, coverage is automatically satisfied
   if (reviewableCodePaths.length === 0) {
     const hasP1 = activeFindings.some((f) => f.severity === 'P1');
     return {
@@ -793,7 +792,7 @@ export function validateFileCoverageQuorum(
       mode: 'file_coverage',
       verdict: hasP1 ? 'FIX_FIRST' : 'SHIP',
       status: 'COMPLETE',
-      rationale: 'All changed files are documentation, assets, or bypass lockfiles. Coverage satisfied automatically.',
+      rationale: 'All changed files are documentation or assets. Coverage satisfied automatically.',
       coveragePct: 100,
       coveredPaths: [],
       uncoveredPaths: [],

@@ -335,8 +335,18 @@ describe('service-owned authoritative completion context', () => {
     const f = fixture({}, composedPrepared());
     const context = await f.context(f.gate);
     expect(context.coverage).toMatchObject({ reviewEngine: 'composed',
-      composedChangedPaths: ['src/a.ts'], composedMaxTasks: 8 });
+      composedChangedPaths: ['src/a.ts'], composedMaxTasks: 8,
+      composedEffectiveConfiguration: f.stored.config.review_configuration_receipt });
+    expect(context.coverage.composedEffectiveConfiguration).toBeDefined();
   });
+  it('refuses a mutated frozen composed configuration receipt before trusting coverage', async () => {
+    const f = fixture({}, composedPrepared());
+    const receipt = f.stored.config.review_configuration_receipt!;
+    receipt.effective.profile.value = 'assertive';
+    await expect(f.context(f.gate)).rejects.toThrow('Authoritative completion context unavailable');
+    expect(f.readerFactory).not.toHaveBeenCalled();
+  });
+
   it.each([{ configured: 4, admitted: 4 }, { configured: 20, admitted: 8 }])(
     'caps a configured composed plan of $configured tasks at $admitted', async ({ configured, admitted }) => {
       const f = fixture({}, composedPrepared(configured));
