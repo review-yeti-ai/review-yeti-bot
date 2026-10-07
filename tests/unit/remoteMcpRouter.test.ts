@@ -239,6 +239,62 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
     expect(query).toHaveBeenCalledOnce();
   });
 
+  it('returns only unavailable logical SHIP for an authenticated RBAC-authorized pause status read without a local mapping', async () => {
+    const requested = { owner: 'exampleorg', repo: 'example-api', prNumber: 46 };
+    const readCurrentCandidate = vi.fn();
+    const resolve = vi.fn();
+    const query = vi.fn();
+    const registry = createDefaultToolRegistry({ db: { query }, passthroughEnabled: true,
+      triggerDeps: { authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
+        repositoryIds: [123], resolver: { readCurrentCandidate, resolve } } } });
+    const { testApp, authenticator } = buildTestApp({ passthroughEnabled: true, toolRegistry: registry });
+
+    const response = await request(testApp).post('/api/mcp').set('Authorization', 'Bearer valid-token').send({
+      jsonrpc: '2.0', id: 174, method: 'tools/call',
+      params: { name: 'get_review_status', arguments: {
+        owner: requested.owner, repo: requested.repo, pull_number: requested.prNumber,
+      } },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.error).toBeUndefined();
+    expect(response.body.result).toBeDefined();
+    const output = JSON.parse(response.body.result.content[0].text);
+    expect(output).toMatchObject({ found: true, verdict: 'SHIP', head_sha: null, phase: 'completed',
+      check_run: null, operator_exemption: { candidate_state: 'unavailable', publication_id: null,
+        audit_digest: null, base_sha: null, policy_digest: null, expected_app_id: null,
+        expected_lanes: 0, completed_lanes: 0, review_started: false,
+        publication_state: 'unavailable', publication_receipt_available: null,
+        review_check_id: null, gate_check_id: null, merge_eligible: false } });
+    expect(authenticator.checkRepositoryAccess).toHaveBeenCalledWith(expect.anything(), requested.owner, requested.repo);
+    expect(readCurrentCandidate).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('keeps pause status behind exact MCP repository RBAC when no local mapping exists', async () => {
+    const readCurrentCandidate = vi.fn();
+    const resolve = vi.fn();
+    const query = vi.fn();
+    const registry = createDefaultToolRegistry({ db: { query }, passthroughEnabled: true,
+      triggerDeps: { authoritativePublishing: { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
+        repositoryIds: [123], resolver: { readCurrentCandidate, resolve } } } });
+    const { testApp } = buildTestApp({ passthroughEnabled: true, toolRegistry: registry });
+
+    const response = await request(testApp).post('/api/mcp').set('Authorization', 'Bearer valid-token').send({
+      jsonrpc: '2.0', id: 175, method: 'tools/call',
+      params: { name: 'get_review_status', arguments: {
+        owner: 'not-authorized', repo: 'example-api', pull_number: 46,
+      } },
+    });
+
+    expect(response.status).toBe(403);
+    expect(response.body.error).toBeDefined();
+    expect(readCurrentCandidate).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it('returns logical SHIP for an enrolled paused status request before storage initialization without reads', async () => {
     const requested = { repositoryId: 123, owner: 'exampleorg', repo: 'example-api', prNumber: 46,
       headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) };

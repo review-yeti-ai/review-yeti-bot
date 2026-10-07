@@ -3,6 +3,7 @@ import {
   type ToolResult,
   buildToolResultJson,
 } from '../mcpTypes';
+import type { McpExecutionContext } from '../mcpTypes';
 import {
   GetReviewStatusInputSchema,
   type GetReviewStatusInput,
@@ -30,7 +31,9 @@ import {
   type OperatorPassthroughOperationScope,
 } from '../../../review/operatorPassthrough';
 import { REVIEW_DISPATCH_OUTBOX_STATUS } from '../../../persistence/reviewDispatchStatus';
-import { authoritativeRepositoryForName, expectedReviewAppIdFor } from '../../../auth/repositoryReviewAuthority';
+import { authoritativeRepositoryForName, expectedReviewAppIdFor, PUBLIC_REVIEW_REPOSITORY,
+  PUBLIC_REVIEW_REPOSITORY_ID } from '../../../auth/repositoryReviewAuthority';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../../../auth/authoritativeServiceIdentity';
 import { isPausedAuthorityReadUnavailable } from '../../../github/authoritativeReadFailure';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
 import { AuthoritativeCandidateChangedError } from '../../../review/authoritativePublishingResolver';
@@ -322,13 +325,37 @@ type ResolvedPauseCandidate = ResolvedPauseCandidateBase & (
 );
 
 async function resolveOperatorPauseCandidate(input: GetReviewStatusInput,
-  options: GetReviewStatusOptions): Promise<ResolvedPauseCandidate> {
+  options: GetReviewStatusOptions, context?: McpExecutionContext): Promise<ResolvedPauseCandidate | null> {
   const admission = options.authoritativePublishing;
   if (!admission) {
     throw new Error('Operator SHIP status requires current authoritative candidate resolution');
   }
   const mappedIdentity = authoritativeRepositoryForName(admission, input.owner, input.repo);
   if (!mappedIdentity) {
+    const configuredIdentities = admission.repositoryIdentities;
+    const noConfiguredIdentityEntries = configuredIdentities === undefined
+      || (Array.isArray(configuredIdentities) && configuredIdentities.length === 0);
+    const requestedRepository = `${input.owner}/${input.repo}`.toLowerCase();
+    const exactAuthorizedStatusRead = context?.authenticatedByConfiguredAuthenticator === true
+      && context.caller !== undefined
+      && context.authorizedRepository !== undefined
+      && `${context.authorizedRepository.owner}/${context.authorizedRepository.repo}`.toLowerCase() === requestedRepository;
+    const repositoryIdsAreWellFormed = Array.isArray(admission.repositoryIds)
+      && admission.repositoryIds.length > 0
+      && new Set(admission.repositoryIds).size === admission.repositoryIds.length
+      && admission.repositoryIds.every((id) => Number.isSafeInteger(id) && id > 0)
+      && admission.repositoryIds.some((id) => id !== PUBLIC_REVIEW_REPOSITORY_ID);
+    if (requestedRepository !== PUBLIC_REVIEW_REPOSITORY.toLowerCase()
+      && noConfiguredIdentityEntries
+      && exactAuthorizedStatusRead
+      && admission.expectedAppId === AUTHORITATIVE_REVIEW_APP_ID
+      && repositoryIdsAreWellFormed) {
+      // This is a status-only, no-candidate projection. The router has already
+      // authenticated the caller and authorized these exact coordinates. Do
+      // not turn the absence of a local name/ID enrollment into a resolver,
+      // GitHub, database, or publication lookup.
+      return null;
+    }
     throw new Error('Operator SHIP status requires an enrolled local repository identity mapping');
   }
   if (typeof admission.resolver.readCurrentCandidate !== 'function') {
@@ -507,7 +534,7 @@ function unavailableOperatorStatus(candidate: ResolvedPauseCandidate & { current
   } satisfies ReviewStatusOutput);
 }
 
-function unavailableCandidateOperatorStatus(candidate: ResolvedPauseCandidate & { authorityAvailable: false }): ToolResult {
+function unavailableCandidateOperatorStatus(): ToolResult {
   return buildToolResultJson({
     schema_version: 'ReviewStatus.v2', found: true, verdict: 'SHIP', attempt_id: null,
     head_sha: null, phase: 'completed', check_run: null, active_worker: null, active_projection: null,
@@ -575,7 +602,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient, options: Ge
   return {
     definition: getReviewStatusDefinition,
     schema: GetReviewStatusInputSchema,
-    execute: async (rawArgs: Record<string, unknown>): Promise<ToolResult> => {
+    execute: async (rawArgs: Record<string, unknown>, context?: McpExecutionContext): Promise<ToolResult> => {
       const parsed = GetReviewStatusInputSchema.safeParse(rawArgs);
       if (!parsed.success) {
         throw new Error(`Invalid arguments: ${parsed.error.issues.map((i) => i.message).join(', ')}`);
@@ -583,8 +610,8 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient, options: Ge
       const { owner, repo, pull_number, head_sha } = parsed.data;
 
       if (options.passthroughEnabled === true) {
-        const candidate = await resolveOperatorPauseCandidate(parsed.data, options);
-        if (!candidate.authorityAvailable) return unavailableCandidateOperatorStatus(candidate);
+        const candidate = await resolveOperatorPauseCandidate(parsed.data, options, context);
+        if (!candidate || !candidate.authorityAvailable) return unavailableCandidateOperatorStatus();
         if (!candidate.current) return historicalOperatorPassthroughStatus(db, parsed.data, candidate);
         return operatorPassthroughStatus(db, parsed.data, candidate);
       }

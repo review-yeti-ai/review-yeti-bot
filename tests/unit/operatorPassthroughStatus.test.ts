@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createGetReviewStatusTool } from '../../src/mcp/server/tools/getReviewStatus';
+import type { McpExecutionContext, ToolResult } from '../../src/mcp/server/mcpTypes';
+import { PUBLIC_REVIEW_REPOSITORY, PUBLIC_REVIEW_REPOSITORY_ID } from '../../src/auth/repositoryReviewAuthority';
 import { operatorPassthroughReadyForShip } from '../../src/review/operatorPassthrough';
 import { AuthoritativeCandidateChangedError } from '../../src/review/authoritativePublishingResolver';
 import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError } from '../../src/github/authoritativeReadFailure';
@@ -33,6 +35,24 @@ function statusOptions(overrides: Record<string, unknown> = {}) {
       baseSha: currentCandidate.baseSha, repositoryId: currentCandidate.repositoryId })),
     ...overrides,
   } as any;
+}
+
+function configuredStatusContext(owner = candidate.owner, repo = candidate.repo,
+  overrides: Partial<McpExecutionContext> = {}): McpExecutionContext {
+  return {
+    caller: { authType: 'static_token', tokenDigest: 'configured1', isAdmin: false,
+      allowedRepositories: new Set([`${owner}/${repo}`.toLowerCase()]), callerId: 'configured-status-caller' },
+    identity: 'configured-status-caller',
+    authenticatedByConfiguredAuthenticator: true,
+    authorizedRepository: { owner, repo },
+    ...overrides,
+  };
+}
+
+function executeStatusWithContext(tool: ReturnType<typeof createGetReviewStatusTool>,
+  args: Record<string, unknown>, context: McpExecutionContext): Promise<ToolResult> {
+  return (tool.execute as unknown as
+    (input: Record<string, unknown>, executionContext: McpExecutionContext) => Promise<ToolResult>)(args, context);
 }
 
 describe('get_review_status operator-passthrough projection', () => {
@@ -287,6 +307,166 @@ describe('get_review_status operator-passthrough projection', () => {
     expect(withoutIdentity.resolveGitHubPullRequest).not.toHaveBeenCalled();
   });
 
+  it('returns only unavailable logical SHIP for an authenticated status read with no local name binding', async () => {
+    const readCurrentCandidate = vi.fn();
+    const resolve = vi.fn();
+    const query = vi.fn(async () => ({ rows: [] }));
+    const options = statusOptions({ authoritativePublishing: {
+      expectedAppId: candidate.expected_app_id, repositoryIds: [currentCandidate.repositoryId],
+      resolver: { readCurrentCandidate, resolve },
+    } });
+    const result = await executeStatusWithContext(createGetReviewStatusTool({ query }, options), {
+      owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number,
+      head_sha: candidate.head_sha,
+    }, configuredStatusContext());
+    const value = JSON.parse((result.content[0] as { text: string }).text);
+
+    expect(value).toMatchObject({ schema_version: 'ReviewStatus.v2', found: true, verdict: 'SHIP',
+      attempt_id: null, head_sha: null, phase: 'completed', check_run: null,
+      active_worker: null, active_projection: null,
+      operator_exemption: { candidate_state: 'unavailable', publication_id: null, audit_digest: null,
+        base_sha: null, policy_digest: null, expected_app_id: null, expected_lanes: 0,
+        completed_lanes: 0, review_started: false, publication_state: 'unavailable',
+        publication_receipt_available: null, review_check_id: null, gate_check_id: null, merge_eligible: false },
+    });
+    expect(readCurrentCandidate).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+    expect(options.resolveGitHubPullRequest).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['unconfigured authentication', { authenticatedByConfiguredAuthenticator: false }],
+    ['missing authenticated caller', { caller: undefined }],
+    ['missing RBAC context', { authorizedRepository: undefined }],
+    ['mismatched RBAC repository', { authorizedRepository: { owner: candidate.owner, repo: 'other-repo' } }],
+  ] as const)('does not return unavailable SHIP without %s when the local name binding is missing', async (_label, override) => {
+    const readCurrentCandidate = vi.fn();
+    const resolve = vi.fn();
+    const query = vi.fn(async () => ({ rows: [] }));
+    const options = statusOptions({ authoritativePublishing: {
+      expectedAppId: candidate.expected_app_id, repositoryIds: [currentCandidate.repositoryId],
+      resolver: { readCurrentCandidate, resolve },
+    } });
+
+    await expect(executeStatusWithContext(createGetReviewStatusTool({ query }, options), {
+      owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number,
+    }, configuredStatusContext(candidate.owner, candidate.repo, override))).rejects.toThrow();
+    expect(readCurrentCandidate).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['malformed exact-name entry', [123], [
+      { repositoryId: '123', owner: candidate.owner, repo: candidate.repo },
+    ], undefined],
+    ['ambiguous names', [123, 124], [
+      { repositoryId: 123, owner: candidate.owner, repo: candidate.repo },
+      { repositoryId: 124, owner: candidate.owner, repo: candidate.repo },
+    ], undefined],
+    ['a mapped identity outside the App allowlist', [123], [
+      { repositoryId: 124, owner: candidate.owner, repo: candidate.repo },
+    ], undefined],
+    ['a conflicting App binding', [123], [
+      { repositoryId: 123, owner: candidate.owner, repo: candidate.repo },
+    ], () => 999],
+  ] as const)('keeps a known %s as an authority error instead of unavailable SHIP', async (_label, repositoryIds,
+    repositoryIdentities, expectedAppIdFor) => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    const options = statusOptions({ authoritativePublishing: {
+      expectedAppId: candidate.expected_app_id, repositoryIds, repositoryIdentities,
+      ...(expectedAppIdFor ? { expectedAppIdFor } : {}),
+      resolver: { readCurrentCandidate: vi.fn(), resolve: vi.fn() },
+    } });
+
+    await expect(executeStatusWithContext(createGetReviewStatusTool({ query }, options), {
+      owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number,
+    }, configuredStatusContext())).rejects.toThrow();
+    expect(query).not.toHaveBeenCalled();
+    expect(options.resolveGitHubPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('does not treat an absent requested name as an empty identity map', async () => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    const options = statusOptions({ authoritativePublishing: {
+      expectedAppId: candidate.expected_app_id, repositoryIds: [currentCandidate.repositoryId],
+      repositoryIdentities: [{ repositoryId: currentCandidate.repositoryId, owner: 'otherorg', repo: 'other-repo' }],
+      resolver: { readCurrentCandidate: vi.fn(), resolve: vi.fn() },
+    } });
+
+    await expect(executeStatusWithContext(createGetReviewStatusTool({ query }, options), {
+      owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number,
+    }, configuredStatusContext())).rejects.toThrow();
+    expect(query).not.toHaveBeenCalled();
+    expect(options.resolveGitHubPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed primary App binding before the no-map status fallback', async () => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    const options = statusOptions({ authoritativePublishing: {
+      expectedAppId: 4552718, repositoryIds: [currentCandidate.repositoryId],
+      resolver: { readCurrentCandidate: vi.fn(), resolve: vi.fn() },
+    } });
+
+    await expect(executeStatusWithContext(createGetReviewStatusTool({ query }, options), {
+      owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number,
+    }, configuredStatusContext())).rejects.toThrow();
+    expect(query).not.toHaveBeenCalled();
+    expect(options.resolveGitHubPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('returns unavailable SHIP for a private status read with mixed private and public App IDs', async () => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    const readCurrentCandidate = vi.fn();
+    const resolve = vi.fn();
+    const options = statusOptions({ authoritativePublishing: {
+      expectedAppId: candidate.expected_app_id, repositoryIds: [currentCandidate.repositoryId, PUBLIC_REVIEW_REPOSITORY_ID],
+      resolver: { readCurrentCandidate, resolve },
+    } });
+
+    const result = await executeStatusWithContext(createGetReviewStatusTool({ query }, options), {
+      owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number,
+    }, configuredStatusContext());
+    const value = JSON.parse((result.content[0] as { text: string }).text);
+    expect(value).toMatchObject({ found: true, verdict: 'SHIP', head_sha: null,
+      operator_exemption: { candidate_state: 'unavailable', expected_app_id: null,
+        review_check_id: null, gate_check_id: null, merge_eligible: false } });
+    expect(readCurrentCandidate).not.toHaveBeenCalled();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+    expect(options.resolveGitHubPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('rejects a public-only numeric scope before private no-map status fallback', async () => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    const options = statusOptions({ authoritativePublishing: {
+      expectedAppId: candidate.expected_app_id, repositoryIds: [PUBLIC_REVIEW_REPOSITORY_ID],
+      resolver: { readCurrentCandidate: vi.fn(), resolve: vi.fn() },
+    } });
+
+    await expect(executeStatusWithContext(createGetReviewStatusTool({ query }, options), {
+      owner: candidate.owner, repo: candidate.repo, pull_number: candidate.pr_number,
+    }, configuredStatusContext())).rejects.toThrow();
+    expect(query).not.toHaveBeenCalled();
+    expect(options.resolveGitHubPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('keeps a missing dedicated public App binding as an authority error', async () => {
+    const [owner, repo] = PUBLIC_REVIEW_REPOSITORY.split('/');
+    const query = vi.fn(async () => ({ rows: [] }));
+    const options = statusOptions({ authoritativePublishing: {
+      expectedAppId: candidate.expected_app_id, repositoryIds: [currentCandidate.repositoryId],
+      repositoryIdentities: [], resolver: { readCurrentCandidate: vi.fn(), resolve: vi.fn() },
+    } });
+
+    await expect(executeStatusWithContext(createGetReviewStatusTool({ query }, options), {
+      owner, repo, pull_number: candidate.pr_number,
+    }, configuredStatusContext(owner, repo))).rejects.toThrow();
+    expect(query).not.toHaveBeenCalled();
+    expect(options.resolveGitHubPullRequest).not.toHaveBeenCalled();
+  });
+
   it('rejects ambiguous paused repository names before any caller-name GitHub lookup', async () => {
     const query = vi.fn(async () => ({ rows: [] }));
     const options = statusOptions({ authoritativePublishing: {
@@ -297,8 +477,8 @@ describe('get_review_status operator-passthrough projection', () => {
       ],
       resolver: { readCurrentCandidate: vi.fn(), resolve: vi.fn() },
     } });
-    await expect(createGetReviewStatusTool({ query }, options).execute({ owner: candidate.owner,
-      repo: candidate.repo, pull_number: candidate.pr_number })).rejects.toThrow();
+    await expect(executeStatusWithContext(createGetReviewStatusTool({ query }, options), { owner: candidate.owner,
+      repo: candidate.repo, pull_number: candidate.pr_number }, configuredStatusContext())).rejects.toThrow();
     expect(options.resolveGitHubPullRequest).not.toHaveBeenCalled();
     expect(query).not.toHaveBeenCalled();
   });

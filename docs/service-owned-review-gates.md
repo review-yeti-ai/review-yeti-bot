@@ -270,6 +270,15 @@ finite Actions/OIDC repository and owner allowlists:
   candidate and effective policy before publication, reserves each check
   before creation, and reconciles uncertain creates without issuing duplicates.
   A worker callback or caller-supplied digest cannot create an exemption.
+
+  A configured-authenticator caller that passed exact repository RBAC may also
+  receive the global paused `SHIP` projection from `get_review_status` when no
+  local name-to-ID identity map is configured. That status is explicitly
+  unavailable: it asserts no candidate, current policy, durable receipt or
+  official check IDs, and keeps `merge_eligible=false`; it performs no resolver,
+  GitHub or database lookup. This status-only projection does not enroll the
+  repository or authorize review admission. A malformed or conflicting map and
+  missing authentication or RBAC remain errors.
   Authenticated admission and bounded catch-up both use this one ledger and
   publisher; merge-group checks bind the current ordered queue snapshot, pause
   mode and every constituent's current paired checks.
