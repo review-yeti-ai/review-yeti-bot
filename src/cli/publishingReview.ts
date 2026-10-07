@@ -46,7 +46,8 @@ import { GitHubInstallationClient } from '../github/installationClient';
 import type { FetchImplementation } from '../github/commentPublisher';
 import { defaultZoektGrounding, removeScratchTree } from '../mcp/zoektGrounding';
 import { isFastShipPanelResult } from '../panel/fastShipResult';
-import { isValidTaskId } from '../reviewTaskContract';
+import { isValidTaskId, type LeanFindingSummary } from '../reviewTaskContract';
+import type { FindingRemediation } from '../review/remediationSubagent';
 import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
 import { runInSpan, getMetrics } from '../telemetry';
@@ -299,6 +300,56 @@ export interface CheckAnnotation {
   message: string;
   title?: string;
 }
+
+/**
+ * Hydrates a LeanFindingSummary (v2) and optional remediation into a GitHub CheckAnnotation.
+ * - Maps P0 and P1 to annotation_level: 'failure', P2 to annotation_level: 'notice'.
+ * - Preserves line anchoring (start_line = finding.line, end_line = finding.line, normalized to >= 1).
+ * - Formats title with severity prefix capped within 120 characters.
+ * - Clamps message body within 4000 characters.
+ * - If changedFiles is provided and does not include finding.file, returns null.
+ */
+export function hydrateLeanFindingToCheckAnnotation(
+  finding: LeanFindingSummary,
+  remediation?: FindingRemediation,
+  changedFiles?: string[],
+): CheckAnnotation | null {
+  if (changedFiles && !changedFiles.includes(finding.file)) {
+    return null;
+  }
+
+  const line = Number.isSafeInteger(Number(finding.line)) && Number(finding.line) > 0
+    ? Number(finding.line)
+    : 1;
+
+  const level: CheckAnnotation['annotation_level'] =
+    finding.severity === 'P2' ? 'notice' : 'failure';
+
+  const title = `${finding.severity}: ${finding.summary}`.slice(0, 120);
+
+  let message = finding.summary;
+  if (remediation) {
+    if (remediation.explanation) {
+      message += `\n\nRemediation:\n${remediation.explanation}`;
+    }
+    if (remediation.codeReplacement?.suggestedSnippet) {
+      message += `\nSuggested fix:\n\`\`\`\n${remediation.codeReplacement.suggestedSnippet}\n\`\`\``;
+    }
+  }
+  message = message.slice(0, 4000);
+
+  return {
+    path: finding.file,
+    start_line: line,
+    end_line: line,
+    annotation_level: level,
+    title,
+    message,
+  };
+}
+
+export const hydrateFindingToCheckAnnotation = hydrateLeanFindingToCheckAnnotation;
+
 
 export interface PublishingCheckClient {
   /** Present only on the hard-failing adapter used by normal-engine qualification. */
@@ -674,7 +725,11 @@ export function projectPublishingRosterBounds(panelResult: PanelResult): Publish
   const configuredSet = new Set(validConfiguredRoster(panelResult.applicablePersonaIds)
     ? (panelResult.applicablePersonaIds as string[]) : []);
   const returnedSet = new Set(allLanes.map((lane) => lane.id || ''));
-  const missingConfiguredLaneCount = configuredSet.size > 0
+  const isFastPathOrCoverage = (panelResult as any).blockerFastPath === true
+    || (panelResult?.quorum as any)?.blockerFastPath === true
+    || (panelResult as any).fileCoverageSatisfied === true
+    || (panelResult?.quorum as any)?.fileCoverage?.satisfied === true;
+  const missingConfiguredLaneCount = configuredSet.size > 0 && !isFastPathOrCoverage
     ? [...configuredSet].filter((id) => !returnedSet.has(id)).length
     : 0;
   const seenReturned = new Set<string>();
@@ -736,16 +791,25 @@ function rawPublicationRoster(
     };
   }
 
+  const isBlockerFastPath = (panelResult as any).blockerFastPath === true
+    || (panelResult?.quorum as any)?.blockerFastPath === true;
+  const isFileCoverageQuorum = (panelResult as any).fileCoverageSatisfied === true
+    || (panelResult?.quorum as any)?.fileCoverage?.satisfied === true;
+
   const configuredIds = panelResult.applicablePersonaIds;
-  const expectedLaneCount = configuredRosterValid ? configuredIds.length : null;
-  const arbitrationExpectedCount = configuredRosterValid ? configuredIds.length : 0;
+  const expectedLaneCount = configuredRosterValid
+    ? (isBlockerFastPath || isFileCoverageQuorum ? completedLaneCount : configuredIds.length)
+    : null;
+  const arbitrationExpectedCount = configuredRosterValid
+    ? (isBlockerFastPath || isFileCoverageQuorum ? completedLaneCount : configuredIds.length)
+    : 0;
   const configuredSet = new Set(configuredRosterValid ? configuredIds : []);
   const returnedSet = new Set(returnedIds);
   const rosterValid = configuredRosterValid
     && returnedLaneCountValid
     && returnedIds.every((id) => isRosterId(id) && configuredSet.has(id))
     && !hasDuplicate(returnedIds)
-    && configuredIds.every((id) => returnedSet.has(id));
+    && (isBlockerFastPath || isFileCoverageQuorum || configuredIds.every((id) => returnedSet.has(id)));
 
   return {
     mode: notApplicable
@@ -2856,7 +2920,13 @@ export async function runPublishingReviewWorker(
       const gracefulPartial = panelResult.gracefulExit?.reason === 'evidence_deadline';
       const rawFindings = (Array.isArray(panelResult.personas) ? panelResult.personas : [])
         .flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
-      const panelQuorumSatisfied = panelResult?.quorum?.satisfied === true;
+      const isBlockerFastPath = (panelResult as any).blockerFastPath === true
+        || (panelResult?.quorum as any)?.blockerFastPath === true;
+      const isFileCoverageQuorum = (panelResult as any).fileCoverageSatisfied === true
+        || (panelResult?.quorum as any)?.fileCoverage?.satisfied === true;
+      const panelQuorumSatisfied = panelResult?.quorum?.satisfied === true
+        || isBlockerFastPath
+        || isFileCoverageQuorum;
       // REL-1092: analyzable files whose changed text GitHub omitted (the pull-files
       // fallback of a 406 diff). No lane saw them, so they are never counted as reviewed:
       // coverage is incomplete here, and the service ANDs this into its own coverage, so
@@ -2879,13 +2949,17 @@ export async function runPublishingReviewWorker(
       // findings and quorum under the same P0/P1 policy as the service Gate.
       const canonical = computeArbitration(rawRoster.lanes, rawRoster.arbitrationExpectedCount, {
         changedFiles,
-        coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied && coverageGaps.length === 0
-          && groundedReviewComplete
+        coverageComplete: (isBlockerFastPath || rawRoster.rosterValid) && panelQuorumSatisfied
+          && (isBlockerFastPath || coverageGaps.length === 0)
+          && (isBlockerFastPath || groundedReviewComplete)
           && !gracefulPartial
           // Fast-ship is a classifier bypass, not complete P0/P1 review evidence. Under an
           // explicit v2 policy it cannot produce a merge-eligible receipt.
           && !(reviewDecisionPolicy && isFastShip && !panelResult.documentationOnly),
         ...(coverageGaps.length > 0 ? { coverageGaps } : {}),
+        blockerFastPath: isBlockerFastPath,
+        fileCoverageSatisfied: isFileCoverageQuorum,
+        quorumSatisfied: panelQuorumSatisfied,
         // One composed context is one reviewer: `rawRoster.lanes` there is the planned TASK list,
         // not a count of independent reviewers, so the default `panelSize` derivation (lane count)
         // would let a longer task plan silently raise its own P1 blocking threshold (7 tasks moves
@@ -2900,7 +2974,7 @@ export async function runPublishingReviewWorker(
         failedLaneCount: rawRoster.failedLaneCount,
         rosterValid: rawRoster.rosterValid,
         quorumSatisfied: canonical.quorumSatisfied,
-        fullPanelComplete: rawRoster.mode === 'panel' && canonical.quorumSatisfied && groundedReviewComplete,
+        fullPanelComplete: isBlockerFastPath || (rawRoster.mode === 'panel' && canonical.quorumSatisfied && groundedReviewComplete),
       };
       const fastShipApproved = isFastShip && canonical.quorumSatisfied;
       const verdict = canonical.verdict;
@@ -2937,8 +3011,8 @@ export async function runPublishingReviewWorker(
           schemaVersion: 'review-yeti-decision.v2',
           policyVersion: reviewDecisionPolicy,
           policyDigest: value(env, 'REVIEW_POLICY_DIGEST'),
-          coverageComplete: coverageGaps.length === 0 && !gracefulPartial && groundedReviewComplete,
-          quorumSatisfied: rawRoster.rosterValid && panelQuorumSatisfied && canonical.quorumSatisfied,
+          coverageComplete: (isBlockerFastPath || coverageGaps.length === 0) && !gracefulPartial && (isBlockerFastPath || groundedReviewComplete),
+          quorumSatisfied: (isBlockerFastPath || rawRoster.rosterValid) && panelQuorumSatisfied && canonical.quorumSatisfied,
           infrastructureFailure: rawRoster.failedLaneCount > 0,
           expectedLanes: rawRoster.arbitrationExpectedCount,
           completedLanes: canonical.completedPersonas,
@@ -3344,8 +3418,9 @@ export async function runPublishingReviewWorker(
           // push this past `resultSchema.personas`'s own bound.
           personas: [...personas, ...errors, ...shadowPersonas, ...shadowErrors, ...shadowRunFailure].slice(0, MAX_PERSONAS),
           ...(reviewEngine === 'composed' && panelResult.taskPlan ? { taskPlan: panelResult.taskPlan } : {}),
-          coverageComplete: coverageGaps.length === 0 && !gracefulPartial && groundedReviewComplete,
-          quorumSatisfied: panelResult.quorum?.satisfied === true && !unreportedNoVerdict && !gracefulPartial,
+          coverageComplete: (isBlockerFastPath || coverageGaps.length === 0) && !gracefulPartial && (isBlockerFastPath || groundedReviewComplete),
+          quorumSatisfied: (panelResult.quorum?.satisfied === true || isBlockerFastPath || isFileCoverageQuorum) && !unreportedNoVerdict && !gracefulPartial,
+          ...(isBlockerFastPath ? { blockerFastPath: true } : {}),
           ...(deletionClassification && deletionClassification.status !== 'disabled' && deletionClassification.totalFiles > 0
             ? { deletionClassification: {
               version: deletionClassification.version, digest: deletionClassification.digest, status: deletionClassification.status,

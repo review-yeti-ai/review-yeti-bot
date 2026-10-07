@@ -271,3 +271,79 @@ Read:
 Do NOT mix clean. Do NOT pkill. No AI attribution in git commits or PRs.
 Resume and drive to completion.
 
+
+## Follow-up — 2026-10-04T18:26:51Z
+
+Implement Review Yeti's next-generation Swarm Context Isolation, Diff Compaction, Findings Decomposition, and File-Coverage Quorum architecture to eliminate monolithic diff prefill, reduce token consumption by 60-70%, and replace rigid quorum with file coverage validation and blocker fast-pathing.
+
+Working directory: /Users/jasonbarbee/Documents/ct-master/review-yeti-bot-jasonbarbee
+Integrity mode: development
+
+## Requirements
+
+### R1. Swarm Context Isolation & AST File-Tree Dispatcher
+Eliminate monolithic diff broadcasting (`staticPrefixText`) across concurrent reviewer tasks. Parse git diffs into an AST and file-tree outline, dispatching domain-bounded subagents to inspect only the files, components, and symbol boundaries assigned to their domain (e.g., security, database, frontend, API), preventing context pollution.
+
+### R2. Ephemeral Diff Lifecycle & Sliding Context Compaction
+Implement an on-demand hunk retrieval mechanism (`get_hunk(filePath, startLine, endLine)`) so subagents inspect raw code only when triggered. Upon completing inspection of a file or hunk, evict the raw diff from conversational turn history and replace it with a concise finding synopsis, keeping turn history bounded and token burn flat.
+
+### R3. Findings Decomposition Contract
+Enforce a lean, structured finding summary schema (`ReviewTaskContract` v2) where subagents emit compact finding digests (severity, file, line, fingerprint, summary) during the initial sweep, decoupling verbose remediation code generation into an on-demand, targeted subagent.
+
+### R4. File Coverage Validation & Blocker Fast-Path Quorum
+Replace the legacy "all-tasks-must-report" quorum bottleneck with file coverage validation (ensuring 100% of modified files are inspected by applicable domains). Implement an early-exit fast-path that halts remaining non-critical tasks immediately when a verified P0/Blocker finding is detected.
+
+## Acceptance Criteria
+
+### Context Isolation & Token Efficiency
+- [ ] Subagents receive only path-relevant AST outlines and diff hunks rather than the full repository unified diff.
+- [ ] Token consumption per PR review run demonstrates a measurable reduction (>50%) compared to monolithic prefill.
+- [ ] Legacy monolithic `staticPrefixText` prefill is completely replaced across composed review task execution.
+
+### Ephemeral Inspection & Compaction
+- [ ] Subagents successfully fetch code on demand via `get_hunk` without conversational history bloat.
+- [ ] Raw diff hunks are evicted from context after inspection, preserving turn budget.
+
+### Contract Integrity & Downstream Publishing
+- [ ] Subagents emit valid compact finding digests conforming to the updated `ReviewTaskContract` v2 schema.
+- [ ] Downstream gate publishing and review check-runs successfully consume and format decomposed findings without loss of line anchoring.
+
+### Coverage & Early Exit
+- [ ] Review verdict is satisfied when all modified files are covered by relevant domains, even if non-critical/style tasks time out or are pruned.
+- [ ] Verified P0/Blocker findings trigger immediate early-exit and mark the review complete without waiting for lagging low-priority lanes.
+
+### Verification & Test Suite
+- [ ] All existing unit, integration, and E2E review tests pass (`npm test`).
+- [ ] Zero regressions in GitHub Check Run publishing, webhook handling, and audit event persistence.
+- [ ] Zero mock facades, zero disabled tests, and zero unhandled rejections across the test suite.
+
+Development Rules:
+- NEVER MIX CLEAN.
+- NEVER PKILL.
+- NEVER add "🤖 Generated with Claude Code" or "Co-Authored-By: Claude" in commits or PRs.
+
+## Follow-up — 2026-10-07T13:58:25Z
+
+Resume execution of the Teamwork workflow for Review Yeti Swarm Context Isolation, Diff Compaction, Findings Decomposition, and File-Coverage Quorum architecture.
+
+Working directory: /Users/jasonbarbee/Documents/ct-master/review-yeti-bot-jasonbarbee
+Integrity mode: development
+
+Status:
+- Git repo: Rebased cleanly on upstream/main (v1.119.4 / 94d95afeb).
+- Phase 0 Survey: COMPLETED (survey_1, survey_2, spec_miner completed).
+- Specification: .agents/orchestrator_2/PROJECT.md, TEST_INFRA.md, and ORIGINAL_REQUEST.md are fully formed.
+- CURRENT GOAL: Resume from orchestrator_2 / Milestone 1 (R1: Swarm Context Isolation & AST File-Tree Dispatcher), then Milestone 2 (R2: Ephemeral Diff Lifecycle & Sliding Compaction), Milestone 3 (R3: Findings Decomposition Contract), Milestone 4 (R4: File Coverage Validation & Blocker Fast-Path), and Milestone 5 (Verification & 100% E2E test qualification).
+
+Requirements:
+- R1: Swarm Context Isolation & AST File-Tree Dispatcher (astOutlineGenerator.ts, pathDomainContract.ts, eliminate monolithic staticPrefixText prefill).
+- R2: Ephemeral Diff Lifecycle & Sliding Compaction (get_hunk tool in toolRuntime.ts, ephemeral diff eviction & synopsis compaction in messageWindow.ts).
+- R3: Findings Decomposition Contract (ReviewTaskContract v2 lean finding summary schema, decoupled remediation subagent, downstream hydration for check-runs).
+- R4: File Coverage Validation & Blocker Fast-Path (100% file coverage quorum validator, blocker fast-path early exit on verified P0).
+- R5: Final Verification & Test Suite Pass (npm test, zero mock facades, zero disabled tests).
+
+Development Rules:
+- NEVER MIX CLEAN.
+- NEVER PKILL.
+- NEVER add "🤖 Generated with Claude Code" or "Co-Authored-By: Claude" in commits or PRs.
+Resume and drive to completion through the worker, reviewer, challenger, and auditor gates.

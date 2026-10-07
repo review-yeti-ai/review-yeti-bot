@@ -1,57 +1,50 @@
-# Project: Review Yeti — Modern AI PR Review Product & Interactive Dashboard
+# Project: Review Yeti — Swarm Context Isolation, Diff Compaction, Findings Decomposition & File-Coverage Quorum
 
 ## Architecture
 
-Review Yeti (`review-yeti-bot`) v1.103.3 provides an enterprise multi-persona AI PR code review engine and interactive dashboard benchmarked against CodeRabbit and Greptile.
-The architecture comprises:
-1. **Frontend**: Next.js 14 App Router (statically exported via `output: 'export'`) with Tailwind CSS, Radix UI primitives, Recharts, and custom hooks (`useSSE`).
-2. **Backend**: Express.js server providing REST APIs for authentication, repositories, pull requests, live streaming (SSE), human-in-the-loop controls, and executive analytics.
-3. **Review Pipeline & Multi-Persona Panel**: `panelEngine.ts` orchestrates 11 specialized reviewer personas, executes read-only analysis tools (`toolRuntime.ts`), and streams reasoning traces and tool calls.
-4. **Persistence Layer**: PostgreSQL store (`postgresStore.ts`) and `dashboardStore.ts` with in-memory fallbacks, persisting review logs, gate attempts, audit trails, and repository settings.
-5. **Real-time Event Streaming**: `LiveStreamBus` singleton broadcasting Server-Sent Events (`/api/live/stream`) with double-buffered batching.
-6. **Downstream Gate & Check Publishing**: `ReviewGatePublisher` and `GitHubReviewGateClient` syncing authoritative review verdicts to GitHub Check Runs (`Review Yeti Gate`).
+Review Yeti (`review-yeti-bot`) next-generation review architecture eliminates monolithic diff broadcasting, cuts token consumption by 60–70%, bounds conversational context, and replaces all-tasks-must-report quorum with 100% file coverage and blocker fast-pathing.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        Next.js 14 Web Frontend                         │
-│  - Live Review Inspector & Streaming Reasoning Feed (/live)            │
-│  - Interactive Line-Anchored Diff Viewer & Finding Cards               │
-│  - Human-in-the-Loop Controls (Dismiss, Steering, Overrides)           │
-│  - Executive & Engineering Analytics Dashboard (p95, Cost, Burn)       │
-│  - GitHub OAuth Login & Organization / Repo Management (/repos)        │
+│                     Git Diff & Changed File Source                     │
 └───────────────────────────────────┬────────────────────────────────────┘
-                                    │ HTTP / SSE
+                                    │
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│                          Express.js Server                             │
-│  - /api/auth/github, /api/auth/session, /api/github/orgs, /repos       │
-│  - /api/live/stream, /api/live/diff, /api/live/active                  │
-│  - /api/reviews/:id/findings, /override, /guidance, /audit-trail       │
-│  - /api/analytics/summary, /tokens, /costs, /findings (24h/7d/30d)     │
-└───────────────────────┬──────────────────────────┬─────────────────────┘
-                        │                          │
-                        ▼                          ▼
-         ┌──────────────────────────────┐   ┌─────────────────────────────┐
-         │       LiveStreamBus          │   │      PostgreSQL Store       │
-         │  - persona:start / complete  │   │  - review_logs, review_runs │
-         │  - reasoning:chunk (live)    │   │  - review_gate_attempts     │
-         │  - tool:start / result       │   │  - review_verdict_overrides │
-         │  - persona:finding           │   │  - review_audit_events      │
-         └──────────────┬───────────────┘   │  - review_prompt_guidance   │
-                        │                   └──────────────┬──────────────┘
-                        ▼                                  │
-         ┌──────────────────────────────┐                  │
-         │         Panel Engine         │                  │
-         │  - 11 Reviewer Personas      │                  │
-         │  - Read-Only Tool Execution  │                  │
-         │  - Prompt Steering Guidance  │                  │
-         └──────────────────────────────┘                  │
-                                                           ▼
-                                            ┌─────────────────────────────┐
-                                            │     ReviewGatePublisher     │
-                                            │  - Syncs to GitHub Check    │
-                                            │    Run ("Review Yeti Gate") │
-                                            └─────────────────────────────┘
+│                   AST File-Tree Outline Dispatcher                     │
+│  - Parses AST symbols (classes, functions, methods, interfaces)        │
+│  - Intersects symbol line ranges with diff changed line numbers        │
+│  - Generates lean AST file-tree outline (<500 tokens vs 15k+ diff)     │
+│  - Domain boundary mapper (security, persistence, API, runtime, UI)   │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│            Swarm Context Isolation & Ephemeral Diff Lifecycle          │
+│  - Domain-bounded tasks receive ONLY path/symbol AST outlines          │
+│  - Monolithic staticPrefixText diff broadcasting eliminated            │
+│  - On-demand get_hunk(filePath, startLine, endLine) retrieval          │
+│  - Inspected hunks evicted into [DIFF_EVICTION_RECEIPT] synopses       │
+│  - Turn history remains bounded (<2k tokens) and token burn stays flat │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│             Findings Decomposition Contract (ReviewTaskContract v2)    │
+│  - Initial sweep emits lean 5-tuple digests:                           │
+│      (severity, file, line, fingerprint, summary)                      │
+│  - Decoupled on-demand Remediation Subagent for code patches / fixes   │
+│  - Downstream hydration preserves line anchoring for Check Runs        │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│         File Coverage Validation & Blocker Fast-Path Quorum            │
+│  - Replaces rigid "all-tasks-must-report" quorum                       │
+│  - 100% file coverage by applicable domains satisfies quorum           │
+│  - Verified P0 / Blocker findings trigger immediate early-exit abort   │
+│  - Clean gate conclusion: status=failure, reason=blocking-findings     │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -60,36 +53,18 @@ The architecture comprises:
 
 | # | Feature | Description | Milestone | Source |
 |---|---------|-------------|-----------|--------|
-| 1 | GitHub OAuth Initiation Route | `GET /api/auth/github` resolving OAuth client ID, generating CSRF state, and redirecting to GitHub | M1 | ORIGINAL_REQUEST R4 & Spec Miner 3 §4.1 |
-| 2 | GitHub OAuth Callback Handler | `GET /api/auth/github/callback` exchanging code for access token, fetching user profile, and minting session | M1 | ORIGINAL_REQUEST R4 & Spec Miner 3 §4.1 |
-| 3 | GitHub Session Introspection & Logout | `GET /api/auth/session` returning user details and role, `DELETE /api/auth/session` revoking session | M1 | ORIGINAL_REQUEST R4 & Spec Miner 3 §4.1 |
-| 4 | Accessible Organizations Listing | `GET /api/github/orgs` listing user's personal account and accessible GitHub organizations | M1 | ORIGINAL_REQUEST R4 & Spec Miner 3 §4.2 |
-| 5 | Accessible Repositories Listing | `GET /api/github/repos` listing organization repos with 1-click monitoring toggle correlation | M1 | ORIGINAL_REQUEST R4 & Spec Miner 3 §4.2 |
-| 6 | Active Pull Requests Discovery & Inspection | `GET /api/github/repos/:owner/:repo/pulls` querying open PRs joined with review logs and active streams | M1 | ORIGINAL_REQUEST R4 & Spec Miner 3 §4.3 |
-| 7 | On-Demand Pull Request Review Dispatch | `POST /api/github/repos/:owner/:repo/pulls/:prNumber/review` triggering immediate review run | M1 | ORIGINAL_REQUEST R4 & Spec Miner 3 §4.3 |
-| 8 | Repository Review Rules CRUD Endpoints | `GET` and `PUT` on `/api/dashboard/repositories/:owner/:repo/rules` with Zod schema validation | M1 | ORIGINAL_REQUEST R4 & Spec Miner 3 §4.4 |
-| 9 | Organization & Repo Management UI | Modernized `/repos` page with org selector, repository cards, active PR list, and review rule modal | M1 | ORIGINAL_REQUEST R4 & Explorer 1 §1.1 |
-| 10 | Streaming Reasoning Traces Pipeline | Gateway SSE capture of `delta.reasoning` / `delta.reasoning_content` emitted as `reasoning:chunk` to `LiveStreamBus` | M2 | ORIGINAL_REQUEST R1 & Explorer 1 §1.3 |
-| 11 | Live Tool Execution Streaming | `tool:start`, `tool:result`, `tool:error` emitted around `runReadOnlyTool` in `panelEngine.ts` | M2 | ORIGINAL_REQUEST R1 & Explorer 1 §1.3 |
-| 12 | Live Finding Discovery Events | `persona:finding` emitted over SSE to `LiveStreamBus` as personas discover findings | M2 | ORIGINAL_REQUEST R1 & Explorer 1 §1.4 |
-| 13 | Live Diff API Endpoints | `GET /api/live/diff?jobId=...` and `/api/dashboard/reviews/:jobId/diff` serving changed files and unified diff hunks | M2 | ORIGINAL_REQUEST R1 & Explorer 1 §1.4 |
-| 14 | Interactive Unified Diff Viewer UI Component | `DiffViewer` rendering unified patch hunks, line numbers, green/red addition/deletion highlights, file accordion | M2 | ORIGINAL_REQUEST R1 & Explorer 1 §1.4 |
-| 15 | Line-Anchored Finding Diff Cards UI Component | `FindingDiffCard` rendering inline annotations directly below annotated lines with P0/P1/P2 badges, title, description, code suggestions | M2 | ORIGINAL_REQUEST R1 & Explorer 1 §1.4 |
-| 16 | Live Streaming Inspector UI Update | `LiveDashboardView.tsx` updated with live reasoning trace accordion, tool execution feed, and interactive diff viewer | M2 | ORIGINAL_REQUEST R1 & Explorer 1 §1.2 |
-| 17 | Deterministic Finding Identifier Generator | Stable finding ID generation (`sha256(repo + ':' + file + ':' + line + ':' + title)`) | M3 | ORIGINAL_REQUEST R2 & Explorer 2 §1.B |
-| 18 | Finding Dismissal & Severity Adjustment API | `POST /api/reviews/:id/findings/:findingId/dismiss` and `PATCH /api/reviews/:id/findings/:findingId/severity` | M3 | ORIGINAL_REQUEST R2 & Explorer 2 §1.B |
-| 19 | Interactive Finding Control Buttons UI | One-click false-positive dismissal and severity adjustment buttons in finding cards and review detail modal | M3 | ORIGINAL_REQUEST R2 & Explorer 2 §1.B |
-| 20 | Review Prompt Guidance Injection | `review_prompt_guidance` persistence, `POST /api/reviews/:id/guidance`, dynamically injected into persona `rules` | M3 | ORIGINAL_REQUEST R2 & Explorer 2 §1.B |
-| 21 | Authoritative Manual Verdict Overrides (SHIP vs BLOCK) | `POST /api/reviews/:id/override` recording human verdict override in `review_verdict_overrides` | M3 | ORIGINAL_REQUEST R2 & Explorer 2 §1.B |
-| 22 | Downstream Check Publishing Sync | Incrementing `desired_version` in `review_gate_attempts` on manual override so `ReviewGatePublisher` updates GitHub Check Run | M3 | ORIGINAL_REQUEST R2 & Explorer 2 §1.B |
-| 23 | Audit Persistence & History | `review_audit_events` table and `GET /api/reviews/:id/audit-trail` capturing actor, action, previous/new state, timestamp | M3 | ORIGINAL_REQUEST R2 & Explorer 2 §1.B |
-| 24 | p95 Review Latency Aggregation | PostgreSQL `PERCENTILE_CONT(0.95)` with in-memory percentile fallback across 24h, 7d, 30d windows | M4 | ORIGINAL_REQUEST R3 & Explorer 2 §1.C |
-| 25 | Model & Repository Spend Intelligence | `SUM(costUSD) GROUP BY repo` and per-PR cost analytics in `/api/analytics/costs` | M4 | ORIGINAL_REQUEST R3 & Explorer 2 §1.C |
-| 26 | Token Burn Curves Time Series | `GET /api/analytics/tokens` enhanced with cumulative burn curves, budget comparison, and repo filtering across 24h, 7d, 30d | M4 | ORIGINAL_REQUEST R3 & Explorer 2 §1.C |
-| 27 | Finding Severity Ratios & Quality Metrics | P0/P1/P2 ratios, acceptance vs dismissal rates via `GET /api/analytics/findings` and `/api/analytics/summary` | M4 | ORIGINAL_REQUEST R3 & Explorer 2 §1.C |
-| 28 | Executive & Engineering Analytics UI Dashboard | Recharts widgets for p95 duration, spend per repo, token burn, severity ratios with 24h/7d/30d filter toggles | M4 | ORIGINAL_REQUEST R3 & Explorer 2 §1.C |
-| 29 | End-to-End Automated Test Suite | Comprehensive Tier 1-4 tests verifying dashboard API endpoints, streaming feeds, diff viewer, HITL overrides, analytics, and OAuth flow | M5 | ORIGINAL_REQUEST Acceptance & Spec Miner 3 §5 |
-| 30 | Production Build Verification & Adversarial Coverage Hardening | Tier 5 adversarial testing, `npm run build` verification with zero errors | M5 | ORIGINAL_REQUEST Acceptance & Spec Miner 3 §5 |
+| 1 | AST Diff Parser & Outline Generator | `astOutlineGenerator.ts`: extracts changed lines and intersects with `ASTParser` symbols to generate lean AST file-tree outlines. | M1 | Survey 1 §1.2 & Spec Miner §3.1 |
+| 2 | Domain Path Boundary Partitioning | `pathDomainContract.ts`: partitions touched files into domain lanes (`security_auth`, `data_persistence`, `api_contracts`, `system_runtime`, `ui_frontend`). | M1 | Survey 1 §1.3 & Spec Miner §3.2 |
+| 3 | Swarm Context Isolation & Prefill Elimination | `composedEngine.ts` & `panelEngine.ts`: eliminates monolithic `staticPrefixText` prefill; dispatches domain-isolated AST outlines to tasks. | M1 | Survey 1 §1.1, Spec Miner §3.3 |
+| 4 | On-Demand `get_hunk` Retrieval Tool | `toolRuntime.ts`: implements `get_hunk(filePath, startLine, endLine)` returning anchored diff hunks; registered in `COMPOSED_READ_ONLY_TOOL_CONTRACT`. | M2 | Survey 1 §1.4 & Spec Miner §3.4 |
+| 5 | Ephemeral Diff Lifecycle & Synopsis Compaction | `messageWindow.ts`: classifies `get_hunk` as ephemeral, evicts raw hunks from older turns, and compacts into `[DIFF_EVICTION_RECEIPT]` synopses. | M2 | Survey 1 §1.5 & Spec Miner §3.5 |
+| 6 | `ReviewTaskContract` v2 Lean Finding Digest | `reviewTaskContract.ts`: lean 5-tuple schema `(severity, file, line, fingerprint, summary)`; LLM schema `ct_review_task_result_v2`. | M3 | Survey 2 §1.1 & Spec Miner §3.6 |
+| 7 | Decoupled Remediation Subagent | `remediationSubagent.ts`: on-demand subagent generating code replacements, suggestions, and fix options for verified findings. | M3 | Survey 2 §2.1 & Spec Miner §3.8 |
+| 8 | Downstream Gate Publishing Hydration | `publishingReview.ts` & `reviewGatePublisher.ts`: hydrates `LeanFindingSummary` into `PanelFinding`, preserving line anchoring for GitHub Check Runs. | M3 | Survey 2 §2.3 & Spec Miner §3.6 |
+| 9 | 100% File Coverage Quorum Validator | `reviewTaskContract.ts` & `reviewCore.js`: replaces all-tasks-must-report with 100% file coverage by completed domain tasks. | M4 | Survey 2 §2.2 & Spec Miner §3.9 |
+| 10 | Blocker Fast-Path Quorum & Early-Exit | `composedEngine.ts`, `reviewGatePolicy.ts`, `publishingReview.ts`: immediate early exit on verified P0, setting `blockerFastPath: true` and `blocking-findings`. | M4 | Survey 2 §2.2 & Spec Miner §3.10 |
+| 11 | Configuration Schema Extensions | `src/config/schema.ts`: extends Zod schemas with `context_isolation`, `diff_compaction`, `decomposed_findings`, `quorum_mode`. | M4 | Spec Miner §3.11 |
+| 12 | Full Regression & Multi-Tier E2E Suite Pass | End-to-end integration and 4-tier test suite pass with zero regressions, zero mock facades, and zero unhandled rejections. | M5 | Spec Miner §5 & ORIGINAL_REQUEST |
 
 ---
 
@@ -97,199 +72,111 @@ The architecture comprises:
 
 | # | Name | Scope | Dependencies | Status |
 |---|------|-------|-------------|--------|
-| M1 | R4: GitHub OAuth, Organization/Repo Management & Review Rules | GitHub OAuth initiate/callback/session routes, accessible org & repo listing, active PR inspection API, review rules CRUD, and modernized `/repos` UI. | none | DONE |
-| M2 | R1: Live Review Inspector, Streaming Reasoning/Tools & Interactive Diff Viewer | Gateway reasoning SSE streaming, tool execution events, live diff API endpoint, React DiffViewer component, Line-anchored finding cards, and LiveDashboardView integration. | none | DONE |
-| M3 | R2: Human-in-the-Loop Controls, Verdict Overrides & Audit Persistence | Deterministic finding IDs, dismissal & severity adjustment API/UI, prompt steering guidance injection, manual SHIP/BLOCK override with GitHub Check Run sync, and audit trail persistence. | M1, M2 | DONE |
-| M4 | R3: Executive & Engineering Analytics Dashboard | p95 review turnaround latency, cost per repository/PR, token burn curves, finding severity ratios, acceptance vs dismissal metrics across 24h/7d/30d time windows, and full Recharts UI dashboard. | M1 | DONE |
-| M5 | Final Verification, 100% E2E Test Pass & Adversarial Hardening | Pass 100% of the E2E test suite from the E2E Testing Track, adversarial challenge testing, production build (`npm run build`) verification with zero regressions. | M1, M2, M3, M4 | DONE |
+| M1 | Swarm Context Isolation & AST File-Tree Dispatcher | Implement AST outline generator (`astOutlineGenerator.ts`), domain path partitioning, and replace monolithic `staticPrefixText` diff broadcasting with domain-isolated AST outlines. | none | DONE |
+| M2 | Ephemeral Diff Lifecycle & Sliding Context Compaction | Implement `get_hunk` tool in `toolRuntime.ts`, register in `COMPOSED_READ_ONLY_TOOL_CONTRACT`, and implement ephemeral diff eviction & synopsis compaction in `messageWindow.ts`. | none | DONE |
+| M3 | Findings Decomposition Contract & Decoupled Remediation | Implement `ReviewTaskContract` v2 lean finding summary schema, decoupled remediation subagent, and downstream hydration preserving exact line anchoring across GitHub Check Runs. | none | DONE |
+| M4 | File Coverage Validation & Blocker Fast-Path Quorum | Implement 100% file coverage quorum validator, blocker fast-path early exit on verified P0 findings with clean `blocking-findings` gate resolution, and configuration schema extensions in `src/config/schema.ts`. | M3 | DONE |
+| M5 | Full Integration & E2E Validation | Full regression suite pass (`npm test`), 4-tier E2E tests, zero mock facades, adversarial coverage hardening, and final verification report. | M1, M2, M3, M4 | DONE |
 
 ---
 
 ## Interface Contracts
 
-### 1. GitHub OAuth & Session Contract (`src/api/authApi.ts`, `src/dashboard/authService.ts`)
+### 1. AST File-Tree Outline Contract (`src/panel/astOutlineContract.ts`)
 ```typescript
-export interface GitHubUserProfile {
-  id: string;
-  username: string;
-  name?: string;
-  email?: string;
-  avatarUrl?: string;
-  role: 'admin' | 'reviewer' | 'viewer';
-  provider: 'github';
-  accessToken?: string;
-}
-
-export interface UserSession {
-  token: string;
-  user: GitHubUserProfile;
-  expiresAt: string;
-}
-```
-
-### 2. Organization, Repository & Pull Request Contract (`src/api/githubAppApi.ts`, `src/api/dashboardApi.ts`)
-```typescript
-export interface GitHubOrganizationSummary {
-  id: number;
-  login: string;
+export interface ASTSymbolOutline {
   name: string;
-  avatarUrl: string;
-  installationId?: number;
-  monitoredCount: number;
-  totalReposCount: number;
+  kind: 'function' | 'method' | 'class' | 'interface' | 'variable' | 'type';
+  startLine: number;
+  endLine: number;
+  exported: boolean;
+  signature?: string;
+  containerName?: string;
 }
 
-export interface ActivePullRequestSummary {
-  number: number;
-  title: string;
-  state: 'open' | 'closed';
-  draft: boolean;
-  author: { login: string; avatarUrl: string };
-  headSha: string;
-  headBranch: string;
-  baseBranch: string;
-  createdAt: string;
-  updatedAt: string;
-  reviewStatus?: {
-    status: 'pending' | 'running' | 'completed' | 'failed';
-    verdict?: 'SHIP' | 'BLOCK' | 'NEUTRAL';
-    findingsCount: number;
-    durationMs?: number;
-    reviewedAt?: string;
-  };
-}
-```
-
-### 3. Live Streaming & Reasoning Event Contract (`src/types/live.ts`, `src/live/liveStreamBus.ts`)
-```typescript
-export type LiveStreamEventType =
-  | 'persona:start'
-  | 'persona:chunk'
-  | 'persona:reasoning'
-  | 'reasoning:chunk'
-  | 'persona:finding'
-  | 'persona:complete'
-  | 'tool:start'
-  | 'tool:result'
-  | 'tool:error'
-  | 'llm:prompt'
-  | 'llm:token'
-  | 'llm:error'
-  | 'job:queued'
-  | 'job:dispatched'
-  | 'job:complete';
-
-export interface ReasoningChunkPayload {
-  jobId: string;
-  personaId: string;
-  reasoning: string;
-  turn?: number;
-  timestamp: string;
+export interface DiffHunkBoundary {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  section?: string;
 }
 
-export interface ToolExecutionPayload {
-  jobId: string;
-  personaId: string;
-  tool: string;
-  args: Record<string, unknown>;
-  output?: string;
-  error?: string;
-  durationMs?: number;
-  timestamp: string;
-}
-```
-
-### 4. Interactive Diff & Line-Anchored Finding Contract (`src/api/liveApi.ts`, `src/review/findings.ts`)
-```typescript
-export interface ChangedFileDiff {
-  path: string;
-  status: 'added' | 'modified' | 'deleted';
-  patch?: string;
+export interface ASTFileOutline {
+  filePath: string;
+  domainLane: DomainLane;
   additions: number;
   deletions: number;
-  hunks: Array<{
-    header: string;
-    oldStart: number;
-    oldLines: number;
-    newStart: number;
-    newLines: number;
-    lines: string[];
-  }>;
+  hunkBoundaries: DiffHunkBoundary[];
+  modifiedSymbols: ASTSymbolOutline[];
 }
 
-export interface AnchoredFinding {
-  id: string; // sha256(repo:file:line:title)
+export interface FileTreeOutline {
+  totalFiles: number;
+  totalAdditions: number;
+  totalDeletions: number;
+  files: ASTFileOutline[];
+  filesByDomain: Record<DomainLane, ASTFileOutline[]>;
+  summaryText: string;
+}
+```
+
+### 2. `get_hunk` Tool Contract (`src/panel/toolRuntime.ts`)
+```typescript
+export interface GetHunkArgs {
+  filePath: string;
+  startLine?: number;
+  endLine?: number;
+  contextLines?: number;
+}
+
+export interface HunkResult {
+  filePath: string;
+  startLine: number;
+  endLine: number;
+  patch: string;
+  modifiedLines: number[];
+  isExhaustive: boolean;
+}
+```
+
+### 3. `ReviewTaskContract` v2 Lean Finding Schema (`src/reviewTaskContract.ts`)
+```typescript
+export interface LeanFindingSummary {
   severity: 'P0' | 'P1' | 'P2';
   file: string;
   line: number;
-  title: string;
-  description: string;
-  suggestion?: string;
-  status: 'active' | 'dismissed' | 'resolved';
-  dismissedReason?: string;
+  fingerprint: string;
+  summary: string; // concise <= 400 chars
+}
+
+export interface ReviewTaskResultV2 {
+  nonce: string;
+  task: string;
+  status: 'COMPLETE' | 'BLOCKED';
+  blockedReason?: string | null;
+  findings: LeanFindingSummary[];
 }
 ```
 
-### 5. Human-in-the-Loop Controls & Override Contract (`src/api/reviewHitlApi.ts`)
+### 4. File Coverage & Blocker Fast-Path Contract (`src/reviewTaskContract.ts`, `src/review/reviewGatePolicy.ts`)
 ```typescript
-export interface FindingDismissalRequest {
-  findingId: string;
-  reason: string;
-  dismissedBy: string;
+export interface FileCoverageValidationResult {
+  satisfied: boolean;
+  coveragePct: number;
+  coveredPaths: string[];
+  uncoveredPaths: string[];
+  securityCoverageSatisfied: boolean;
+  missingSecurityPaths: string[];
 }
 
-export interface VerdictOverrideRequest {
-  overrideVerdict: 'SHIP' | 'BLOCK';
-  reason: string;
-  overriddenBy: string;
-}
-
-export interface PromptGuidanceRequest {
-  guidanceText: string;
-  targetPersonas?: string[];
-  createdBy: string;
-}
-
-export interface ReviewAuditEvent {
-  id: string;
-  reviewId: string;
-  actor: string;
-  action: 'finding_dismissed' | 'severity_changed' | 'verdict_overridden' | 'guidance_added';
-  previousState?: Record<string, unknown>;
-  newState: Record<string, unknown>;
-  justification?: string;
-  timestamp: string;
-}
-```
-
-### 6. Executive & Engineering Analytics Contract (`src/api/analytics.ts`)
-```typescript
-export interface AnalyticsTimeFilter {
-  range: '24h' | '7d' | '30d';
-  repo?: string;
-}
-
-export interface AnalyticsSummaryResponse {
-  totalReviews: number;
-  p95DurationMs: number;
-  avgDurationMs: number;
-  totalSpendUsd: number;
-  totalTokens: number;
-  successRate: number;
-  findingSeverityRatio: {
-    p0: number;
-    p1: number;
-    p2: number;
-  };
-  acceptanceRate: number; // accepted vs dismissed
-}
-
-export interface RepoSpendBreakdown {
-  repo: string;
-  spendUsd: number;
-  reviewCount: number;
-  avgSpendPerPR: number;
-  totalTokens: number;
+export interface QuorumResult {
+  required: number;
+  distinctProviders: string[];
+  satisfied: boolean;
+  coverageMode: 'file_coverage' | 'all_tasks';
+  fileCoverage?: FileCoverageValidationResult;
+  blockerFastPath?: boolean;
 }
 ```
 
@@ -297,19 +184,16 @@ export interface RepoSpendBreakdown {
 
 ## Code Layout
 
-- `src/api/authApi.ts` & `src/dashboard/authService.ts`: GitHub OAuth initiation, code callback exchange, session creation and validation
-- `src/api/githubAppApi.ts` & `src/api/dashboardApi.ts`: Organization listing, repository listing, active PR queries, and review rules
-- `src/github/installationClient.ts`: GitHub API methods for `listPullRequests`, `listInstallations`, and `listInstallationRepositories`
-- `src/app/repos/page.tsx`: Organization and repository management UI with 1-click toggles and PR inspection table
-- `src/gateway/openRouterClient.ts`: Streaming reasoning delta extraction and chunk callbacks
-- `src/panel/panelEngine.ts`: Instrumenting `runReadOnlyTool` with live tool execution events, injecting prompt steering guidance
-- `src/live/liveStreamBus.ts`: Supporting reasoning, tool, and finding event types
-- `src/api/liveApi.ts`: Live diff endpoint (`GET /api/live/diff`) and finding emission
-- `src/components/live/diff-viewer.tsx` & `finding-diff-card.tsx`: Interactive diff viewer with inline line-anchored finding cards
-- `src/components/live/LiveDashboardView.tsx`: Integrated live reasoning traces and tool feed
-- `src/persistence/postgresStore.ts` & `dashboardStore.ts`: Tables and repositories for `review_verdict_overrides`, `finding_dismissals`, `review_prompt_guidance`, `review_audit_events`
-- `src/api/reviewHitlApi.ts`: REST endpoints for finding dismissal, severity adjustment, verdict override, guidance, and audit history
-- `src/review/reviewGatePublisher.ts`: Syncing manual verdict overrides to GitHub Check Runs
-- `src/api/analytics.ts`: Endpoints for p95 duration, repo spend breakdown, token burn curves, and finding quality metrics with 24h/7d/30d filtering
-- `src/app/page.tsx` & `src/components/dashboard/`: Executive and engineering analytics dashboard UI with Recharts
-- `tests/e2e/`: End-to-end automated test suites for OAuth, streaming feeds, diff viewer, HITL controls, and analytics
+- `src/panel/astOutlineGenerator.ts`: AST diff parsing, symbol intersection, file-tree outline generation.
+- `src/panel/astOutlineContract.ts`: Type definitions for AST outlines and file-tree summaries.
+- `src/panel/composedEngine.ts`: Elimination of `staticPrefixText` diff broadcasting, task context isolation, blocker fast-path handling.
+- `src/panel/panelEngine.ts`: Removal of monolithic diff inlining in `buildScopedDiffSection`.
+- `src/panel/toolRuntime.ts`: Implementation of `get_hunk(filePath, startLine, endLine)` tool.
+- `src/panel/messageWindow.ts`: Ephemeral diff eviction and synopsis compaction.
+- `src/reviewTaskContract.ts`: `ReviewTaskContract` v2 schema, `isFileCoverageSatisfied` validator.
+- `src/review/remediationSubagent.ts`: Decoupled on-demand remediation generation.
+- `src/review/publishingReview.ts` & `src/review/reviewGatePublisher.ts`: Hydration of lean findings into check run annotations.
+- `src/review/reviewGatePolicy.ts`: Blocker fast-path early exit support (`blocking-findings`).
+- `src/config/schema.ts`: Configuration extensions for swarm context isolation and diff compaction.
+- `tests/unit/`: Unit tests for AST outlines, `get_hunk`, compaction, v2 contracts, and file coverage quorum.
+- `tests/e2e/`: Multi-tier E2E tests validating token reduction, context isolation, and blocker fast-pathing.
