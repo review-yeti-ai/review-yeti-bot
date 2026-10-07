@@ -39,7 +39,7 @@ const requestedSchema = z.object({
   prNumber: z.number().int().positive().safe(), headSha: reviewPolicySourceSchema.shape.sha,
   baseSha: reviewPolicySourceSchema.shape.sha,
 }).strict();
-const currentSchema = requestedSchema.extend({ open: z.boolean(), draft: z.boolean() });
+const currentSchema = requestedSchema.extend({ open: z.boolean(), draft: z.boolean(), private: z.boolean().optional() });
 const policySchema = z.object({ effectivePolicyDigest: digest, effectiveConfigDigest: digest,
   sources: z.array(reviewPolicySourceSchema).min(1).max(16) }).strict();
 const personasSchema = z.array(z.string().regex(/^[a-z][a-z0-9_-]{0,127}$/u)).min(1).max(64);
