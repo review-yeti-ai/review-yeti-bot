@@ -106,7 +106,7 @@ import {
   MAX_PERSONAS, buildPersonaTelemetryPayload, parseWorkerReviewCompletion,
   type WorkerReviewCompletion, type WorkerReviewResult,
 } from '../review/workerReviewCompletion';
-import type { WorkerReviewCompletionAdapter } from '../review/workerReviewCompletionHttp';
+import { WorkerReviewCompletionDeliveryError, type WorkerReviewCompletionAdapter } from '../review/workerReviewCompletionHttp';
 import type { ReviewExecutionCheckpointAdapter } from '../review/reviewExecutionCheckpointHttp';
 import { REVIEW_EXECUTION_CHECKPOINT_VERSION, type ReviewExecutionCheckpoint } from '../review/reviewExecutionCheckpoint';
 import type { PanelResult, PanelFinding, LaneTokenUsage, LaneAggregateUsage } from '../panel/types';
@@ -1480,6 +1480,7 @@ export async function runPublishingReviewWorker(
   // rule: a gap is a property of the diff, and a fresh attempt reads the same diff).
   let prePanelCoverageComplete: boolean | undefined;
   let authoritativeCompletionAttempted = false;
+  let authoritativeCompletionFailureLogged = false;
   let legacySuccessCompletionAttempted = false;
   const reportReviewResult = async (result: WorkerReviewResult): Promise<void> => {
     if (qualificationOnly) {
@@ -1503,7 +1504,20 @@ export async function runPublishingReviewWorker(
     // Once a terminal body may have reached the service, never replace it with
     // a different failure body merely because its acknowledgement was lost.
     authoritativeCompletionAttempted = true;
-    await deps.reviewCompletion.reportReviewResult(event);
+    try {
+      await deps.reviewCompletion.reportReviewResult(event);
+    } catch (error) {
+      if (error instanceof WorkerReviewCompletionDeliveryError) {
+        authoritativeCompletionFailureLogged = true;
+        logger.error('Worker review completion could not be acknowledged', {
+          runId: identity.runId,
+          reason: 'completion_callback_failed',
+          completionFailureCode: error.code,
+          ...(error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus }),
+        });
+      }
+      throw error;
+    }
   };
 
   const reportTerminalFailure = async (
@@ -1593,9 +1607,11 @@ export async function runPublishingReviewWorker(
           coverageComplete: false, quorumSatisfied: false, failureDiagnostics: diagnostics });
         infrastructureDelivered = authoritativeInfrastructureBody !== undefined;
       } catch {
-        logger.error('Authoritative worker failure could not be acknowledged', {
-          runId: identity.runId, reason: 'completion_callback_failed', failureClass,
-        });
+        if (!authoritativeCompletionFailureLogged) {
+          logger.error('Authoritative worker failure could not be acknowledged', {
+            runId: identity.runId, reason: 'completion_callback_failed', failureClass,
+          });
+        }
       }
     }
     // REL-1057: a superseded run is not a failure. The service retires it

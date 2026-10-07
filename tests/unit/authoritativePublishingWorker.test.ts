@@ -2188,6 +2188,37 @@ describe('authoritative prepared publishing worker', () => {
     expect(JSON.stringify(f.errorLog.mock.calls)).not.toContain(PRIVATE_DETAIL);
   });
 
+  it.each(['normal completion', 'terminal failure'] as const)(
+    'logs one closed delivery diagnostic for %s without exposing response data', async (path) => {
+      const f = fixture();
+      const privateResponse = `${PRIVATE_DETAIL} ${TOKEN} ${ENDPOINT}`;
+      const acknowledgementFetch = vi.fn<typeof fetch>(async () => new Response(privateResponse, { status: 401 }));
+      f.deps.reviewCompletion = new HttpWorkerReviewCompletionAdapter({ token: TOKEN, endpoint: ENDPOINT,
+        fetchImplementation: acknowledgementFetch });
+      f.errorLog.mockClear();
+      if (path === 'terminal failure') f.panelRunner.mockRejectedValue(new Error('request timed out'));
+
+      if (path === 'normal completion') {
+        await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toMatchObject({
+          message: 'Worker review completion could not be acknowledged', code: 'http_rejected', httpStatus: 401,
+        });
+      } else {
+        await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toThrow('request timed out');
+      }
+
+      expect(acknowledgementFetch).toHaveBeenCalledOnce();
+      const deliveryLogs = f.errorLog.mock.calls.filter(([message]) =>
+        message === 'Worker review completion could not be acknowledged');
+      expect(deliveryLogs).toHaveLength(1);
+      expect(deliveryLogs[0]?.[1]).toMatchObject({ runId: f.env.REVIEW_RUN_ID,
+        reason: 'completion_callback_failed', completionFailureCode: 'http_rejected', httpStatus: 401 });
+      const serializedLogs = JSON.stringify(f.errorLog.mock.calls);
+      expect(serializedLogs).not.toContain(PRIVATE_DETAIL);
+      expect(serializedLogs).not.toContain(TOKEN);
+      expect(serializedLogs).not.toContain(ENDPOINT);
+    },
+  );
+
   it('preserves legacy check publishing and mutable configuration when authoritative mode is absent', async () => {
     const f = fixture();
     delete f.env.REVIEW_AUTHORITATIVE_GATE;
