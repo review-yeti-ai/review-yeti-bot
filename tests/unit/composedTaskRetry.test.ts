@@ -198,14 +198,20 @@ describe('composed task-level retry', () => {
     await executeComposedReview({ config: configFor(), changedFiles, repository: 'acme/app',
       headSha: 'c'.repeat(40), client: priorClient.client,
       checkpoint: { save: async (snapshot: any) => { priorSnapshots.push(structuredClone(snapshot)); } } as never });
-    const deliveredTasks = priorSnapshots.at(-1).completedTasks.filter((task: any) => task.id !== 'task-3');
+    const priorCheckpoint = priorSnapshots.at(-1);
+    expect(priorCheckpoint.plannerPlan).toEqual(expect.any(Array));
+    const deliveredTasks = priorCheckpoint.completedTasks.filter((task: any) => task.id !== 'task-3');
     const harness = recordingClient(({ taskId, nonce, attempt }) => (
       taskId === 'task-3' && attempt === 1 ? malformedVariants.nonce_mismatch(taskId) : clean(taskId, nonce)));
     const saved: any[] = [];
     const result = await executeComposedReview({
       config: configFor(), changedFiles, repository: 'acme/app', headSha: 'c'.repeat(40), client: harness.client,
       checkpoint: {
-        resumed: { revision: 3, plan: TASKS, completedTasks: deliveredTasks },
+        // Resume the validated raw planner response captured from the exact-head run. A legacy
+        // checkpoint with only `plan` cannot safely reuse its historical charters and must plan
+        // again before any pending task is retried.
+        resumed: { revision: priorCheckpoint.revision, plan: priorCheckpoint.plan,
+          plannerPlan: priorCheckpoint.plannerPlan, completedTasks: deliveredTasks },
         save: async (snapshot: any) => { saved.push(structuredClone(snapshot)); },
       } as never,
     });
@@ -216,7 +222,7 @@ describe('composed task-level retry', () => {
     expect(harness.attempts('task-3')).toBe(2);
     expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2', 'task-3']);
     const latest = saved.at(-1);
-    expect(latest.revision).toBeGreaterThan(3);
+    expect(latest.revision).toBeGreaterThan(priorCheckpoint.revision);
     expect(latest.completedTasks.map((task: any) => task.id)).toEqual(['task-1', 'task-2', 'task-3']);
   });
 

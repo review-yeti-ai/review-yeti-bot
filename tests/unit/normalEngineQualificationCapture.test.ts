@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, open, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, readFile, realpath, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, join, relative } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { canonicalJson } from '../../src/review/reviewCore';
@@ -42,6 +43,10 @@ import {
   waitForNormalEngineQualificationCapture,
   writeNormalEngineQualificationCaptureReady,
 } from '../../src/qualification/normalEngineQualificationCapture';
+
+async function makePrivateTempDirectory(prefix: string): Promise<string> {
+  return mkdtemp(join(await realpath(tmpdir()), prefix));
+}
 
 const digest = (value: string): string => createHash('sha256').update(value, 'utf8').digest('hex');
 const PLAN_RUN_ID = 'nq_0123456789abcdef0123456789abcdef';
@@ -491,7 +496,7 @@ async function readyFixture(root: string) {
   const caseArtifacts: NormalEngineQualificationPlanReceipt['cases'] = [];
   const artifactPaths = ['normal-engine-qualification.json', 'normal-engine-qualification.json.sha256'];
   for (const row of historyArtifacts) artifactPaths.push(row.recordPath, row.sha256Path);
-  const stagingRoot = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-writer-stage-'));
+  const stagingRoot = await makePrivateTempDirectory('normal-qualification-capture-writer-stage-');
   const stagingStoreRoot = join(stagingRoot, NORMAL_ENGINE_QUALIFICATION_STORE_ROOT.split('/').at(-1)!);
   try {
     for (const step of steps) {
@@ -747,7 +752,7 @@ async function persistAndReadTerminationOutcome(
 
 describe('normal engine qualification capture handshake', () => {
   it('seals exactly the Plan-derived private artifact inventory and verifies every file digest', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-ready-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-ready-');
     try {
       const { ready, recordPaths, plan, planBytes } = await readyFixture(root);
       const parsed = normalEngineQualificationCaptureReadyV1Schema.parse(ready.manifest);
@@ -768,7 +773,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('rejects an artifact path outside the fixed per-run namespace and a duplicate path', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-path-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-path-');
     try {
       const { source } = await readyFixture(root);
       const escaped = structuredClone(source);
@@ -787,7 +792,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('rejects omitted, relabelled, extra, and wrong-hash source rows before constructing READY', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-source-binding-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-source-binding-');
     try {
       const { source, ready } = await readyFixture(root);
       const mismatches: Array<{ label: string; value: typeof source }> = [];
@@ -821,7 +826,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('rejects a different valid Plan with the same planId and runId', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-alternate-plan-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-alternate-plan-');
     try {
       const { ready, plan } = await readyFixture(root);
       const alternate = structuredClone(plan);
@@ -848,7 +853,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('rejects malformed Plan counts and Plan-bound hashes that do not match the persisted receipt', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-plan-counts-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-plan-counts-');
     try {
       const { source, plan, ready } = await readyFixture(root);
       const planPath = join(root, 'normal-engine-qualification.json');
@@ -892,7 +897,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('rejects symlinked artifact files instead of hashing their targets', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-symlink-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-symlink-');
     try {
       const { source } = await readyFixture(root);
       const row = source.cases[0]!;
@@ -910,7 +915,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('accepts and consumes only an ACK that exactly matches the sealed copied inventory', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-ack-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-ack-');
     const markerPath = join(root, 'qualification-capture.complete');
     try {
       const { ready, plan } = await readyFixture(root);
@@ -941,7 +946,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('fails capture on a mismatched, official-looking, or malformed ACK without changing the plan', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-invalid-ack-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-invalid-ack-');
     const markerPath = join(root, 'qualification-capture.complete');
     try {
       const { ready, plan } = await readyFixture(root);
@@ -971,7 +976,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('rejects directory and symlink ACK paths without reading their targets', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-ack-path-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-ack-path-');
     try {
       const { ready } = await readyFixture(root);
       const directoryMarker = join(root, 'directory-ack');
@@ -994,7 +999,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('rejects a modified READY record before accepting any later ACK', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-ready-tamper-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-ready-tamper-');
     try {
       const { ready } = await readyFixture(root);
       await writeFile(ready.path, '{"schemaVersion":"NormalEngineQualificationCaptureReady.v1"}\n', { mode: 0o600 });
@@ -1009,7 +1014,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('times out distinctly and leaves the original Plan.v1 terminal state unchanged in the outcome', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-outcome-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-outcome-');
     try {
       const { ready, plan } = await readyFixture(root);
       let now = 0;
@@ -1036,7 +1041,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('records hold-off as not requested and rejects an invalid ACK schema', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-off-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-off-');
     try {
       const { ready, plan } = await readyFixture(root);
       const result = await waitForNormalEngineQualificationCapture({ NODE_ENV: 'test' }, null, {
@@ -1054,7 +1059,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('rejects missing, truncated, hash-tampered, and payload-tampered termination messages', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-termination-tamper-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-termination-tamper-');
     try {
       const { ready, plan } = await readyFixture(root);
       const wait = await waitForNormalEngineQualificationCapture({ NODE_ENV: 'test' }, null);
@@ -1088,7 +1093,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('fails closed before persisting either file when the bounded termination message would overflow', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-termination-overflow-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-termination-overflow-');
     try {
       const { ready, plan } = await readyFixture(root);
       const wait = await waitForNormalEngineQualificationCapture({ NODE_ENV: 'test' }, null);
@@ -1113,7 +1118,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('does not create a termination channel for ordinary non-qualification data', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-termination-ordinary-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-termination-ordinary-');
     const terminationPath = join(root, basename(NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_PATH));
     try {
       await expect(persistNormalEngineQualificationCaptureOutcome({ verdict: 'SHIP' }, root)).rejects.toThrow();
@@ -1125,7 +1130,7 @@ describe('normal engine qualification capture handshake', () => {
   });
 
   it('does not create the qualification termination channel for ordinary review-shaped data', async () => {
-    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-ordinary-review-'));
+    const root = await makePrivateTempDirectory('normal-qualification-capture-ordinary-review-');
     const messagePath = join(root, basename(NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_PATH));
     try {
       await expect(persistNormalEngineQualificationCaptureOutcome({ verdict: 'SHIP', source: 'ordinary-review' }, root))
