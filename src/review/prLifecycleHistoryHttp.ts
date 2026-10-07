@@ -2,23 +2,62 @@ import { z } from 'zod';
 import { isGitHubInstallationToken } from '../github/githubTransportPolicy';
 import { canonicalJson, sha256 } from './reviewCore';
 import { validateWorkerCompletionEndpoint } from './workerCompletion';
+import { findingDispositionEventSchema, type FindingDispositionEvent } from './findingDisposition';
+import { MAX_DISPUTE_RECHECKS_PER_BATCH, type AuthenticatedDisputesProjection } from './disputedFindingRecheck';
+
+export type { AuthenticatedDisputesProjection } from './disputedFindingRecheck';
 
 export const PR_LIFECYCLE_HISTORY_PAGE_SIZE = 100;
 export const MAX_PR_LIFECYCLE_HISTORY_RESPONSE_BYTES = 4_000_000;
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const uuid = z.string().uuid();
+const authenticatedDisputesSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('complete'), disputes: z.array(z.object({ findingFingerprint: z.string().regex(/^fp1_[a-f0-9]{24}$/u),
+    priorFindingEventId: uuid, priorEvidenceDigest: digest }).strict()).max(MAX_DISPUTE_RECHECKS_PER_BATCH),
+  paths: z.array(z.string().min(1).max(4_096)).max(MAX_DISPUTE_RECHECKS_PER_BATCH) }).strict(),
+  z.object({ status: z.literal('unavailable'), disputes: z.array(z.never()).max(0),
+    paths: z.array(z.string().min(1).max(4_096)).max(MAX_DISPUTE_RECHECKS_PER_BATCH),
+    reason: z.enum(['source-unavailable', 'ambiguous-linkage', 'history-incomplete']) }).strict(),
+]);
 const eventSchema = z.object({
   eventId: uuid, eventType: z.string().min(1).max(120), runId: z.string().optional(), executionAttempt: z.number().int().positive().optional(),
+  evidenceSemanticsVersion: z.string().min(1).max(120).optional(),
+  completionStatus: z.enum(['completed', 'failed', 'cancelled']).optional(),
+  coverageComplete: z.boolean().optional(),
+  quorumSatisfied: z.boolean().optional(),
   headSha: sha.optional(), baseSha: sha.optional(), policyDigest: digest.optional(), configDigest: digest.optional(),
   contextDigest: digest.optional(), evidenceDigest: digest.optional(),
   verificationStatus: z.enum(['confirmed', 'contradicted', 'insufficient']),
   verification: z.object({ findingEventId: uuid.optional(), fingerprint: z.string().max(500).optional(),
     status: z.enum(['confirmed', 'contradicted', 'insufficient']).optional(),
     currentAffectedContextDigest: digest.optional(), sourceAffectedContextDigest: digest.optional() }).strict().optional(),
-}).strict();
+  disposition: findingDispositionEventSchema.optional(),
+}).strict().superRefine((event, context) => {
+  const hasCompletionProjection = event.completionStatus !== undefined || event.coverageComplete !== undefined
+    || event.quorumSatisfied !== undefined;
+  if (event.eventType !== 'review.completion_recorded' && hasCompletionProjection) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['completionStatus'],
+      message: 'completion projection fields are valid only on completion events' });
+  }
+  const typedEvent = event.eventType.startsWith('finding.disposition.');
+  if (typedEvent !== (event.disposition !== undefined)
+    || (event.disposition && event.eventType !== `finding.disposition.${event.disposition.kind}`)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['disposition'], message: 'typed disposition event does not match its event type' });
+  }
+});
 const findingSchema = z.object({
-  findingEventId: uuid, fingerprint: z.string().min(1).max(500), path: z.string().min(1).max(4096),
+  findingEventId: uuid, durableFindingId: z.string().regex(/^lf1_[a-f0-9]{32}$/u).optional(),
+  fingerprint: z.string().min(1).max(500), path: z.string().min(1).max(4096),
+  claim: z.object({ title: z.string().max(1_000), body: z.string().max(4_000), trust: z.literal('untrusted') }).strict().optional(),
+  groundedEvidenceSemanticsVersion: z.string().min(1).max(120).optional(),
+  rootCause: z.object({ componentId: z.string().min(1).max(300), behaviorId: z.string().min(1).max(300),
+    contractId: z.string().min(1).max(300), failureModeId: z.string().min(1).max(300) }).strict().optional(),
+  causeAnchor: z.object({ componentPath: z.string().min(1).max(4096), side: z.enum(['head', 'base']),
+    startLine: z.number().int().positive().safe(), endLine: z.number().int().positive().safe(),
+    citationIds: z.array(z.string().min(1).max(256)).min(1).max(64), contentDigest: digest })
+    .strict().optional(),
+  sourceWindowManifestDigest: digest.optional(),
   regionStart: z.number().int().positive().optional(), regionEnd: z.number().int().positive().optional(),
   firstSeenHead: sha, lastSeenHead: sha, affectedContextDigest: digest,
   sourceSeverity: z.string().max(16), effectiveSeverity: z.string().max(16), disposition: z.string().max(32),
@@ -32,6 +71,7 @@ const snapshotResponseSchema = z.object({
   configDigest: digest, contextDigest: digest, eventCount: z.number().int().nonnegative().safe(),
   findingCount: z.number().int().nonnegative().safe(), eventOmittedCount: z.number().int().nonnegative().safe(),
   findingOmittedCount: z.number().int().nonnegative().safe(), legacyOmittedCount: z.number().int().nonnegative().safe(),
+  authenticatedDisputes: authenticatedDisputesSchema,
   eventsDigest: digest, findingsDigest: digest, expiresAt: z.string().datetime(),
 }).strict();
 const pageResponseSchema = z.object({
@@ -44,8 +84,15 @@ const pageResponseSchema = z.object({
 
 export interface PrLifecycleHistoryFinding {
   findingEventId: string;
+  durableFindingId?: string;
   fingerprint: string;
   path: string;
+  claim?: { title: string; body: string; trust: 'untrusted' };
+  groundedEvidenceSemanticsVersion?: string;
+  rootCause?: { componentId: string; behaviorId: string; contractId: string; failureModeId: string };
+  causeAnchor?: { componentPath: string; side: 'head' | 'base'; startLine: number; endLine: number;
+    citationIds: string[]; contentDigest: string };
+  sourceWindowManifestDigest?: string;
   regionStart?: number;
   regionEnd?: number;
   firstSeenHead: string;
@@ -64,6 +111,10 @@ export interface PrLifecycleHistoryEvent {
   eventType: string;
   runId?: string;
   executionAttempt?: number;
+  evidenceSemanticsVersion?: string;
+  completionStatus?: 'completed' | 'failed' | 'cancelled';
+  coverageComplete?: boolean;
+  quorumSatisfied?: boolean;
   headSha?: string;
   baseSha?: string;
   policyDigest?: string;
@@ -73,6 +124,7 @@ export interface PrLifecycleHistoryEvent {
   verificationStatus: 'confirmed' | 'contradicted' | 'insufficient';
   verification?: { findingEventId?: string; fingerprint?: string; status?: 'confirmed' | 'contradicted' | 'insufficient';
     currentAffectedContextDigest?: string; sourceAffectedContextDigest?: string };
+  disposition?: FindingDispositionEvent;
 }
 
 export interface PrLifecycleHistoryLoad {
@@ -91,6 +143,7 @@ export interface PrLifecycleHistoryLoad {
   eventsDigest?: string;
   findingsDigest?: string;
   omissions: readonly string[];
+  authenticatedDisputes?: AuthenticatedDisputesProjection;
 }
 
 export interface PrLifecycleHistorySource {
@@ -108,7 +161,8 @@ export interface PrLifecycleHistorySource {
 function unavailableLoad(reason: string): PrLifecycleHistoryLoad {
   return { status: 'unavailable', events: [], findings: [], eventCount: 0, findingCount: 0,
     loadedEventCount: 0, loadedFindingCount: 0, eventOmittedCount: 0, findingOmittedCount: 0,
-    legacyOmittedCount: 0, omissions: [reason] };
+    legacyOmittedCount: 0, omissions: [reason],
+    authenticatedDisputes: { status: 'unavailable', disputes: [], paths: [], reason: 'source-unavailable' } };
 }
 
 function unavailable(): Error { return new Error('PR lifecycle history could not be read'); }
@@ -174,6 +228,9 @@ export class HttpPrLifecycleHistorySource implements PrLifecycleHistorySource {
         ...(snapshot.legacyOmittedCount > 0 ? [`${snapshot.legacyOmittedCount} legacy completion record(s) were omitted as unverified context`] : []),
         ...(!complete ? ['history pages or digests were incomplete'] : []),
       ];
+      const authenticatedDisputes: AuthenticatedDisputesProjection = complete ? snapshot.authenticatedDisputes : {
+        status: 'unavailable', disputes: [] as const, paths: snapshot.authenticatedDisputes.paths, reason: 'history-incomplete',
+      };
       return {
         status: complete ? (omissions.length === 0 ? 'complete' : 'partial') : 'partial',
         snapshotId: snapshot.snapshotId,
@@ -184,6 +241,7 @@ export class HttpPrLifecycleHistorySource implements PrLifecycleHistorySource {
         loadedEventCount: events.length, loadedFindingCount: findings.length,
         eventOmittedCount: snapshot.eventOmittedCount, findingOmittedCount: snapshot.findingOmittedCount,
         legacyOmittedCount: snapshot.legacyOmittedCount, eventsDigest, findingsDigest, omissions,
+        authenticatedDisputes,
       };
     } catch {
       return unavailableLoad('service-owned lifecycle history could not be loaded completely');

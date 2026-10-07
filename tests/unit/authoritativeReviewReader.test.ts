@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AuthoritativeReviewReader, MAX_AUTHORITATIVE_DIFF_BYTES } from '../../src/github/authoritativeReviewReader';
+import { AuthoritativeReviewReader, MAX_AUTHORITATIVE_DIFF_BYTES, MAX_GROUNDED_IMPORT_SOURCE_PROBES } from '../../src/github/authoritativeReviewReader';
 import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError } from '../../src/github/authoritativeReadFailure';
 import { renderFindingMarker } from '../../src/review/findingConvergence';
 
@@ -431,6 +431,44 @@ describe('AuthoritativeReviewReader', () => {
     it('does no network I/O with an already-aborted operation signal', async () => {
       const f = fixture(); const abort = new AbortController(); abort.abort();
       await expect(f.reader.exactCurrentDiff(request, abort.signal)).rejects.toThrow(); expect(f.fetcher).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('exact pinned source probes for dependency revalidation', () => {
+    it('derives repository/revision/path presence and raw-byte digest from pinned GitHub objects', async () => {
+      const bytes = Buffer.from('export const contract = true;\n');
+      const responses = [jsonResponse(repositoryBody()), jsonResponse(fileBody(bytes)),
+        new Response('not found', { status: 404 })];
+      const fetcher = vi.fn<typeof fetch>(async () => {
+        const response = responses.shift();
+        if (!response) throw new Error('unexpected extra fetch');
+        return response;
+      });
+      const reader = new AuthoritativeReviewReader({ token: TOKEN, baseUrl: API, timeoutMs: 250, fetchImplementation: fetcher });
+      const results = await reader.readPinnedSourceProbes({ ...TARGET, baseSha: BASE, headSha: HEAD,
+        probes: [{ revisionSha: HEAD, path: FILE_PATH }, { revisionSha: BASE, path: FILE_PATH }] });
+      expect(results).toEqual([
+        { repository: 'exampleorg/central-policy', revisionSha: HEAD, path: FILE_PATH,
+          presence: 'present', sourceDigest: createHash('sha256').update(bytes).digest('hex') },
+        { repository: 'exampleorg/central-policy', revisionSha: BASE, path: FILE_PATH,
+          presence: 'absent', sourceDigest: null },
+      ]);
+      expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
+        `${API}/repos/exampleorg/central-policy`,
+        `${API}/repos/exampleorg/central-policy/contents/policy/review.json?ref=${HEAD}`,
+        `${API}/repos/exampleorg/central-policy/contents/policy/review.json?ref=${BASE}`,
+      ]);
+    });
+
+    it('fails closed without network reads when the unique probe cap is exceeded', async () => {
+      const { reader, fetcher } = fixture();
+      const probes = Array.from({ length: MAX_GROUNDED_IMPORT_SOURCE_PROBES + 1 }, (_, index) => ({
+        revisionSha: HEAD, path: `src/generated/${index}.ts`,
+      }));
+      const results = await reader.readPinnedSourceProbes({ ...TARGET, baseSha: BASE, headSha: HEAD, probes });
+      expect(results).toHaveLength(MAX_GROUNDED_IMPORT_SOURCE_PROBES + 1);
+      expect(results.every((row) => row.presence === 'unavailable' && row.sourceDigest === null)).toBe(true);
+      expect(fetcher).not.toHaveBeenCalled();
     });
   });
 

@@ -24,6 +24,8 @@ import {
   MAX_FINDING_FINGERPRINTS,
   type QualificationFindingFingerprint,
 } from '../qualification/findingFingerprint';
+import { isNormalEngineQualificationWorker } from '../qualification/normalEngineQualification';
+import { runNormalEngineQualificationWorker } from '../qualification/normalEngineQualificationWorker';
 import {
   isPublishingReviewWorker,
   createPublishingCheckClient,
@@ -32,8 +34,7 @@ import {
 import { WorkerStatusPoller } from './workerStatusPoller';
 import { recordSupersededWorkerExit } from './workerSupersededExit';
 import { isReviewSuperseded } from '../review/reviewSupersession';
-import { readFindingThreads, type PullRequestRef } from '../github/findingThreads';
-import { isGitHubInstallationToken } from '../github/githubTransportPolicy';
+import type { PullRequestRef } from '../github/findingThreads';
 import { publishingWorkerAdapters } from '../review/publishingWorkerAdapters';
 import { flushMetrics } from '../telemetry/metrics';
 import { logger } from '../utils/logger';
@@ -1781,14 +1782,13 @@ export async function runWorker(
       // ADR 0002: finding threads come from the service, which verifies the review App as their
       // author. Without the service route, the run's own read token can still recognise threads
       // for identity, but those are never trusted to satisfy a P2 (no author verification).
-      const readToken = String(workerEnv.GH_TOKEN || '').trim();
-      const headSha = String(workerEnv.REVIEW_HEAD_SHA || '').trim();
       const serviceThreads = adapters.findingThreads;
-      const findingThreadReader = serviceThreads
-        ? (_pr: PullRequestRef) => serviceThreads.read(headSha, rootAbortController.signal)
-        : isGitHubInstallationToken(readToken)
-          ? (pr: PullRequestRef) => readFindingThreads({ token: readToken, signal: rootAbortController.signal }, pr)
-          : undefined;
+      const findingThreadReader = serviceThreads?.readSnapshot
+        ? async (_pr: PullRequestRef, expectedHeadSha: string, signal?: AbortSignal) => ({
+            source: 'service' as const,
+            ...(await serviceThreads.readSnapshot!(expectedHeadSha, signal ?? rootAbortController.signal)),
+          })
+        : undefined;
       try {
         receipt = await runPublishingReviewWorker(workerEnv, {
           checkClient,
@@ -1835,7 +1835,17 @@ export async function runWorker(
   continuationRunner: (workerEnv: NodeJS.ProcessEnv) => Promise<void> = async (workerEnv) => {
     await runContinuationPhase({ env: workerEnv, argv: process.argv, suppressExit: true });
   },
+  normalEngineQualificationRunner: (workerEnv: NodeJS.ProcessEnv) => Promise<void> = runNormalEngineQualificationWorker,
 ): Promise<void> {
+  const normalQualificationFlag = String(env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ONLY || '').trim();
+  if (normalQualificationFlag !== '') {
+    if (normalQualificationFlag !== 'true' || !isNormalEngineQualificationWorker(env)
+      || isPrepPhase(env, process.argv) || isContinuationPhase(env, process.argv)) {
+      throw new Error('normal-engine qualification worker contract is invalid');
+    }
+    await normalEngineQualificationRunner(env);
+    return;
+  }
   if (isPrepPhase(env, process.argv)) {
     logger.info('CT_PHASE=prep detected, executing decoupled prep phase');
     await runPrepPhase({ env, argv: process.argv, suppressExit: true });

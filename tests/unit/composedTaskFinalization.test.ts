@@ -185,7 +185,7 @@ describe('composed task logs-only model-reported blocked reason', () => {
     expect(result.personas).toEqual([]);
     expect(result.optionalFailures).toEqual([{
       id: 'verify-change', failureClass: 'contract',
-      error: 'Task verify-change (architecture) reported BLOCKED for path(s) [src/app.ts]: Is this change sound?',
+      error: 'Task verify-change (architecture) reported BLOCKED for path(s) [src/app.ts]: Test a specific changed behavior; rules=architecture,correctness,performance; risk=source:1. Is this change sound?',
     }]);
     expect(result.unreportedLanes).toEqual([]);
     expect(result.quorum.satisfied).toBe(false);

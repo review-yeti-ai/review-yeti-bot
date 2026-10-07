@@ -10,6 +10,7 @@ import {
   unreportedLaneFailure,
 } from '../composedEngine';
 import { TaskSourceDelivery } from '../../review/taskSourceDelivery';
+import { completeComposedRuntimeResources } from '../composedResourceReceipt';
 import { TASK_ID_PATTERN } from '../../reviewTaskContract';
 import { isBypassDiffOnlyPath } from '../../pathDomainContract';
 import { computeArbitration } from '../../review/reviewCore';
@@ -28,6 +29,9 @@ import { workerPanelDeadlineBudget } from '../../config/workerTerminalDeadline';
 import type { ReviewTask } from '../reviewTask';
 import { initTelemetry, clearSpans, getRecentSpans } from '../../telemetry';
 import { canonicalJson, sha256 } from '../../review/reviewCore';
+import { buildDeterministicCoverageManifest } from '../../review/groundedReviewEngine';
+import { buildDeterministicReviewPlanningContext, enrichTasksWithPlanningContext,
+  reviewTaskCharterDigest } from '../../review/prReviewPlanningContext';
 import { disputedFindingRecheckDigest, type DisputedFindingRecheckUnsigned } from '../../review/disputedFindingRecheck';
 import type { DeletionClassificationPlan } from '../../review/deletionClassification';
 import {
@@ -111,7 +115,110 @@ describe('executeComposedReview', () => {
     await executeComposedReview({ config: cfg, changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture',
       headSha: 'a'.repeat(40), client: { complete } });
 
+    expect(JSON.stringify(complete.mock.calls[0]?.[0]?.messages)).toContain('DETERMINISTIC COVERAGE, RULE, AND RISK MAP');
+    expect(JSON.stringify(complete.mock.calls[1]?.[0]?.messages)).toContain('risk=security-sensitive:0');
     expect(complete.mock.calls.map(([request]) => request.reasoningEffort)).toEqual(['max', 'max']);
+  });
+
+  it('records composed turns, task progress, and only source-verified investigated paths', async () => {
+    const configDigest = 'a'.repeat(64);
+    const cfg = config();
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages), nonce = nonceFrom(text);
+      if (text.includes('=== PLAN TURN ===')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [{ id: 'guard', dimension: 'security',
+          paths: ['src/auth/guard.ts'], question: 'Safe?', rationale: 'Changed guard.' }] }));
+      }
+      return fakeResponse(JSON.stringify({ nonce, task: 'guard', status: 'COMPLETE', blockedReason: null, findings: [] }));
+    });
+
+    const result = await executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete },
+      effectiveConfigDigest: configDigest, verificationReserveTurns: 12 });
+
+    expect((result as any).composedResourceObservation).toMatchObject({
+      version: 'ComposedRuntimeResources.v1',
+      configDigest: { value: configDigest, unavailableReason: null },
+      budget: { configuredTotalTurns: 100, investigationTurns: 88, verificationReserveTurns: 12 },
+      usage: {
+        totalTurns: 2, planningTurns: 1, discoveryTurns: 1, taskFinalizationTurns: 0,
+        verifierCalls: { value: null,
+          unavailableReason: expect.stringContaining('after the composed engine returns') },
+        clientCallsStarted: 2, clientResponsesReceived: 2,
+        gatewayAcceptedCalls: null, providerCompletions: null,
+        engineElapsedMonotonicMs: expect.any(Number), settledClientCallElapsedMs: expect.any(Number),
+      },
+      tasks: { planned: ['guard'], started: ['guard'], completed: ['guard'], blocked: [], failed: [], pending: [] },
+      coverage: {
+        assignedPaths: { count: 1, sha256: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+        investigatedPaths: { count: 1, sha256: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+        remainingPaths: { count: 0, sha256: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+        regions: { state: 'unavailable', reason: expect.any(String) },
+      },
+    });
+  });
+
+  it('does not call a shared path fully investigated while an assigned task remains blocked', async () => {
+    const cfg = config();
+    let taskCall = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages), nonce = nonceFrom(text);
+      if (text.includes('=== PLAN TURN ===')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [
+          { id: 'guard-a', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Check A?', rationale: 'Change A.' },
+          { id: 'guard-b', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Check B?', rationale: 'Change B.' },
+        ] }));
+      }
+      const task = taskCall++ === 0 ? 'guard-a' : 'guard-b';
+      return fakeResponse(JSON.stringify({ nonce, task,
+        status: task === 'guard-a' ? 'COMPLETE' : 'BLOCKED',
+        blockedReason: task === 'guard-a' ? null : 'evidence_insufficient', findings: [] }));
+    });
+
+    const result = await executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'b'.repeat(40), client: { complete },
+      effectiveConfigDigest: 'c'.repeat(64) });
+
+    expect((result as any).composedResourceObservation).toMatchObject({
+      tasks: { planned: ['guard-a', 'guard-b'], completed: ['guard-a'], blocked: ['guard-b'], pending: [] },
+      coverage: { assignedPaths: { count: 1 }, investigatedPaths: { count: 0 }, remainingPaths: { count: 1 } },
+    });
+  });
+
+  it('captures an in-progress task and unsettled client call when the outer cutoff interrupts the engine', async () => {
+    const configDigest = 'd'.repeat(64);
+    const cfg = config();
+    const controller = new AbortController();
+    const snapshots: any[] = [];
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages), nonce = nonceFrom(text);
+      if (text.includes('=== PLAN TURN ===')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [{ id: 'guard', dimension: 'security',
+          paths: ['src/auth/guard.ts'], question: 'Safe?', rationale: 'Changed guard.' }] }));
+      }
+      setTimeout(() => controller.abort(new Error('outer deadline')), 0);
+      return new Promise<OpenRouterResponse>(() => {});
+    });
+
+    await expect(executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'd'.repeat(40), client: { complete },
+      signal: controller.signal, effectiveConfigDigest: configDigest,
+      resourceObservationCapture: (snapshot: unknown) => snapshots.push(snapshot),
+    } as any)).rejects.toBeDefined();
+
+    const snapshot = snapshots.at(-1);
+    expect(snapshot).toMatchObject({
+      stage: 'composed_engine',
+      configDigest: { value: configDigest },
+      engineExecutionState: 'running',
+      tasks: { started: ['guard'], interrupted: ['guard'], inProgress: [], completed: [], failed: [], pending: [] },
+      usage: { clientCallsStarted: 2, clientResponsesReceived: 1, clientCallsUnsettled: 1,
+        gatewayAcceptedCalls: null, providerCompletions: null },
+    });
+    expect(completeComposedRuntimeResources({ observation: snapshot, configDigest, verifierCalls: 0 }))
+      .toMatchObject({ stage: 'worker_completion', engineExecutionState: 'interrupted',
+        tasks: { interrupted: ['guard'], inProgress: [] }, usage: { clientCallsUnsettled: 1,
+          gatewayAcceptedCalls: null, providerCompletions: null } });
   });
 
   it.each([
@@ -208,6 +315,16 @@ describe('executeComposedReview', () => {
       const testsTask = { id: 'tests', dimension: 'testing' as const,
         paths: ['src/auth/guard.ts'], question: 'Are the tests adequate?', rationale: 'The changed guard needs coverage.' };
       const plan = [authTask, testsTask];
+      const configWithoutPreChecks = config();
+      configWithoutPreChecks.pre_checks.enabled = false;
+      configWithoutPreChecks.pre_checks.zoekt.enabled = false;
+      configWithoutPreChecks.pre_checks.analyzers.enabled = false;
+      configWithoutPreChecks.pre_checks.symbolAppendix.enabled = false;
+      const planning = enrichTasksWithPlanningContext(plan, buildDeterministicReviewPlanningContext({
+        coverage: buildDeterministicCoverageManifest(CODE_FILES), changedFiles: CODE_FILES,
+      }));
+      const charterDigestByTask = new Map(planning.tasks.map((task) => [task.id,
+        reviewTaskCharterDigest(task, planning.assignments)] as const));
       const priorAuthFinding = { severity: 'P1' as const, path: 'src/auth/guard.ts', line: 2,
         title: 'Prior disputed finding', body: 'This finding must be independently checked again.' };
       const priorTestsFinding = { severity: 'P2' as const, path: 'src/auth/guard.ts', line: 1,
@@ -247,17 +364,17 @@ describe('executeComposedReview', () => {
         return fakeResponse(JSON.stringify({ nonce, task: authTask.id, status, findings: [] }));
       });
       const result = await executeComposedReview({
-        config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture',
+        config: configWithoutPreChecks, changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture',
         headSha: 'a'.repeat(40), client: { complete },
         disputedFindingRechecks: [recheck],
         checkpoint: {
           resumed: { version: 'ReviewExecutionCheckpoint.v1', runId: unsigned.runId, repositoryId: 123,
             owner: 'acme', repo: 'reviewer-fixture', prNumber: 42, headSha: unsigned.headSha,
             baseSha: unsigned.baseSha, policyDigest: unsigned.policyDigest, configDigest: unsigned.configDigest,
-            executionAttempt: 2, revision: 5, plan,
+            executionAttempt: 2, revision: 5, plan: planning.tasks, plannerPlan: plan,
             completedTasks: [
-              { id: authTask.id, findings: [priorAuthFinding] },
-              { id: testsTask.id, findings: [priorTestsFinding], sourceDelivery: new TaskSourceDelivery({
+              { id: authTask.id, findings: [priorAuthFinding], charterDigest: charterDigestByTask.get(authTask.id) },
+              { id: testsTask.id, findings: [priorTestsFinding], charterDigest: charterDigestByTask.get(testsTask.id), sourceDelivery: new TaskSourceDelivery({
                 taskId: testsTask.id, paths: testsTask.paths, files: CODE_FILES,
                 headSha: unsigned.headSha, prefix: CODE_FILES[0].patch, inlinedPaths: testsTask.paths,
               }).acknowledgeRequest([{ role: 'user', content: CODE_FILES[0].patch }]) },
@@ -276,13 +393,13 @@ describe('executeComposedReview', () => {
         const resumeComplete = vi.fn(async () => { throw new Error('A satisfied task must not invoke the provider again'); });
         const latest = saved.at(-1)!;
         const resumed = await executeComposedReview({
-          config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40),
+          config: configWithoutPreChecks, changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40),
           client: { complete: resumeComplete }, disputedFindingRechecks: [],
           checkpoint: { resumed: {
             version: 'ReviewExecutionCheckpoint.v1', runId: unsigned.runId, repositoryId: 123,
             owner: 'acme', repo: 'reviewer-fixture', prNumber: 42, headSha: unsigned.headSha,
             baseSha: unsigned.baseSha, policyDigest: unsigned.policyDigest, configDigest: unsigned.configDigest,
-            executionAttempt: 2, revision: latest.revision, plan,
+            executionAttempt: 2, revision: latest.revision, plan: latest.plan, plannerPlan: latest.plannerPlan,
             completedTasks: latest.completedTasks, satisfiedFindingRecheckIds: latest.satisfiedFindingRecheckIds,
           }, save: async () => undefined },
         });
@@ -2400,8 +2517,12 @@ describe('executeComposedReview', () => {
     expect(result).not.toHaveProperty('retention');
     const [planRequest, outcomeRequest] = retention.requests;
     expect(Object.keys(planRequest).sort()).toEqual(['evidence', 'requestDigest', 'selectors', 'stage', 'version']);
-    expect(planRequest.evidence.tasks).toEqual([threeTasks()[0]]);
-    expect(JSON.stringify(planRequest)).not.toMatch(/policy|build|context|provider|prompt|tool/i);
+    expect(planRequest.evidence.tasks).toMatchObject([{ id: threeTasks()[0]?.id, paths: threeTasks()[0]?.paths }]);
+    expect(planRequest.evidence.tasks[0]?.question).toContain('risk=security-sensitive');
+    expect(planRequest.evidence.tasks[0]?.rationale).toContain('Regions=');
+    expect(planRequest).not.toHaveProperty('policy');
+    expect(planRequest).not.toHaveProperty('provider');
+    expect(planRequest).not.toHaveProperty('prompt');
     expect(Object.isFrozen(planRequest)).toBe(true);
     expect(Object.isFrozen(planRequest.evidence.tasks[0].paths)).toBe(true);
     expect(outcomeRequest.evidence.planDigest).toBe('1'.repeat(64));
@@ -3297,9 +3418,11 @@ describe('executeComposedReview', () => {
     try {
       await planHeld.promise;
       expect(planRequest.evidence.tasks.map((task: any) => task.id)).toEqual(expectedIds);
+      expect(planRequest.evidence.tasks.every((task: any) => task.question.includes('risk=')
+        && task.rationale.includes('Regions='))).toBe(true);
       expect(planRequest).toEqual(createComposedTaskPlanRetentionRequest({
         selectors: retentionSelectors, changedPaths: changedFiles.map((file) => file.path),
-        tasks: [tasks[3], tasks[2], tasks[1], tasks[0]],
+        tasks: planRequest.evidence.tasks,
       }));
       expect(providerTasks).toEqual([]);
       expect(retention.port.persistOutcome).not.toHaveBeenCalled();

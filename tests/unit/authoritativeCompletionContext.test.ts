@@ -7,6 +7,7 @@ import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritative
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { sha256 } from '../../src/review/reviewCore';
 import { deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
+import { parseGroundedRelativeImports, groundedRelativeImportCandidates } from '../../src/review/groundedContractResolver';
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
 import { TrustedCompletionResolutionError, isDeterministicCompletionFailure }
   from '../../src/review/workerCompletionPersistenceError';
@@ -169,6 +170,129 @@ describe('REL-1056 trusted-completion failure classification', () => {
 });
 
 describe('service-owned authoritative completion context', () => {
+  it('marks a force-pushed-away cause head as not-ancestor after the exact service comparison', async () => {
+    const request = { sourceEventId: '00000000-0000-4000-8000-000000000041', sourceKind: 'cause' as const,
+      priorRunId: `run_${'4'.repeat(32)}`, priorHeadSha: 'd'.repeat(40), currentHeadSha: target.headSha };
+    const comparison = vi.fn(async () => ({ status: 'diverged' as const, mergeBaseSha: 'e'.repeat(40),
+      files: [{ path: 'src/auth/guard.ts' }] }));
+    const f = fixture({ readerFactory: async () => ({ currentCandidate: vi.fn(async () => ({ ...current })),
+      exactCurrentDiff: vi.fn(async () => ({ current: { ...current }, diff, expectedFileCount: 1 })),
+      commitComparison: comparison }) });
+
+    const context = await f.context(f.gate, undefined, undefined, { originRequestsByFingerprint: {
+      [`fp1_${'a'.repeat(24)}`]: [request],
+    } });
+
+    expect(comparison).toHaveBeenCalledTimes(1);
+    expect(comparison.mock.calls[0]?.slice(1, 3)).toEqual([request.priorHeadSha, target.headSha]);
+    expect(context.originAncestry).toMatchObject([{ ...request, version: 'GroundedOriginAncestry.v1', result: 'not-ancestor' }]);
+    expect(context.originAncestry?.[0]?.comparisonDigest).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
+  it('preserves a repair origin as unavailable when the exact comparison read fails', async () => {
+    const request = { sourceEventId: '00000000-0000-4000-8000-000000000042', sourceKind: 'repair' as const,
+      priorRunId: `run_${'5'.repeat(32)}`, priorHeadSha: 'd'.repeat(40), currentHeadSha: target.headSha };
+    const comparison = vi.fn(async () => { throw new Error('comparison unavailable'); });
+    const f = fixture({ readerFactory: async () => ({ currentCandidate: vi.fn(async () => ({ ...current })),
+      exactCurrentDiff: vi.fn(async () => ({ current: { ...current }, diff, expectedFileCount: 1 })),
+      commitComparison: comparison }) });
+
+    const context = await f.context(f.gate, undefined, undefined, { originRequestsByFingerprint: {
+      [`fp1_${'b'.repeat(24)}`]: [request],
+    } });
+
+    expect(comparison).toHaveBeenCalledTimes(1);
+    expect(context.originAncestry).toMatchObject([{ ...request, version: 'GroundedOriginAncestry.v1', result: 'unavailable' }]);
+    expect(context.originAncestry?.[0]?.comparisonDigest).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
+  it('does not compare an origin request bound to a different current head', async () => {
+    const request = { sourceEventId: '00000000-0000-4000-8000-000000000043', sourceKind: 'cause' as const,
+      priorRunId: `run_${'6'.repeat(32)}`, priorHeadSha: 'd'.repeat(40), currentHeadSha: 'f'.repeat(40) };
+    const comparison = vi.fn(async () => ({ status: 'ahead' as const, mergeBaseSha: 'd'.repeat(40), files: [] }));
+    const f = fixture({ readerFactory: async () => ({ currentCandidate: vi.fn(async () => ({ ...current })),
+      exactCurrentDiff: vi.fn(async () => ({ current: { ...current }, diff, expectedFileCount: 1 })),
+      commitComparison: comparison }) });
+
+    const context = await f.context(f.gate, undefined, undefined, { originRequestsByFingerprint: {
+      [`fp1_${'c'.repeat(24)}`]: [request],
+    } });
+
+    expect(comparison).not.toHaveBeenCalled();
+    expect(context.originAncestry).toBeUndefined();
+  });
+
+  it('derives dependency probes from authenticated importer source and ignores worker-reported states', async () => {
+    const importerPath = 'src/use.ts';
+    const importerContent = "import { Api } from './api';\n";
+    const parsed = parseGroundedRelativeImports(importerContent, importerPath);
+    expect(parsed.complete).toBe(true);
+    if (!parsed.complete) return;
+    const declaration = parsed.declarations[0]!;
+    const reference = { importerPath, importerSide: 'head' as const,
+      importerFullContentSha256: sha256(importerContent), importerStatementStartLine: declaration.startLine,
+      importerStatementEndLine: declaration.endLine, importSpecifier: declaration.specifier,
+      importStatementDigest: declaration.statementDigest };
+    const manifest = [{ repository: 'example/candidate', revisionSha: target.headSha,
+      path: groundedRelativeImportCandidates(importerPath, reference.importSpecifier)[0]!,
+      // These sender claims are deliberately wrong. The service must use its own pinned reads.
+      presence: 'present' as const, sourceDigest: 'f'.repeat(64), resolutionRefs: [reference] }];
+    const actualCandidatePath = 'src/api.ts';
+    const actualCandidate = 'export const Api = 1;\n';
+    const readPinnedSourceFiles = vi.fn(async (input: { probes: readonly { revisionSha: string; path: string }[] }) =>
+      input.probes.map((probe) => probe.path === importerPath
+        ? { repository: 'example/candidate', ...probe, presence: 'present' as const,
+          sourceDigest: sha256(importerContent), content: importerContent }
+        : probe.path === actualCandidatePath
+          ? { repository: 'example/candidate', ...probe, presence: 'present' as const,
+            sourceDigest: sha256(actualCandidate), content: actualCandidate }
+          : { repository: 'example/candidate', ...probe, presence: 'absent' as const, sourceDigest: null }));
+    const f = fixture({ readerFactory: async () => ({ currentCandidate: vi.fn(async () => ({ ...current })),
+      exactCurrentDiff: vi.fn(async () => ({ current: { ...current }, diff, expectedFileCount: 1 })),
+      readPinnedSourceFiles }) });
+
+    const context = await f.context(f.gate, undefined, undefined, { sourceResolutionProbeManifest: manifest });
+
+    expect(readPinnedSourceFiles).toHaveBeenCalledTimes(2);
+    expect(readPinnedSourceFiles.mock.calls[1]![0].probes.map((probe) => probe.path))
+      .toEqual(groundedRelativeImportCandidates(importerPath, reference.importSpecifier));
+    expect(context.coverage.expectedImportResolutionSources).toContainEqual({
+      repository: 'example/candidate', revisionSha: target.headSha, path: actualCandidatePath,
+      presence: 'present', sourceDigest: sha256(actualCandidate),
+    });
+    expect(context.coverage.expectedImportResolutionSources).toContainEqual({
+      repository: 'example/candidate', revisionSha: target.headSha, path: manifest[0]!.path,
+      presence: 'absent', sourceDigest: null,
+    });
+  });
+
+  it('does not read candidate paths when the importer statement digest is stale', async () => {
+    const importerPath = 'src/use.ts';
+    const importerContent = "import { Api } from './api';\n";
+    const parsed = parseGroundedRelativeImports(importerContent, importerPath);
+    expect(parsed.complete).toBe(true);
+    if (!parsed.complete) return;
+    const declaration = parsed.declarations[0]!;
+    const reference = { importerPath, importerSide: 'head' as const,
+      importerFullContentSha256: sha256(importerContent), importerStatementStartLine: declaration.startLine,
+      importerStatementEndLine: declaration.endLine, importSpecifier: declaration.specifier,
+      importStatementDigest: '0'.repeat(64) };
+    const manifest = [{ repository: 'example/candidate', revisionSha: target.headSha,
+      path: groundedRelativeImportCandidates(importerPath, reference.importSpecifier)[0]!,
+      presence: 'present' as const, sourceDigest: 'f'.repeat(64), resolutionRefs: [reference] }];
+    const readPinnedSourceFiles = vi.fn(async (input: { probes: readonly { revisionSha: string; path: string }[] }) =>
+      input.probes.map((probe) => ({ repository: 'example/candidate', ...probe,
+        presence: 'present' as const, sourceDigest: sha256(importerContent), content: importerContent })));
+    const f = fixture({ readerFactory: async () => ({ currentCandidate: vi.fn(async () => ({ ...current })),
+      exactCurrentDiff: vi.fn(async () => ({ current: { ...current }, diff, expectedFileCount: 1 })),
+      readPinnedSourceFiles }) });
+
+    const context = await f.context(f.gate, undefined, undefined, { sourceResolutionProbeManifest: manifest });
+
+    expect(readPinnedSourceFiles).toHaveBeenCalledTimes(1);
+    expect(context.coverage.expectedImportResolutionSources).toEqual([]);
+  });
+
   it('supplies the composed engine and exact effective paths from the trusted policy and diff', async () => {
     const f = fixture({}, composedPrepared());
     const context = await f.context(f.gate);
@@ -189,8 +313,10 @@ describe('service-owned authoritative completion context', () => {
     const f = fixture();
     f.exactCurrentDiff.mockResolvedValue({ current: { ...current, draft }, diff, expectedFileCount: 1 });
     const context = await f.context(f.gate);
-    expect(context).toEqual({ current: { ...current, draft, policyDigest: f.gate.coordinates.policyDigest }, coverage: {
+    expect(context).toEqual({ current: { ...current, draft, policyDigest: f.gate.coordinates.policyDigest },
+      historyAncestryVerified: false, coverage: {
       expectedPersonaIds: ['sec-lane', 'qual-lane'], changedFiles: [{ path: 'src/a.ts', patch: diff }],
+      groundedVerifierRouting: { primaryModel: 'review-model' },
       coverageComplete: true, quorumSatisfied: true,
       // REL-1139: the same applicability decision's disclosures, re-checked against a skip claim.
       emptyModeration: { truncatedFiles: 0, unavailablePatches: 0, omittedSourcePaths: 0, routedFiles: 0, uncoveredPaths: 0 },

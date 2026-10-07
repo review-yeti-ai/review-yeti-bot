@@ -5,6 +5,7 @@ import { executeComposedReview, resolveComposedTaskConcurrency } from '../../src
 import { extractMessageContentText } from '../../src/panel/panelEngine';
 import type { ReviewModelClient } from '../../src/gateway/openRouterClient';
 import { parseChangedFiles } from '../../src/review/changedFiles';
+import { buildDeterministicCoverageManifest } from '../../src/review/groundedReviewEngine';
 import type { PublishingProgressEvent } from '../../src/telemetry/publishingProgress';
 
 const changedFiles = parseChangedFiles([
@@ -122,6 +123,10 @@ afterEach(() => {
 
 describe('work-conserving composed task scheduling', () => {
   it('dispatches later tasks as slots free while preserving isolated context and plan-order results', async () => {
+    const rawPlannerPlan = taskPlan(5);
+    const assignedQuestionPrefix = 'Test a specific changed behavior; rules=architecture,correctness,performance; risk=source:1';
+    const assignedRegionId = buildDeterministicCoverageManifest(changedFiles).regions[0]?.id;
+    expect(assignedRegionId).toBeDefined();
     const taskOneGate = deferred<void>();
     const taskThreeGate = deferred<void>();
     const taskFourGate = deferred<void>();
@@ -131,7 +136,7 @@ describe('work-conserving composed task scheduling', () => {
     const taskFourPrompt = deferred<string>();
     const taskFivePrompt = deferred<string>();
     const complete = vi.fn(async (request: any) => {
-      if (!isWorkRequest(request)) return planResponse(request, 5);
+      if (!isWorkRequest(request)) return response({ nonce: nonceIn(requestText(request)), tasks: rawPlannerPlan });
       const text = requestText(request);
       const id = taskIdIn(text);
       if (id === 'task-1') await taskOneGate.promise;
@@ -153,7 +158,11 @@ describe('work-conserving composed task scheduling', () => {
     expect(taskFourContext).not.toContain('Task task-2 (architecture, paths [src/app.ts])');
     expect(taskFourContext).not.toContain('=== SWARM CONTEXT: PRIOR SETTLED TASKS');
     expect(taskFourContext).toContain('Task id: task-4');
-    expect(taskFourContext).toContain('Question: Review change 4.');
+    expect(rawPlannerPlan[3]).toMatchObject({ id: 'task-4', question: 'Review change 4.',
+      rationale: 'Check the changed behavior and its callers.' });
+    expect(taskFourContext).toContain(`Question: ${assignedQuestionPrefix}. Review change 4.`);
+    expect(taskFourContext).toContain(`Rationale: Regions=${assignedRegionId}. Caller/contract context: []. Required: `
+      + 'inspect the changed behavior and any directly referenced contract before concluding. Check the changed behavior and its callers.');
     expect(taskFourContext).toContain('+export const value = 2;');
     expect(taskThreeGate.promise).toBeDefined();
 
@@ -180,12 +189,14 @@ describe('work-conserving composed task scheduling', () => {
     expect(taskFiveContext).not.toContain('Task task-4 (architecture, paths [src/app.ts])');
     expect(taskFiveContext).toContain('=== WORK TURN: TASK 5 OF 5 ===');
     expect(taskFiveContext).toContain('Task id: task-5');
-    expect(taskFiveContext).toContain('Question: Review change 5.');
+    expect(rawPlannerPlan[4]).toMatchObject({ id: 'task-5', question: 'Review change 5.' });
+    expect(taskFiveContext).toContain(`Question: ${assignedQuestionPrefix}. Review change 5.`);
 
     taskFourGate.resolve();
     taskThreeGate.resolve();
     const result = await run;
     expect(result.personas.map((persona) => persona.id)).toEqual(taskPlan(5).map((task) => task.id));
+    expect(result.taskPlan?.[3]?.question).toBe(`${assignedQuestionPrefix}. Review change 4.`);
     expect(result.unreportedLanes).toEqual([]);
   });
 

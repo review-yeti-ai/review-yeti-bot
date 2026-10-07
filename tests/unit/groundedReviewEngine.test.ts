@@ -3,10 +3,13 @@ import {
   applyGroundedVerificationToPersonas,
   buildDeterministicCoverageManifest,
   runIndependentGroundedVerification,
+  GROUNDED_VERIFICATION_VERSION,
 } from '../../src/review/groundedReviewEngine';
+import { GROUNDED_VERIFICATION_V2_VERSION, groundedCitationManifestDigest, sha256Bytes } from '../../src/review/groundedEvidenceV2';
 import { findingFingerprint } from '../../src/review/findingConvergence';
 import { REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
 import { parseChangedFiles } from '../../src/review/changedFiles';
+import { groundedRelativeImportCandidates } from '../../src/review/groundedContractResolver';
 import type { ReviewModelClient } from '../../src/gateway/openRouterClient';
 import type { RepoFileProvider } from '../../src/panel/panelEngine';
 
@@ -19,6 +22,594 @@ function patch(path: string, oldLine: string, newLine: string): string {
 }
 
 describe('grounded review engine', () => {
+  it('verifies a 444,656-byte changed source from bounded source windows and a compact alias response', async () => {
+    const path = 'src/large.ts';
+    const candidateLine = 3_000;
+    const oldLine = `export const claim = '${'old'.padEnd(32, 'x')}';\n`;
+    const newLine = `export const claim = '${'new'.padEnd(32, 'x')}';\n`;
+    const makeSource = (target: string) => {
+      const lines = Array.from({ length: candidateLine + 100 }, (_, index) => `const row${index} = '${'x'.repeat(40)}';\n`);
+      lines[candidateLine - 1] = target;
+      let source = lines.join('');
+      const padding = 444_656 - Buffer.byteLength(source, 'utf8');
+      lines[lines.length - 1] = `${lines.at(-1)!.slice(0, -1)}${'x'.repeat(padding)}\n`;
+      source = lines.join('');
+      return source;
+    };
+    const current = makeSource(newLine), previous = makeSource(oldLine);
+    expect(Buffer.byteLength(current, 'utf8')).toBe(444_656);
+    const diff = `@@ -${candidateLine} +${candidateLine} @@\n-${oldLine.slice(0, -1)}\n+${newLine.slice(0, -1)}\n`;
+    const changedFiles = [{ path, patch: diff }];
+    let visibleEvidence: any;
+    const complete = vi.fn(async (request: any) => {
+      const content = request.messages[1].content;
+      visibleEvidence = JSON.parse(content.match(/<retrieved_repository_evidence>(.*?)<\/retrieved_repository_evidence>/su)[1]);
+      const row = visibleEvidence[0];
+      const headId = row.head.windows[0].id;
+      const baseId = row.base.windows[0].id;
+      const diffId = row.diffs[0].id;
+      return { model: 'test-verifier', content: JSON.stringify({ status: 'confirmed',
+        violatedInvariant: 'The changed exported value must preserve its validated contract.',
+        failurePath: 'A caller reaches the new unsafe value without the required guard.',
+        benignCheck: 'The selected changed source contains no guard before the value is returned.',
+        changeConnection: 'The admitted added line supplies the unsafe value.',
+        rootCause: { componentId: 'large-source.claim', behaviorId: 'unsafe-return',
+          contractId: 'validated-export', failureModeId: 'unguarded-value' },
+        causeAnchor: { componentPath: path, side: 'head', startLine: candidateLine, endLine: candidateLine,
+          citationIds: [headId] },
+        causalPath: { relation: 'same-component', candidatePath: path, componentPath: path,
+          citationIds: [headId, baseId, diffId] },
+        baseState: { trigger: 'absent', contract: 'not-violated', citationIds: [baseId] },
+        headState: { trigger: 'present', contract: 'violated', citationIds: [headId] },
+        causalDelta: { kind: 'introduced', materiality: 'reachability', citationIds: [diffId] },
+        citations: [headId, baseId, diffId] }), usage: null, costUSD: null };
+    });
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (_path, side) => ({ content: side === 'head' ? current : previous,
+        sha: side === 'head' ? head : base, presence: 'present', source: { repository, path, side } }),
+      readDiff: () => ({ patch: diff, identity: { repository, headSha: head, baseSha: base } }),
+    };
+
+    const verification = await runIndependentGroundedVerification({ findings: [{ severity: 'P1', path, line: candidateLine,
+      title: 'Unsafe value returned from changed export' }], changedFiles, provider, repository,
+      headSha: head, baseSha: base, model: 'test-model', severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+      verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      client: { complete } as unknown as ReviewModelClient });
+
+    expect(verification.version).toBe(GROUNDED_VERIFICATION_V2_VERSION);
+    expect(GROUNDED_VERIFICATION_VERSION).toBe(GROUNDED_VERIFICATION_V2_VERSION);
+    expect(verification.outcomes[0]).toMatchObject({ status: 'confirmed', candidateSide: 'head' });
+    expect(verification.outcomes[0]?.scopeDecision, JSON.stringify(verification.outcomes[0]?.scopeDecision)).toMatchObject({ causalScope: 'introduced',
+      rootCauseEvidenceKey: expect.stringMatching(/^cause-evidence-v1:[a-f0-9]{64}$/u) });
+    expect(verification.outcomes[0]?.evidence).toMatchObject({
+      rootCause: { componentId: 'large-source.claim' },
+      causeAnchor: { componentPath: path, side: 'head', startLine: candidateLine, endLine: candidateLine },
+      sourceWindowManifestDigest: expect.any(String),
+    });
+    const evidence = verification.outcomes[0]?.evidence as any;
+    expect(evidence.citations.map((citation: any) => citation.side).sort()).toEqual(['base', 'diff', 'head']);
+    expect(evidence.sourceWindowManifestDigest).toBe(groundedCitationManifestDigest(evidence.citations));
+    expect(Buffer.byteLength(visibleEvidence[0].head.windows[0].source, 'utf8')).toBeLessThanOrEqual(24_000);
+    expect(visibleEvidence[0].head.windows[0].source).not.toContain(current.slice(0, 5_000));
+    expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it('proves a deleted export still reaches an unchanged pinned caller through bounded reverse-reference evidence', async () => {
+    const path = 'src/security.ts';
+    const callerPath = 'src/handler.ts';
+    const oldDefinition = 'export function authorize(request: Request) {\n  return request.session !== null;\n}\n';
+    const caller = "import { authorize } from './security';\nexport function handle(request: Request) { return authorize(request); }\n";
+    const diff = `diff --git a/${path} b/${path}\ndeleted file mode 100644\n--- a/${path}\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-export function authorize(request: Request) {\n-  return request.session !== null;\n-}\n`;
+    const changedFile = parseChangedFiles(diff, { repository, headSha: head, baseSha: base }).files[0]!;
+    const resolutionCandidates = groundedRelativeImportCandidates(callerPath, './security');
+    let visibleEvidence: any;
+    const findReferences = vi.fn(async (symbol: string, sourcePath: string, side: 'head' | 'base') => ({
+      version: 'PinnedSourceReferenceSearch.v1' as const, repository, sourcePath, symbol, side,
+      revisionSha: side === 'head' ? head : base, candidatePaths: [callerPath], searchComplete: false,
+      scannedFileCount: 12, scannedBytes: 20_000, reason: 'scan_file_limit' as const,
+    }));
+    const complete = vi.fn(async (request: any) => {
+      const content = request.messages[1].content;
+      visibleEvidence = JSON.parse(content.match(/<retrieved_repository_evidence>(.*?)<\/retrieved_repository_evidence>/su)[1]);
+      const target = visibleEvidence.find((item: any) => item.path === path);
+      const callerEvidence = visibleEvidence.find((item: any) => item.path === callerPath);
+      const candidateId = target.base.windows.find((window: any) => window.role === 'candidate').id;
+      const contractId = target.base.windows.find((window: any) => window.role === 'dependency-contract').id;
+      const absenceId = target.head.absence.id;
+      const diffId = target.diffs[0].id;
+      const baseCallerId = callerEvidence.base.windows.find((window: any) => window.role === 'dependency-caller').id;
+      const headCallerId = callerEvidence.head.windows.find((window: any) => window.role === 'dependency-caller').id;
+      return { model: 'test-verifier', content: JSON.stringify({ status: 'confirmed',
+        violatedInvariant: 'Every public authorization contract must remain resolvable by active callers.',
+        failurePath: 'The unchanged handler imports the removed export and calls it for every request.',
+        benignCheck: 'The deleted definition was the only exact named export satisfying this import.',
+        changeConnection: 'The admitted deletion removes the export while the current handler still imports it.',
+        rootCause: { componentId: 'security.authorize', behaviorId: 'preserve-auth-export',
+          contractId: 'named-import-resolves', failureModeId: 'reachable-missing-export' },
+        causeAnchor: { componentPath: path, side: 'base', startLine: 1, endLine: 3, citationIds: [candidateId] },
+        causalPath: { relation: 'same-component', candidatePath: path, componentPath: path,
+          citationIds: [candidateId, contractId, absenceId, baseCallerId, headCallerId, diffId] },
+        baseState: { trigger: 'present', contract: 'not-violated', citationIds: [candidateId, contractId, baseCallerId] },
+        headState: { trigger: 'present', contract: 'violated', citationIds: [absenceId, headCallerId] },
+        causalDelta: { kind: 'introduced', materiality: 'reachability', citationIds: [diffId] },
+        citations: [candidateId, contractId, absenceId, baseCallerId, headCallerId, diffId] }), usage: null, costUSD: null };
+    });
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null, findReferences,
+      readFileAt: async (requestedPath, side) => {
+        const revisionSha = side === 'head' ? head : base;
+        const content = requestedPath === path ? (side === 'head' ? null : oldDefinition)
+          : requestedPath === callerPath ? caller : null;
+        if (requestedPath === path || requestedPath === callerPath) {
+          return { content, sha: revisionSha, presence: requestedPath === path && side === 'head' ? 'absent' as const : 'present' as const,
+            source: { repository, path: requestedPath, side } };
+        }
+        if (resolutionCandidates.includes(requestedPath)) return { content: null, sha: revisionSha, presence: 'absent' as const,
+          source: { repository, path: requestedPath, side } };
+        return { content: null, sha: revisionSha, presence: 'unavailable' as const,
+          source: { repository, path: requestedPath, side } };
+      },
+      readDiff: (requestedPath) => requestedPath === path ? { patch: changedFile.patch!,
+        identity: { repository, headSha: head, baseSha: base } } : null,
+    };
+
+    const verification = await runIndependentGroundedVerification({ findings: [{ severity: 'P1', path, line: 1,
+      title: 'Deleted authorization export remains reachable from the handler' }], changedFiles: [changedFile], provider,
+      repository, headSha: head, baseSha: base, model: 'test-model', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+      client: { complete } as unknown as ReviewModelClient });
+
+    expect(findReferences).toHaveBeenCalledExactlyOnceWith('authorize', path, 'head');
+    expect(verification.sourceResolutionProbes).toBe(resolutionCandidates.length + 2);
+    expect(verification.sourceResolutionProbes).toBe(verification.sourceResolutionProbeManifest.length);
+    expect(verification.calls).toBe(1);
+    expect(complete).toHaveBeenCalledOnce();
+    expect(visibleEvidence).toHaveLength(2);
+    expect(visibleEvidence.find((item: any) => item.path === callerPath)).toMatchObject({
+      head: { windows: [expect.objectContaining({ role: 'dependency-caller' })] },
+      base: { windows: [expect.objectContaining({ role: 'dependency-caller' })] },
+    });
+    const callerEvidence = visibleEvidence.find((item: any) => item.path === callerPath);
+    expect(callerEvidence.base.windows[0].mapping.edge.resolution).toMatchObject({
+      version: 'BoundedRelativeImportResolution.v1', revisionSha: base, state: 'resolved', resolvedPath: path,
+      probes: expect.arrayContaining([expect.objectContaining({ path, presence: 'present' })]),
+    });
+    expect(callerEvidence.head.windows[0].mapping.edge.resolution).toMatchObject({
+      version: 'BoundedRelativeImportResolution.v1', revisionSha: head, state: 'unresolved', resolvedPath: null,
+      probes: expect.arrayContaining([expect.objectContaining({ path, presence: 'absent', sourceDigest: null })]),
+    });
+    expect(verification.outcomes[0], JSON.stringify(verification.outcomes[0])).toMatchObject({
+      status: 'confirmed', candidateSide: 'base', scopeDecision: { causalScope: 'introduced' },
+    });
+    expect(verification.outcomes[0]?.evidence?.citations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path, side: 'head', presence: 'absent' }),
+      expect.objectContaining({ path: callerPath, side: 'head', window: expect.objectContaining({ role: 'dependency-caller' }) }),
+      expect.objectContaining({ path, side: 'base', window: expect.objectContaining({ role: 'dependency-contract' }) }),
+    ]));
+  });
+
+  it('does not treat an extensionless deleted-path candidate as the unique active import when an index fallback exists', async () => {
+    const path = 'src/security.ts';
+    const callerPath = 'src/handler.ts';
+    const fallbackPath = 'src/security/index.ts';
+    const oldDefinition = 'export function authorize(request: Request) { return request.session !== null; }\n';
+    const caller = "import { authorize } from './security';\nexport function handle(request: Request) { return authorize(request); }\n";
+    const fallback = 'export function authorize(request: Request) { return true; }\n';
+    const resolutionCandidates = groundedRelativeImportCandidates(callerPath, './security');
+    const diff = `diff --git a/${path} b/${path}\ndeleted file mode 100644\n--- a/${path}\n+++ /dev/null\n@@ -1 +0,0 @@\n-${oldDefinition}`;
+    const changedFile = parseChangedFiles(diff, { repository, headSha: head, baseSha: base }).files[0]!;
+    const findReferences = vi.fn(async (symbol: string, sourcePath: string, side: 'head' | 'base') => ({
+      version: 'PinnedSourceReferenceSearch.v1' as const, repository, sourcePath, symbol, side,
+      revisionSha: side === 'head' ? head : base, candidatePaths: [callerPath], searchComplete: false,
+      scannedFileCount: 12, scannedBytes: 20_000, reason: 'scan_file_limit' as const,
+    }));
+    const complete = vi.fn(async () => ({ model: 'must-not-run', content: '', usage: null, costUSD: null }));
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null, findReferences,
+      readFileAt: async (requestedPath, side) => {
+        const revisionSha = side === 'head' ? head : base;
+        if (requestedPath === path) return { content: side === 'head' ? null : oldDefinition,
+          sha: revisionSha, presence: side === 'head' ? 'absent' as const : 'present' as const,
+          source: { repository, path: requestedPath, side } };
+        if (requestedPath === callerPath) return { content: caller, sha: revisionSha, presence: 'present' as const,
+          source: { repository, path: requestedPath, side } };
+        if (requestedPath === fallbackPath && side === 'head') return { content: fallback, sha: revisionSha,
+          presence: 'present' as const, source: { repository, path: requestedPath, side } };
+        if (resolutionCandidates.includes(requestedPath)) return { content: null, sha: revisionSha, presence: 'absent' as const,
+          source: { repository, path: requestedPath, side } };
+        return { content: null, sha: revisionSha, presence: 'unavailable' as const,
+          source: { repository, path: requestedPath, side } };
+      },
+      readDiff: (requestedPath) => requestedPath === path ? { patch: changedFile.patch!,
+        identity: { repository, headSha: head, baseSha: base } } : null,
+    };
+    const verification = await runIndependentGroundedVerification({ findings: [{ severity: 'P1', path, line: 1,
+      title: 'Deleted authorization export remains reachable from the handler' }], changedFiles: [changedFile], provider,
+      repository, headSha: head, baseSha: base, model: 'test-model', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+      client: { complete } as unknown as ReviewModelClient });
+
+    expect(findReferences).toHaveBeenCalledExactlyOnceWith('authorize', path, 'head');
+    expect(verification.outcomes[0]).toMatchObject({ status: 'insufficient' });
+    expect(verification.coverageComplete).toBe(false);
+    expect(verification.sourceResolutionProbes).toBeGreaterThan(0);
+    expect(verification.sourceResolutionProbes).toBe(verification.sourceResolutionProbeManifest.length);
+    expect(verification.calls).toBe(0);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('verifies a changed caller against a complete small contract window inside a large helper file', async () => {
+    const callerPath = 'src/caller.ts';
+    const helperPath = 'src/helper.ts';
+    const importLine = "import { safeHelper } from './helper';\n";
+    const oldCall = 'export function run(value: string) { return value; }\n';
+    const newCall = 'export function run(value: string) { return safeHelper(value); }\n';
+    const callerBase = `${importLine}${oldCall}`;
+    const callerHead = `${importLine}${newCall}`;
+    const definition = 'export function safeHelper(value: string) { return value.trim(); }\n';
+    const makeHelper = (targetLine: number) => {
+      const lines = Array.from({ length: 1_000 }, (_, index) => `const row${index} = '${'x'.repeat(40)}';\n`);
+      lines[targetLine - 1] = definition;
+      return lines.join('');
+    };
+    const helperBase = makeHelper(501);
+    const helperHead = makeHelper(501);
+    expect(Buffer.byteLength(helperHead, 'utf8')).toBeGreaterThan(24_000);
+    const diff = '@@ -2 +2 @@\n-export function run(value: string) { return value; }\n+export function run(value: string) { return safeHelper(value); }\n';
+    let responseBuilderError: string | undefined;
+    let visibleCrossFileEvidence: any;
+    const complete = vi.fn(async (request: any) => {
+      try {
+        const body = request.messages[1].content;
+        const files = JSON.parse(body.match(/<retrieved_repository_evidence>(.*?)<\/retrieved_repository_evidence>/su)[1]);
+        visibleCrossFileEvidence = files;
+        const caller = files.find((file: any) => file.path === callerPath);
+        const helper = files.find((file: any) => file.path === helperPath);
+        const candidateHead = caller.head.windows.find((window: any) => window.role === 'candidate').id;
+        const mappedBase = caller.base.windows.find((window: any) => window.role === 'mapped-base').id;
+        const callerHead = caller.head.windows.find((window: any) => window.role === 'dependency-caller').id;
+        const callerBase = caller.base.windows.find((window: any) => window.role === 'dependency-caller').id;
+        const contractHead = helper.head.windows.find((window: any) => window.role === 'dependency-contract').id;
+        const contractBase = helper.base.windows.find((window: any) => window.role === 'dependency-contract').id;
+        const diffId = caller.diffs[0].id;
+        const citations = [candidateHead, mappedBase, callerHead, callerBase, contractHead, contractBase, diffId];
+        return { model: 'test-verifier', content: JSON.stringify({ status: 'confirmed',
+        violatedInvariant: 'The helper contract requires validated data.',
+        failurePath: 'The new changed caller sends unvalidated input to the helper.',
+        benignCheck: 'The helper is only safe when its caller performs validation.',
+        changeConnection: 'The admitted callsite newly reaches the helper without validation.',
+        rootCause: { componentId: 'helper.safehelper', behaviorId: 'consume-unvalidated-value',
+          contractId: 'caller-validates-input', failureModeId: 'validation-bypassed' },
+        causeAnchor: { componentPath: helperPath, side: 'head', startLine: 501, endLine: 501,
+          citationIds: [contractHead] },
+        causalPath: { relation: 'dependency-edge', candidatePath: callerPath, componentPath: helperPath,
+          citationIds: [candidateHead, mappedBase, callerHead, callerBase, contractHead, contractBase, diffId] },
+        baseState: { trigger: 'absent', contract: 'not-violated', citationIds: [mappedBase, callerBase, contractBase] },
+        headState: { trigger: 'present', contract: 'violated', citationIds: [candidateHead, callerHead, contractHead] },
+          causalDelta: { kind: 'introduced', materiality: 'reachability', citationIds: [diffId] }, citations }),
+          usage: null, costUSD: null };
+      } catch (error) {
+        responseBuilderError = `${error instanceof Error ? error.message : String(error)}; evidence=${JSON.stringify(visibleCrossFileEvidence)}`;
+        throw error;
+      }
+    });
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (requestedPath, side) => {
+        const content = requestedPath === callerPath ? (side === 'head' ? callerHead : callerBase)
+          : requestedPath === helperPath ? (side === 'head' ? helperHead : helperBase) : null;
+        return { content, sha: side === 'head' ? head : base, presence: content === null ? 'absent' : 'present',
+          source: { repository, path: requestedPath, side } };
+      },
+      readDiff: (requestedPath) => requestedPath === callerPath ? { patch: diff,
+        identity: { repository, headSha: head, baseSha: base } } : null,
+    };
+    const verification = await runIndependentGroundedVerification({ findings: [{ severity: 'P1', path: callerPath,
+      line: 2, title: 'Changed caller violates the imported validation contract' }],
+      changedFiles: [{ path: callerPath, patch: diff }], provider, repository, headSha: head, baseSha: base,
+      model: 'test-model', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2, client: { complete } as unknown as ReviewModelClient });
+
+    expect(complete).toHaveBeenCalledOnce();
+    expect(responseBuilderError).toBeUndefined();
+    expect(verification.outcomes[0], JSON.stringify(verification.outcomes[0])).toMatchObject({ status: 'confirmed',
+      scopeDecision: { causalScope: 'introduced' },
+      evidence: { causalPath: { relation: 'dependency-edge', componentPath: helperPath } } });
+    const evidence = verification.outcomes[0]?.evidence as any;
+    expect(evidence.citations.find((citation: any) => citation.path === helperPath
+      && citation.window?.role === 'dependency-contract')?.window.fullContentSha256).toBe(sha256Bytes(Buffer.from(helperHead)));
+    expect(evidence.citations.filter((citation: any) => citation.window?.role === 'dependency-contract')
+      .every((citation: any) => citation.window.byteLength <= 24_000)).toBe(true);
+  });
+
+  it('enforces the existing per-file-side cap across multiple contract windows in one evidence packet', async () => {
+    const callerPath = 'src/caller.ts';
+    const helperPath = 'src/contracts.ts';
+    const symbols = Array.from({ length: 12 }, (_, index) => `helper${index}`);
+    const imports = `import { ${symbols.join(', ')} } from './contracts';\n`;
+    const oldCall = 'export function run(value: string) { return value; }\n';
+    let expression = 'value';
+    for (const symbol of symbols) expression = `${symbol}(${expression})`;
+    const newCall = `export function run(value: string) { return ${expression}; }\n`;
+    const callerBase = `${imports}${oldCall}`;
+    const callerHead = `${imports}${newCall}`;
+    const largeLine = (index: number) => `const row${index} = '${'x'.repeat(500)}';\n`;
+    const helperLines = Array.from({ length: 1_200 }, (_, index) => largeLine(index));
+    symbols.forEach((symbol, index) => {
+      helperLines[50 + index * 80] = `export function ${symbol}(value: string) { return value.trim(); }\n`;
+    });
+    const helper = helperLines.join('');
+    const diff = `@@ -2 +2 @@\n-${oldCall.slice(0, -1)}\n+${newCall.slice(0, -1)}\n`;
+    const complete = vi.fn();
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (requestedPath, side) => {
+        const content = requestedPath === callerPath ? (side === 'head' ? callerHead : callerBase)
+          : requestedPath === helperPath ? helper : null;
+        return { content, sha: side === 'head' ? head : base, presence: content === null ? 'absent' : 'present',
+          source: { repository, path: requestedPath, side } };
+      },
+      readDiff: (requestedPath) => requestedPath === callerPath ? { patch: diff,
+        identity: { repository, headSha: head, baseSha: base } } : null,
+    };
+    const verification = await runIndependentGroundedVerification({ findings: [{ severity: 'P1', path: callerPath,
+      line: 2, title: 'Changed caller crosses multiple imported contract windows' }],
+      changedFiles: [{ path: callerPath, patch: diff }], provider, repository, headSha: head, baseSha: base,
+      model: 'test-model', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2, client: { complete } as unknown as ReviewModelClient });
+
+    expect(verification.outcomes[0]).toMatchObject({ status: 'insufficient' });
+    expect(verification.outcomes[0]?.reason).toContain('per-file-side verifier bound');
+    expect(verification.calls).toBe(0);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('keeps a proven preexisting P1 in baseline evidence and removes it from new-PR findings', async () => {
+    const path = 'src/parser.ts';
+    const previous = 'function parse(value) { return eval(value); }\n// old note\n';
+    const current = 'function parse(value) { return eval(value); }\n// new note\n';
+    const patch = '@@ -2 +2 @@\n-// old note\n+// new note\n';
+    const changedFiles = [{ path, patch }];
+    const finding = { severity: 'P1', path, line: 2, title: 'Unsafe evaluation of untrusted input' };
+    const client = { complete: async (request: any) => {
+      const body = request.messages[1].content;
+      const file = JSON.parse(body.match(/<retrieved_repository_evidence>(.*?)<\/retrieved_repository_evidence>/su)[1])[0];
+      const headId = file.head.windows[0].id;
+      const baseId = file.base.windows[0].id;
+      const diffId = file.diffs[0].id;
+      return { model: 'test-verifier', content: JSON.stringify({ status: 'confirmed',
+        violatedInvariant: 'Untrusted input must not be executed.', failurePath: 'The parsed input reaches eval.',
+        benignCheck: 'The source contains no validation before eval.',
+        changeConnection: 'The unsafe evaluation is identical on both source sides and the patch only edits a comment.',
+        rootCause: { componentId: 'parser.evaluate', behaviorId: 'execute-user-input',
+          contractId: 'input-must-be-data', failureModeId: 'unsafe-evaluation' },
+        causeAnchor: { componentPath: path, side: 'head', startLine: 1, endLine: 1, citationIds: [headId] },
+        causalPath: { relation: 'same-component', candidatePath: path, componentPath: path,
+          citationIds: [headId, baseId, diffId] },
+        baseState: { trigger: 'present', contract: 'violated', citationIds: [baseId] },
+        headState: { trigger: 'present', contract: 'violated', citationIds: [headId] },
+        causalDelta: { kind: 'unaffected', citationIds: [diffId] }, citations: [headId, baseId, diffId] }),
+        usage: null, costUSD: null };
+    } } as unknown as ReviewModelClient;
+    const provider: RepoFileProvider = { findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (_path, side) => ({ content: side === 'head' ? current : previous,
+        sha: side === 'head' ? head : base, presence: 'present', source: { repository, path, side } }),
+      readDiff: () => ({ patch, identity: { repository, headSha: head, baseSha: base } }) };
+    const verification = await runIndependentGroundedVerification({ findings: [finding], changedFiles, provider, repository,
+      headSha: head, baseSha: base, verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2, model: 'test-model', client });
+    expect(verification.outcomes[0]).toMatchObject({ status: 'confirmed', severity: 'P1',
+      scopeDecision: { causalScope: 'preexisting' } });
+
+    const filtered = applyGroundedVerificationToPersonas([{ id: 'security', findings: [finding] }], verification,
+      changedFiles, REVIEW_SEVERITY_POLICY_V2, { repository, baseSha: base, headSha: head });
+    expect(filtered.personas[0].findings).toEqual([]);
+    expect(filtered.baselineContextFindings).toEqual([finding]);
+    expect(filtered.unverifiedBlockerCount).toBe(0);
+    expect(filtered.coverageComplete).toBe(true);
+  });
+
+  it('fails before a verifier call when bounded imported contract windows exceed the aggregate cap', async () => {
+    const path = 'src/consumer.ts';
+    const importLines = Array.from({ length: 12 }, (_, index) => `import { Contract${index} } from './contracts/c${index}';\n`);
+    const oldCall = 'export function use() { return Contract0("old"); }\n';
+    const newCall = 'export function use() { return Contract0("new"); }\n';
+    const previous = `${importLines.join('')}${oldCall}`;
+    const current = `${importLines.join('')}${newCall}`;
+    const line = importLines.length + 1;
+    const patch = `@@ -${line} +${line} @@\n-${oldCall.slice(0, -1)}\n+${newCall.slice(0, -1)}\n`;
+    const contractSource = (symbol: string) => `export function ${symbol}(value: string) { const data = "${'x'.repeat(8_000)}"; return value; }\n`;
+    const changedFiles = [{ path, patch }];
+    const complete = vi.fn();
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (requestedPath, side) => {
+        const content = requestedPath === path ? (side === 'head' ? current : previous)
+          : /^src\/contracts\/c\d+\.ts$/u.test(requestedPath)
+            ? contractSource(`Contract${Number(requestedPath.match(/c(\d+)\.ts$/u)?.[1])}`) : null;
+        return { content, sha: side === 'head' ? head : base,
+          presence: content === null ? 'absent' : 'present', source: { repository, path: requestedPath, side } };
+      },
+      readDiff: (requestedPath) => requestedPath === path
+        ? { patch, identity: { repository, headSha: head, baseSha: base } } : null,
+    };
+
+    const result = await runIndependentGroundedVerification({ findings: [{ severity: 'P1', path, line,
+      title: 'Changed caller violates an imported contract' }], changedFiles, provider, repository,
+      headSha: head, baseSha: base, model: 'test-model', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      client: { complete } as unknown as ReviewModelClient });
+
+    expect(result.outcomes[0]).toMatchObject({ status: 'insufficient' });
+    expect(result.outcomes[0]?.reason).toContain('aggregate verifier bound');
+    expect(result.calls).toBe(0);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { label: 'forged compact citation alias', response: JSON.stringify({ status: 'confirmed', citations: ['e999'] }) },
+    { label: 'oversized truncated response', response: `${JSON.stringify({ status: 'insufficient', citations: [] })}${' '.repeat(6_001)}` },
+  ])('keeps a v2 $label insufficient without proof', async ({ response }) => {
+    const path = 'src/alias.ts';
+    const previous = 'oldOperation();\n';
+    const current = 'newOperation();\n';
+    const patch = '@@ -1 +1 @@\n-oldOperation();\n+newOperation();\n';
+    const changedFiles = [{ path, patch }];
+    const complete = vi.fn(async () => ({ model: 'test-verifier', content: response, usage: null, costUSD: null }));
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (_path, side) => ({ content: side === 'head' ? current : previous,
+        sha: side === 'head' ? head : base, presence: 'present', source: { repository, path, side } }),
+      readDiff: () => ({ patch, identity: { repository, headSha: head, baseSha: base } }),
+    };
+    const result = await runIndependentGroundedVerification({ findings: [{ severity: 'P1', path, line: 1,
+      title: 'Unsafe changed call' }], changedFiles, provider, repository, headSha: head, baseSha: base,
+      verificationVersion: GROUNDED_VERIFICATION_VERSION, model: 'test-model', client: { complete } as unknown as ReviewModelClient });
+    expect(result.outcomes[0]).toMatchObject({ status: 'insufficient' });
+    expect(result.outcomes[0]?.evidence).toBeUndefined();
+    expect(result.unverifiedBlockerCount).toBe(1);
+    expect(result.coverageComplete).toBe(false);
+    expect(result.calls).toBe(1);
+    expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a stale provider content digest without burning a v2 verifier call', async () => {
+    const path = 'src/stale.ts';
+    const previous = 'oldOperation();\n';
+    const current = 'newOperation();\n';
+    const patch = '@@ -1 +1 @@\n-oldOperation();\n+newOperation();\n';
+    const complete = vi.fn();
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (_path, side) => ({ content: side === 'head' ? current : previous,
+        contentSha256: 'f'.repeat(64), sha: side === 'head' ? head : base, presence: 'present',
+        source: { repository, path, side } }),
+      readDiff: () => ({ patch, identity: { repository, headSha: head, baseSha: base } }),
+    };
+    const result = await runIndependentGroundedVerification({ findings: [{ severity: 'P1', path, line: 1,
+      title: 'Unsafe changed call' }], changedFiles: [{ path, patch }], provider, repository,
+      headSha: head, baseSha: base, verificationVersion: GROUNDED_VERIFICATION_VERSION, model: 'test-model',
+      client: { complete } as unknown as ReviewModelClient });
+    expect(result.outcomes[0]).toMatchObject({ status: 'insufficient' });
+    expect(result.calls).toBe(0);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('uses the configured alternate only for a trusted matching disputed P1 and does not fall back on failure', async () => {
+    const path = 'src/disputed.ts';
+    const title = 'Previously confirmed authorization defect';
+    const finding = { severity: 'P1', path, line: 1, title };
+    const previous = 'oldOperation();\n';
+    const current = 'newOperation();\n';
+    const patch = '@@ -1 +1 @@\n-oldOperation();\n+newOperation();\n';
+    const primary = vi.fn();
+    const adjudicator = vi.fn(async (_request: any, _context?: any) => ({ model: 'reported-upstream-model',
+      content: JSON.stringify({ status: 'insufficient', citations: [] }), usage: null, costUSD: null }));
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (_path, side) => ({ content: side === 'head' ? current : previous,
+        sha: side === 'head' ? head : base, presence: 'present', source: { repository, path, side } }),
+      readDiff: () => ({ patch, identity: { repository, headSha: head, baseSha: base } }),
+    };
+    const dispute = { findingFingerprint: findingFingerprint({ path, title }), priorFindingEventId: 'event-auth-1',
+      priorEvidenceDigest: 'f'.repeat(64) };
+    const result = await runIndependentGroundedVerification({ findings: [finding], changedFiles: [{ path, patch }], provider,
+      repository, headSha: head, baseSha: base, model: 'primary-alias', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      authenticatedDisputes: [dispute], disputedBlockerAdjudicator: { model: 'adjudicator-alias',
+        client: { complete: adjudicator } as unknown as ReviewModelClient },
+      client: { complete: primary } as unknown as ReviewModelClient });
+    expect(adjudicator).toHaveBeenCalledOnce();
+    expect(primary).not.toHaveBeenCalled();
+    expect(adjudicator.mock.calls[0]?.[1]).toEqual({ version: 'GroundedVerifierRequestContext.v1',
+      findingFingerprint: dispute.findingFingerprint, severity: 'P1', purpose: 'disputed-blocker-recheck',
+      requestedRole: 'disputed-blocker-adjudicator', appliedRole: 'disputed-blocker-adjudicator',
+      configuredAlternateModel: 'adjudicator-alias', selectedModel: 'adjudicator-alias' });
+    expect(adjudicator.mock.calls[0]?.[0]).not.toHaveProperty('groundedVerifierContext');
+    expect(JSON.stringify(adjudicator.mock.calls[0]?.[0])).not.toContain('GroundedVerifierRequestContext.v1');
+    expect(result.outcomes[0]).toMatchObject({ status: 'insufficient', verifierRoute: {
+      purpose: 'disputed-blocker-recheck', requestedRole: 'disputed-blocker-adjudicator',
+      appliedRole: 'disputed-blocker-adjudicator', configuredAlternateModel: 'adjudicator-alias',
+      selectedModel: 'adjudicator-alias', responseReportedModel: 'reported-upstream-model',
+      upstreamIdentity: { providerId: null, model: null },
+    } });
+
+    const primaryFallback = vi.fn(async (_request: any, _context?: any) => ({ model: 'primary-reported-model',
+      content: JSON.stringify({ status: 'insufficient', citations: [] }), usage: null, costUSD: null }));
+    const fallback = await runIndependentGroundedVerification({ findings: [finding], changedFiles: [{ path, patch }], provider,
+      repository, headSha: head, baseSha: base, model: 'primary-alias', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      authenticatedDisputes: [dispute], client: { complete: primaryFallback } as unknown as ReviewModelClient });
+    expect(primaryFallback).toHaveBeenCalledOnce();
+    expect(primaryFallback.mock.calls[0]?.[1]).toEqual({ version: 'GroundedVerifierRequestContext.v1',
+      findingFingerprint: dispute.findingFingerprint, severity: 'P1', purpose: 'disputed-blocker-recheck',
+      requestedRole: 'disputed-blocker-adjudicator', appliedRole: 'primary',
+      configuredAlternateModel: null, selectedModel: 'primary-alias' });
+    expect(fallback.outcomes[0]?.verifierRoute).toMatchObject({ purpose: 'disputed-blocker-recheck',
+      requestedRole: 'disputed-blocker-adjudicator', appliedRole: 'primary', configuredAlternateModel: null,
+      selectedModel: 'primary-alias', responseReportedModel: 'primary-reported-model' });
+
+    const ordinaryPrimary = vi.fn(async (_request: any, _context?: any) => ({ model: 'ordinary-reported-model',
+      content: JSON.stringify({ status: 'insufficient', citations: [] }), usage: null, costUSD: null }));
+    await runIndependentGroundedVerification({ findings: [finding], changedFiles: [{ path, patch }], provider,
+      repository, headSha: head, baseSha: base, model: 'primary-alias', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      client: { complete: ordinaryPrimary } as unknown as ReviewModelClient });
+    expect(ordinaryPrimary.mock.calls[0]?.[1]).toEqual({ version: 'GroundedVerifierRequestContext.v1',
+      findingFingerprint: dispute.findingFingerprint, severity: 'P1', purpose: 'primary',
+      requestedRole: 'primary', appliedRole: 'primary', configuredAlternateModel: null, selectedModel: 'primary-alias' });
+    expect(JSON.stringify(ordinaryPrimary.mock.calls[0]?.[0])).not.toContain('GroundedVerifierRequestContext.v1');
+
+    const legacyClient = vi.fn(async (_request: any, _context?: any) => ({ model: 'legacy-reported-model',
+      content: JSON.stringify({ status: 'insufficient', reason: 'Legacy verification cannot confirm.' }), usage: null, costUSD: null }));
+    await runIndependentGroundedVerification({ findings: [finding], changedFiles: [{ path, patch }], provider,
+      repository, headSha: head, baseSha: base, model: 'primary-alias',
+      verificationVersion: 'GroundedIndependentVerification.v1',
+      client: { complete: legacyClient } as unknown as ReviewModelClient });
+    expect(legacyClient.mock.calls[0]).toHaveLength(1);
+
+    const failingAdjudicator = vi.fn(async () => { throw new Error('alternate transport failed'); });
+    const failed = await runIndependentGroundedVerification({ findings: [finding], changedFiles: [{ path, patch }], provider,
+      repository, headSha: head, baseSha: base, model: 'primary-alias', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      authenticatedDisputes: [dispute], disputedBlockerAdjudicator: { model: 'adjudicator-alias',
+        client: { complete: failingAdjudicator } as unknown as ReviewModelClient },
+      client: { complete: primary } as unknown as ReviewModelClient });
+    expect(failingAdjudicator).toHaveBeenCalledOnce();
+    expect(primary).not.toHaveBeenCalled();
+    expect(failed.outcomes[0]).toMatchObject({ status: 'insufficient', verifierRoute: {
+      requestedRole: 'disputed-blocker-adjudicator', appliedRole: 'disputed-blocker-adjudicator',
+      selectedModel: 'adjudicator-alias', responseReportedModel: null,
+      responseModelUnavailableReason: 'The verifier call failed before a response was observed.',
+    } });
+  });
+
+  it.each([
+    { path: 'src/unresolved.ts', head: "import { Missing } from './missing';\nexport const changed = newValue();\n",
+      base: "import { Missing } from './missing';\nexport const changed = oldValue();\n",
+      patch: "@@ -2 +2 @@\n-export const changed = oldValue();\n+export const changed = newValue();\n", line: 2,
+      missing: 'relative import contract could not be resolved' },
+    { path: 'src/legacy.c', head: '#include "contract.h"\nunsafe_call();\n', base: '#include "contract.h"\nsafe_call();\n',
+      patch: '@@ -2 +2 @@\n-safe_call();\n+unsafe_call();\n', line: 2,
+      missing: 'C/C++ include dependencies are not supported' },
+  ])('keeps unresolved contract syntax explicit and makes no call for $path', async ({ path, head: current, base: previous, patch, line, missing }) => {
+    const changedFiles = [{ path, patch }];
+    const complete = vi.fn();
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (requestedPath, side) => {
+        const content = requestedPath === path ? (side === 'head' ? current : previous) : null;
+        return { content, sha: side === 'head' ? head : base, presence: content === null ? 'absent' : 'present',
+          source: { repository, path: requestedPath, side } };
+      },
+      readDiff: () => ({ patch, identity: { repository, headSha: head, baseSha: base } }),
+    };
+    const result = await runIndependentGroundedVerification({ findings: [{ severity: 'P1', path, line,
+      title: 'Changed behavior lacks a required imported contract' }], changedFiles, provider, repository,
+      headSha: head, baseSha: base, model: 'test-model', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      client: { complete } as unknown as ReviewModelClient });
+    expect(result.outcomes[0]).toMatchObject({ status: 'insufficient' });
+    expect(result.outcomes[0]?.reason).toContain(missing);
+    expect(result.calls).toBe(0);
+    expect(complete).not.toHaveBeenCalled();
+  });
+
   it.each([
     {
       kind: 'added', path: 'src/new.ts', line: 1, absentSide: 'base' as const,

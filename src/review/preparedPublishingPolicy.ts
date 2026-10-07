@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { resolveWorkerConfig } from '../config/publishingWorkerConfig';
-import { ctReviewConfigV3Schema, type CtReviewConfigV3 } from '../config/schema';
+import { ctReviewConfigV3Schema, disputedBlockerAdjudicatorSchema, type CtReviewConfigV3 } from '../config/schema';
 import {
   DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
   HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
@@ -30,6 +30,7 @@ const centralPolicySchema = z.object({
     personas: z.string().min(1).max(2_000),
     profile: z.enum(['chill', 'balanced', 'assertive']).optional(),
     severity_policy: z.literal('review-yeti-severity.v2').optional(),
+    disputed_blocker_adjudicator: disputedBlockerAdjudicatorSchema.optional(),
     budget: z.object({
       max_investigation_turns: z.number().int().positive().max(100),
       max_reviewed_lockfile_patch_chars: z.number().int()
@@ -136,6 +137,7 @@ export function verifyPreparedPublishingConfig(config: unknown, expectedDigest: 
       || parsed.reviewers.providers[0].id !== 'bifrost'
       || parsed.reviewers.providers[0].enabled !== true
       || parsed.reviewers.providers[0].model !== selectedTransport.model
+      || parsed.disputed_blocker_adjudicator?.model.toLowerCase() === selectedTransport.model.toLowerCase()
       || parsed.reviewers.arbiter.order.some((id) => id !== 'bifrost')
       || parsed.personas.some((persona) => persona.providers?.some((id) => id !== 'bifrost'))) throw new Error();
     return parsed;

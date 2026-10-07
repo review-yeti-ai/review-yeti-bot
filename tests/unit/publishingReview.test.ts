@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { findingFingerprint } from '../../src/review/findingConvergence';
 import { createHash, randomUUID } from 'node:crypto';
+import { canonicalJson, sha256 } from '../../src/review/reviewCore';
 import { createPanelDeadlineSignal, PanelConfigurationError, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
 import { workerFailureClasses } from '../../src/types/workerFailure';
 import { WORKER_PANEL_RESERVE_MS, type WorkerPanelDeadlineBudget } from '../../src/config/workerTerminalDeadline';
@@ -10,6 +11,9 @@ import { HttpWorkerReviewCompletionAdapter } from '../../src/review/workerReview
 import type { JevAskRequest, JevOutcome } from '../../src/gateway/jevClient';
 import { MAX_PERSONAS, MAX_TEXT_CHARACTERS, deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
+import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from '../../src/review/groundedEvidenceV2';
+import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
+import { resolveComposedEngineMaxFindings, resolveComposedProviderId } from '../../src/panel/composedEngine';
 import {
   classifyFailure,
   createOpenAIPublishingConfig,
@@ -25,6 +29,9 @@ import {
   runPublishingReviewWorker,
 } from '../../src/cli/publishingReview';
 import { HttpWorkerCompletionAdapter } from '../../src/review/workerCompletion';
+import { HttpPrLifecycleHistorySource } from '../../src/review/prLifecycleHistoryHttp';
+import { ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
+import { TaskSourceDelivery } from '../../src/review/taskSourceDelivery';
 import { GitHubQualificationReadError } from '../../src/github/qualificationReader';
 import {
   OpenRouterConnectionError,
@@ -80,7 +87,7 @@ function checkClient() {
   };
 }
 
-const DIFF = 'diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
+const DIFF = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-const value = 'old';\n+const value = 'new';\n`;
 
 /** REL-1132: a fake panel runner that makes one call per `[role, persona, ...]` entry through the
  * (metered) client it is handed, then returns its fixture result. `usageClient` answers those calls
@@ -108,29 +115,7 @@ function usageClient(calls: Array<[string, string, number, number]>) {
 
 function deps(over: Record<string, unknown> = {}) {
   const defaultRepoFileProviderFactory = (input: { owner: string; repo: string; headSha: string; baseSha: string;
-    changedFiles: Array<{ path: string; patch?: string }> }) => ({
-    findFiles: vi.fn(async () => []),
-    readFile: vi.fn(async () => 'function fixture() { return true; }'),
-    readFileAt: vi.fn(async (_path: string, side: 'head' | 'base' | 'merge-base') => ({
-      content: 'function fixture() { return true; }', sha: side === 'head' ? input.headSha : input.baseSha,
-    })),
-    readDiff: (path: string) => {
-      const file = input.changedFiles.find((candidate) => candidate.path === path);
-      return file?.patch ? { patch: file.patch, identity: { repository: `${input.owner}/${input.repo}`,
-        headSha: input.headSha, baseSha: input.baseSha } } : null;
-    },
-  });
-  const defaultGroundedClient = {
-    complete: vi.fn(async (request: { messages?: Array<{ content: unknown }> }) => {
-      const prompt = String(request.messages?.[1]?.content ?? '');
-      const match = /<claim>(\{[\s\S]*?\})<\/claim>/u.exec(prompt);
-      const claim = match ? JSON.parse(match[1]) as { path: string } : { path: 'src/a.ts' };
-      return { model: 'grounded-test-model', content: JSON.stringify({ status: 'confirmed',
-        violatedInvariant: 'A required invariant is violated.', failurePath: 'The changed branch reaches the violating operation.',
-        benignCheck: 'No current guard prevents the failure.', changeConnection: 'The current diff introduces the path.',
-        citations: [`head:${claim.path}`, `base:${claim.path}`, `diff:${claim.path}`] }), usage: null, costUSD: null, raw: {} };
-    }),
-  };
+    changedFiles: Array<{ path: string; patch?: string }> }) => groundedFixtureProvider(input);
   return {
     checkClient: checkClient(),
     currentPullRequestVerifier: vi.fn(async () => undefined),
@@ -144,13 +129,156 @@ function deps(over: Record<string, unknown> = {}) {
       arbiter: { verdict: 'SHIP' },
     })) as never,
     client: {} as never,
-    groundedVerifierClient: defaultGroundedClient as never,
+    groundedVerifierClient: groundedFixtureClient as never,
     repoFileProviderFactory: defaultRepoFileProviderFactory as never,
     ...over,
   };
 }
 
+function preparedGroundedVerifierContract(prepared: ReturnType<typeof preparePublishingPolicy>) {
+  const config = prepared.config;
+  const primaryModel = config.review_engine === 'composed'
+    ? config.reviewers.providers.find((provider) => provider.id === resolveComposedProviderId(config)
+      && provider.enabled)?.model
+    : prepared.transport.model;
+  if (!primaryModel) throw new Error('Prepared review configuration has no primary grounded-verifier model');
+  if (config.review_engine === 'composed' && !config.review_configuration_receipt) {
+    throw new Error('Prepared composed configuration has no trusted runtime configuration receipt');
+  }
+  return {
+    groundedVerifierRouting: { primaryModel },
+    ...(config.review_engine === 'composed'
+      ? { composedEffectiveConfiguration: config.review_configuration_receipt }
+      : {}),
+  };
+}
+
+describe('HTTP lifecycle completion projection', () => {
+  function sourceWithEvent(overrides: Record<string, unknown> = {}) {
+    const snapshotId = '223e4567-e89b-42d3-a456-426614174000';
+    const eventId = '123e4567-e89b-42d3-a456-426614174000';
+    const runId = `run_${'a'.repeat(32)}`;
+    const headSha = 'b'.repeat(40);
+    const baseSha = 'c'.repeat(40);
+    const policyDigest = 'd'.repeat(64);
+    const configDigest = 'e'.repeat(64);
+    const contextDigest = 'f'.repeat(64);
+    const event = { eventId, eventType: 'review.completion_recorded', runId, executionAttempt: 1,
+      evidenceSemanticsVersion: 'GroundedReviewEvidenceSemantics.v2', completionStatus: 'failed',
+      coverageComplete: true, quorumSatisfied: false, headSha, baseSha, policyDigest, configDigest,
+      contextDigest, evidenceDigest: '9'.repeat(64), verificationStatus: 'insufficient', ...overrides };
+    const snapshot = {
+      version: 'PrLifecycleHistorySnapshot.v1', snapshotId, runId, executionAttempt: 1,
+      repositoryId: 1339040553, owner: 'exampleorg', repo: 'example-meta', prNumber: 2795,
+      headSha, baseSha, policyDigest, configDigest, contextDigest, eventCount: 1, findingCount: 0,
+      eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+      authenticatedDisputes: { status: 'complete', disputes: [], paths: [] },
+      eventsDigest: createHash('sha256').update(JSON.stringify([eventId])).digest('hex'),
+      findingsDigest: createHash('sha256').update('[]').digest('hex'), expiresAt: '2026-10-06T21:00:00.000Z',
+    };
+    const fetchImplementation = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body));
+      const body = request.version === 'PrLifecycleHistorySnapshotRequest.v1' ? snapshot : {
+        version: 'PrLifecycleHistoryPage.v1', snapshotId, collection: 'events', offset: 0, limit: 100,
+        totalCount: 1, capturedCount: 1, rows: [event], hasMore: false, nextOffset: null,
+      };
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    return new HttpPrLifecycleHistorySource({ token: 'ghs_test',
+      completionEndpoint: 'https://dispatch.example.invalid/api/dispatch/completion', runId, executionAttempt: 1,
+      identity: { repositoryId: 1339040553, owner: 'exampleorg', repo: 'example-meta', prNumber: 2795,
+        headSha, baseSha, policyDigest, configDigest }, fetchImplementation });
+  }
+
+  it('deserializes the current strict completion projection fields', async () => {
+    const history = await sourceWithEvent().read();
+    expect(history.status).toBe('complete');
+    expect(history.events[0]).toMatchObject({ eventType: 'review.completion_recorded',
+      completionStatus: 'failed', coverageComplete: true, quorumSatisfied: false });
+  });
+
+  it.each([
+    ['status', { completionStatus: 'SHIP' }],
+    ['coverage', { coverageComplete: 'true' }],
+    ['quorum', { quorumSatisfied: 1 }],
+  ])('returns unavailable rather than accepting an invalid projected %s', async (_label, overrides) => {
+    const history = await sourceWithEvent(overrides).read();
+    expect(history.status).toBe('unavailable');
+    expect(history.events).toEqual([]);
+  });
+});
+
 describe('qualification source arguments', () => {
+  it.each([
+    ['complete task evidence', 'completed', ['src/a.ts'], true],
+    ['failed task evidence', 'failed', ['src/a.ts'], false],
+    ['missing assigned path evidence', 'completed', ['src/a.ts', 'src/b.ts'], false],
+  ] as const)('derives composed coverage from runtime resources with %s', async (_label, taskStatus, taskPaths, shouldShip) => {
+    const sourcePath = 'src/a.ts';
+    const patch = '@@ -1 +1 @@\n-old\n+new\n';
+    const taskId = 'security';
+    const taskPlan = [{ id: taskId, dimension: 'security' as const, paths: [...taskPaths],
+      question: 'Review the changed behavior.', rationale: 'The task owns the changed source.' }];
+    const sourceDelivery = { version: 'TaskSourceDelivery.v1' as const, taskId, headSha: HEAD, baseSha: BASE,
+      contextDigests: ['f'.repeat(64)], complete: true,
+      files: [{ path: sourcePath, patchDigest: createHash('sha256').update(patch).digest('hex'), totalChars: patch.length,
+        ranges: [[0, patch.length] as [number, number]], inline: true }] };
+    const diff = `diff --git a/${sourcePath} b/${sourcePath}\n${patch}`;
+    const composedReviewRunner = vi.fn(async (options: any) => {
+      const observer = new ComposedRuntimeResourceObserver({ configDigest: env().REVIEW_CONFIG_DIGEST });
+      observer.configureBudget({ configuredTotalTurns: 1, investigationTurns: 1, verificationReserveTurns: 0 });
+      observer.setPlan(taskPlan);
+      observer.markTaskStarted(taskId);
+      observer.markTaskOutcome(taskId, taskStatus, taskStatus === 'completed' ? sourceDelivery : undefined);
+      const resources = observer.snapshot('terminal');
+      if (!resources) throw new Error('expected a terminal composed resource observation');
+      options.resourceObservationCapture(resources);
+      return { taskPlan, applicablePersonaIds: [taskId],
+        personas: taskStatus === 'completed' ? [{ id: taskId, findings: [], sourceDelivery }] : [],
+        optionalFailures: taskStatus === 'failed' ? [{ id: taskId, error: 'task failed', failureClass: 'provider_error' }] : [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: taskStatus === 'completed' },
+        arbiter: { verdict: 'SHIP' }, composedResourceObservation: resources };
+    });
+    const result = await runPublishingReviewWorker(env({ REVIEW_YETI_POLICY_JSON: JSON.stringify({
+      review_yeti: { personas: 'security', review_engine: 'composed', budget: { max_investigation_turns: 1 } },
+    }) }), deps({ composedReviewRunner, sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD,
+      diff, diffDigest: createHash('sha256').update(diff).digest('hex'), githubReads: 0 })) }) as never);
+
+    if (shouldShip) expect(result).toMatchObject({ verdict: 'SHIP', conclusion: 'success', coverage: { fullPanelComplete: true } });
+    else expect(result).toMatchObject({ conclusion: 'failure', coverage: { fullPanelComplete: false } });
+  });
+
+  it('does not reuse an incompatible policy/config history snapshot for composed planning', async () => {
+    const historyDigest = 'e'.repeat(64);
+    const history = {
+      status: 'complete', snapshotId: '123e4567-e89b-42d3-a456-426614174000', contextDigest: 'f'.repeat(64),
+      events: [{ eventId: '223e4567-e89b-42d3-a456-426614174000', eventType: 'review.completion_recorded',
+        runId: `run_${'a'.repeat(32)}`, executionAttempt: 1, evidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+        headSha: 'c'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: historyDigest, configDigest: 'd'.repeat(64),
+        contextDigest: 'f'.repeat(64), evidenceDigest: historyDigest, completionStatus: 'failed',
+        coverageComplete: false, quorumSatisfied: false, verificationStatus: 'insufficient' }],
+      findings: [], authenticatedDisputes: { status: 'complete', disputes: [], paths: [] },
+      eventCount: 1, findingCount: 0, loadedEventCount: 1, loadedFindingCount: 0,
+      eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+      eventsDigest: historyDigest, findingsDigest: historyDigest, omissions: [],
+    };
+    let planningContext: any;
+    const composedReviewRunner = vi.fn(async (options: any) => {
+      planningContext = options.planningHistoryContext;
+      return { taskPlan: [{ id: 'security', dimension: 'security', paths: ['src/a.ts'], question: 'Review source.', rationale: 'Changed source.' }],
+        applicablePersonaIds: ['security'], personas: [{ id: 'security', findings: [] }], optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true }, arbiter: { verdict: 'SHIP' } };
+    });
+    await runPublishingReviewWorker(env({ REVIEW_YETI_POLICY_JSON: JSON.stringify({
+      review_yeti: { personas: 'security', review_engine: 'composed' },
+    }) }), deps({ composedReviewRunner, prLifecycleHistory: { read: vi.fn(async () => history),
+      recordVerification: vi.fn(async () => true) } }) as never);
+
+    expect(planningContext.evidenceSemanticsCompatibility).toMatchObject({
+      sourcePolicyConfigCompatible: false, compatibleForCheckpointReuse: false, compatibleForCoverageReuse: false,
+    });
+  });
+
   it('caps every hosted publishing model call before it reaches Bifrost', async () => {
     const requests: Array<{ maxTokens?: number }> = [];
     const rawClient = {
@@ -232,6 +360,210 @@ describe('qualification source arguments', () => {
 });
 
 describe('grounded evidence call order', () => {
+  it('compares the exact cause origin even when the newest complete failed review is an ancestor', async () => {
+    const causeRunId = `run_${'8'.repeat(32)}`;
+    const latestRunId = `run_${'9'.repeat(32)}`;
+    const causeHeadSha = '3'.repeat(40);
+    const latestHeadSha = '4'.repeat(40);
+    const causeFindingEventId = randomUUID();
+    const causeFingerprint = `fp1_${'a'.repeat(24)}`;
+    const sourceContextDigest = 'e'.repeat(64);
+    const sourceCompletion = { eventId: randomUUID(), eventType: 'review.completion_recorded',
+      runId: causeRunId, executionAttempt: 1, headSha: causeHeadSha, baseSha: BASE,
+      policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64), contextDigest: sourceContextDigest,
+      evidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+      completionStatus: 'failed' as const, coverageComplete: true, quorumSatisfied: true,
+      verificationStatus: 'insufficient' as const };
+    const history = {
+      status: 'complete' as const, snapshotId: randomUUID(), contextDigest: 'f'.repeat(64),
+      events: [{ ...sourceCompletion, eventId: randomUUID(), runId: latestRunId, headSha: latestHeadSha },
+        { eventId: randomUUID(), eventType: 'finding.independent_verification', runId: causeRunId,
+          executionAttempt: 1, headSha: causeHeadSha, contextDigest: sourceContextDigest,
+          evidenceDigest: 'a'.repeat(64), verificationStatus: 'confirmed' as const,
+          verification: { findingEventId: causeFindingEventId, fingerprint: causeFingerprint, status: 'confirmed' as const } },
+        sourceCompletion],
+      findings: [{ findingEventId: causeFindingEventId, durableFindingId: `lf1_${'b'.repeat(32)}`,
+        fingerprint: causeFingerprint, path: 'src/a.ts', groundedEvidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+        rootCause: { componentId: 'fixture.component', behaviorId: 'fixture.behavior',
+          contractId: 'fixture.contract', failureModeId: 'fixture.failure' },
+        causeAnchor: { componentPath: 'src/a.ts', side: 'head' as const, startLine: 1, endLine: 1,
+          citationIds: ['prior-cause'], contentDigest: 'b'.repeat(64) },
+        firstSeenHead: causeHeadSha, lastSeenHead: causeHeadSha, affectedContextDigest: sourceContextDigest,
+        sourceSeverity: 'P1', effectiveSeverity: 'P1', disposition: 'carried', blocking: true,
+        verificationStatus: 'confirmed' as const, evidenceDigest: 'c'.repeat(64) }],
+      eventCount: 3, findingCount: 1, loadedEventCount: 3, loadedFindingCount: 1,
+      eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+      eventsDigest: 'd'.repeat(64), findingsDigest: 'e'.repeat(64), omissions: [],
+    };
+    const comparison = vi.fn(async (baseSha: string, _headSha: string) => ({
+      status: baseSha === latestHeadSha ? 'ahead' as const : 'diverged' as const,
+      mergeBaseSha: '5'.repeat(40), files: [],
+    }));
+    const policy = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', severity_policy: 'review-yeti-severity.v2', budget: { max_investigation_turns: 1 },
+    } });
+    const receipt = await runPublishingReviewWorker(env({ REVIEW_YETI_POLICY_JSON: policy }), deps({
+      panelRunner: vi.fn(async () => ({ applicablePersonaIds: ['security'],
+        personas: [{ id: 'security', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1,
+          title: 'The tenant guard accepts a caller-selected tenant', body: 'The changed authorization path accepts a tenant from the request.',
+          blockerEvidence: { trigger: 'A caller-selected tenant reaches the changed guard.',
+            impact: 'The request can cross into another tenant.',
+            violatedContract: 'Tenant identity must come from the authenticated session.' } }] }],
+        optionalFailures: [], quorum: { required: 1, distinctProviders: ['fixture'], satisfied: true }, arbiter: { verdict: 'FINDINGS' },
+      })) as never,
+      prLifecycleHistory: { read: vi.fn(async () => history), recordVerification: vi.fn(async () => true) } as never,
+      incrementalCompareReader: { compare: comparison } as never,
+      sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF,
+        diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 1 })) as never,
+    }) as never);
+
+    expect(comparison.mock.calls.map(([from, to]) => [from, to])).toEqual(expect.arrayContaining([
+      [latestHeadSha, HEAD], [causeHeadSha, HEAD],
+    ]));
+    expect(receipt.groundedReview?.verification.outcomes[0]).toMatchObject({
+      verifiedOriginAncestry: [{ sourceEventId: causeFindingEventId, sourceKind: 'cause', priorRunId: causeRunId,
+        priorHeadSha: causeHeadSha, currentHeadSha: HEAD, result: 'not-ancestor' }],
+      verifiedContinuity: { status: 'unavailable', unavailableReason: 'stale-context', sourceEventIds: [] },
+    });
+  });
+
+  it('compares the selected repair origin even when the newest complete failed review and cause are ancestors', async () => {
+    const causeRunId = `run_${'7'.repeat(32)}`;
+    const repairRunId = `run_${'8'.repeat(32)}`;
+    const latestRunId = `run_${'9'.repeat(32)}`;
+    const causeHeadSha = '3'.repeat(40);
+    const repairHeadSha = '4'.repeat(40);
+    const latestHeadSha = '5'.repeat(40);
+    const causeFindingEventId = randomUUID();
+    const negativeFindingEventId = randomUUID();
+    const repairEventId = randomUUID();
+    const causeFingerprint = `fp1_${'a'.repeat(24)}`;
+    const durableFindingId = `lf1_${'b'.repeat(32)}`;
+    const causeContextDigest = 'c'.repeat(64);
+    const repairContextDigest = 'd'.repeat(64);
+    const affectedContextDigest = 'e'.repeat(64);
+    const policyDigest = 'c'.repeat(64);
+    const configDigest = 'd'.repeat(64);
+    const causeCompletion = { eventId: randomUUID(), eventType: 'review.completion_recorded',
+      runId: causeRunId, executionAttempt: 1, headSha: causeHeadSha, baseSha: BASE,
+      policyDigest, configDigest, contextDigest: causeContextDigest,
+      evidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+      completionStatus: 'failed' as const, coverageComplete: true, quorumSatisfied: true,
+      verificationStatus: 'insufficient' as const };
+    const repairCompletion = { ...causeCompletion, eventId: randomUUID(), runId: repairRunId,
+      headSha: repairHeadSha, contextDigest: repairContextDigest };
+    const latestCompletion = { ...causeCompletion, eventId: randomUUID(), runId: latestRunId,
+      headSha: latestHeadSha };
+    const disposition = { version: 'PrFindingDisposition.v1', kind: 'fixed' as const, findingId: durableFindingId,
+      fingerprint: causeFingerprint, path: 'src/a.ts', runId: repairRunId, executionAttempt: 1,
+      headSha: repairHeadSha, baseSha: BASE, policyDigest, configDigest, contextDigest: repairContextDigest,
+      affectedContextDigest, evidenceDigest: '6'.repeat(64),
+      provenance: { actorType: 'service' as const, actorDigest: '7'.repeat(64),
+        source: 'grounded_verifier' as const, receiptDigest: '8'.repeat(64) },
+      adjudication: { method: 'independent_grounded_verifier' as const, status: 'contradicted' as const,
+        proofDigest: '9'.repeat(64), priorFindingEventId: causeFindingEventId, changedContextDigest: affectedContextDigest } };
+    const repairEvent = { eventId: repairEventId, eventType: 'finding.disposition.fixed', runId: repairRunId,
+      executionAttempt: 1, headSha: repairHeadSha, baseSha: BASE, policyDigest, configDigest,
+      contextDigest: repairContextDigest, evidenceDigest: sha256(canonicalJson(disposition)),
+      verificationStatus: 'contradicted' as const, disposition };
+    const history = {
+      status: 'complete' as const, snapshotId: randomUUID(), contextDigest: 'f'.repeat(64),
+      events: [latestCompletion, repairEvent,
+        { eventId: randomUUID(), eventType: 'finding.independent_verification', runId: repairRunId,
+          executionAttempt: 1, headSha: repairHeadSha, baseSha: BASE, policyDigest, configDigest,
+          contextDigest: repairContextDigest, evidenceDigest: disposition.adjudication.proofDigest,
+          verificationStatus: 'contradicted' as const,
+          verification: { findingEventId: negativeFindingEventId, fingerprint: causeFingerprint,
+            status: 'contradicted' as const, currentAffectedContextDigest: affectedContextDigest,
+            sourceAffectedContextDigest: causeContextDigest } },
+        repairCompletion,
+        { eventId: randomUUID(), eventType: 'finding.independent_verification', runId: causeRunId,
+          executionAttempt: 1, headSha: causeHeadSha, contextDigest: causeContextDigest,
+          evidenceDigest: 'a'.repeat(64), verificationStatus: 'confirmed' as const,
+          verification: { findingEventId: causeFindingEventId, fingerprint: causeFingerprint, status: 'confirmed' as const } },
+        causeCompletion],
+      findings: [{ findingEventId: causeFindingEventId, durableFindingId, fingerprint: causeFingerprint,
+        path: 'src/a.ts', groundedEvidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+        rootCause: { componentId: 'fixture.component', behaviorId: 'fixture.behavior',
+          contractId: 'fixture.contract', failureModeId: 'fixture.failure' },
+        causeAnchor: { componentPath: 'src/a.ts', side: 'head' as const, startLine: 1, endLine: 1,
+          citationIds: ['prior-cause'], contentDigest: 'b'.repeat(64) },
+        firstSeenHead: causeHeadSha, lastSeenHead: causeHeadSha, affectedContextDigest: causeContextDigest,
+        sourceSeverity: 'P1', effectiveSeverity: 'P1', disposition: 'carried', blocking: true,
+        verificationStatus: 'confirmed' as const, evidenceDigest: 'b'.repeat(64) },
+      { findingEventId: negativeFindingEventId, durableFindingId, fingerprint: causeFingerprint, path: 'src/a.ts',
+        firstSeenHead: causeHeadSha, lastSeenHead: repairHeadSha, affectedContextDigest, sourceSeverity: 'P1',
+        effectiveSeverity: 'P1', disposition: 'carried', blocking: false,
+        verificationStatus: 'contradicted' as const, evidenceDigest: 'c'.repeat(64) }],
+      eventCount: 6, findingCount: 2, loadedEventCount: 6, loadedFindingCount: 2,
+      eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+      eventsDigest: 'd'.repeat(64), findingsDigest: 'e'.repeat(64), omissions: [],
+    };
+    const comparison = vi.fn(async (baseSha: string, _headSha: string) => ({
+      status: baseSha === repairHeadSha ? 'diverged' as const : 'ahead' as const,
+      mergeBaseSha: '1'.repeat(40), files: [],
+    }));
+    const policy = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', severity_policy: 'review-yeti-severity.v2', budget: { max_investigation_turns: 1 },
+    } });
+    const receipt = await runPublishingReviewWorker(env({ REVIEW_YETI_POLICY_JSON: policy }), deps({
+      panelRunner: vi.fn(async () => ({ applicablePersonaIds: ['security'],
+        personas: [{ id: 'security', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1,
+          title: 'The tenant guard accepts a caller-selected tenant', body: 'The changed authorization path accepts a tenant from the request.',
+          blockerEvidence: { trigger: 'A caller-selected tenant reaches the changed guard.',
+            impact: 'The request can cross into another tenant.',
+            violatedContract: 'Tenant identity must come from the authenticated session.' } }] }],
+        optionalFailures: [], quorum: { required: 1, distinctProviders: ['fixture'], satisfied: true }, arbiter: { verdict: 'FINDINGS' },
+      })) as never,
+      prLifecycleHistory: { read: vi.fn(async () => history), recordVerification: vi.fn(async () => true) } as never,
+      incrementalCompareReader: { compare: comparison } as never,
+      sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF,
+        diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 1 })) as never,
+    }) as never);
+
+    expect(comparison.mock.calls.map(([from, to]) => [from, to])).toEqual(expect.arrayContaining([
+      [latestHeadSha, HEAD], [causeHeadSha, HEAD], [repairHeadSha, HEAD],
+    ]));
+    expect(receipt.groundedReview?.verification.outcomes[0]).toMatchObject({
+      verifiedOriginAncestry: [
+        { sourceEventId: causeFindingEventId, sourceKind: 'cause', priorRunId: causeRunId,
+          priorHeadSha: causeHeadSha, currentHeadSha: HEAD, result: 'ancestor' },
+        { sourceEventId: repairEventId, sourceKind: 'repair', priorRunId: repairRunId,
+          priorHeadSha: repairHeadSha, currentHeadSha: HEAD, result: 'not-ancestor' },
+      ], verifiedContinuity: { status: 'unavailable', unavailableReason: 'stale-context', sourceEventIds: [] },
+    });
+  });
+
+  it('keeps a current confirmed P1 reviewable when captured history has no matching origin', async () => {
+    const history = { status: 'complete' as const, snapshotId: randomUUID(), contextDigest: 'f'.repeat(64),
+      events: [], findings: [], eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
+      eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+      eventsDigest: sha256(canonicalJson([])), findingsDigest: sha256(canonicalJson([])), omissions: [] };
+    const compare = vi.fn(async () => ({ status: 'ahead' as const, mergeBaseSha: BASE, files: [] }));
+    const policy = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', severity_policy: 'review-yeti-severity.v2', budget: { max_investigation_turns: 1 },
+    } });
+    const receipt = await runPublishingReviewWorker(env({ REVIEW_YETI_POLICY_JSON: policy }), deps({
+      panelRunner: vi.fn(async () => ({ applicablePersonaIds: ['security'],
+        personas: [{ id: 'security', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1,
+          title: 'The tenant guard accepts a caller-selected tenant', body: 'The changed authorization path accepts a tenant from the request.',
+          blockerEvidence: { trigger: 'A caller-selected tenant reaches the changed guard.',
+            impact: 'The request can cross into another tenant.',
+            violatedContract: 'Tenant identity must come from the authenticated session.' } }] }],
+        optionalFailures: [], quorum: { required: 1, distinctProviders: ['fixture'], satisfied: true }, arbiter: { verdict: 'FINDINGS' },
+      })) as never,
+      prLifecycleHistory: { read: vi.fn(async () => history), recordVerification: vi.fn(async () => true) } as never,
+      incrementalCompareReader: { compare } as never,
+      sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF,
+        diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 1 })) as never,
+    }) as never);
+
+    expect(compare).not.toHaveBeenCalled();
+    expect(receipt.findingCount).toBe(1);
+    expect(receipt.groundedReview?.verification.outcomes[0]).toMatchObject({ status: 'confirmed',
+      verifiedContinuity: { status: 'new', sourceEventIds: [] } });
+  });
+
   it('loads the fixed service history before incremental planning and review generation', async () => {
     const order: string[] = [];
     const digest = 'e'.repeat(64);
@@ -239,16 +571,28 @@ describe('grounded evidence call order', () => {
       read: vi.fn(async () => {
         order.push('history');
         return { status: 'complete' as const, snapshotId: randomUUID(), contextDigest: digest,
-          events: [], findings: [], eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
+          events: [{ eventId: randomUUID(), eventType: 'review.completion_recorded', runId: `run_${'9'.repeat(32)}`,
+            executionAttempt: 1, headSha: '1'.repeat(40), baseSha: '2'.repeat(40),
+            policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
+            evidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, completionStatus: 'failed' as const,
+            coverageComplete: true, quorumSatisfied: true, verificationStatus: 'insufficient' as const }], findings: [], eventCount: 1, findingCount: 0, loadedEventCount: 1, loadedFindingCount: 0,
           eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+          authenticatedDisputes: { status: 'complete' as const, disputes: [], paths: [] },
           eventsDigest: digest, findingsDigest: digest, omissions: [] };
       }),
       recordVerification: vi.fn(async () => true),
     };
     const sourceLoader = vi.fn(async () => { order.push('diff'); return { diff: DIFF, githubReads: 1 }; });
     const incrementalBase = { read: vi.fn(async () => {
-      order.push('incremental-base'); return { prior: null, maxAgeMs: 1 };
+      order.push('incremental-base'); return { prior: { runId: `run_${'9'.repeat(32)}`, executionAttempt: 1,
+        repositoryId: 1339040553, prNumber: 2795, headSha: '1'.repeat(40), baseSha: '2'.repeat(40),
+        policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64), completionDigest: 'e'.repeat(64),
+        ageMs: 0, coverageComplete: true, shipComplete: false, findingPaths: [] }, maxAgeMs: 1 };
     }) };
+    const compare = vi.fn(async (from: string, to: string) => {
+      order.push(`compare:${from}:${to}`);
+      return { status: 'ahead' as const, mergeBaseSha: '1'.repeat(40), files: [] };
+    });
     const panelRunner = vi.fn(async () => {
       order.push('panel');
       return { applicablePersonaIds: ['sec-lane'], personas: [{ id: 'sec-lane', findings: [] }], optionalFailures: [],
@@ -256,16 +600,140 @@ describe('grounded evidence call order', () => {
     });
     const receipt = await runPublishingReviewWorker(env({ REVIEW_YETI_INCREMENTAL: 'true' }), deps({
       sourceLoader: sourceLoader as never, prLifecycleHistory: history as never,
-      incrementalBase: incrementalBase as never, panelRunner: panelRunner as never,
+      incrementalBase: incrementalBase as never, incrementalCompareReader: { compare } as never,
+      findingThreadReader: vi.fn(async (_pr: unknown, expectedHeadSha: string) => ({
+        source: 'service' as const, headSha: expectedHeadSha, complete: true, omittedCount: 0, threads: [],
+      })), panelRunner: panelRunner as never,
     }) as never);
 
     expect(order.indexOf('diff')).toBeLessThan(order.indexOf('history'));
     expect(order.indexOf('history')).toBeLessThan(order.indexOf('incremental-base'));
     expect(order.indexOf('incremental-base')).toBeLessThan(order.indexOf('panel'));
     expect(receipt.groundedReview?.history).toMatchObject({
-      status: 'complete', eventCount: 0, findingCount: 0, eventsDigest: digest, findingsDigest: digest,
+      status: 'complete', eventCount: 1, findingCount: 0, eventsDigest: digest, findingsDigest: digest,
       memorySources: { honcho: 'unavailable', mcp: 'unavailable' },
     });
+  });
+
+  it('routes an authenticated current P1 through the prepared adjudicator and invalidates its checkpoint path', async () => {
+    const selector = { version: 'DisputedBlockerAdjudicator.v1', model: 'qualified-adjudicator-alias', reasoning_effort: 'high' };
+    const policyContent = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', review_engine: 'composed', severity_policy: 'review-yeti-severity.v2',
+      disputed_blocker_adjudicator: selector, budget: { max_investigation_turns: 1 },
+    } });
+    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'primary-review-alias' };
+    const prepared = preparePublishingPolicy({ content: policyContent, source: { repositoryId: 987,
+      repository: 'exampleorg/example-meta', sha: 'e'.repeat(40), path: 'policy/review.json',
+      contentDigest: createHash('sha256').update(policyContent).digest('hex') } }, transport,
+    { owner: 'exampleorg', repo: 'example-meta' });
+    const input = env({ REVIEW_AUTHORITATIVE_GATE: 'true', REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest,
+      REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
+      REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+      REVIEW_MODEL: transport.model, OPENAI_BASE_URL: transport.baseUrl,
+      REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion', GITHUB_PUBLISH_TOKEN: 'ghs_test',
+      REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE' });
+    const changedFiles = [
+      { path: 'src/a.ts', patch: '@@ -1 +1 @@\n-oldOperation();\n+newOperation();\n' },
+      { path: 'src/b.ts', patch: '@@ -1 +1 @@\n-before();\n+after();\n' },
+    ];
+    const sourceDiff = changedFiles.map((file) => `diff --git a/${file.path} b/${file.path}\n--- a/${file.path}\n+++ b/${file.path}\n${file.patch}`).join('');
+    const changed = parseChangedFiles(sourceDiff).files;
+    const finding = { severity: 'P1', path: 'src/a.ts', line: 1,
+      title: 'Previously confirmed authorization defect', body: 'The changed path now permits an unauthenticated caller.' };
+    const fingerprint = findingFingerprint(finding);
+    const priorFindingEventId = '123e4567-e89b-42d3-a456-426614174000';
+    const priorEvidenceDigest = 'f'.repeat(64);
+    const historyContextDigest = 'e'.repeat(64);
+    const history = {
+      read: vi.fn(async () => ({ status: 'complete' as const,
+        snapshotId: '223e4567-e89b-42d3-a456-426614174000', contextDigest: historyContextDigest,
+        events: [{ eventId: '323e4567-e89b-42d3-a456-426614174000', eventType: 'review.completion_recorded',
+          runId: `run_${'9'.repeat(32)}`, executionAttempt: 1, headSha: '1'.repeat(40), baseSha: '2'.repeat(40),
+          policyDigest: prepared.policy.effectivePolicyDigest, configDigest: prepared.policy.effectiveConfigDigest,
+          contextDigest: historyContextDigest, evidenceDigest: priorEvidenceDigest,
+          evidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+          completionStatus: 'completed' as const, coverageComplete: true, quorumSatisfied: true,
+          verificationStatus: 'confirmed' as const }],
+        findings: [{ findingEventId: priorFindingEventId, durableFindingId: `lf1_${'a'.repeat(32)}`,
+          fingerprint, path: 'src/a.ts', regionStart: 1, regionEnd: 1, firstSeenHead: '1'.repeat(40),
+          lastSeenHead: '1'.repeat(40), claim: { title: finding.title, body: finding.body, trust: 'untrusted' as const },
+          affectedContextDigest: 'a'.repeat(64), sourceSeverity: 'P1' as const, effectiveSeverity: 'P1' as const,
+          disposition: 'open' as const, blocking: true, verificationStatus: 'confirmed' as const,
+          evidenceDigest: priorEvidenceDigest, groundedEvidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION }],
+        authenticatedDisputes: { status: 'complete' as const,
+          disputes: [{ findingFingerprint: fingerprint, priorFindingEventId, priorEvidenceDigest }], paths: ['src/a.ts'] },
+        eventCount: 1, findingCount: 1, loadedEventCount: 1, loadedFindingCount: 1,
+        eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+        eventsDigest: 'b'.repeat(64), findingsDigest: 'c'.repeat(64), omissions: [],
+      })), recordVerification: vi.fn(async () => true),
+    };
+    const tasks = [
+      { id: 'task-a', dimension: 'security' as const, paths: ['src/a.ts'], question: 'Review A.', rationale: 'Affected path.' },
+      { id: 'task-b', dimension: 'testing' as const, paths: ['src/b.ts'], question: 'Review B.', rationale: 'Unrelated path.' },
+    ];
+    const checkpoint = { version: 'ReviewExecutionCheckpoint.v1', runId: input.REVIEW_RUN_ID!, repositoryId: 1339040553,
+      owner: 'exampleorg', repo: 'example-meta', prNumber: 2795, headSha: HEAD, baseSha: BASE,
+      policyDigest: prepared.policy.effectivePolicyDigest, configDigest: prepared.policy.effectiveConfigDigest,
+      executionAttempt: 1, revision: 1, plan: tasks,
+      completedTasks: [{ id: 'task-a', findings: [] }, { id: 'task-b', findings: [] }] };
+    let resumedTaskIds: string[] = [];
+    const deliveries = tasks.map((task) => {
+      const delivery = new TaskSourceDelivery({ taskId: task.id, paths: task.paths, files: changed,
+        prefix: sourceDiff, inlinedPaths: task.paths, headSha: HEAD, baseSha: BASE });
+      delivery.beginAttempt();
+      return delivery.acknowledgeRequest([{ role: 'user', content: sourceDiff }]);
+    });
+    const composedReviewRunner = vi.fn(async (options: any) => {
+      resumedTaskIds = options.checkpoint.resumed.completedTasks.map((row: { id: string }) => row.id);
+      const observer = new ComposedRuntimeResourceObserver({ configDigest: prepared.policy.effectiveConfigDigest,
+        configuration: prepared.config.review_configuration_receipt });
+      observer.configureBudget({ configuredTotalTurns: 1, investigationTurns: 1, verificationReserveTurns: 0 });
+      observer.setPlan(tasks);
+      tasks.forEach((task, index) => { observer.markTaskStarted(task.id); observer.markTaskOutcome(task.id, 'completed', deliveries[index]); });
+      const resources = observer.snapshot('terminal');
+      if (!resources) throw new Error('expected a composed resource snapshot');
+      options.resourceObservationCapture(resources);
+      return { taskPlan: tasks, applicablePersonaIds: tasks.map((task) => task.id),
+        personas: [{ id: 'task-a', findings: [finding], sourceDelivery: deliveries[0] },
+          { id: 'task-b', findings: [], sourceDelivery: deliveries[1] }], optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' }, composedResourceObservation: resources };
+    });
+    const verifierRequests: Array<Record<string, unknown>> = [];
+    const groundedVerifierClient = { complete: vi.fn(async (request: Record<string, unknown>) => {
+      verifierRequests.push(request);
+      return { model: 'body-reported-unverified', content: JSON.stringify({ status: 'insufficient', citations: [] }),
+        usage: null, costUSD: null, raw: {} };
+    }) };
+    const reportReviewResult = vi.fn(async (_event: unknown) => undefined);
+    const comparisonReader = { compare: vi.fn(async () => ({ status: 'ahead' as const,
+      mergeBaseSha: '1'.repeat(40), files: [] })) };
+    const readCheckpoint = vi.fn(async () => ({ checkpoint, disputedFindingRechecks: [] }));
+
+    await runPublishingReviewWorker(input, deps({ composedReviewRunner, groundedVerifierClient,
+      prLifecycleHistory: history as never,
+      findingThreadReader: vi.fn(async (_pr: unknown, expectedHeadSha: string) => ({
+        source: 'service' as const, headSha: expectedHeadSha, complete: true, omittedCount: 0, threads: [],
+      })),
+      incrementalCompareReader: comparisonReader as never,
+      reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
+      reviewCompletion: { reportReviewResult },
+      sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: sourceDiff,
+        diffDigest: createHash('sha256').update(sourceDiff).digest('hex'), githubReads: 0 })),
+      repoFileProviderFactory: (request: any) => groundedFixtureProvider({ ...request, candidateFindings: [finding] }),
+      currentPullRequestVerifier: vi.fn(async () => undefined),
+    }) as never);
+
+    expect(readCheckpoint).toHaveBeenCalledOnce();
+    expect(resumedTaskIds).toEqual(['task-b']);
+    expect(verifierRequests).toHaveLength(1);
+    expect(verifierRequests[0]).toMatchObject({ model: selector.model, reasoningEffort: 'high', maxTokens: 4096 });
+    expect(reportReviewResult).toHaveBeenCalledOnce();
+    const event = reportReviewResult.mock.calls[0]![0] as { result: any };
+    expect(event.result.coverageComplete).toBe(false);
+    expect(event.result.groundedReview.verification.outcomes[0]).toMatchObject({ severity: 'P1', status: 'insufficient',
+      verifierRoute: { purpose: 'disputed-blocker-recheck', requestedRole: 'disputed-blocker-adjudicator',
+        appliedRole: 'disputed-blocker-adjudicator', configuredAlternateModel: selector.model, selectedModel: selector.model } });
   });
 });
 
@@ -1691,22 +2159,33 @@ describe('runPublishingReviewWorker', () => {
       reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
       reportReviewEvidence: vi.fn(async (_event: unknown) => {}),
     };
+    const readOrder: string[] = [];
+    const priorThreads = [{ fingerprint: findingFingerprint({ path: 'src/a.ts', title: 'Nit' }),
+      severity: 'P2' as const, path: 'src/a.ts', line: 1, title: 'Nit', resolved: true, outdated: false,
+      resolution: { author: 'author1', reason: 'Intentional; the length is bounded upstream by the contract.' } }];
     const d = deps({
       completion,
-      panelRunner: vi.fn(async () => ({
+      panelRunner: vi.fn(async () => {
+        readOrder.push('panel');
+        return ({
         applicablePersonaIds: ['sec-lane'],
         personas: [{ id: 'sec-lane', findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'x'.repeat(MAX_TEXT_CHARACTERS + 1) }] }],
         optionalFailures: [],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
-      })) as never,
+        });
+      }) as never,
       // ADR 0002: the P2 is satisfied by its resolved thread, so the check is green and the
-      // terminal success path (the subject of this test) runs.
-      findingThreadReader: vi.fn(async () => [{ fingerprint: findingFingerprint({ path: 'src/a.ts', title: 'Nit' }),
-        severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', resolved: true, outdated: false,
-        resolution: { author: 'author1', reason: 'Intentional; the length is bounded upstream by the contract.' } }]),
+      // terminal success path (the subject of this test) runs. The exact-head service snapshot is
+      // loaded before panel generation, so the model receives the same untrusted explanation.
+      findingThreadReader: vi.fn(async (_pr, expectedHeadSha) => {
+        readOrder.push('threads');
+        return { source: 'service' as const, headSha: expectedHeadSha, complete: true, omittedCount: 0, threads: priorThreads };
+      }),
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
+    expect(readOrder.indexOf('threads')).toBeGreaterThanOrEqual(0);
+    expect(readOrder.indexOf('threads')).toBeLessThan(readOrder.indexOf('panel'));
     expect(receipt.conclusion).toBe('success');
     expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
     const event = completion.reportTerminalSuccess.mock.calls[0]?.[0] as Record<string, unknown>;
@@ -2089,8 +2568,21 @@ describe('real composed findings-stop reaches canonical fail-closed publication'
     it.each(['P0', 'P2'] as const)('never publishes incomplete %s finding-stop as SHIP (authoritative=' + authoritative + ')', async (severity) => {
       const policy = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
         personas: 'security,testing', review_engine: 'composed', budget: { max_investigation_turns: 3 },
+        composed: { max_findings_total: 25 },
       } });
       const input = env({ REVIEW_YETI_POLICY_JSON: policy });
+      const transport = { baseUrl: input.OPENAI_BASE_URL!, model: input.REVIEW_MODEL! };
+      const prepared = preparePublishingPolicy({ content: policy, source: {
+        repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
+        contentDigest: createHash('sha256').update(policy).digest('hex'),
+      } }, transport);
+      expect(prepared.config.composed?.max_findings_total).toBe(25);
+      expect(resolveComposedEngineMaxFindings({}, prepared.config.composed?.max_findings_total)).toBe(25);
+      const groundedVerifierContract = preparedGroundedVerifierContract(prepared);
+      const changedLineCount = severity === 'P2' ? 25 : 1;
+      const sourceDiff = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n`
+        + Array.from({ length: changedLineCount }, (_, index) => `@@ -${index + 1} +${index + 1} @@\n`
+          + `-const value${index + 1} = 'old';\n+const value${index + 1} = 'new';\n`).join('');
       const serviceDecisions: Array<ReturnType<typeof evaluateReviewGate>> = [];
       const reportReviewResult = vi.fn(async (event: unknown) => {
         // Exercise the existing service's pure re-derivation/Gate policy, not a DB or live App.
@@ -2098,22 +2590,28 @@ describe('real composed findings-stop reaches canonical fail-closed publication'
           expectedCoordinates: { runId: input.REVIEW_RUN_ID!, repositoryId: Number(input.REVIEW_REPOSITORY_ID),
             owner: 'exampleorg', repo: 'example-meta', prNumber: 2795, headSha: HEAD, baseSha: BASE,
             policyDigest: input.REVIEW_POLICY_DIGEST!, configDigest: input.REVIEW_CONFIG_DIGEST!, executionAttempt: 1 },
-          expectedPersonaIds: ['sec-lane', 'qual-lane'], changedFiles: parseChangedFiles(DIFF).files,
+          ...groundedVerifierContract,
+          expectedPersonaIds: prepared.expectedPersonaIds, changedFiles: parseChangedFiles(sourceDiff).files,
           coverageComplete: true, quorumSatisfied: true, reviewEngine: 'composed', composedChangedPaths: ['src/a.ts'], composedMaxTasks: 8,
         });
+        if (!derived.valid) {
+          const result = (event as { result?: any }).result;
+          const outcomeRows = result?.groundedReview?.verification?.outcomes?.map((row: any) => ({
+            path: row.path, line: row.line, severity: row.severity, candidateSide: row.candidateSide,
+            status: row.status, fingerprint: row.fingerprint,
+          }));
+          const laneRows = result?.personas?.map((lane: any) => ({ id: lane.id,
+            findings: lane.findings?.map((finding: any) => ({ path: finding.path, line: finding.line,
+              severity: finding.severity, title: finding.title })) }));
+          throw new Error(`Unexpected invalid local completion fixture: ${derived.message}; outcomes=${JSON.stringify(outcomeRows)}; lanes=${JSON.stringify(laneRows)}`);
+        }
         expect(derived.valid).toBe(true);
-        if (!derived.valid) throw new Error('Unexpected invalid local completion fixture');
         const candidate = { repositoryId: Number(input.REVIEW_REPOSITORY_ID), prNumber: 2795,
           headSha: HEAD, baseSha: BASE, policyDigest: input.REVIEW_POLICY_DIGEST! };
         serviceDecisions.push(evaluateReviewGate({ candidate, current: { ...candidate, open: true, draft: false }, evidence: derived.evidence }));
       });
       const reportTerminalSuccess = vi.fn(async () => undefined);
       if (authoritative) {
-        const transport = { baseUrl: input.OPENAI_BASE_URL!, model: input.REVIEW_MODEL! };
-        const prepared = preparePublishingPolicy({ content: policy, source: {
-          repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
-          contentDigest: createHash('sha256').update(policy).digest('hex'),
-        } }, transport);
         Object.assign(input, { REVIEW_AUTHORITATIVE_GATE: 'true',
           REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
           REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/completion',
@@ -2130,18 +2628,32 @@ describe('real composed findings-stop reaches canonical fail-closed publication'
           usage: { prompt: 10, completion: 10, total: 20 }, costUSD: 0.001, raw: {} };
         expect(text).toContain('Task id: task-1');
         return { model: 'fixture', content: JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE',
-          findings: Array.from({ length: severity === 'P2' ? 25 : 1 }, (_, index) => ({ severity, path: 'src/a.ts', line: 1,
-            title: `Finding ${index}`, body: `Local fixture ${index}.` })) }),
+            findings: Array.from({ length: changedLineCount }, (_, index) => ({ severity, path: 'src/a.ts', line: index + 1,
+            title: `Finding ${index}`, body: `Local fixture ${index}.`,
+            ...(severity === 'P0' ? { blockerEvidence: {
+              trigger: 'An unauthenticated request reaches the changed protected operation.',
+              impact: 'The request can perform the operation without the required identity check.',
+              violatedContract: 'Only an authenticated caller may invoke the protected operation.',
+            } } : {}) })) }),
           usage: { prompt: 10, completion: 10, total: 20 }, costUSD: 0.001, raw: {} };
       });
       const d = deps({ client: { complete }, zoektGrounding: vi.fn(async () => ({})),
+        sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: sourceDiff,
+          diffDigest: createHash('sha256').update(sourceDiff).digest('hex'), githubReads: 0 })),
         ...(authoritative ? { reviewCompletion: { reportReviewResult } } : { completion: { reportTerminalSuccess } }) });
       const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected external request'));
       try {
         // Real executeComposedReview and real computeArbitration; only I/O/publication seams are local fixtures.
         const receipt = await runPublishingReviewWorker(input, d);
-        expect(receipt).toMatchObject({ verdict: 'BLOCK', conclusion: 'failure', findingCount: severity === 'P2' ? 25 : 1,
+        const expectedFindingCount = severity === 'P2' ? 12 : 1;
+        expect(receipt).toMatchObject({ verdict: 'BLOCK', conclusion: 'failure', findingCount: expectedFindingCount,
           coverage: { expectedLaneCount: 4, completedLaneCount: 1, rosterValid: false, quorumSatisfied: false, fullPanelComplete: false } });
+        expect(receipt.groundedReview?.verification).toMatchObject({
+          candidates: severity === 'P2' ? 25 : 1,
+          calls: expectedFindingCount,
+          insufficient: severity === 'P2' ? 13 : 0,
+          budget: { callsPerTask: 12 },
+        });
         expect(receipt.personas?.map((lane) => lane.id)).toEqual(['task-1']);
         expect(receipt.metrics?.tokenAccounting?.total).toMatchObject({ calls: 2, totalTokens: 40 });
         expect(complete).toHaveBeenCalledTimes(2);
@@ -2153,7 +2665,10 @@ describe('real composed findings-stop reaches canonical fail-closed publication'
           expect(reportReviewResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ result: expect.objectContaining({
             // This field is path/evidence coverage, not task completion. The unchanged service
             // contract also receives the whole plan, missing task lanes, and false quorum.
-            coverageComplete: true, quorumSatisfied: false, taskPlan: expect.arrayContaining(tasks),
+          coverageComplete: false, quorumSatisfied: false,
+            taskPlan: expect.arrayContaining(tasks.map((task) => expect.objectContaining({
+              id: task.id, dimension: task.dimension, paths: task.paths,
+            }))),
             personas: [expect.objectContaining({ id: 'task-1' })],
           }) }));
           expect(reportReviewResult.mock.invocationCallOrder[0]).toBeLessThan(d.checkClient.completeCheck.mock.invocationCallOrder[0]);

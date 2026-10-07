@@ -1,5 +1,8 @@
 import type { ReviewGateCandidate } from './reviewGatePolicy';
 import type { TrustedReviewCoverageContract } from './workerReviewCompletion';
+import type { ReviewHeadAncestryReceipt } from './incrementalReview';
+import type { GroundedOriginAncestryV1 } from './findingContinuity';
+import type { TrustedConventionAdjudicationReadResult, TrustedConventionCurrentFinding } from '../github/trustedConventionAdjudicationReader';
 
 export interface ReviewGateCoordinates {
   owner: string; repo: string; repositoryId: number; prNumber: number;
@@ -80,5 +83,16 @@ export interface ReviewGateRepository {
 export interface TrustedGateCompletionContext {
   current: ReviewGateCandidate & { open: boolean; draft: boolean };
   coverage: Omit<TrustedReviewCoverageContract, 'expectedCoordinates'>;
+  /** Service-only exact prior-head comparison for semantic ID continuity; grants no coverage or eligibility. */
+  historyAncestryVerified?: boolean;
+  /** Exact service-recomputed receipt; worker hint is never copied without a matching comparison digest. */
+  historyAncestry?: ReviewHeadAncestryReceipt;
+  /** Service-recomputed exact source-origin comparisons; no worker-provided head is authority. */
+  originAncestry?: readonly GroundedOriginAncestryV1[];
+  /** Repository-scoped authenticated source capability; only service-derived current findings are queried. */
+  readTrustedConventionAdjudications?: (input: {
+    currentFindings: readonly TrustedConventionCurrentFinding[];
+    consumedCommentSourceIdDigests?: readonly string[];
+  }) => Promise<TrustedConventionAdjudicationReadResult>;
 }
 export type GateWorkerResultTransition = 'recorded' | 'duplicate' | 'ignored' | 'unauthorized' | 'conflict';

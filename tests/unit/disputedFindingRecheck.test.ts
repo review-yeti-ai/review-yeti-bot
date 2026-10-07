@@ -6,7 +6,8 @@ import { getReviewFindingId } from '../../src/mcp/server/tools/findingIdentity';
 import { parseWorkerReviewCompletion, workerReviewCompletionDigest } from '../../src/review/workerReviewCompletion';
 import {
   disputedFindingRecheckDigest, loadValidatedDisputedFindingRechecks,
-  parseDisputedFindingRecheck, validateDisputedFindingRecheckRow, pendingDisputedFindingRechecks, remainingCheckpointTasksAfterRechecks,
+  parseDisputedFindingRecheck, validateDisputedFindingRecheckRow, pendingDisputedFindingRechecks,
+  remainingCheckpointTasksAfterRechecks, remainingCheckpointTasksForPaths,
 } from '../../src/review/disputedFindingRecheck';
 
 const names = {
@@ -276,6 +277,15 @@ describe('checkpoint acknowledgement identity and task receipts', () => {
     expect(remainingCheckpointTasksAfterRechecks(completed, [], checkpoint.plan)).toEqual(completed);
     expect(() => remainingCheckpointTasksAfterRechecks(completed, [recheck], []))
       .toThrow('Disputed finding re-review does not match a validated resumed task plan');
+  });
+  it('invalidates completed tasks whose paths carry prior blockers while preserving unrelated tasks', () => {
+    const { checkpoint } = pair();
+    const plan = [...checkpoint.plan, { id: 'other-reviewer', dimension: 'testing' as const,
+      paths: ['src/other.ts'], question: 'Check unrelated path.', rationale: 'Independent coverage.' }];
+    const unrelated = { id: 'other-reviewer', findings: [] };
+    const completed = [...checkpoint.completedTasks, unrelated];
+    expect(remainingCheckpointTasksForPaths(completed, plan, ['src/auth/guard.ts'])).toEqual([unrelated]);
+    expect(remainingCheckpointTasksForPaths(completed, plan, [])).toEqual(completed);
   });
   it('returns no pending work after a matching acknowledged task', () => {
     const { recheck, checkpoint } = pair();

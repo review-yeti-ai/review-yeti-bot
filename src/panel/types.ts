@@ -13,6 +13,7 @@ import type { ReviewBudgetDisclosure } from '../types/reviewBudget';
 import type { VerdictCacheDisclosure } from '../types/verdictCache';
 import type { MapReduceDisclosure } from '../types/mapReduceReview';
 import type { TaskSourceReceipt } from '../types/taskSourceDelivery';
+import type { ComposedRuntimeResources } from './composedResourceReceipt';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2' | 'P3' | 'NIT';
 
@@ -168,6 +169,8 @@ export interface PanelResult {
   };
   /** Validated composed task plan, carried to the trusted completion boundary. */
   taskPlan?: import('./reviewTask').ReviewTask[];
+  /** Typed, composed-engine-only resource observations; the worker adds verifier usage later. */
+  composedResourceObservation?: ComposedRuntimeResources;
   headSha: string;
   /**
    * Set when the approval came from path classification (documentation-only diff), not the

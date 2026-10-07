@@ -89,8 +89,18 @@ const priorThreadSchema = z.object({
 export const findingThreadsReadResultSchema = z.object({
   version: z.literal('FindingThreadsReadResult.v1'),
   runId: z.string().regex(/^run_[a-f0-9]{32}$/u),
+  headSha: z.string().regex(/^[a-f0-9]{40}$/u),
+  complete: z.boolean(),
+  omittedCount: z.number().int().nonnegative().safe(),
   threads: z.array(priorThreadSchema).max(500),
-}).strict();
+}).strict().superRefine((result, context) => {
+  if (result.complete && result.omittedCount !== 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['omittedCount'], message: 'complete thread history cannot omit entries' });
+  }
+  if (!result.complete && result.omittedCount === 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['omittedCount'], message: 'partial thread history must disclose omitted entries' });
+  }
+});
 
 export const findingThreadsResultSchema = z.object({
   version: z.enum(['FindingThreadsResult.v1', 'FindingThreadsResult.v2']),

@@ -3,12 +3,14 @@ import { planDiffShrink, renderDiffShrinkSummary } from '../../src/review/diffSh
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
 import { createDefaultV3Config } from '../../src/config/configLoader';
-import { ctReviewConfigV3Schema } from '../../src/config/schema';
+import { ctReviewConfigV3Schema, resolvePreChecksConfig } from '../../src/config/schema';
 import { executePersonaPanel, extractMessageContentText, MAX_INLINE_DIFF_CHARS_CEILING } from '../../src/panel/panelEngine';
 import { executeComposedReview } from '../../src/panel/composedEngine';
 import * as panelEngine from '../../src/panel/panelEngine';
 import { parseReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
 import { TaskSourceDelivery } from '../../src/review/taskSourceDelivery';
+import { buildDeterministicCoverageManifest } from '../../src/review/groundedReviewEngine';
+import { buildDeterministicReviewPlanningContext, enrichTasksWithPlanningContext, reviewTaskCharterDigest } from '../../src/review/prReviewPlanningContext';
 import { MAX_FILE_PATCH_CHARS } from '../../src/pipeline/hunkFilter';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { resolveScopedReviewApplicability } from '../../src/review/incrementalReview';
@@ -1163,18 +1165,29 @@ describe('composed engine wiring', () => {
     ('validates resumed findings against original lines: %j', async ({ line, retained }) => {
       const changedFiles = files(BIG_DIFF);
       const findings = [{ severity: 'P2', path: 'src/core.ts', line, title: 'Tail contract', body: 'Check the original tail.' }];
+      const plannerPlan = [{ id: 't1', dimension: 'security' as const,
+        paths: ['src/core.ts', 'tests/core.test.ts'], question: 'Tail?', rationale: 'Contract.' }];
+      // This checkpoint represents a validated raw plan and the current bound charter. Disable
+      // pre-checks so the charter fixture stays deterministic while this test isolates line checks.
+      const config = COMPOSED_CONFIG();
+      config.pre_checks = { ...resolvePreChecksConfig(config), enabled: false };
+      const planningManifest = buildDeterministicReviewPlanningContext({
+        coverage: buildDeterministicCoverageManifest(changedFiles), changedFiles,
+      });
+      const enrichedPlan = enrichTasksWithPlanningContext(plannerPlan, planningManifest);
+      const charterDigest = reviewTaskCharterDigest(enrichedPlan.tasks[0]!, enrichedPlan.assignments);
       // Controlled receipt fixture: acknowledge the exact synthetic original
       // patches, so this control isolates retained finding-line validation.
-      const source = new TaskSourceDelivery({taskId:'t1',paths:changedFiles.map(file=>file.path),files:changedFiles,
-        prefix:changedFiles.map(file=>file.patch).join('\n'),inlinedPaths:changedFiles.map(file=>file.path),
+      const source = new TaskSourceDelivery({taskId:'t1',paths:plannerPlan[0]!.paths,files:changedFiles,
+        prefix:changedFiles.map(file=>file.patch).join('\n'),inlinedPaths:plannerPlan[0]!.paths,
         headSha:'e'.repeat(40),baseSha:'b'.repeat(40)});
       const sourceDelivery=source.acknowledgeRequest([{role:'user',content:changedFiles.map(file=>file.patch).join('\n')}]);
       const checkpoint = parseReviewExecutionCheckpoint({ version: 'ReviewExecutionCheckpoint.v1',
         runId: `run_${'1'.repeat(32)}`, repositoryId: 1, owner: 'acme', repo: 'app', prNumber: 1,
         headSha: 'e'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
         executionAttempt: 2, revision: 1,
-        plan: [{ id: 't1', dimension: 'security', paths: ['src/core.ts', 'tests/core.test.ts'], question: 'Tail?', rationale: 'Contract.' }],
-        completedTasks: [{ id: 't1', findings, sourceDelivery }] });
+        plan: enrichedPlan.tasks, plannerPlan,
+        completedTasks: [{ id: 't1', findings, charterDigest, sourceDelivery }] });
       const validate = vi.spyOn(panelEngine, 'validateFindings');
       const complete = vi.fn(async (request: any) => {
         const prompt = request.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
@@ -1182,11 +1195,14 @@ describe('composed engine wiring', () => {
         return { model: 'm', content: JSON.stringify({ nonce, task: 't1', status: 'COMPLETE', findings: [] }),
           usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
       });
-      const result = await executeComposedReview({ config: COMPOSED_CONFIG(), changedFiles, repository: 'acme/app',
+      const result = await executeComposedReview({ config, changedFiles, repository: 'acme/app',
         headSha: 'e'.repeat(40), baseSha:'b'.repeat(40), client: { complete } as never, reviewBudget: ON,
         checkpoint: { resumed: checkpoint, save: async () => {} } });
       expect(validate.mock.calls[0]).toEqual([checkpoint.completedTasks[0].findings, changedFiles]);
       expect(complete).toHaveBeenCalledTimes(retained ? 0 : 2);
+      const prompts = complete.mock.calls.map(([request]) => (request as any).messages
+        .map((message: any) => extractMessageContentText(message.content)).join('\n'));
+      expect(prompts.every((prompt) => prompt.includes('WORK TURN'))).toBe(true);
       expect(result.personas[0]?.findings.map((finding) => finding.line) ?? []).toEqual(retained ? [702] : []);
       if (!retained) expect(result.unreportedLanes?.[0].error).toContain('source_not_delivered');
     });

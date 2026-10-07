@@ -23,7 +23,8 @@
 import { normalizeCapacityKey } from '../config/providerConcurrency';
 import type { ProviderLeaseCoordinator } from './providerLeaseCoordinator';
 import { logger } from '../utils/logger';
-import { OpenRouterTimeoutError, type OpenRouterRequest, type OpenRouterResponse, type ReviewModelClient } from './openRouterClient';
+import { OpenRouterTimeoutError, type GroundedVerifierRequestContextV1, type OpenRouterRequest,
+  type OpenRouterResponse, type ReviewModelClient } from './openRouterClient';
 
 /** How long the coordinator is skipped after it failed once. */
 export const PROVIDER_COORDINATOR_COOLDOWN_MS = 30_000;
@@ -228,7 +229,7 @@ export function createConcurrencyLimitedModelClient(
 
   return {
     stats: () => ({ ...stats }),
-    async complete(request: OpenRouterRequest): Promise<OpenRouterResponse> {
+    async complete(request: OpenRouterRequest, context?: GroundedVerifierRequestContextV1): Promise<OpenRouterResponse> {
       const startedAt = now();
       const requestTimeoutMs = Number(request.timeoutMs);
       const ownDeadline = Number.isFinite(requestTimeoutMs) && requestTimeoutMs > 0 ? startedAt + requestTimeoutMs : Infinity;
@@ -252,7 +253,7 @@ export function createConcurrencyLimitedModelClient(
         const forwarded = waitedMs > 0 && Number.isFinite(requestTimeoutMs) && requestTimeoutMs > 0
           ? { ...request, timeoutMs: Math.max(1, requestTimeoutMs - waitedMs) }
           : request;
-        return await client.complete(forwarded);
+        return await client.complete(forwarded, context);
       } finally {
         stopHeartbeat();
         stats.inFlight -= 1;

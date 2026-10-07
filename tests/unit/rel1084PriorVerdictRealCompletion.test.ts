@@ -22,10 +22,11 @@ import {
   verdictCacheSourceFromRows,
   type ComparisonContentFile,
 } from '../../src/review/verdictCache';
-import { parseWorkerReviewCompletion, workerReviewCompletionDigest, type WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
+import { parseWorkerReviewCompletion, publishedFindingSeverity, workerReviewCompletionDigest, type WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import { logger } from '../../src/utils/logger';
 import { gateRecordFor, resolvedThreadsFor } from '../support/priorGateRecord';
+import { groundedFixtureClient, groundedFixtureProvider, type GroundedFixtureSourceSnapshot } from '../support/groundedReviewFixture';
 
 /**
  * REL-1084 / REL-1085 production finding: the authoritative worker's completion never sets the
@@ -55,13 +56,59 @@ const START = Date.parse('2026-09-24T10:00:00.000Z');
 const TOKEN = 'ghs_fake_prior_verdict';
 const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
 
-function modified(path: string, marker: string): string {
-  return [`diff --git a/${path} b/${path}`, 'index 1111111..2222222 100644', `--- a/${path}`, `+++ b/${path}`,
-    '@@ -10,2 +10,2 @@', ' const keep = 0;', `-const OLD_${marker} = 1;`, `+const ${marker} = 2;`].join('\n') + '\n';
+const PATHS = ['src/changed.ts', 'src/same.ts', 'src/stable.ts'];
+const ACCESS_CONTROL_FUNCTIONS: Record<string, string> = {
+  'src/changed.ts': 'canReadChanged',
+  'src/same.ts': 'canReadSame',
+  'src/stable.ts': 'canReadStable',
+};
+
+/** Source-bound P1 fixture: a changed TypeScript guard now grants access unconditionally. */
+function accessControlSource(path: string, allowOnlyAdmins: boolean): string {
+  const functionName = ACCESS_CONTROL_FUNCTIONS[path];
+  if (!functionName) throw new Error(`No access-control source fixture for ${path}`);
+  return [
+    ...Array.from({ length: 9 }, (_, index) => `const fixtureLine${index + 1} = ${index + 1};`),
+    `export function ${functionName}(isAdmin: boolean): boolean {`,
+    `  return ${allowOnlyAdmins ? 'isAdmin' : 'true'};`,
+    '}',
+  ].join('\n') + '\n';
 }
 
-const PATHS = ['src/changed.ts', 'src/same.ts', 'src/stable.ts'];
-const DIFF = modified('src/changed.ts', 'CHANGED') + modified('src/same.ts', 'SAME') + modified('src/stable.ts', 'STABLE');
+function accessControlDiff(path: string): string {
+  const functionName = ACCESS_CONTROL_FUNCTIONS[path];
+  if (!functionName) throw new Error(`No access-control diff fixture for ${path}`);
+  return [
+    `diff --git a/${path} b/${path}`,
+    'index 1111111..2222222 100644',
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    '@@ -10,3 +10,3 @@',
+    ` export function ${functionName}(isAdmin: boolean): boolean {`,
+    '-  return isAdmin;',
+    '+  return true;',
+    ' }',
+  ].join('\n') + '\n';
+}
+
+function accessControlSnapshots(headSha: string, baseSha: string): GroundedFixtureSourceSnapshot[] {
+  return PATHS.flatMap((path) => [
+    { path, revisionSha: baseSha, content: accessControlSource(path, true) },
+    { path, revisionSha: headSha, content: accessControlSource(path, false) },
+  ]);
+}
+
+function accessControlBlockerEvidence(path: string) {
+  const functionName = ACCESS_CONTROL_FUNCTIONS[path];
+  if (!functionName) throw new Error(`No access-control blocker evidence for ${path}`);
+  return {
+    trigger: `A non-admin caller invokes ${functionName} with isAdmin set to false.`,
+    impact: 'The changed guard returns true, allowing the caller to read protected data.',
+    violatedContract: 'Only administrators may read protected data from this resource.',
+  };
+}
+
+const DIFF = PATHS.map(accessControlDiff).join('');
 const changedFiles = () => parseChangedFiles(DIFF).files;
 
 function prepared() {
@@ -132,26 +179,10 @@ async function realPriorCompletion(options: { findings?: Record<string, LaneFind
       diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 as const })) as never,
     panelRunner: panelRunner as never,
     client: { complete: vi.fn().mockRejectedValue(new Error('A test must never invoke a provider')) } as never,
-    groundedVerifierClient: { complete: vi.fn(async (request: any) => {
-      const prompt = String(request.messages?.[1]?.content ?? '');
-      const claim = JSON.parse(/<claim>(\{[\s\S]*?\})<\/claim>/u.exec(prompt)?.[1] ?? '{}');
-      return { model: transport.model, content: JSON.stringify({ status: 'confirmed',
-        violatedInvariant: 'The reviewed contract must be preserved.',
-        failurePath: 'The changed operation reaches the incompatible contract.',
-        benignCheck: 'No guard handles this current input.',
-        changeConnection: 'The current changed source introduces the path.',
-        citations: [`head:${claim.path}`, `base:${claim.path}`, `diff:${claim.path}`] }), usage: null, costUSD: null };
-    }) } as never,
-    repoFileProviderFactory: (input: any) => ({
-      findFiles: vi.fn(async () => []), readFile: vi.fn(async () => 'export function read(value: string) { return value; }'),
-      readFileAt: vi.fn(async (path: string, side: 'head' | 'base' | 'merge-base') => ({
-        content: `export function read(value: string) { return value; }`, sha: side === 'head' ? input.headSha : input.baseSha,
-      })),
-      readDiff: (path: string) => {
-        const file = input.changedFiles.find((candidate: { path: string; patch?: string }) => candidate.path === path);
-        return file?.patch ? { patch: file.patch, identity: { repository: `${input.owner}/${input.repo}`,
-          headSha: input.headSha, baseSha: input.baseSha } } : null;
-      },
+    groundedVerifierClient: groundedFixtureClient as never,
+    repoFileProviderFactory: (input: any) => groundedFixtureProvider({
+      owner: input.owner, repo: input.repo, headSha: input.headSha, baseSha: input.baseSha,
+      changedFiles: input.changedFiles, sourceSnapshots: accessControlSnapshots(input.headSha, input.baseSha),
     }) as never,
     prLifecycleHistory: { read: vi.fn(async () => ({ status: 'complete',
       snapshotId: '00000000-0000-4000-8000-000000000003', contextDigest: 'a'.repeat(64),
@@ -244,9 +275,29 @@ describe('a prior built by the real completion builder and the real gate', () =>
 
   it('keeps a complete failed P1 review as repair context and re-reviews its finding path', async () => {
     const completion = await realPriorCompletion({ findings: { 'sec-lane': [
-      { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Unchecked input reaches the query', body: 'Validate it first.' },
+      { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Non-admin caller can read protected data',
+        body: 'The changed guard returns true when isAdmin is false.', blockerEvidence: accessControlBlockerEvidence('src/stable.ts') },
     ] } });
-    const recorded = gateRecordFor(completion, { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles() });
+    const verification = completion.result.groundedReview?.verification as any;
+    expect(verification).toMatchObject({ version: 'GroundedIndependentVerification.v2',
+      semanticsVersion: 'GroundedReviewEvidenceSemantics.v2', candidates: 1, confirmed: 1, insufficient: 0,
+      coverageComplete: true, calls: 1,
+      candidateManifest: expect.arrayContaining([expect.objectContaining({ severity: 'P1' })]) });
+    const outcome = verification.outcomes.find((row: any) => row.path === 'src/stable.ts');
+    expect(outcome).toMatchObject({ path: 'src/stable.ts', line: 11, severity: 'P1', status: 'confirmed', candidateSide: 'head',
+      evidence: { scopeProof: {
+        identity: { repository: 'example/project', baseSha: BASE, headSha: PRIOR_HEAD, candidateSide: 'head' },
+        independentVerifier: { role: 'independent-grounded-verifier', status: 'confirmed' },
+      } } });
+    expect(outcome.evidence.citations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'src/stable.ts', side: 'base', revisionSha: BASE }),
+      expect.objectContaining({ path: 'src/stable.ts', side: 'head', revisionSha: PRIOR_HEAD }),
+      expect.objectContaining({ path: 'src/stable.ts', side: 'diff', revisionSha: PRIOR_HEAD }),
+    ]));
+    expect(outcome.evidence.citations.find((citation: any) => citation.path === 'src/stable.ts' && citation.side === 'head')
+      .window.fullContentSha256).toBe(createHash('sha256').update(accessControlSource('src/stable.ts', false)).digest('hex'));
+    const recorded = gateRecordFor(completion, { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles(),
+      groundedVerifierRouting: { primaryModel: transport.model } });
     expect(recorded.decision).toMatchObject({ status: 'failure', reason: 'blocking-findings' });
     const rows = storedRows(completion, recorded);
     expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'run-not-succeeded' });
@@ -255,7 +306,7 @@ describe('a prior built by the real completion builder and the real gate', () =>
     const forged = { ...rows, run: { ...rows.run, status: 'succeeded' } };
     expect(priorReviewRecordFromRows(forged)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-not-clean' });
     // The reason reaches the check-summary disclosure.
-    expect(renderIncrementalSummary(null, { scope: null, decision: decideNext(completion, forged) })).toEqual([
+    expect(renderIncrementalSummary(null, { scope: null, decision: decideNext(completion, forged), ancestryVerified: false })).toEqual([
       '**Incremental re-review** (`REVIEW_YETI_INCREMENTAL`): full review, because no file could be carried forward.',
     ]);
     // And a surviving P1 over a gate record forged to clean SHIP is refused at published severity.
@@ -290,15 +341,21 @@ describe('a prior built by the real completion builder and the real gate', () =>
 
   it('#1034 shape: a raw P1 calibrated to P2 stays an open path in incremental and cache decisions', async () => {
     const completion = await realPriorCompletion({ findings: { 'sec-lane': [
-      { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module', body: 'Rename it.' },
+      { severity: 'P1', path: 'src/stable.ts', line: 11,
+        title: 'Naming regression: canReadStable grants non-admin callers protected data',
+        body: 'The changed guard returns true when isAdmin is false.', blockerEvidence: accessControlBlockerEvidence('src/stable.ts') },
     ] } });
     // The worker reports raw P1; it is published as a calibrated P2, which is required (ADR 0002)
     // until the author resolves its thread with a reason. The open path is preserved either way.
     expect(completion.result.personas.flatMap((lane) => lane.findings.map((finding) => finding.severity))).toEqual(['P1']);
-    expect(gateRecordFor(completion, { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles() }).decision)
+    expect(publishedFindingSeverity(completion.result.personas.flatMap((lane) => lane.findings)[0]!)).toBe('P2');
+    expect(gateRecordFor(completion, { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles(),
+      groundedVerifierRouting: { primaryModel: transport.model } }).decision)
       .toMatchObject({ status: 'failure', reason: 'blocking-findings' });
     const recorded = gateRecordFor(completion, { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles(),
-      findingThreads: resolvedThreadsFor([{ path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module' }]) });
+      groundedVerifierRouting: { primaryModel: transport.model },
+      findingThreads: resolvedThreadsFor([{ path: 'src/stable.ts', line: 11,
+        title: 'Naming regression: canReadStable grants non-admin callers protected data' }]) });
     expect(recorded.decision).toMatchObject({ status: 'success', reason: 'clean-review' });
     const rows = storedRows(completion, recorded);
     expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });

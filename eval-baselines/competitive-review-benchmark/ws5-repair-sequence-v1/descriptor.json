@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "WS5RepairSequenceBundle.v1",
+  "repository": {
+    "repositoryId": 73002,
+    "owner": "synthetic",
+    "repo": "fixture-sequence"
+  },
+  "prNumber": 41,
+  "baseSha": "1fd9256afcf0250975c69410a766629c4d4225ad",
+  "introductionHeadSha": "1035dc8db9a222447aa774fd9660c224e5d37655",
+  "repairHeadSha": "1b183caf5f8c518a3acda3fb2d8eea38133eed98",
+  "commitChain": [
+    {
+      "commitSha": "1fd9256afcf0250975c69410a766629c4d4225ad",
+      "treeSha": "69fc13337c02bf12a0abeae9b159a536bafc665f",
+      "parentSha": null,
+      "commitTimestamp": "2026-10-06T12:00:00+00:00",
+      "commitMessage": "Synthetic fixture revision"
+    },
+    {
+      "commitSha": "1035dc8db9a222447aa774fd9660c224e5d37655",
+      "treeSha": "776024c34f4845dbe4af86603fcddcfe5451a183",
+      "parentSha": "1fd9256afcf0250975c69410a766629c4d4225ad",
+      "commitTimestamp": "2026-10-06T12:01:00+00:00",
+      "commitMessage": "Synthetic fixture revision"
+    },
+    {
+      "commitSha": "1b183caf5f8c518a3acda3fb2d8eea38133eed98",
+      "treeSha": "37853bf74f738d4bdeeeb2a3972dfd8f4c08de03",
+      "parentSha": "1035dc8db9a222447aa774fd9660c224e5d37655",
+      "commitTimestamp": "2026-10-06T12:02:00+00:00",
+      "commitMessage": "Synthetic fixture revision"
+    }
+  ],
+  "phases": [
+    {
+      "caseId": "ws5-sequence-a-v1",
+      "phase": "introduction",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-repair-sequence-v1/inputs/ws5-sequence-a-v1.json",
+      "inputSha256": "31feff802596e9e8b52aa45b64a1a00fc2af5e221158815c007188b3b11877a5",
+      "baseSha": "1fd9256afcf0250975c69410a766629c4d4225ad",
+      "headSha": "1035dc8db9a222447aa774fd9660c224e5d37655"
+    },
+    {
+      "caseId": "ws5-sequence-b-v1",
+      "phase": "repair",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-repair-sequence-v1/inputs/ws5-sequence-b-v1.json",
+      "inputSha256": "4023515cfc0daef0b1c00089924ca12d5071080da4e97d6e964c03c8596bbceb",
+      "baseSha": "1035dc8db9a222447aa774fd9660c224e5d37655",
+      "headSha": "1b183caf5f8c518a3acda3fb2d8eea38133eed98"
+    }
+  ]
+}

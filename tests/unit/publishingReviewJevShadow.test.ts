@@ -63,7 +63,7 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
 const SHADOW_ON = { REVIEW_YETI_JEV_SHADOW: 'true', ...TYPESAFE_ENV };
 
 const DIFF = [
-  'diff --git a/src/auth/token.ts b/src/auth/token.ts\n--- a/src/auth/token.ts\n+++ b/src/auth/token.ts\n@@ -1 +1,2 @@\n-old\n+new\n+more\n',
+  `diff --git a/src/auth/token.ts b/src/auth/token.ts\n--- a/src/auth/token.ts\n+++ b/src/auth/token.ts\n@@ -1 +1,2 @@\n-const token = 'old';\n+const token = 'new';\n+const valid = true;\n`,
   'diff --git a/docs/guide.md b/docs/guide.md\n--- a/docs/guide.md\n+++ b/docs/guide.md\n@@ -1 +1 @@\n-a\n+b\n',
 ].join('');
 
@@ -225,9 +225,10 @@ describe('REL-1081: Jev triage shadow never changes the review', () => {
       jevTriageShadow: { asker: slow },
       // ADR 0002: the advisory P2 is satisfied by its resolved thread, so the check is green and
       // the terminal-success callback (which releases the slow Jev) runs.
-      findingThreadReader: vi.fn(async () => [{ fingerprint: findingFingerprint(finding()), severity: 'P2',
-        path: finding().path, line: finding().line, title: finding().title, resolved: true, outdated: false,
-        resolution: { author: 'author1', reason: 'Accepted: documented trade-off in the module header.' } }]),
+      findingThreadReader: vi.fn(async (_pr, headSha: string) => ({ source: 'service' as const, headSha,
+        complete: true, omittedCount: 0, threads: [{ fingerprint: findingFingerprint(finding()), severity: 'P2',
+          path: finding().path, line: finding().line, title: finding().title, resolved: true, outdated: false,
+          resolution: { author: 'author1', reason: 'Accepted: documented trade-off in the module header.' } }] })),
       checkClient: {
         createCheck: vi.fn(async () => 4242),
         completeCheck: vi.fn(async () => { order.push('check'); }),

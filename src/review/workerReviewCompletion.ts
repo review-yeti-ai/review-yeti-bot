@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { taskSourceReceiptSchema } from './taskSourceDelivery';
+import { taskSourceReceiptSchema, validateTaskSourceReceipt } from './taskSourceDelivery';
 import { evaluateFindingConvergence, findingClaimType, findingFingerprint, findingFingerprintForClaimType,
   type PriorFindingThread } from './findingConvergence';
 import { DELETION_CLASSIFICATION_VERSION } from './deletionClassification';
@@ -20,8 +20,21 @@ import { EMPTY_MODERATION_SKIPPED, decideEmptyModeration } from './emptyModerati
 import { isInfrastructureIncompleteResult } from './laneInfrastructure';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
+import { composedRuntimeResourcesSchema, type ComposedRuntimeResources } from '../panel/composedResourceReceipt';
 import { MAX_TASKS_HARD_CAP, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN, validateTaskPlan, type ReviewTask } from '../reviewTaskContract';
-import { buildDeterministicCoverageManifest, groundedAffectedContextDigest } from './groundedReviewEngine';
+import { buildDeterministicCoverageManifest, groundedAffectedContextDigest,
+  GROUNDED_VERIFICATION_LEGACY_VERSION, GROUNDED_VERIFICATION_VERSION,
+  type AuthenticatedDisputedBlockerV1, type GroundedVerifiedEvidenceV2 } from './groundedReviewEngine';
+import { groundedCitationManifestDigest, isValidGroundedCitationV2, isValidGroundedSourceWindowV1,
+  GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, GROUNDED_REVIEW_RECEIPT_V2_VERSION,
+  GROUNDED_VERIFICATION_V2_VERSION, sha256Bytes, type GroundedCitationV2, type GroundedDependencyEdgeV1,
+  type GroundedImportResolutionSourceV1 } from './groundedEvidenceV2';
+import { groundedCandidateHunkProof, groundedPatchRegionDigest } from './groundedSourceWindows';
+import { groundedRelativeImportCandidates } from './groundedContractResolver';
+import { classifyFindingChangeScope, findingChangeScopeProofDigest, FINDING_CHANGE_SCOPE_PROOF_VERSION,
+  FINDING_CHANGE_SCOPE_VERSION, FINDING_ROOT_CAUSE_IDENTITY_VERSION, type FindingChangeScopeDecision,
+  type FindingChangeScopeProofV1 } from './findingChangeScope';
+import { groundedVerifierRouteV1Schema, type GroundedVerifierRouteV1 } from './groundedVerifierRoute';
 
 export { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 
@@ -73,24 +86,34 @@ const groundedOutcomeSchema = z.object({ fingerprint: z.string().min(1).max(500)
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['evidence'], message: 'insufficient outcomes cannot carry verification proof' });
     }
   });
-const groundedReviewReceiptSchema = z.object({
-  version: z.literal('GroundedReviewReceipt.v1'),
-  coverage: z.object({ digest, regionCount: boundedInteger.max(100_000), assignmentCount: boundedInteger.max(24),
-    coveredRegionCount: boundedInteger.max(100_000), complete: z.boolean(), omissions: z.array(z.string().min(1).max(500)).max(500) }).strict(),
-  history: z.object({ status: z.enum(['complete', 'partial', 'unavailable']), snapshotId: z.string().uuid().optional(),
+const groundedCoverageReceiptSchema = z.object({ digest, regionCount: boundedInteger.max(100_000), assignmentCount: boundedInteger.max(24),
+  coveredRegionCount: boundedInteger.max(100_000), complete: z.boolean(), omissions: z.array(z.string().min(1).max(500)).max(500) }).strict();
+const groundedHistoryReceiptFields = { status: z.enum(['complete', 'partial', 'unavailable']), snapshotId: z.string().uuid().optional(),
     contextDigest: digest.optional(), eventCount: boundedInteger, findingCount: boundedInteger,
     loadedEventCount: boundedInteger, loadedFindingCount: boundedInteger, eventOmittedCount: boundedInteger,
     findingOmittedCount: boundedInteger, legacyOmittedCount: boundedInteger, eventsDigest: digest.optional(),
     findingsDigest: digest.optional(), omissions: z.array(z.string().min(1).max(500)).max(500),
     memorySources: z.object({ honcho: z.literal('unavailable'), mcp: z.literal('unavailable') }).strict(),
     verificationWrites: z.object({ attempted: boundedInteger, recorded: boundedInteger, failed: boundedInteger })
-      .strict().refine((value) => value.recorded + value.failed === value.attempted, 'verification writes must be accounted for'),
-  }).strict().superRefine((history, context) => {
+      .strict().refine((value) => value.recorded + value.failed === value.attempted, 'verification writes must be accounted for') };
+const groundedHistoryReceiptV1Schema = z.object(groundedHistoryReceiptFields).strict().superRefine((history, context) => {
     if (history.status === 'complete' && (!history.snapshotId || !history.contextDigest || !history.eventsDigest || !history.findingsDigest)) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['snapshotId'], message: 'complete history requires its authenticated snapshot digests' });
     }
-  }),
-  verification: z.object({ version: z.literal('GroundedIndependentVerification.v1'), candidates: boundedInteger.max(MAX_TOTAL_FINDINGS),
+  });
+const reviewHeadAncestryV1Schema = z.object({ version: z.literal('ReviewHeadAncestry.v1'),
+  result: z.enum(['ancestor', 'not-ancestor', 'unavailable']), priorRunId: z.string().regex(/^run_[a-f0-9]{32}$/u),
+  priorHeadSha: sha, currentHeadSha: sha, comparisonDigest: digest }).strict();
+const groundedHistoryReceiptV2Schema = z.object({ ...groundedHistoryReceiptFields,
+  /** Historical aggregate hint; retained for receipt parsing but never continuity authority. */
+  verifiedAncestry: reviewHeadAncestryV1Schema.optional() }).strict().superRefine((history, context) => {
+    if (history.status === 'complete' && (!history.snapshotId || !history.contextDigest || !history.eventsDigest || !history.findingsDigest)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['snapshotId'], message: 'complete history requires its authenticated snapshot digests' });
+    }
+  });
+
+const groundedHistoryReceiptSchema = groundedHistoryReceiptV1Schema;
+const groundedVerificationV1Schema = z.object({ version: z.literal(GROUNDED_VERIFICATION_LEGACY_VERSION), candidates: boundedInteger.max(MAX_TOTAL_FINDINGS),
     confirmed: boundedInteger.max(MAX_TOTAL_FINDINGS), contradicted: boundedInteger.max(MAX_TOTAL_FINDINGS),
     insufficient: boundedInteger.max(MAX_TOTAL_FINDINGS), unverifiedBlockerCount: boundedInteger.max(MAX_TOTAL_FINDINGS),
     coverageComplete: z.boolean(), calls: boundedInteger.max(100),
@@ -110,8 +133,373 @@ const groundedReviewReceiptSchema = z.object({
     if (verification.calls > verification.budget.totalCalls) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['calls'], message: 'verifier calls exceeded the recorded budget' });
     }
-  }),
+  });
+const groundedReviewReceiptV1Schema = z.object({
+  version: z.literal('GroundedReviewReceipt.v1'),
+  coverage: groundedCoverageReceiptSchema,
+  history: groundedHistoryReceiptSchema,
+  verification: groundedVerificationV1Schema,
 }).strict();
+
+const groundedWindowMappingV2Schema = z.union([
+  z.object({ kind: z.literal('changed-hunk'), candidateSide: z.enum(['head', 'base']), candidateLine: positiveInteger,
+    hunkOrdinal: boundedInteger, oldStart: boundedInteger, oldLines: boundedInteger,
+    newStart: boundedInteger, newLines: boundedInteger,
+    relation: z.enum(['replaced-region', 'insertion-gap', 'deletion-gap']),
+    counterpartStartLine: boundedInteger.nullable(), counterpartEndLine: boundedInteger.nullable(),
+    beforeLine: boundedInteger.nullable(), afterLine: boundedInteger.nullable() }).strict(),
+  z.object({ kind: z.literal('dependency-contract'), exhaustive: z.literal(true), edge: z.object({
+    resolver: z.literal('relative-import-v1'), importerPath: z.string().min(1).max(MAX_PATH_CHARACTERS),
+    importerSide: z.enum(['head', 'base']), importerFullContentSha256: digest,
+    importerStatementStartLine: positiveInteger, importerStatementEndLine: positiveInteger,
+    importSpecifier: z.string().min(1).max(2_000), contractSymbols: z.array(z.string().min(1).max(128)).min(1).max(32),
+    resolution: z.object({ version: z.literal('BoundedRelativeImportResolution.v1'), revisionSha: sha,
+      state: z.enum(['resolved', 'unresolved']), resolvedPath: z.string().min(1).max(MAX_PATH_CHARACTERS).nullable(),
+      probes: z.array(z.object({ path: z.string().min(1).max(MAX_PATH_CHARACTERS),
+        presence: z.enum(['present', 'absent']), sourceDigest: digest.nullable() }).strict()).min(1).max(12),
+    }).strict().optional(),
+    resolvedPath: z.string().min(1).max(MAX_PATH_CHARACTERS), contractFullContentSha256: digest,
+    definitionStartLine: positiveInteger, definitionEndLine: positiveInteger, definitionSha256: digest,
+    importStatementDigest: digest, contractId: digest, originRegionDigest: digest,
+  }).strict() }).strict(),
+]);
+const groundedSourceWindowV2Schema = z.object({
+  version: z.literal('GroundedSourceWindow.v1'), id: digest,
+  repository: z.string().min(3).max(500), path: z.string().min(1).max(MAX_PATH_CHARACTERS),
+  side: z.enum(['head', 'base']), role: z.enum(['candidate', 'mapped-base', 'mapped-head', 'dependency-contract', 'dependency-caller']),
+  revisionSha: sha, headSha: sha, baseSha: sha, fullContentSha256: digest,
+  startLine: boundedInteger, endLine: boundedInteger, windowSha256: digest,
+  byteLength: boundedInteger.max(24_000), regionDigest: digest, mapping: groundedWindowMappingV2Schema, exhaustive: z.boolean(),
+}).strict().superRefine((window, context) => {
+  if (!isValidGroundedSourceWindowV1(window)) context.addIssue({ code: z.ZodIssueCode.custom,
+    path: ['id'], message: 'source window ID or metadata digest is invalid' });
+});
+const groundedCitationV2Schema = z.object({
+  id: z.string().min(1).max(MAX_PATH_CHARACTERS + 128), path: z.string().min(1).max(MAX_PATH_CHARACTERS),
+  repository: z.string().min(3).max(500), side: z.enum(['head', 'base', 'diff']),
+  revisionSha: sha, headSha: sha, baseSha: sha, sourceDigest: digest,
+  presence: z.literal('absent').optional(), window: groundedSourceWindowV2Schema.optional(), regionDigest: digest.optional(),
+}).strict().superRefine((citation, context) => {
+  if (!isValidGroundedCitationV2(citation)) context.addIssue({ code: z.ZodIssueCode.custom,
+    path: ['id'], message: 'citation ID is not bound to its exact source metadata' });
+});
+const uniqueBoundedIds = (max = 32) => z.array(z.string().min(1).max(MAX_PATH_CHARACTERS + 128)).max(max)
+  .refine((values) => new Set(values).size === values.length, 'citation IDs must be unique');
+const groundedRootCauseV2Schema = z.object({
+  componentId: z.string().regex(/^[a-z0-9]+(?:[._:/-][a-z0-9]+)*$/u),
+  behaviorId: z.string().regex(/^[a-z0-9]+(?:[._:/-][a-z0-9]+)*$/u),
+  contractId: z.string().regex(/^[a-z0-9]+(?:[._:/-][a-z0-9]+)*$/u),
+  failureModeId: z.string().regex(/^[a-z0-9]+(?:[._:/-][a-z0-9]+)*$/u),
+}).strict();
+const groundedScopeDecisionV2Schema = z.object({
+  version: z.literal(FINDING_CHANGE_SCOPE_VERSION),
+  causalScope: z.enum(['introduced', 'exacerbated', 'preexisting', 'unproven']),
+  reviewIdentity: z.object({ repository: z.string().min(3).max(500), baseSha: sha, headSha: sha,
+    findingFingerprint: z.string().min(1).max(500).optional(), candidateSide: z.enum(['head', 'base']).optional(),
+    candidatePath: z.string().min(1).max(MAX_PATH_CHARACTERS).optional() }).strict().nullable(),
+  rootCauseEvidenceKey: z.string().regex(/^cause-evidence-v1:[a-f0-9]{64}$/u).nullable(),
+  evidenceDigest: digest.nullable(),
+  reasonCode: z.enum(['proof_missing', 'input_identity_invalid', 'proof_identity_mismatch', 'citation_manifest_invalid',
+    'citation_manifest_mismatch', 'citation_unavailable_or_ambiguous', 'citation_binding_invalid', 'verifier_not_confirming',
+    'root_cause_identity_invalid', 'cause_anchor_invalid', 'causal_path_unproven', 'side_state_unproven',
+    'causal_change_unproven', 'causal_change_contradictory', 'introduced_proven', 'exacerbated_proven', 'preexisting_proven']),
+}).strict();
+const groundedCauseAnchorV2Schema = z.object({ componentPath: z.string().min(1).max(MAX_PATH_CHARACTERS),
+  side: z.enum(['head', 'base']), startLine: positiveInteger, endLine: positiveInteger,
+  citationIds: uniqueBoundedIds(), contentDigest: digest }).strict().superRefine((anchor, context) => {
+    if (anchor.endLine < anchor.startLine || anchor.endLine - anchor.startLine + 1 > 20) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['endLine'], message: 'cause anchor exceeds its line bound' });
+    }
+  });
+export interface GroundedOriginAncestryV1 {
+  version: 'GroundedOriginAncestry.v1';
+  sourceEventId: string;
+  sourceKind: 'cause' | 'repair';
+  priorRunId: string;
+  priorHeadSha: string;
+  currentHeadSha: string;
+  result: 'ancestor' | 'not-ancestor' | 'unavailable';
+  comparisonDigest: string;
+}
+const groundedOriginAncestryV1Schema = z.object({
+  version: z.literal('GroundedOriginAncestry.v1'), sourceEventId: z.string().min(1).max(128),
+  sourceKind: z.enum(['cause', 'repair']), priorRunId: z.string().regex(/^run_[a-f0-9]{32}$/u),
+  priorHeadSha: sha, currentHeadSha: sha, result: z.enum(['ancestor', 'not-ancestor', 'unavailable']),
+  comparisonDigest: digest,
+}).strict();
+const groundedFindingContinuityV1Schema = z.object({
+  version: z.literal('GroundedFindingContinuity.v1'),
+  status: z.enum(['new', 'continuous', 'reopened', 'unavailable']),
+  durableFindingId: z.string().min(1).max(128).optional(),
+  historySnapshotId: z.string().uuid().optional(),
+  historyContextDigest: digest.optional(),
+  sourceEventIds: z.array(z.string().min(1).max(128)).max(4_096)
+    .refine((values) => values.every((value, index) => index === 0 || values[index - 1] < value),
+      'source event IDs must be sorted and unique'),
+  currentFingerprint: z.string().min(1).max(500),
+  candidateSide: z.enum(['head', 'base']),
+  rootCause: groundedRootCauseV2Schema,
+  causeAnchor: groundedCauseAnchorV2Schema,
+  sourceWindowManifestDigest: digest,
+  currentOutcomeEvidenceDigest: digest.optional(),
+  /** Per-origin ancestry receipts supersede the generic latest-head hint for continuity authority. */
+  verifiedOriginAncestry: z.array(groundedOriginAncestryV1Schema).max(2).optional(),
+  evidenceDigest: digest,
+  unavailableReason: z.string().min(1).max(500).optional(),
+}).strict().superRefine((continuity, context) => {
+  const hasHistoryBinding = continuity.historySnapshotId !== undefined && continuity.historyContextDigest !== undefined;
+  if (continuity.status === 'new') {
+    if (!hasHistoryBinding || continuity.sourceEventIds.length !== 0 || continuity.durableFindingId !== undefined
+      || continuity.unavailableReason !== undefined) context.addIssue({ code: z.ZodIssueCode.custom,
+      path: ['status'], message: 'new continuity requires a complete empty-match snapshot and no durable ID' });
+  } else if (continuity.status === 'continuous' || continuity.status === 'reopened') {
+    if (!hasHistoryBinding || !continuity.sourceEventIds.length || !continuity.durableFindingId
+      || continuity.unavailableReason !== undefined) context.addIssue({ code: z.ZodIssueCode.custom,
+      path: ['status'], message: 'matched continuity requires its durable ID, exact snapshot and source events' });
+  } else if (!continuity.unavailableReason || continuity.durableFindingId !== undefined
+    || continuity.historySnapshotId !== undefined && continuity.historyContextDigest === undefined
+    || continuity.historyContextDigest !== undefined && continuity.historySnapshotId === undefined) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['status'],
+      message: 'unavailable continuity requires a reason and cannot claim a durable match' });
+  }
+  const origins = continuity.verifiedOriginAncestry;
+  if (origins && origins.some((origin, index) => index > 0
+    && (origins[index - 1]!.sourceKind > origin.sourceKind
+      || origins[index - 1]!.sourceKind === origin.sourceKind
+        && origins[index - 1]!.sourceEventId >= origin.sourceEventId))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['verifiedOriginAncestry'],
+      message: 'origin ancestry proofs must be sorted and unique by source kind and event ID' });
+  }
+});
+export type GroundedFindingContinuityV1 = z.infer<typeof groundedFindingContinuityV1Schema>;
+export type GroundedFindingContinuityV1Material = Omit<GroundedFindingContinuityV1, 'evidenceDigest'>;
+export function groundedFindingContinuityDigest(material: GroundedFindingContinuityV1Material): string {
+  return sha256(canonicalJson(material));
+}
+export type ReviewHeadAncestryV1 = z.infer<typeof reviewHeadAncestryV1Schema>;
+
+export interface GroundedLifecycleTransitionV1 {
+  version: 'GroundedLifecycleTransition.v1';
+  transition: 'fixed' | 'regressed';
+  currentFingerprint: string;
+  outcomeStatus: 'confirmed' | 'contradicted';
+  candidateSide: 'head' | 'base';
+  durableFindingId: string;
+  priorFindingEventId: string;
+  historySnapshotId: string;
+  historyContextDigest: string;
+  baseSha: string;
+  headSha: string;
+  changedContextDigest: string;
+  sourceWindowManifestDigest: string;
+  evidenceDigest: string;
+  currentOutcomeEvidenceDigest: string;
+  sourceCitationIds: string[];
+  causalScope?: 'introduced' | 'exacerbated';
+}
+const groundedCausalPathV2Schema = z.object({ relation: z.enum(['same-component', 'dependency-edge', 'contract-edge', 'unrelated', 'unknown']),
+  candidatePath: z.string().min(1).max(MAX_PATH_CHARACTERS), componentPath: z.string().min(1).max(MAX_PATH_CHARACTERS),
+  citationIds: uniqueBoundedIds() }).strict();
+const groundedSourceStateV2Schema = z.object({ trigger: z.enum(['present', 'absent', 'unknown']),
+  contract: z.enum(['violated', 'not-violated', 'unknown']), citationIds: uniqueBoundedIds() }).strict();
+const groundedCausalDeltaV2Schema = z.object({ kind: z.enum(['introduced', 'materially-worsened', 'unaffected', 'unknown']),
+  materiality: z.enum(['reachability', 'impact', 'frequency', 'attack-surface']).optional(),
+  citationIds: uniqueBoundedIds() }).strict().superRefine((delta, context) => {
+    if (delta.kind === 'materially-worsened' && !delta.materiality) context.addIssue({ code: z.ZodIssueCode.custom,
+      path: ['materiality'], message: 'materially-worsened requires explicit materiality' });
+  });
+const groundedScopeProofV2Schema = z.object({
+  version: z.literal(FINDING_CHANGE_SCOPE_PROOF_VERSION),
+  identity: z.object({ repository: z.string().min(3).max(500), baseSha: sha, headSha: sha,
+    findingFingerprint: z.string().min(1).max(500), candidateSide: z.enum(['head', 'base']),
+    sourceWindowManifestDigest: digest }).strict(),
+  independentVerifier: z.object({ role: z.literal('independent-grounded-verifier'),
+    status: z.literal('confirmed'), evidenceDigest: digest }).strict(),
+  rootCause: z.object({ version: z.literal(FINDING_ROOT_CAUSE_IDENTITY_VERSION),
+    componentId: z.string().min(1).max(128), behaviorId: z.string().min(1).max(128),
+    contractId: z.string().min(1).max(128), failureModeId: z.string().min(1).max(128) }).strict(),
+  causeAnchor: groundedCauseAnchorV2Schema,
+  causalPath: z.object({ relation: z.enum(['same-component', 'dependency-edge', 'contract-edge', 'unrelated', 'unknown']),
+    citationIds: uniqueBoundedIds() }).strict(),
+  baseState: groundedSourceStateV2Schema,
+  headState: groundedSourceStateV2Schema,
+  causalChange: z.object({ relation: z.enum(['introduced', 'materially-worsened', 'unaffected', 'unknown']),
+    materiality: z.enum(['reachability', 'impact', 'frequency', 'attack-surface']).optional(),
+    citationIds: uniqueBoundedIds() }).strict(),
+}).strict();
+const groundedVerificationEvidenceV2CommonShape = {
+  semanticsVersion: z.literal(GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION),
+  citations: z.array(groundedCitationV2Schema).min(1).max(64), usedCitationIds: uniqueBoundedIds(),
+  causalDiffPaths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).max(13),
+  sourceWindowManifestDigest: digest,
+};
+function refineGroundedVerificationEvidenceV2Manifest(evidence: { citations: GroundedCitationV2[];
+  usedCitationIds: string[]; sourceWindowManifestDigest: string }, context: z.RefinementCtx): void {
+  const ids = evidence.citations.map((citation) => citation.id);
+  if (new Set(ids).size !== ids.length) context.addIssue({ code: z.ZodIssueCode.custom,
+    path: ['citations'], message: 'citation manifest IDs must be unique' });
+  if (evidence.usedCitationIds.some((id) => !ids.includes(id))) context.addIssue({ code: z.ZodIssueCode.custom,
+    path: ['usedCitationIds'], message: 'used citation is outside the source manifest' });
+  if (groundedCitationManifestDigest(evidence.citations as GroundedCitationV2[]) !== evidence.sourceWindowManifestDigest) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceWindowManifestDigest'],
+      message: 'source-window manifest digest does not match its exact citations' });
+  }
+}
+const groundedConfirmedEvidenceV2Schema = z.object({
+  ...groundedVerificationEvidenceV2CommonShape,
+  violatedInvariant: boundedText(2_000), failurePath: boundedText(2_000), benignCheck: boundedText(2_000),
+  changeConnection: boundedText(2_000), rootCause: groundedRootCauseV2Schema, causeAnchor: groundedCauseAnchorV2Schema,
+  causalPath: groundedCausalPathV2Schema, baseState: groundedSourceStateV2Schema, headState: groundedSourceStateV2Schema,
+  causalDelta: groundedCausalDeltaV2Schema,
+  rootCauseEvidenceKey: z.string().regex(/^cause-evidence-v1:[a-f0-9]{64}$/u).nullable().optional(),
+  scopeProof: groundedScopeProofV2Schema, scopeDecision: groundedScopeDecisionV2Schema,
+}).strict().superRefine((evidence, context) => {
+  refineGroundedVerificationEvidenceV2Manifest(evidence, context);
+  const allowed = new Set(evidence.usedCitationIds);
+  const claims = [...evidence.causeAnchor.citationIds, ...evidence.causalPath.citationIds,
+    ...evidence.baseState.citationIds, ...evidence.headState.citationIds, ...evidence.causalDelta.citationIds];
+  if (claims.some((id) => !allowed.has(id))) context.addIssue({ code: z.ZodIssueCode.custom,
+    path: ['usedCitationIds'], message: 'structured scope evidence cites an unused source reference' });
+  if (evidence.rootCauseEvidenceKey !== evidence.scopeDecision.rootCauseEvidenceKey) context.addIssue({ code: z.ZodIssueCode.custom,
+    path: ['rootCauseEvidenceKey'], message: 'scope decision root-cause key disagrees with the evidence key' });
+  if (canonicalJson(evidence.scopeProof.rootCause) !== canonicalJson({ version: FINDING_ROOT_CAUSE_IDENTITY_VERSION, ...evidence.rootCause })
+    || canonicalJson(evidence.scopeProof.causeAnchor) !== canonicalJson(evidence.causeAnchor)
+    || evidence.scopeProof.identity.sourceWindowManifestDigest !== evidence.sourceWindowManifestDigest) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['scopeProof'], message: 'scope proof does not match its grounded evidence' });
+  }
+});
+const groundedContradictedEvidenceV2Schema = z.object({
+  ...groundedVerificationEvidenceV2CommonShape,
+  explanation: boundedText(2_000),
+}).strict().superRefine(refineGroundedVerificationEvidenceV2Manifest);
+const groundedOutcomeV2Schema = z.object({
+  fingerprint: z.string().min(1).max(500), path: z.string().min(1).max(MAX_PATH_CHARACTERS), line: positiveInteger,
+  title: boundedText(MAX_TITLE_CHARACTERS), claimType: z.enum(['generic', 'absence', 'missing-tests']),
+  severity: z.enum(['P0', 'P1', 'P2', 'P3', 'NIT']), candidateSide: z.enum(['head', 'base']).optional(),
+  status: z.enum(['confirmed', 'contradicted', 'insufficient']), reason: boundedText(2_000).optional(),
+  affectedContextDigest: digest, relatedDiffPaths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).max(13),
+  evidenceDigest: digest.optional(), evidence: z.union([groundedConfirmedEvidenceV2Schema, groundedContradictedEvidenceV2Schema]).optional(),
+  /** Exact current-head ancestry for the matched lifecycle origins; the Gate joins this to trusted history. */
+  verifiedOriginAncestry: z.array(groundedOriginAncestryV1Schema).max(2).optional(),
+  verifiedContinuity: groundedFindingContinuityV1Schema.optional(),
+  verifierRoute: groundedVerifierRouteV1Schema.optional(),
+}).strict().superRefine((outcome, context) => {
+  if ((outcome.status === 'confirmed' || outcome.status === 'contradicted')
+    && (!outcome.evidenceDigest || !outcome.evidence || !outcome.candidateSide)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['evidence'], message: 'v2 verified outcomes require candidate side and evidence' });
+  }
+  if (outcome.status === 'confirmed' && (!outcome.evidence || !('rootCause' in outcome.evidence))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['evidence'], message: 'confirmed outcomes require scope evidence' });
+  }
+  if (outcome.status === 'contradicted' && (!outcome.evidence || !('explanation' in outcome.evidence))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['evidence'], message: 'contradicted outcomes require an explanation' });
+  }
+  if (outcome.status === 'insufficient' && (outcome.evidenceDigest !== undefined || outcome.evidence !== undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['evidence'], message: 'insufficient outcomes cannot carry verification proof' });
+  }
+  const origins = outcome.verifiedOriginAncestry;
+  if (origins && origins.some((origin, index) => index > 0
+    && (origins[index - 1]!.sourceKind > origin.sourceKind
+      || origins[index - 1]!.sourceKind === origin.sourceKind
+        && origins[index - 1]!.sourceEventId >= origin.sourceEventId))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['verifiedOriginAncestry'],
+      message: 'origin ancestry proofs must be sorted and unique by source kind and event ID' });
+  }
+  // Continuity is an optional, untrusted history hint. It must have a strict shape, but a stale or
+  // forged hint cannot invalidate otherwise valid finding verification; the Gate service accepts
+  // it only after rechecking the canonical digest, exact authenticated row, and per-origin ancestry.
+  if (outcome.claimType === 'absence' && outcome.status === 'confirmed' && outcome.evidence
+    && !outcome.evidence.citations.some((citation) => citation.window?.path === outcome.path
+      && citation.window.role === 'candidate' && citation.window.exhaustive)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['evidence'], message: 'partial source windows cannot prove an absence claim' });
+  }
+});
+const groundedImportResolutionRefV1Schema = z.object({
+  importerPath: z.string().min(1).max(MAX_PATH_CHARACTERS), importerSide: z.enum(['head', 'base']),
+  importerFullContentSha256: digest, importerStatementStartLine: positiveInteger,
+  importerStatementEndLine: positiveInteger, importSpecifier: z.string().min(1).max(2_000),
+  importStatementDigest: digest,
+}).strict().refine((reference) => reference.importerStatementEndLine >= reference.importerStatementStartLine,
+  'importer statement range must be ordered');
+const groundedImportResolutionSourceV1Schema = z.object({
+  repository: z.string().min(3).max(500), revisionSha: sha, path: z.string().min(1).max(MAX_PATH_CHARACTERS),
+  presence: z.enum(['present', 'absent', 'unavailable']), sourceDigest: digest.nullable(),
+  resolutionRefs: z.array(groundedImportResolutionRefV1Schema).min(1).max(100),
+}).strict().superRefine((source, context) => {
+  if (source.presence === 'present' ? source.sourceDigest === null : source.sourceDigest !== null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceDigest'],
+      message: 'source probe digest is required only for present files' });
+  }
+  const keys = source.resolutionRefs.map((reference) => canonicalJson(reference));
+  if (new Set(keys).size !== keys.length || keys.some((key, index) => index > 0 && keys[index - 1]! >= key)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['resolutionRefs'],
+      message: 'source probe resolution references must be sorted and unique' });
+  }
+});
+const groundedFindingCandidateV2Schema = z.object({
+  fingerprint: z.string().min(1).max(500), severity: z.enum(['P0', 'P1', 'P2', 'P3', 'NIT']),
+}).strict();
+const groundedVerificationV2Schema = z.object({
+  version: z.literal(GROUNDED_VERIFICATION_V2_VERSION),
+  semanticsVersion: z.literal(GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION),
+  candidates: boundedInteger.max(MAX_TOTAL_FINDINGS), confirmed: boundedInteger.max(MAX_TOTAL_FINDINGS),
+  contradicted: boundedInteger.max(MAX_TOTAL_FINDINGS), insufficient: boundedInteger.max(MAX_TOTAL_FINDINGS),
+  unverifiedBlockerCount: boundedInteger.max(MAX_TOTAL_FINDINGS), coverageComplete: z.boolean(),
+  calls: boundedInteger.max(100),
+  /** New receipts report source API resolution probes separately; older v2 receipts remain readable. */
+  sourceResolutionProbes: boundedInteger.max(100).optional(),
+  sourceResolutionProbeManifest: z.array(groundedImportResolutionSourceV1Schema).max(100).optional(),
+  /** Original pre-filter engine candidate severities; optional only for historical v2 parsing. */
+  candidateManifest: z.array(groundedFindingCandidateV2Schema).max(MAX_TOTAL_FINDINGS).optional(),
+  budget: z.object({ totalCalls: boundedInteger.max(100), callsPerTask: boundedInteger.max(12),
+    concurrency: boundedInteger.max(18), callTimeoutMs: boundedInteger.max(180_000), stageBudgetMs: boundedInteger.max(300_000) }).strict(),
+  outcomes: z.array(groundedOutcomeV2Schema).max(MAX_TOTAL_FINDINGS),
+}).strict().superRefine((verification, context) => {
+  const outcomes = verification.outcomes;
+  if (new Set(outcomes.map((row) => row.fingerprint)).size !== outcomes.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['outcomes'],
+      message: 'v2 outcomes must uniquely bind one normalized finding identity' });
+  }
+  if (verification.candidates !== outcomes.length
+    || verification.confirmed !== outcomes.filter((row) => row.status === 'confirmed').length
+    || verification.contradicted !== outcomes.filter((row) => row.status === 'contradicted').length
+    || verification.insufficient !== outcomes.filter((row) => row.status === 'insufficient').length
+    || verification.unverifiedBlockerCount !== outcomes.filter((row) => (row.severity === 'P0' || row.severity === 'P1')
+      && (row.status === 'insufficient' || (row.status === 'confirmed' && row.evidence && 'rootCause' in row.evidence
+        && row.evidence.scopeDecision.causalScope === 'unproven'))).length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['outcomes'], message: 'v2 verification counts must account for every outcome' });
+  }
+  if (verification.calls > verification.budget.totalCalls) context.addIssue({ code: z.ZodIssueCode.custom,
+    path: ['calls'], message: 'verifier calls exceeded the recorded budget' });
+  const probeManifest = verification.sourceResolutionProbeManifest;
+  if (probeManifest !== undefined && verification.sourceResolutionProbes !== probeManifest.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceResolutionProbeManifest'],
+      message: 'source-resolution probe count must equal its canonical unique source manifest' });
+  }
+  if (probeManifest) {
+    const keys = probeManifest.map((source) => `${source.repository}\u0000${source.revisionSha}\u0000${source.path}`);
+    if (new Set(keys).size !== keys.length || keys.some((key, index) => index > 0 && keys[index - 1]! >= key)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceResolutionProbeManifest'],
+        message: 'source-resolution probes must be sorted and unique by repository, revision, and path' });
+    }
+  }
+  const candidates = verification.candidateManifest;
+  if (candidates && (candidates.length !== verification.candidates
+    || new Set(candidates.map((candidate) => candidate.fingerprint)).size !== candidates.length
+    || candidates.some((candidate, index) => index > 0 && candidates[index - 1]!.fingerprint >= candidate.fingerprint))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['candidateManifest'],
+      message: 'pre-filter candidate severity manifest must be complete, unique, and deterministically ordered' });
+  }
+});
+const groundedReviewReceiptV2Schema = z.object({
+  version: z.literal(GROUNDED_REVIEW_RECEIPT_V2_VERSION),
+  semanticsVersion: z.literal(GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION),
+  coverage: groundedCoverageReceiptSchema,
+  history: groundedHistoryReceiptV2Schema,
+  verification: groundedVerificationV2Schema,
+}).strict();
+type GroundedReviewReceiptV2 = z.infer<typeof groundedReviewReceiptV2Schema>;
+const groundedReviewReceiptSchema = z.union([groundedReviewReceiptV1Schema, groundedReviewReceiptV2Schema]);
 
 const findingSchema = z.object({
   severity: z.enum(['P0', 'P1', 'P2', 'P3', 'NIT']),
@@ -369,6 +757,8 @@ const resultSchema = z.object({
   reviewDecision: reviewDecisionV2Schema.optional(),
   /** Exact current source coverage, independently verified claims, and service-history loading receipt. */
   groundedReview: groundedReviewReceiptSchema.optional(),
+  /** Composed-only runtime observation; service binds it to the prepared config and task sources. */
+  composedResources: composedRuntimeResourcesSchema.optional(),
   /**
    * OPTIONAL, additive (Stage 0 / example-meta review-yeti telemetry work): the panel engine's own
    * wall-clock measurement of the whole run (`panelResult.panelWallClockMs` in `panelEngine.ts`),
@@ -450,6 +840,224 @@ export type WorkerReviewResult = z.infer<typeof resultSchema>;
 export type WorkerReviewPersonaEvidence = z.infer<typeof personaSchema>;
 export type TrustedWorkerReviewCoordinates = z.infer<typeof completionCoordinatesSchema>;
 
+export interface TrustedGroundedLifecycleTransitionV1 {
+  version: 'GroundedLifecycleTransition.v1';
+  kind: 'fixed' | 'regressed';
+  durableFindingId: string;
+  priorFindingEventId: string;
+  changedContextDigest: string;
+  historySnapshotId: string;
+  historyContextDigest: string;
+  currentFingerprint: string;
+  candidateSide: 'head' | 'base';
+  outcomeStatus: 'confirmed' | 'contradicted';
+  baseSha: string;
+  headSha: string;
+  sourceWindowManifestDigest: string;
+  currentOutcomeEvidenceDigest: string;
+  evidenceDigest: string;
+  causalScope?: 'introduced' | 'exacerbated';
+}
+const trustedGroundedLifecycleTransitionV1Schema = z.object({
+  version: z.literal('GroundedLifecycleTransition.v1'), kind: z.enum(['fixed', 'regressed']),
+  durableFindingId: z.string().min(1).max(128), priorFindingEventId: z.string().min(1).max(128),
+  changedContextDigest: digest, historySnapshotId: z.string().uuid(), historyContextDigest: digest,
+  currentFingerprint: z.string().min(1).max(500), candidateSide: z.enum(['head', 'base']),
+  outcomeStatus: z.enum(['confirmed', 'contradicted']), baseSha: sha, headSha: sha,
+  sourceWindowManifestDigest: digest, currentOutcomeEvidenceDigest: digest, evidenceDigest: digest,
+  causalScope: z.enum(['introduced', 'exacerbated']).optional(),
+}).strict().superRefine((transition, context) => {
+  if ((transition.kind === 'regressed') !== (transition.causalScope !== undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['causalScope'],
+      message: 'only a regressed transition carries its service-reduced introduced/exacerbated scope' });
+  }
+});
+
+/** Service-only projection of the authenticated lifecycle snapshot and its independently rechecked ancestry. */
+export interface TrustedGroundedHistoryContext {
+  snapshotId: string;
+  contextDigest: string;
+  eventIds: readonly string[];
+  currentRunId: string;
+  currentHeadSha: string;
+  expectedContinuityByFingerprint: Readonly<Record<string, GroundedFindingContinuityV1>>;
+  /** Service-rederived exact cause/repair origins for each current candidate; a generic ancestry hint is not authority. */
+  expectedOriginAncestryByFingerprint?: Readonly<Record<string, readonly GroundedOriginAncestryV1[]>>;
+  verifiedAncestry?: ReviewHeadAncestryV1;
+  /** Transitions already rechecked by the service against stored events and current exact source. */
+  expectedTransitionsByFingerprint?: Readonly<Record<string, TrustedGroundedLifecycleTransitionV1>>;
+}
+
+export interface TrustedGroundedVerifierRouting {
+  primaryModel: string;
+  disputedBlockerAdjudicatorModel?: string;
+}
+
+/** Service-authenticated pinned source state used to revalidate worker import-resolution traces. */
+export interface TrustedGroundedImportResolutionSourceV1 {
+  repository: string;
+  revisionSha: string;
+  path: string;
+  presence: 'present' | 'absent' | 'unavailable';
+  sourceDigest: string | null;
+}
+
+function sourcePathSetDigest(paths: readonly string[]): { count: number; sha256: string } {
+  return { count: paths.length, sha256: sha256(JSON.stringify(paths)) };
+}
+
+function groundedImportResolutionMatches(input: { edge: GroundedDependencyEdgeV1; revisionSha: string;
+  repository: string; expected: { state: 'resolved'; path: string } | { state: 'unresolved' };
+  workerSources: ReadonlyMap<string, GroundedImportResolutionSourceV1>;
+  trustedSources: ReadonlyMap<string, TrustedGroundedImportResolutionSourceV1> }): boolean {
+  const resolution = input.edge.resolution;
+  const candidates = groundedRelativeImportCandidates(input.edge.importerPath, input.edge.importSpecifier);
+  if (!resolution || resolution.revisionSha !== input.revisionSha || candidates.length === 0
+    || resolution.probes.map((probe) => probe.path).some((path, index) => path !== candidates[index])) return false;
+  const reference = { importerPath: input.edge.importerPath, importerSide: input.edge.importerSide,
+    importerFullContentSha256: input.edge.importerFullContentSha256,
+    importerStatementStartLine: input.edge.importerStatementStartLine,
+    importerStatementEndLine: input.edge.importerStatementEndLine, importSpecifier: input.edge.importSpecifier,
+    importStatementDigest: input.edge.importStatementDigest };
+  for (const probe of resolution.probes) {
+    const key = `${input.repository}\u0000${input.revisionSha}\u0000${probe.path}`;
+    const workerSource = input.workerSources.get(key);
+    const trustedSource = input.trustedSources.get(key);
+    const expectedPresence = probe.presence;
+    if (!workerSource || !trustedSource || workerSource.repository !== input.repository
+      || workerSource.revisionSha !== input.revisionSha || workerSource.path !== probe.path
+      || workerSource.presence !== expectedPresence || workerSource.sourceDigest !== probe.sourceDigest
+      || trustedSource.repository !== workerSource.repository || trustedSource.revisionSha !== workerSource.revisionSha
+      || trustedSource.path !== workerSource.path || trustedSource.presence !== workerSource.presence
+      || trustedSource.sourceDigest !== workerSource.sourceDigest
+      || !workerSource.resolutionRefs.some((candidate) => canonicalJson(candidate) === canonicalJson(reference))) return false;
+  }
+  if (input.expected.state === 'resolved') {
+    const last = resolution.probes.at(-1);
+    return resolution.state === 'resolved' && resolution.resolvedPath === input.expected.path
+      && resolution.probes.length <= candidates.length && last?.path === input.expected.path
+      && last.presence === 'present' && last.sourceDigest === input.edge.contractFullContentSha256
+      && resolution.probes.slice(0, -1).every((probe) => probe.presence === 'absent' && probe.sourceDigest === null);
+  }
+  return resolution.state === 'unresolved' && resolution.resolvedPath === null
+    && resolution.probes.length === candidates.length
+    && resolution.probes.every((probe) => probe.presence === 'absent' && probe.sourceDigest === null);
+}
+
+function composedRuntimeResourcesRefusal(input: { result: WorkerReviewResult; tasks: readonly ReviewTask[];
+  changedFiles: readonly ReviewChangedFile[]; coordinates: TrustedWorkerReviewCoordinates;
+  expectedConfiguration?: ComposedRuntimeResources['configuration']['value'] }): string | null {
+  const receipt = input.result.composedResources;
+  if (!receipt) return 'composed completion is missing its worker-stage runtime resource receipt';
+  if (receipt.stage !== 'worker_completion' || receipt.discoveryScope !== 'composed_engine'
+    || receipt.evidenceSemanticsVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION) {
+    return 'composed runtime resource receipt has the wrong stage or evidence semantics';
+  }
+  if (receipt.configDigest.value !== input.coordinates.configDigest || receipt.configuration.value === null
+    || input.expectedConfiguration === undefined || input.expectedConfiguration === null
+    || canonicalJson(receipt.configuration.value) !== canonicalJson(input.expectedConfiguration)) {
+    return 'composed runtime resource receipt is not bound to the service-prepared effective configuration';
+  }
+  const verifierCalls = input.result.groundedReview?.version === GROUNDED_REVIEW_RECEIPT_V2_VERSION
+    ? input.result.groundedReview.verification.calls : null;
+  if (verifierCalls === null || receipt.usage.verifierCalls.value !== verifierCalls) {
+    return 'composed runtime resource receipt does not match the observed grounded-verifier calls';
+  }
+  const taskIds = input.tasks.map(task => task.id).sort();
+  if (canonicalJson(receipt.tasks.planned) !== canonicalJson(taskIds)) {
+    return 'composed runtime resource task plan disagrees with the trusted task plan';
+  }
+  const personaById = new Map(input.result.personas.filter(persona => persona.evidenceSource !== 'shadow')
+    .map(persona => [persona.id, persona] as const));
+  const successfulPersonaIds = [...personaById.values()].filter(persona => persona.decision !== 'ERROR'
+    && persona.status !== 'ERROR').map(persona => persona.id).sort();
+  if (canonicalJson(receipt.tasks.completed) !== canonicalJson(successfulPersonaIds)
+    || successfulPersonaIds.some(id => !receipt.tasks.started.includes(id))) {
+    return 'composed runtime resource completed-task states disagree with the exact worker lanes';
+  }
+  const terminalErrorIds = [...personaById.values()].filter(persona => persona.decision === 'ERROR'
+    || persona.status === 'ERROR').map(persona => persona.id);
+  const failedTaskIds = new Set([...receipt.tasks.blocked, ...receipt.tasks.failed, ...receipt.tasks.interrupted]);
+  if (terminalErrorIds.some(id => !failedTaskIds.has(id))) {
+    return 'composed runtime resource task failures disagree with the exact worker lanes';
+  }
+  const taskById = new Map(input.tasks.map(task => [task.id, task] as const));
+  const deliveredComplete = new Set<string>();
+  for (const taskId of receipt.tasks.completed) {
+    const task = taskById.get(taskId);
+    const persona = personaById.get(taskId);
+    if (!task || !persona?.sourceDelivery) continue;
+    const validated = validateTaskSourceReceipt(persona.sourceDelivery, { taskId, paths: task.paths,
+      files: input.changedFiles, headSha: input.coordinates.headSha, baseSha: input.coordinates.baseSha });
+    if (validated?.complete) deliveredComplete.add(taskId);
+  }
+  const assignedPaths = [...new Set(input.tasks.flatMap(task => task.paths))].sort();
+  const investigatedPaths = assignedPaths.filter(path => {
+    const owners = input.tasks.filter(task => task.paths.includes(path));
+    return owners.length > 0 && owners.every(task => receipt.tasks.completed.includes(task.id)
+      && deliveredComplete.has(task.id));
+  });
+  const investigated = new Set(investigatedPaths);
+  const remainingPaths = assignedPaths.filter(path => !investigated.has(path));
+  if (canonicalJson(receipt.coverage.assignedPaths) !== canonicalJson(sourcePathSetDigest(assignedPaths))
+    || canonicalJson(receipt.coverage.investigatedPaths) !== canonicalJson(sourcePathSetDigest(investigatedPaths))
+    || canonicalJson(receipt.coverage.remainingPaths) !== canonicalJson(sourcePathSetDigest(remainingPaths))) {
+    return 'composed runtime resource path coverage disagrees with the trusted plan and source-delivery receipts';
+  }
+  if (input.result.coverageComplete && (receipt.engineExecutionState !== 'complete' || remainingPaths.length > 0)) {
+    return 'worker claims complete coverage with incomplete composed execution or source delivery';
+  }
+  return null;
+}
+
+function groundedVerifierRouteRefusal(result: WorkerReviewResult, contract: TrustedReviewCoverageContract): string | null {
+  const receipt = result.groundedReview;
+  if (!receipt || receipt.version !== GROUNDED_REVIEW_RECEIPT_V2_VERSION) return null;
+  const routing = contract.groundedVerifierRouting;
+  const routes = receipt.verification.outcomes.filter((outcome) => outcome.verifierRoute !== undefined);
+  if (!routing) return routes.length > 0 ? 'verifier route receipt lacks its trusted prepared model configuration' : null;
+  if (typeof routing.primaryModel !== 'string' || !routing.primaryModel.trim()
+    || (routing.disputedBlockerAdjudicatorModel !== undefined
+      && (typeof routing.disputedBlockerAdjudicatorModel !== 'string' || !routing.disputedBlockerAdjudicatorModel.trim()))) {
+    return 'trusted verifier route configuration is malformed';
+  }
+  const tuples = contract.authenticatedDisputes ?? [];
+  const paths = new Set(contract.authenticatedDisputePaths ?? []);
+  for (const outcome of receipt.verification.outcomes) {
+    const exactDisputes = tuples.filter((tuple) => tuple.findingFingerprint === outcome.fingerprint);
+    const disputed = (outcome.severity === 'P0' || outcome.severity === 'P1') && exactDisputes.length === 1
+      && paths.has(outcome.path) && exactDisputes[0]!.priorFindingEventId.length > 0
+      && /^[a-f0-9]{64}$/u.test(exactDisputes[0]!.priorEvidenceDigest);
+    const route = outcome.verifierRoute;
+    if (!route) {
+      if (disputed && routing.disputedBlockerAdjudicatorModel && outcome.status !== 'insufficient') {
+        return 'configured disputed-blocker adjudicator route is missing from verified outcome';
+      }
+      continue;
+    }
+    if (route.configuredAlternateModel !== (routing.disputedBlockerAdjudicatorModel ?? null)) {
+      return 'worker disputed-blocker route disagrees with the service-prepared alternate model';
+    }
+    if (disputed) {
+      if (route.purpose !== 'disputed-blocker-recheck' || route.requestedRole !== 'disputed-blocker-adjudicator') {
+        return 'authenticated disputed blocker was not routed as a disputed-blocker recheck';
+      }
+      if (routing.disputedBlockerAdjudicatorModel) {
+        if (route.appliedRole !== 'disputed-blocker-adjudicator'
+          || route.selectedModel !== routing.disputedBlockerAdjudicatorModel) {
+          return 'configured disputed blocker did not use the selected adjudicator route';
+        }
+      } else if (route.appliedRole !== 'primary' || route.selectedModel !== routing.primaryModel) {
+        return 'unconfigured disputed-blocker route must stay on primary model';
+      }
+    } else if (route.purpose !== 'primary' || route.requestedRole !== 'primary' || route.appliedRole !== 'primary'
+      || route.selectedModel !== routing.primaryModel) {
+      return 'alternate verifier route lacks an exact authenticated disputed P0/P1 context';
+    }
+  }
+  return null;
+}
+
 export interface TrustedReviewCoverageContract {
   /** The service-owned run identity that the authenticated worker result must exactly match. */
   expectedCoordinates: TrustedWorkerReviewCoordinates;
@@ -459,6 +1067,17 @@ export interface TrustedReviewCoverageContract {
   reviewEngine?: 'panel' | 'composed' | 'shadow';
   /** Set only from the checked, service-prepared effective worker config. */
   reviewDecisionPolicy?: typeof REVIEW_SEVERITY_POLICY_V2;
+  /** Authenticated DB/history resolution; worker history hints alone never grant continuity. */
+  groundedHistory?: TrustedGroundedHistoryContext;
+  /** Service-authenticated disputed finding identity and its affected path disclosure. */
+  authenticatedDisputes?: readonly AuthenticatedDisputedBlockerV1[];
+  authenticatedDisputePaths?: readonly string[];
+  /** Effective model route from the service-prepared configuration, not worker self-report. */
+  groundedVerifierRouting?: TrustedGroundedVerifierRouting;
+  /** Actual pinned provider observations, independently fetched by authoritative completion context. */
+  expectedImportResolutionSources?: readonly TrustedGroundedImportResolutionSourceV1[];
+  /** Exact effective configuration receipt independently prepared by the service for composed mode. */
+  composedEffectiveConfiguration?: ComposedRuntimeResources['configuration']['value'];
   composedChangedPaths?: readonly string[];
   composedMaxTasks?: number;
   /** Exact changed-file evidence already read by the service for the admitted head. */
@@ -547,6 +1166,10 @@ export interface DerivedWorkerReviewEvidence {
   valid: true;
   canonical: CanonicalArbitration;
   evidence: ReviewGateEvidence;
+  /** History hints that match both the verified current outcome and the trusted DB projection. */
+  groundedContinuity?: GroundedFindingContinuityV1[];
+  /** Lifecycle transitions reduced from exact current proof plus trusted DB/repository proof. */
+  groundedTransitions?: GroundedLifecycleTransitionV1[];
 }
 
 export interface InvalidWorkerReviewEvidence {
@@ -993,6 +1616,442 @@ export function storedEvidenceShipCompleteReason(
   return storedLanesRefusal(result, roster.length);
 }
 
+function groundedReviewReceiptV2Error(input: { receipt: GroundedReviewReceiptV2; result: WorkerReviewResult;
+  changedFiles: readonly ReviewChangedFile[]; headSha: string; baseSha: string; repository: string;
+  expectedImportResolutionSources?: readonly TrustedGroundedImportResolutionSourceV1[] }): string | null {
+  const { receipt, result, changedFiles, headSha, baseSha, repository } = input;
+  if (receipt.semanticsVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
+    || receipt.verification.semanticsVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION) {
+    return 'grounded v2 evidence semantics version is unsupported';
+  }
+  if (receipt.verification.coverageComplete !== (receipt.coverage.complete && receipt.verification.unverifiedBlockerCount === 0)) {
+    return 'grounded v2 coverage status is inconsistent';
+  }
+  if (result.coverageComplete && (!receipt.coverage.complete || !receipt.verification.coverageComplete)) {
+    return 'worker claims complete coverage with an unverified v2 blocker or source gap';
+  }
+  const changedByPath = new Map(changedFiles.map((file) => [file.path, file]));
+  const workerResolutionSources = new Map((receipt.verification.sourceResolutionProbeManifest ?? []).map((source) =>
+    [`${source.repository}\u0000${source.revisionSha}\u0000${source.path}`, source] as const));
+  const trustedResolutionSources = new Map<string, TrustedGroundedImportResolutionSourceV1>();
+  const expectedResolutionSources = input.expectedImportResolutionSources;
+  if (expectedResolutionSources) {
+    let previousKey = '';
+    for (const source of expectedResolutionSources) {
+      const key = `${source.repository}\u0000${source.revisionSha}\u0000${source.path}`;
+      if (source.repository !== repository || ![headSha, baseSha].includes(source.revisionSha)
+        || !source.path || source.path.startsWith('/') || source.path.split('/').some((part) => part === '' || part === '.' || part === '..')
+        || !['present', 'absent', 'unavailable'].includes(source.presence)
+        || (source.presence === 'present' ? !/^[a-f0-9]{64}$/u.test(source.sourceDigest ?? '') : source.sourceDigest !== null)
+        || (previousKey && key <= previousKey) || trustedResolutionSources.has(key)) {
+        return 'trusted pinned source-resolution context is malformed or unsorted';
+      }
+      previousKey = key;
+      trustedResolutionSources.set(key, source);
+    }
+  }
+  const candidateManifest = receipt.verification.candidateManifest;
+  if (receipt.verification.candidates > 0 && !candidateManifest) {
+    return 'grounded v2 receipt lacks the original pre-filter candidate severity manifest';
+  }
+  const candidateSeverityByFingerprint = new Map(candidateManifest?.map((candidate) =>
+    [candidate.fingerprint, candidate.severity] as const) ?? []);
+  for (const outcome of receipt.verification.outcomes) {
+    if (candidateSeverityByFingerprint.get(outcome.fingerprint) !== outcome.severity) {
+      return 'grounded v2 outcome severity disagrees with its original engine candidate';
+    }
+  }
+  const currentFindings = result.personas.filter((persona) => persona.evidenceSource !== 'shadow')
+    .flatMap((persona) => persona.findings).map((finding) => {
+    const claimType = findingClaimType({ path: finding.path, title: finding.title });
+    return { fingerprint: findingFingerprintForClaimType({ path: finding.path, title: finding.title }, claimType),
+      severity: publishFinding(finding as ReviewFinding, { severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2 }).severity, finding };
+  });
+  const findingsByFingerprint = new Map<string, typeof currentFindings>();
+  for (const row of currentFindings) {
+    const rows = findingsByFingerprint.get(row.fingerprint) ?? [];
+    rows.push(row);
+    findingsByFingerprint.set(row.fingerprint, rows);
+  }
+  const exactCurrentLaneFinding = (fingerprint: string, severity: string) =>
+    (findingsByFingerprint.get(fingerprint) ?? []).some((row) => row.severity === severity);
+  for (const row of currentFindings) {
+    if ((row.severity === 'P0' || row.severity === 'P1')
+      && !receipt.verification.outcomes.some((outcome) => outcome.fingerprint === row.fingerprint
+        && outcome.severity === row.severity && outcome.status === 'confirmed')) {
+      return 'current blocking finding lacks an exact normalized v2 verification outcome';
+    }
+  }
+  let recomputedUnverifiedBlockers = 0;
+  for (const outcome of receipt.verification.outcomes) {
+    const normalizedClaimType = findingClaimType({ path: outcome.path, title: outcome.title });
+    if (outcome.claimType !== normalizedClaimType
+      || findingFingerprintForClaimType({ path: outcome.path, title: outcome.title }, outcome.claimType) !== outcome.fingerprint) {
+      return 'grounded v2 outcome identity does not match its normalized lane claim';
+    }
+    const sameIdentityFindings = findingsByFingerprint.get(outcome.fingerprint) ?? [];
+    if (sameIdentityFindings.length > 0 && !exactCurrentLaneFinding(outcome.fingerprint, outcome.severity)) {
+      return 'grounded v2 outcome severity does not match its normalized current lane finding';
+    }
+    const changed = changedByPath.get(outcome.path);
+    if (!changed || outcome.relatedDiffPaths.some((path) => !changedByPath.has(path))
+      || new Set(outcome.relatedDiffPaths).size !== outcome.relatedDiffPaths.length) {
+      return 'grounded v2 outcome references source outside the trusted changed set';
+    }
+    const currentAffectedContextDigest = groundedAffectedContextDigest(outcome, changedFiles, outcome.relatedDiffPaths);
+    if (currentAffectedContextDigest !== outcome.affectedContextDigest) return 'grounded v2 outcome context is stale';
+    if (outcome.status === 'insufficient') {
+      if (outcome.severity === 'P0' || outcome.severity === 'P1') recomputedUnverifiedBlockers += 1;
+      if (exactCurrentLaneFinding(outcome.fingerprint, outcome.severity)) return 'unverified v2 outcome remains in published findings';
+      continue;
+    }
+    const candidateProof = typeof changed.patch === 'string' && outcome.candidateSide
+      ? groundedCandidateHunkProof({ patch: changed.patch, candidateLine: outcome.line, candidateSide: outcome.candidateSide }) : null;
+    if (!candidateProof) return 'grounded v2 candidate line has no unique exact added/deleted hunk mapping';
+    const evidence = outcome.evidence!;
+    let recomputedScope: FindingChangeScopeDecision | undefined;
+    const citations = evidence.citations as GroundedCitationV2[];
+    if (evidence.semanticsVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
+      || groundedCitationManifestDigest(citations) !== evidence.sourceWindowManifestDigest) {
+      return 'grounded v2 outcome manifest or semantics digest is invalid';
+    }
+    const citationsById = new Map(citations.map((citation) => [citation.id, citation]));
+    if (citationsById.size !== citations.length || evidence.usedCitationIds.some((id) => !citationsById.has(id))) {
+      return 'grounded v2 citation allow-list contains duplicate or unresolved references';
+    }
+    for (const citation of citations) {
+      if (!isValidGroundedCitationV2(citation) || citation.repository !== repository
+        || citation.headSha !== headSha || citation.baseSha !== baseSha
+        || citation.revisionSha !== (citation.side === 'base' ? baseSha : headSha)) {
+        return 'grounded v2 citation is not bound to the trusted repository revisions';
+      }
+      if (citation.presence === 'absent') {
+        const marker = changedByPath.get(citation.path)?.sourcePresence;
+        if (!marker || marker.repository !== repository || marker.path !== citation.path
+          || marker.headSha !== headSha || marker.baseSha !== baseSha || marker.absentSide !== citation.side
+          || marker.patchDigest !== sha256(changedByPath.get(citation.path)?.patch ?? '')
+          || sha256(canonicalJson(marker)) !== citation.sourceDigest) {
+          return 'grounded v2 absence citation is not bound to trusted source-presence evidence';
+        }
+      }
+      if (citation.side === 'diff') {
+        const file = changedByPath.get(citation.path);
+        if (!file || typeof file.patch !== 'string'
+          || citation.sourceDigest !== sha256Bytes(Buffer.from(file.patch, 'utf8'))) {
+          return 'grounded v2 diff citation does not match the exact admitted patch';
+        }
+        const expectedRegionDigest = citation.path === outcome.path ? candidateProof.regionDigest : groundedPatchRegionDigest(file.patch);
+        if (!expectedRegionDigest || citation.regionDigest !== expectedRegionDigest) {
+          return 'grounded v2 diff region does not match the admitted patch hunk manifest';
+        }
+      }
+    }
+
+    const sourceBytesBySide = new Map<string, number>();
+    const evidencePaths = new Set<string>();
+    const contractIds = new Set<string>();
+    let totalEvidenceBytes = 0;
+    for (const citation of citations) {
+      evidencePaths.add(citation.path);
+      if (citation.window) {
+        const key = `${citation.path}:${citation.side}`;
+        const next = (sourceBytesBySide.get(key) ?? 0) + citation.window.byteLength;
+        sourceBytesBySide.set(key, next);
+        if (next > MAX_CHANGED_FILE_PATCH_BYTES) return 'grounded v2 windows exceed the existing per-file-side byte limit';
+        totalEvidenceBytes += citation.window.byteLength;
+        if (citation.window.role === 'dependency-contract' && citation.window.mapping.kind === 'dependency-contract') {
+          const edge = citation.window.mapping.edge;
+          contractIds.add(`${edge.importerPath}:${edge.importSpecifier}`);
+          const forwardEdge = edge.importerPath === outcome.path && edge.resolvedPath === citation.path;
+          const deletedContractReverseEdge = outcome.candidateSide === 'base' && edge.resolvedPath === outcome.path
+            && edge.resolvedPath === citation.path && edge.importerPath !== outcome.path && citation.side === 'base';
+          if (!forwardEdge && !deletedContractReverseEdge) return 'grounded v2 dependency edge has the wrong caller/contract paths';
+          if (deletedContractReverseEdge && !groundedImportResolutionMatches({ edge, revisionSha: baseSha,
+            repository, expected: { state: 'resolved', path: outcome.path },
+            workerSources: workerResolutionSources, trustedSources: trustedResolutionSources })
+            && (outcome.severity === 'P0' || outcome.severity === 'P1')) {
+            return 'material deleted-contract evidence does not prove the unique active base import target';
+          }
+          const importerCitation = citations.find((candidate) => candidate.window && candidate.path === edge.importerPath
+            && candidate.side === edge.importerSide && candidate.window.fullContentSha256 === edge.importerFullContentSha256
+            && candidate.window.role === 'dependency-caller' && candidate.window.mapping.kind === 'dependency-contract'
+            && canonicalJson(candidate.window.mapping.edge) === canonicalJson(edge));
+          if (!importerCitation) return 'grounded v2 dependency edge lacks its exact importer source identity';
+          if (deletedContractReverseEdge) {
+            const headCaller = citations.find((candidate) => candidate.window && candidate.path === edge.importerPath
+              && candidate.side === 'head' && candidate.window.role === 'dependency-caller'
+              && candidate.window.mapping.kind === 'dependency-contract');
+            if (edge.importerSide !== 'base' || !headCaller?.window || headCaller.window.fullContentSha256 !== edge.importerFullContentSha256) {
+              return 'deleted-contract evidence lacks the exact unchanged caller on the current head';
+            }
+            const currentEdge = headCaller.window.mapping.kind === 'dependency-contract' ? headCaller.window.mapping.edge : null;
+            if (!currentEdge) return 'deleted-contract evidence lacks its current caller edge';
+            if (!groundedImportResolutionMatches({ edge: currentEdge, revisionSha: headSha,
+              repository, expected: { state: 'unresolved' },
+              workerSources: workerResolutionSources, trustedSources: trustedResolutionSources })
+              && (outcome.severity === 'P0' || outcome.severity === 'P1')) {
+              return 'material deleted-contract evidence does not prove absence of every current import target';
+            }
+            const baseLink = { importerPath: edge.importerPath, importSpecifier: edge.importSpecifier,
+              contractSymbols: edge.contractSymbols, resolvedPath: edge.resolvedPath,
+              contractFullContentSha256: edge.contractFullContentSha256,
+              definitionStartLine: edge.definitionStartLine, definitionEndLine: edge.definitionEndLine,
+              definitionSha256: edge.definitionSha256, importStatementDigest: edge.importStatementDigest,
+              originRegionDigest: edge.originRegionDigest };
+            const headLink = currentEdge && { importerPath: currentEdge.importerPath, importSpecifier: currentEdge.importSpecifier,
+              contractSymbols: currentEdge.contractSymbols, resolvedPath: currentEdge.resolvedPath,
+              contractFullContentSha256: currentEdge.contractFullContentSha256,
+              definitionStartLine: currentEdge.definitionStartLine, definitionEndLine: currentEdge.definitionEndLine,
+              definitionSha256: currentEdge.definitionSha256, importStatementDigest: currentEdge.importStatementDigest,
+              originRegionDigest: currentEdge.originRegionDigest };
+            if (currentEdge.importerSide !== 'head' || canonicalJson(baseLink) !== canonicalJson(headLink)) {
+              return 'deleted-contract evidence has a stale or different current caller edge';
+            }
+          }
+          if (edge.resolvedPath !== citation.path || edge.contractFullContentSha256 !== citation.window.fullContentSha256
+            || edge.definitionStartLine > citation.window.endLine || edge.definitionEndLine < citation.window.startLine) {
+            return 'grounded v2 contract window does not cover the resolved definition';
+          }
+        }
+      }
+      if (citation.side === 'diff') totalEvidenceBytes += Buffer.byteLength(changedByPath.get(citation.path)?.patch ?? '', 'utf8');
+    }
+    if (sourceBytesBySide.size > 26 || totalEvidenceBytes > 180_000 || evidencePaths.size > 13 || contractIds.size > 12) {
+      return 'grounded v2 evidence exceeds an existing file, import, or aggregate byte bound';
+    }
+
+    const candidateWindowCitation = citations.find((citation) => citation.path === outcome.path
+      && citation.side === outcome.candidateSide && citation.window?.role === 'candidate');
+    const oppositeSide = outcome.candidateSide === 'head' ? 'base' : 'head';
+    const counterpartCitation = citations.find((citation) => citation.path === outcome.path && citation.side === oppositeSide
+      && (citation.presence === 'absent' || citation.window?.role === (oppositeSide === 'base' ? 'mapped-base' : 'mapped-head')));
+    const candidateDiff = citations.find((citation) => citation.path === outcome.path && citation.side === 'diff'
+      && citation.regionDigest === candidateProof.regionDigest);
+    if (!candidateWindowCitation?.window || candidateWindowCitation.window.regionDigest !== candidateProof.regionDigest
+      || canonicalJson(candidateWindowCitation.window.mapping) !== canonicalJson(candidateProof.mapping)
+      || outcome.line < candidateWindowCitation.window.startLine || outcome.line > candidateWindowCitation.window.endLine
+      || !counterpartCitation || !candidateDiff
+      || !evidence.usedCitationIds.includes(candidateWindowCitation.id)
+      || !evidence.usedCitationIds.includes(counterpartCitation.id) || !evidence.usedCitationIds.includes(candidateDiff.id)) {
+      return 'grounded v2 proof lacks the exact candidate window, mapped old/new side, or causal hunk';
+    }
+    if (outcome.candidateSide === 'base' && candidateProof.mapping.kind === 'changed-hunk'
+      && candidateProof.mapping.relation === 'deletion-gap' && counterpartCitation.presence !== 'absent'
+      && counterpartCitation.window?.role !== 'mapped-head') return 'grounded v2 deletion proof lacks current head gap evidence';
+    if ('rootCause' in evidence) {
+      if ((outcome.candidateSide === 'base' && evidence.causeAnchor.side !== 'base')
+        || (outcome.candidateSide === 'head' && evidence.causeAnchor.side !== 'head')) {
+        return 'grounded v2 cause anchor side disagrees with the candidate hunk';
+      }
+      const anchorCitation = evidence.causeAnchor.citationIds.map((id) => citationsById.get(id)).find((citation) => citation?.window
+        && citation.path === evidence.causeAnchor.componentPath && citation.side === evidence.causeAnchor.side
+        && citation.window.startLine <= evidence.causeAnchor.startLine && citation.window.endLine >= evidence.causeAnchor.endLine);
+      if (!anchorCitation || !evidence.usedCitationIds.includes(anchorCitation.id)) return 'grounded v2 cause anchor lacks exact cited source';
+      if (evidence.causalPath.candidatePath !== outcome.path || evidence.causalPath.componentPath !== evidence.causeAnchor.componentPath
+        || !evidence.causalPath.citationIds.every((id) => evidence.usedCitationIds.includes(id))) {
+        return 'grounded v2 causal path does not match its candidate and anchor sources';
+      }
+      if (!evidence.baseState.citationIds.every((id) => evidence.usedCitationIds.includes(id))
+        || !evidence.headState.citationIds.every((id) => evidence.usedCitationIds.includes(id))
+        || !evidence.causalDelta.citationIds.every((id) => evidence.usedCitationIds.includes(id))) {
+        return 'grounded v2 state or delta assertion references an uncited source';
+      }
+      const scopeProof = evidence.scopeProof as FindingChangeScopeProofV1;
+      if (scopeProof.identity.repository !== repository || scopeProof.identity.baseSha !== baseSha
+        || scopeProof.identity.headSha !== headSha || scopeProof.identity.findingFingerprint !== outcome.fingerprint
+        || scopeProof.identity.candidateSide !== outcome.candidateSide
+        || scopeProof.identity.sourceWindowManifestDigest !== evidence.sourceWindowManifestDigest) {
+        return 'grounded v2 scope proof identity does not match the trusted current review';
+      }
+      if (canonicalJson(scopeProof.rootCause) !== canonicalJson({ version: FINDING_ROOT_CAUSE_IDENTITY_VERSION, ...evidence.rootCause })
+        || canonicalJson(scopeProof.causeAnchor) !== canonicalJson(evidence.causeAnchor)
+        || scopeProof.causalPath.relation !== evidence.causalPath.relation
+        || canonicalJson(scopeProof.causalPath.citationIds) !== canonicalJson(evidence.causalPath.citationIds)
+        || canonicalJson(scopeProof.baseState) !== canonicalJson(evidence.baseState)
+        || canonicalJson(scopeProof.headState) !== canonicalJson(evidence.headState)
+        || scopeProof.causalChange.relation !== evidence.causalDelta.kind
+        || scopeProof.causalChange.materiality !== evidence.causalDelta.materiality
+        || canonicalJson(scopeProof.causalChange.citationIds) !== canonicalJson(evidence.causalDelta.citationIds)) {
+        return 'grounded v2 causal-scope proof disagrees with source-bound outcome evidence';
+      }
+      const trustedProofDigest = findingChangeScopeProofDigest(scopeProof);
+      recomputedScope = classifyFindingChangeScope({
+        expected: { repository, baseSha, headSha, findingFingerprint: outcome.fingerprint,
+          candidateSide: outcome.candidateSide!, candidatePath: outcome.path },
+        proof: scopeProof, trustedProofDigest, sourceWindowManifestDigest: evidence.sourceWindowManifestDigest,
+        citations,
+      });
+      if (canonicalJson(recomputedScope) !== canonicalJson(evidence.scopeDecision)
+        || recomputedScope.rootCauseEvidenceKey !== evidence.rootCauseEvidenceKey) {
+        return 'grounded v2 causal-scope decision failed trusted proof re-reduction';
+      }
+    }
+    const evidenceDigest = sha256(canonicalJson({ fingerprint: outcome.fingerprint, currentAffectedContextDigest, evidence }));
+    if (evidenceDigest !== outcome.evidenceDigest) return 'grounded v2 verification evidence digest is invalid';
+    if (outcome.status === 'confirmed' && !('rootCause' in evidence)) return 'confirmed v2 outcome lacks causal scope proof';
+    const scope = recomputedScope;
+    if (outcome.severity === 'P0' || outcome.severity === 'P1') {
+      if (outcome.status === 'confirmed' && scope?.causalScope === 'unproven') recomputedUnverifiedBlockers += 1;
+      if ((outcome.status === 'confirmed' && (scope?.causalScope === 'preexisting' || scope?.causalScope === 'unproven')
+        || outcome.status === 'contradicted') && exactCurrentLaneFinding(outcome.fingerprint, outcome.severity)) {
+        return 'baseline, unproven, or contradicted v2 blocker remains in published findings';
+      }
+      if (outcome.status === 'confirmed' && (!scope || !['introduced', 'exacerbated', 'preexisting', 'unproven'].includes(scope.causalScope))) {
+        return 'material v2 outcome has no trusted causal classification';
+      }
+      if (outcome.status === 'confirmed' && (scope?.causalScope === 'introduced' || scope?.causalScope === 'exacerbated')
+        && !exactCurrentLaneFinding(outcome.fingerprint, outcome.severity)) {
+        return 'new or worsened v2 blocker lacks its exact normalized current lane finding';
+      }
+    }
+    if (outcome.status === 'confirmed' && (scope?.causalScope === 'preexisting' || scope?.causalScope === 'unproven')
+      && exactCurrentLaneFinding(outcome.fingerprint, outcome.severity)) return 'baseline or unproven v2 finding remains in published findings';
+    if ((outcome.status === 'confirmed' && (scope?.causalScope === 'introduced' || scope?.causalScope === 'exacerbated')
+      && !exactCurrentLaneFinding(outcome.fingerprint, outcome.severity))
+      || (outcome.status === 'contradicted' && exactCurrentLaneFinding(outcome.fingerprint, outcome.severity))) {
+      return 'grounded v2 findings were not reconciled with the independent outcome';
+    }
+  }
+  if (recomputedUnverifiedBlockers !== receipt.verification.unverifiedBlockerCount) {
+    return 'grounded v2 unverified blocker count disagrees with source-scope reduction';
+  }
+  return null;
+}
+
+function matchedOriginAncestryForOutcome(input: { outcome: GroundedReviewReceiptV2['verification']['outcomes'][number];
+  trusted: TrustedGroundedHistoryContext; kinds: readonly ('cause' | 'repair')[];
+  currentHeadSha: string; eventIds: ReadonlySet<string> }): GroundedOriginAncestryV1[] | undefined {
+  if (input.kinds.length === 0) return undefined;
+  const supplied = input.outcome.verifiedOriginAncestry;
+  const expected = input.trusted.expectedOriginAncestryByFingerprint?.[input.outcome.fingerprint];
+  const parsedExpected = z.array(groundedOriginAncestryV1Schema).max(2).safeParse(expected);
+  if (!supplied || !parsedExpected.success || supplied.length !== input.kinds.length
+    || parsedExpected.data.length !== input.kinds.length
+    || canonicalJson(supplied) !== canonicalJson(parsedExpected.data)) return undefined;
+  if (supplied.some((origin, index) => origin.sourceKind !== input.kinds[index]
+    || origin.result !== 'ancestor' || origin.currentHeadSha !== input.currentHeadSha
+    || origin.currentHeadSha !== input.trusted.currentHeadSha || !input.eventIds.has(origin.sourceEventId))) return undefined;
+  return parsedExpected.data;
+}
+
+function hasNoExpectedOriginAncestry(input: { outcome: GroundedReviewReceiptV2['verification']['outcomes'][number];
+  continuity: GroundedFindingContinuityV1; trusted: TrustedGroundedHistoryContext }): boolean {
+  const expected = input.trusted.expectedOriginAncestryByFingerprint?.[input.outcome.fingerprint];
+  return (input.outcome.verifiedOriginAncestry === undefined || input.outcome.verifiedOriginAncestry.length === 0)
+    && (input.continuity.verifiedOriginAncestry === undefined || input.continuity.verifiedOriginAncestry.length === 0)
+    && (expected === undefined || Array.isArray(expected) && expected.length === 0);
+}
+
+function groundedContinuityForGate(input: { result: WorkerReviewResult; contract: TrustedReviewCoverageContract;
+  coordinates: TrustedWorkerReviewCoordinates }): { accepted: GroundedFindingContinuityV1[];
+  transitions: GroundedLifecycleTransitionV1[] } {
+  const receipt = input.result.groundedReview;
+  const trusted = input.contract.groundedHistory;
+  if (!receipt || receipt.version !== GROUNDED_REVIEW_RECEIPT_V2_VERSION || !trusted) return { accepted: [], transitions: [] };
+  if (!/^run_[a-f0-9]{32}$/u.test(trusted.currentRunId) || trusted.currentRunId !== input.coordinates.runId
+    || trusted.currentHeadSha !== input.coordinates.headSha
+    || !z.string().uuid().safeParse(trusted.snapshotId).success || !/^[a-f0-9]{64}$/u.test(trusted.contextDigest)
+    || !Array.isArray(trusted.eventIds) || trusted.eventIds.length > 4_096 || new Set(trusted.eventIds).size !== trusted.eventIds.length
+    || trusted.eventIds.some((id) => typeof id !== 'string' || id.length === 0 || id.length > 128)) {
+    return { accepted: [], transitions: [] };
+  }
+  const receiptHistory = receipt.history;
+  if (receiptHistory.status !== 'complete' || receiptHistory.snapshotId !== trusted.snapshotId
+    || receiptHistory.contextDigest !== trusted.contextDigest) return { accepted: [], transitions: [] };
+  if (trusted.verifiedAncestry && (trusted.verifiedAncestry.currentHeadSha !== trusted.currentHeadSha
+    || !reviewHeadAncestryV1Schema.safeParse(trusted.verifiedAncestry).success)) {
+    return { accepted: [], transitions: [] };
+  }
+  const eventIds = new Set(trusted.eventIds);
+  const accepted: GroundedFindingContinuityV1[] = [];
+  const transitions: GroundedLifecycleTransitionV1[] = [];
+  for (const outcome of receipt.verification.outcomes) {
+    const hint = outcome.verifiedContinuity;
+    if (hint && hint.status !== 'unavailable' && outcome.status === 'confirmed') {
+      const expected = trusted.expectedContinuityByFingerprint[hint.currentFingerprint];
+      const { evidenceDigest: hintDigest, ...hintMaterial } = hint;
+      const expectedMaterial = expected && (({ evidenceDigest: _expectedDigest, ...material }) => material)(expected);
+      const expectedDigestValid = Boolean(expected && expectedMaterial
+        && expected.evidenceDigest === groundedFindingContinuityDigest(expectedMaterial));
+      const hintEvidence = outcome.evidence;
+      const anchorBound = Boolean(hintEvidence && hint.causeAnchor.citationIds.length > 0
+        && hint.causeAnchor.citationIds.every((id) => {
+          const citation = hintEvidence.citations.find((candidate) => candidate.id === id);
+          const window = citation?.window;
+          return hintEvidence!.usedCitationIds.includes(id) && Boolean(window
+            && window.path === hint.causeAnchor.componentPath && window.side === hint.causeAnchor.side
+            && window.startLine <= hint.causeAnchor.startLine && window.endLine >= hint.causeAnchor.endLine);
+        }));
+      const outcomeCauseBound = Boolean(hintEvidence && (outcome.status === 'confirmed'
+        ? 'rootCause' in hintEvidence && canonicalJson(hint.rootCause) === canonicalJson(hintEvidence.rootCause)
+          && canonicalJson(hint.causeAnchor) === canonicalJson(hintEvidence.causeAnchor)
+        : outcome.status === 'contradicted' && anchorBound));
+      const requiredKinds: readonly ('cause' | 'repair')[] = hint.status === 'continuous' ? ['cause']
+        : hint.status === 'reopened' ? ['cause', 'repair'] : [];
+      const matchedOrigins = requiredKinds.length > 0
+        ? matchedOriginAncestryForOutcome({ outcome, trusted, kinds: requiredKinds,
+          currentHeadSha: input.coordinates.headSha, eventIds })
+        : undefined;
+      const originContinuityBound = requiredKinds.length > 0
+        ? Boolean(matchedOrigins && hint.verifiedOriginAncestry
+          && canonicalJson(hint.verifiedOriginAncestry) === canonicalJson(outcome.verifiedOriginAncestry)
+          && canonicalJson(hint.sourceEventIds) === canonicalJson(matchedOrigins.map((origin) => origin.sourceEventId).sort()))
+        : hint.status === 'new' && hasNoExpectedOriginAncestry({ outcome, continuity: hint, trusted });
+      if (expected && groundedFindingContinuityV1Schema.safeParse(expected).success && expectedDigestValid
+        && groundedFindingContinuityV1Schema.safeParse(hint).success
+        && hintDigest === groundedFindingContinuityDigest(hintMaterial)
+        && outcome.evidenceDigest === hint.currentOutcomeEvidenceDigest && outcomeCauseBound
+        && expected.currentFingerprint === hint.currentFingerprint
+        && canonicalJson(expected) === canonicalJson(hint)
+        && hint.historySnapshotId === trusted.snapshotId && hint.historyContextDigest === trusted.contextDigest
+        && hint.sourceEventIds.every((id) => eventIds.has(id))
+        && originContinuityBound) accepted.push(hint);
+    }
+
+    const trustedTransition = trusted.expectedTransitionsByFingerprint?.[outcome.fingerprint];
+    const parsedTransition = trustedGroundedLifecycleTransitionV1Schema.safeParse(trustedTransition);
+    if (!parsedTransition.success) continue;
+    const transition = parsedTransition.data;
+    const { evidenceDigest: transitionDigest, ...transitionMaterial } = transition;
+    const evidence = outcome.evidence;
+    const requiredTransitionKinds: readonly ('cause' | 'repair')[] | undefined = transition.kind === 'fixed'
+      ? outcome.status === 'contradicted' ? ['cause'] : undefined
+      : outcome.status === 'confirmed' ? ['cause', 'repair'] : undefined;
+    const transitionOrigins = requiredTransitionKinds && matchedOriginAncestryForOutcome({ outcome, trusted,
+      kinds: requiredTransitionKinds, currentHeadSha: input.coordinates.headSha, eventIds });
+    if (!evidence || transition.currentFingerprint !== outcome.fingerprint
+      || sha256(canonicalJson(transitionMaterial)) !== transitionDigest
+      || transition.candidateSide !== outcome.candidateSide || transition.outcomeStatus !== outcome.status
+      || transition.baseSha !== input.coordinates.baseSha || transition.headSha !== input.coordinates.headSha
+      || transition.changedContextDigest !== outcome.affectedContextDigest
+      || transition.historySnapshotId !== trusted.snapshotId || transition.historyContextDigest !== trusted.contextDigest
+      || !eventIds.has(transition.priorFindingEventId)
+      || transition.sourceWindowManifestDigest !== evidence.sourceWindowManifestDigest
+      || transition.currentOutcomeEvidenceDigest !== outcome.evidenceDigest
+      || !transitionOrigins) continue;
+    if (transition.kind === 'fixed' && outcome.status !== 'contradicted') continue;
+    if (transition.kind === 'fixed' && transition.priorFindingEventId !== transitionOrigins[0]!.sourceEventId) continue;
+    if (transition.kind === 'regressed' && (outcome.status !== 'confirmed' || !('rootCause' in evidence)
+      || !['introduced', 'exacerbated'].includes(evidence.scopeDecision.causalScope)
+      || transition.causalScope !== evidence.scopeDecision.causalScope
+      || transition.priorFindingEventId !== transitionOrigins[1]!.sourceEventId
+      || !accepted.some((continuity) => continuity.currentFingerprint === outcome.fingerprint
+        && continuity.status === 'reopened'
+        && canonicalJson(continuity.verifiedOriginAncestry) === canonicalJson(outcome.verifiedOriginAncestry)))) continue;
+    transitions.push({ version: transition.version, transition: transition.kind,
+      currentFingerprint: transition.currentFingerprint, outcomeStatus: outcome.status,
+      candidateSide: transition.candidateSide, durableFindingId: transition.durableFindingId,
+      priorFindingEventId: transition.priorFindingEventId, historySnapshotId: transition.historySnapshotId,
+      historyContextDigest: transition.historyContextDigest, baseSha: transition.baseSha, headSha: transition.headSha,
+      changedContextDigest: transition.changedContextDigest, sourceWindowManifestDigest: transition.sourceWindowManifestDigest,
+      evidenceDigest: transition.evidenceDigest, currentOutcomeEvidenceDigest: transition.currentOutcomeEvidenceDigest,
+      sourceCitationIds: [...evidence.usedCitationIds],
+      ...(transition.kind === 'regressed' && outcome.status === 'confirmed' && 'rootCause' in evidence
+        ? { causalScope: transition.causalScope! } : {}) });
+  }
+  return { accepted, transitions };
+}
+
 /** Validate the deterministic, exact-diff binding before any grounded result can affect arbitration. */
 function groundedReviewReceiptError(
   result: WorkerReviewResult,
@@ -1001,6 +2060,7 @@ function groundedReviewReceiptError(
   baseSha: string,
   repository: string,
   required: boolean,
+  expectedImportResolutionSources?: readonly TrustedGroundedImportResolutionSourceV1[],
 ): string | null {
   const receipt = result.groundedReview;
   if (!receipt) return required ? 'v2 review requires an independent grounded-review receipt' : null;
@@ -1040,8 +2100,18 @@ function groundedReviewReceiptError(
       if (!absentHeader) return 'changed-source absence evidence does not match its unified diff';
     }
   }
+  if (receipt.version === GROUNDED_REVIEW_RECEIPT_V2_VERSION) {
+    return groundedReviewReceiptV2Error({ receipt, result, changedFiles, headSha, baseSha, repository,
+      expectedImportResolutionSources });
+  }
   const outcomes = new Map<string, typeof receipt.verification.outcomes[number]>();
   const currentFindings = result.personas.flatMap((persona) => persona.findings);
+  const groundedFingerprint = (finding: { path: string; title: string; body?: string }): string => {
+    if (!required) return findingFingerprint(finding);
+    const claimType = findingClaimType({ path: finding.path, title: finding.title });
+    return findingFingerprintForClaimType({ path: finding.path, title: finding.title }, claimType);
+  };
+  const legacyGroundedSeverity = (severity: string): string => severity === 'P0' || severity === 'P1' ? severity : 'P2';
   if (required && currentFindings.some((finding) => {
     const claimType = findingClaimType({ path: finding.path, title: finding.title });
     const severity = publishedFindingSeverity(finding);
@@ -1058,6 +2128,11 @@ function groundedReviewReceiptError(
     }
     if (findingFingerprintForClaimType({ path: outcome.path, title: outcome.title }, outcome.claimType) !== outcome.fingerprint) {
       return 'grounded outcome identity does not match its claim locator';
+    }
+    const sameIdentityFindings = currentFindings.filter((finding) => groundedFingerprint(finding) === outcome.fingerprint);
+    if (sameIdentityFindings.length > 0 && !sameIdentityFindings.some((finding) =>
+      legacyGroundedSeverity(publishedFindingSeverity(finding)) === legacyGroundedSeverity(outcome.severity))) {
+      return 'grounded outcome severity does not match its normalized current lane finding';
     }
     const changed = changedByPath.get(outcome.path);
     if (!changed || outcome.relatedDiffPaths.some((path) => !changedByPath.has(path))
@@ -1115,13 +2190,9 @@ function groundedReviewReceiptError(
       }
     }
   }
-  const groundedFingerprint = (finding: { path: string; title: string; body?: string }): string => {
-    if (!required) return findingFingerprint(finding);
-    const claimType = findingClaimType({ path: finding.path, title: finding.title });
-    return findingFingerprintForClaimType({ path: finding.path, title: finding.title }, claimType);
-  };
   for (const outcome of receipt.verification.outcomes) {
-    const matching = currentFindings.some((finding) => groundedFingerprint(finding) === outcome.fingerprint);
+    const matching = currentFindings.some((finding) => groundedFingerprint(finding) === outcome.fingerprint
+      && legacyGroundedSeverity(publishedFindingSeverity(finding)) === legacyGroundedSeverity(outcome.severity));
     if ((outcome.status === 'confirmed' && !matching) || (outcome.status === 'contradicted' && matching)
       || (outcome.status === 'insufficient' && (outcome.severity === 'P0' || outcome.severity === 'P1') && matching)) {
       return 'grounded findings were not reconciled with the independent outcome';
@@ -1129,7 +2200,9 @@ function groundedReviewReceiptError(
   }
   for (const finding of currentFindings) {
     const severity = publishedFindingSeverity(finding);
-    if ((severity === 'P0' || severity === 'P1') && outcomes.get(groundedFingerprint(finding))?.status !== 'confirmed') {
+    const outcome = outcomes.get(groundedFingerprint(finding));
+    if ((severity === 'P0' || severity === 'P1')
+      && (outcome?.severity !== severity || outcome?.status !== 'confirmed')) {
       return 'blocking finding lacks a current confirmed independent verification';
     }
   }
@@ -1165,8 +2238,14 @@ export function deriveCanonicalWorkerReviewEvidence(
   const changedFiles = validateChangedFiles(contract.changedFiles);
   const groundedError = groundedReviewReceiptError(completion.result, changedFiles, expectedCoordinates.headSha, expectedCoordinates.baseSha,
     `${expectedCoordinates.owner}/${expectedCoordinates.repo}`,
-    contract.reviewDecisionPolicy === REVIEW_SEVERITY_POLICY_V2);
+    contract.reviewDecisionPolicy === REVIEW_SEVERITY_POLICY_V2, contract.expectedImportResolutionSources);
   if (groundedError) return invalidEvidence(groundedError);
+  const routeError = groundedVerifierRouteRefusal(completion.result, contract);
+  if (routeError) return invalidEvidence(routeError);
+  const continuity = groundedContinuityForGate({ result: completion.result, contract, coordinates: expectedCoordinates });
+  if (completion.result.composedResources !== undefined && contract.reviewEngine !== 'composed') {
+    return invalidEvidence('panel completion cannot claim composed runtime resources');
+  }
   const groundedCoverageComplete = completion.result.groundedReview
     ? completion.result.groundedReview.coverage.complete && completion.result.groundedReview.verification.coverageComplete
     : true;
@@ -1260,6 +2339,9 @@ export function deriveCanonicalWorkerReviewEvidence(
     && completion.result.personas.length === expectedPersonaIds.length
     && completion.result.personas.every((persona) => persona.decision === 'ERROR'
       && persona.status === 'ERROR' && persona.evidenceSource !== 'shadow' && persona.findings.length === 0);
+  const currentComposedSemantics = contract.reviewDecisionPolicy === REVIEW_SEVERITY_POLICY_V2
+    || completion.result.groundedReview?.version === GROUNDED_REVIEW_RECEIPT_V2_VERSION;
+  let composedResourceCoverageComplete = contract.reviewEngine !== 'composed' || !currentComposedSemantics;
   if (contract.reviewEngine === 'composed' && !composedInfrastructureFailure) {
     if (!completion.result.taskPlan || !contract.composedChangedPaths?.length) {
       return invalidEvidence('composed completion is missing its trusted task plan or effective paths');
@@ -1273,11 +2355,23 @@ export function deriveCanonicalWorkerReviewEvidence(
     if (canonicalJson(validatedPlan.tasks) !== canonicalJson(completion.result.taskPlan)) {
       return invalidEvidence('composed task plan does not cover the trusted changed files');
     }
+    if (currentComposedSemantics || completion.result.composedResources) {
+      const resourceRefusal = composedRuntimeResourcesRefusal({ result: completion.result,
+        tasks: validatedPlan.tasks, changedFiles, coordinates: expectedCoordinates,
+        expectedConfiguration: contract.composedEffectiveConfiguration });
+      if (resourceRefusal) return invalidEvidence(resourceRefusal);
+      const composedResources = completion.result.composedResources!;
+      composedResourceCoverageComplete = composedResources.engineExecutionState === 'complete'
+        && composedResources.coverage.remainingPaths.count === 0;
+    }
     const admittedIds = composedPlanLaneIds(validatedPlan.tasks, completion.result.personas, validatedPlan.tasks.length);
     if (!admittedIds.valid) return invalidEvidence(admittedIds.message);
     requiredIds = admittedIds.ids;
   } else if (completion.result.taskPlan) {
     return invalidEvidence('panel completion cannot claim a composed task plan');
+  } else if (composedInfrastructureFailure) {
+    // An infrastructure failure before planning has no source-coverage observation and remains incomplete.
+    composedResourceCoverageComplete = false;
   }
   const expected = new Set(requiredIds);
   const seen = new Set<string>();
@@ -1288,7 +2382,8 @@ export function deriveCanonicalWorkerReviewEvidence(
     seen.add(persona.id);
   }
 
-  const coverageComplete = contract.coverageComplete && completion.result.coverageComplete && groundedCoverageComplete;
+  const coverageComplete = contract.coverageComplete && completion.result.coverageComplete && groundedCoverageComplete
+    && composedResourceCoverageComplete;
   const arbitration = arbitrateLanes(completion.result.personas, requiredIds.length, coverageComplete, changedFiles,
     contract.reviewEngine === 'composed', contract.reviewDecisionPolicy);
   if (!arbitration.valid) return invalidEvidence(arbitration.message);
@@ -1361,7 +2456,9 @@ export function deriveCanonicalWorkerReviewEvidence(
   const moderationRefusal = emptyModerationClaimRefusal(
     completion.result, contract, requiredIds, changedFiles, coverageComplete, canonical);
   if (moderationRefusal) return invalidEvidence(moderationRefusal, canonical, evidence);
-  return { valid: true, canonical, evidence };
+  return { valid: true, canonical, evidence,
+    ...(continuity.accepted.length > 0 ? { groundedContinuity: continuity.accepted } : {}),
+    ...(continuity.transitions.length > 0 ? { groundedTransitions: continuity.transitions } : {}) };
 }
 
 /** Stable digest helper for the later artifact store integration. */

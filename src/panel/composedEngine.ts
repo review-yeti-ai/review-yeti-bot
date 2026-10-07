@@ -178,11 +178,16 @@ import type { ReviewExecutionCheckpoint } from '../review/reviewExecutionCheckpo
 import { remainingCheckpointTasksAfterRechecks, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import { canonicalJson, sha256 } from '../review/reviewCore';
 import { REVIEW_SEVERITY_POLICY_V2 } from '../review/reviewDecision';
+import { ComposedRuntimeResourceObserver } from './composedResourceReceipt';
+import { buildDeterministicCoverageManifest } from '../review/groundedReviewEngine';
+import { buildDeterministicReviewPlanningContext, enrichTasksWithPlanningContext, renderReviewPlanningManifest,
+  reviewTaskCharterDigest, type ReviewPlanningHistoryContext, type ReviewPlanningManifest } from '../review/prReviewPlanningContext';
 
 export interface ComposedCheckpointSnapshot {
   revision: number;
   plan: ReviewTask[];
-  completedTasks: Array<{ id: string; findings: PanelFinding[]; sourceDelivery?: TaskSourceReceipt }>;
+  plannerPlan?: ReviewTask[];
+  completedTasks: Array<{ id: string; findings: PanelFinding[]; charterDigest?: string; sourceDelivery?: TaskSourceReceipt }>;
   satisfiedFindingRecheckIds?: string[];
 }
 
@@ -201,6 +206,10 @@ export interface ComposedReviewOptions {
   publisherShadow?: boolean;
   /** Publisher reserves these calls from the existing total-turn budget for independent verification. */
   verificationReserveTurns?: number;
+  /** Exact digest copied from the service-prepared worker configuration. */
+  effectiveConfigDigest?: string;
+  /** Bounded secret-free snapshots for the publisher's protected outer-cutoff closeout. */
+  resourceObservationCapture?: (snapshot: import('./composedResourceReceipt').ComposedRuntimeResources) => void;
   jobId?: string;
   requestPolicy?: PanelRequestPolicy;
   isCurrentHead?: () => boolean;
@@ -236,6 +245,8 @@ export interface ComposedReviewOptions {
   };
   /** Service-owned requests to freshly re-review exact previously completed tasks. */
   disputedFindingRechecks?: DisputedFindingRecheck[];
+  /** Authenticated historical context loaded before any model planning turn. */
+  planningHistoryContext?: ReviewPlanningHistoryContext;
 }
 
 // ---------------------------------------------------------------------------
@@ -626,6 +637,8 @@ async function callTurn(params: {
   deadlineAtMs?: number;
   /** Clock paired with `deadlineAtMs`; inherited from the panel deadline context. */
   now?: () => number;
+  resourceObserver?: ComposedRuntimeResourceObserver;
+  resourcePhase: 'planning' | 'task';
 }): Promise<TurnCallResult> {
   throwIfPanelAborted(params.signal);
   const startedAt = Date.now();
@@ -650,8 +663,9 @@ async function callTurn(params: {
   for (;;) {
     throwIfPanelAborted(params.signal);
     try {
-      response = await raceWithPanelAbort(
-        Promise.resolve().then(() => params.client.complete({
+      const clientCallStartedAt = performance.now();
+      params.resourceObserver?.clientCallStarted();
+      const clientCall = Promise.resolve().then(() => params.client.complete({
           ...(params.requestPolicy || {}),
           reasoningEffort: params.reasoningEffort,
           model: params.model,
@@ -662,9 +676,14 @@ async function callTurn(params: {
           ...(params.jobId ? { jobId: params.jobId } : {}),
           ...(params.internalProgress ? { internalProgress: params.internalProgress } : {}),
           responseFormat: params.responseFormat,
-        })),
-        params.signal,
-      );
+        })).then((value) => {
+        params.resourceObserver?.clientCallSettled(performance.now() - clientCallStartedAt, true);
+        return value;
+      }, (error: unknown) => {
+        params.resourceObserver?.clientCallSettled(performance.now() - clientCallStartedAt, false);
+        throw error;
+      });
+      response = await raceWithPanelAbort(clientCall, params.signal);
       break;
     } catch (error: any) {
       // An abort is a decision, never a transient fault. Never retry past it.
@@ -731,6 +750,7 @@ async function callTurn(params: {
   }
 
   const durationMs = Date.now() - startedAt;
+  params.resourceObserver?.recordTurn(params.resourcePhase, params.kind);
   const usage = response.usage;
   const cachedTokens = usage
     ? (typeof usage.cached === 'number' ? usage.cached
@@ -1108,6 +1128,7 @@ export function buildPlanDirective(
   securityAuthPaths: string[] = [],
   enabledPersonas: Array<{ id: string; charter: string }> = [],
   deltaRereview = false,
+  planningManifest?: ReviewPlanningManifest,
 ): string {
   const personaCharterLines = enabledPersonas.length > 0
     ? [
@@ -1117,10 +1138,17 @@ export function buildPlanDirective(
         ``,
       ]
     : [];
+  const deterministicMap = planningManifest ? [
+    `=== DETERMINISTIC COVERAGE, RULE, AND RISK MAP ===`,
+    renderReviewPlanningManifest(planningManifest),
+    `Use the map to assign every changed region to at least one exact-path task. A listed static analyzer item is an untrusted hypothesis that must be tested; unavailable analyzers or symbol/caller context are omissions, never clean evidence. Read the relevant callers/contracts before a task concludes when its context requirements ask for them.`,
+    ``,
+  ] : [];
 
   return [
     `=== PLAN TURN ===`,
     ...personaCharterLines,
+    ...deterministicMap,
     `Propose a bounded review task plan covering every changed code file listed above (${changedFilePaths.length} file(s) total; documentation/asset files do not need their own task). Do not propose independent review tasks solely for binary files or compressed archives (e.g. .gz, .tar, .zip, images, binaries) whose patch text is unavailable; binary assets are handled by routed lanes and do not consume task slots.`,
     // Ids are specified with positive examples ONLY. This line used to read
     // '(for example "security-auth", not "T1")'. Naming the rejected form
@@ -1373,6 +1401,7 @@ async function runPlanPhase(input: {
   /** REL-1082: whole-request cap for a budgeted review; tool results are clipped to it. */
   requestCapBytes?: number;
   progress?: PublishingProgressReporter;
+  resourceObserver?: ComposedRuntimeResourceObserver;
 }): Promise<PlanPhaseOutcome> {
   let messages = [...input.messages];
   const turnUsages: LaneTurnUsage[] = [];
@@ -1402,6 +1431,8 @@ async function runPlanPhase(input: {
       signal: input.signal,
       turnNumber: turnsUsed + 1,
       kind: isLastLocalTurn ? 'final' : 'tool',
+      resourceObserver: input.resourceObserver,
+      resourcePhase: 'planning',
       ...(input.progress ? { internalProgress: {
         turn: turnsUsed + 1, task: 'composed_plan', lane: 'composed-plan',
       } } : {}),
@@ -1541,6 +1572,7 @@ async function runTaskWorkPhase(input: {
   requestCapBytes?: number;
   progress?: PublishingProgressReporter;
   progressState?: { startedAt: number; turnUsages: LaneTurnUsage[] };
+  resourceObserver?: ComposedRuntimeResourceObserver;
 }): Promise<TaskOutcome> {
   const diagnosticLane = composedTaskDiagnosticLane(input.taskIndex);
   const startedAt = input.progressState?.startedAt ?? Date.now();
@@ -1571,6 +1603,7 @@ async function runTaskWorkPhase(input: {
   });
   const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining(), input.task.paths?.length || 1);
   const finalizationTurns = Math.min(TASK_FINALIZATION_TURNS, Math.max(1, localMaxTurns - 1));
+  input.resourceObserver?.reserveTaskFinalizationTurns(finalizationTurns);
 
   for (let iter = 0; iter < localMaxTurns; iter++) {
     if (input.turnsRemaining() <= 0) return exhausted('total_turn_budget_exhausted');
@@ -1601,6 +1634,8 @@ async function runTaskWorkPhase(input: {
       signal: input.signal,
       turnNumber: turnUsages.length + 1,
       kind: correctionAttempts > 0 ? 'correction' : finalizing ? 'final' : 'tool',
+      resourceObserver: input.resourceObserver,
+      resourcePhase: 'task',
       ...(input.progress ? { internalProgress: {
         turn: turnUsages.length + 1, task: 'composed_task', lane: diagnosticLane,
       } } : {}),
@@ -1913,6 +1948,11 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
   // budget check, and until this was wired the check compared against Infinity and did nothing.
   const composedDeadlineAtMs = deadline.budget.deadlineAtMs;
   const panelStartedAt = Date.now();
+  const resourceObserver = new ComposedRuntimeResourceObserver({
+    configDigest: options.effectiveConfigDigest,
+    configuration: options.config.review_configuration_receipt,
+    onSnapshot: options.resourceObservationCapture,
+  });
   options.progress?.emit({ task: 'panel', status: 'started' });
   // REL-1079: the shrink disclosure is recorded by the same call that shrinks.
   let diffShrinkDisclosure: DiffShrinkDisclosure | null = null;
@@ -2013,6 +2053,20 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const domainLanes = classifyDomainLanesByHeuristic(effectiveFiles);
     const deletionClassification = classificationAtHead(repoFileProvider?.deletionPlan?.(), repository, headSha);
     const preCheckEvidence = await gatherPreCheckEvidence(config, effectiveFiles, options.workspaceRoot, signal, repoFileProvider);
+    const deterministicCoverage = buildDeterministicCoverageManifest(changedFiles);
+    const planningManifest = buildDeterministicReviewPlanningContext({
+      coverage: deterministicCoverage, changedFiles,
+      analyzers: preCheckEvidence.analyzers, symbolAppendix: preCheckEvidence.symbolAppendix,
+      ...(options.planningHistoryContext ? { history: options.planningHistoryContext } : {}),
+    });
+    logger.info('Deterministic review planning context prepared', {
+      repository, headSha, digest: planningManifest.digest,
+      regionCount: planningManifest.assignments.length,
+      sourcePathCount: new Set(planningManifest.assignments.map((assignment) => assignment.path)).size,
+      analyzerHypothesisCount: planningManifest.assignments.reduce((count, assignment) => count + assignment.analyzerHypotheses.length, 0),
+      dependencyContextCount: planningManifest.assignments.reduce((count, assignment) => count + assignment.dependencies.length, 0),
+      omissionCount: planningManifest.omissions.length,
+    });
     const zoektConfig = mergeZoektToolConfig((config as any)?.pre_checks?.zoekt, (config as any)?.evidence?.zoekt);
 
     const effectiveJobId = jobId || `job_${repository.replace(/\//g, '_')}_${headSha.slice(0, 7)}`;
@@ -2078,6 +2132,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
               effectiveFilePaths.filter((path) => domainLanes[path] === 'security_auth'),
               enabledPersonas,
               ledgerItems.length > 0,
+              planningManifest,
             ),
           },
         ],
@@ -2086,6 +2141,11 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
 
     const workBudget = resolveComposedEngineWorkBudget(process.env, config.composed?.max_turns_total,
       options.verificationReserveTurns);
+    resourceObserver.configureBudget({
+      configuredTotalTurns: workBudget.totalTurns + workBudget.verificationReserveTurns,
+      investigationTurns: workBudget.totalTurns,
+      verificationReserveTurns: workBudget.verificationReserveTurns,
+    });
     const totalTurnBudget = workBudget.totalTurns;
     span.setAttribute('review_yeti.composed.verification_reserved_turns', workBudget.verificationReserveTurns);
     const maxFindings = resolveComposedEngineMaxFindings(process.env, config.composed?.max_findings_total);
@@ -2101,8 +2161,13 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     });
     let planOutcome: PlanPhaseOutcome;
     let retainedPlanDigest: string | null = null;
-    const resumedPlan = options.checkpoint?.resumed
-      ? validateTaskPlan({ tasks: options.checkpoint.resumed.plan }, { changedFiles: effectiveFilePaths, maxTasks })
+    let checkpointCharterDigests = new Map<string, string>();
+    let checkpointPlannerPlan: ReviewTask[] | undefined;
+    const legacyRecheckPlan = (options.disputedFindingRechecks?.length ?? 0) > 0
+      ? options.checkpoint?.resumed?.plan : undefined;
+    const resumedPlannerTasks = options.checkpoint?.resumed?.plannerPlan ?? legacyRecheckPlan;
+    const resumedPlan = resumedPlannerTasks
+      ? validateTaskPlan({ tasks: resumedPlannerTasks }, { changedFiles: effectiveFilePaths, maxTasks })
       : null;
     let retainedCheckpointTasks = options.checkpoint?.resumed?.completedTasks ?? [];
     if ((options.disputedFindingRechecks?.length ?? 0) > 0) {
@@ -2146,9 +2211,31 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           zoektConfig,
           turnsRemaining: remainingBudget,
           progress: options.progress,
+          resourceObserver,
         });
         planOutcome = { ...freshPlan, tasks: orderReviewTasksByRisk(freshPlan.tasks, deletionClassification) };
       }
+      checkpointPlannerPlan = resumedPlan?.valid
+        ? options.checkpoint?.resumed?.plannerPlan
+        : planOutcome.tasks;
+      const enrichedPlan = enrichTasksWithPlanningContext(planOutcome.tasks, planningManifest);
+      planOutcome = { ...planOutcome, tasks: enrichedPlan.tasks };
+      checkpointCharterDigests = new Map(enrichedPlan.tasks.map((task) => [task.id,
+        reviewTaskCharterDigest(task, enrichedPlan.assignments)] as const));
+      const { digest: _unboundDigest, ...planningManifestBody } = planningManifest;
+      const boundPlanningDigest = sha256(canonicalJson({ ...planningManifestBody,
+        assignments: enrichedPlan.assignments, omissions: enrichedPlan.omissions }));
+      logger.info('Composed plan bound deterministic source regions to tasks', {
+        repository, headSha, digest: boundPlanningDigest, taskCount: planOutcome.tasks.length,
+        assignedRegionCount: enrichedPlan.assignments.filter((assignment) => assignment.taskIds.length > 0).length,
+        unassignedRegionCount: enrichedPlan.assignments.filter((assignment) => assignment.taskIds.length === 0).length,
+        omissionCount: enrichedPlan.omissions.length,
+      });
+      if (enrichedPlan.assignments.some((assignment) => assignment.taskIds.length === 0
+        && classifyBudgetCategory(assignment.path) !== 'docs')) {
+        throw new Error('Composed plan leaves a reviewable source region without an assigned task');
+      }
+      resourceObserver.setPlan(planOutcome.tasks);
       if (retention) {
         const acknowledgement = await persistWithRunFences(options, deadline, () =>
           persistComposedTaskPlan(retention, {
@@ -2191,6 +2278,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         if (!planIds.has(task.id)) continue;
         try {
           const planned = planOutcome.tasks.find(value => value.id === task.id)!;
+          if (!task.charterDigest || task.charterDigest !== checkpointCharterDigests.get(task.id)) continue;
           const receipt = validateTaskSourceReceipt(task.sourceDelivery, {taskId:task.id, paths:planned.paths,
             files:changedFiles, headSha, baseSha:options.baseSha});
           // Old checkpoints retain observations, but cannot prove original
@@ -2198,6 +2286,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           if (!receipt) continue;
           completedCheckpointTasks.set(task.id, validateFindings(task.findings, changedFiles));
           sourceDeliveries.set(task.id, receipt);
+          resourceObserver.markTaskStarted(task.id);
+          resourceObserver.markTaskOutcome(task.id, 'completed', receipt);
         } catch {
           // A stale or invalid checkpoint never becomes review evidence.
         }
@@ -2236,7 +2326,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       const snapshot = {
         revision,
         plan: planOutcome.tasks,
+        ...(checkpointPlannerPlan ? { plannerPlan: checkpointPlannerPlan } : {}),
         completedTasks: [...completedCheckpointTasks].map(([id, findings]) => ({ id, findings,
+          charterDigest: checkpointCharterDigests.get(id),
           sourceDelivery:sourceReceipt(id) })),
         satisfiedFindingRecheckIds: [...satisfiedFindingRecheckIds],
       };
@@ -2405,6 +2497,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       taskTurnUsages: LaneTurnUsage[]): Promise<SettledTask> => {
       const { task, index } = reserved;
       checkRetentionRun();
+      resourceObserver.markTaskStarted(task.id);
       const diagnosticLane = composedTaskDiagnosticLane(index);
       const taskStartedAt = Date.now();
       const taskClockStartedAt = clock();
@@ -2481,6 +2574,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
               signal: taskSignal,
               repoFileProvider,
               zoektConfig,
+              resourceObserver,
               // The shared budget counts completed usage and every in-flight reservation. A task may
               // spend only its reserved slice; unused turns are refunded as soon as this task settles.
               turnsRemaining: () => reserved.reservedTurns - taskTurnUsages.length,
@@ -2580,8 +2674,13 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           for (const recheck of rechecksByTask.get(task.id) ?? []) satisfiedFindingRecheckIds.add(recheck.requestId);
           saveCheckpoint();
         }
+        resourceObserver.markTaskOutcome(task.id,
+          outcome.type === 'complete' ? 'completed' : outcome.type === 'blocked' ? 'blocked' : 'failed',
+          outcome.type === 'complete' ? outcome.sourceDelivery : undefined);
         return { ...reserved, outcome };
       } catch (error) {
+        if (signal?.aborted) resourceObserver.markTaskInterrupted(task.id);
+        else resourceObserver.markTaskOutcome(task.id, 'failed');
         options.progress?.emit({
           task: 'composed_task', status: taskSignal.aborted ? 'aborted' : 'failed', role: 'composed_task', lane: diagnosticLane,
           provider: providerId, model, required: true, durationMs: Date.now() - taskStartedAt,
@@ -3082,7 +3181,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         snapshot: {
           revision: checkpointRevision,
           plan: planOutcome.tasks,
+          ...(checkpointPlannerPlan ? { plannerPlan: checkpointPlannerPlan } : {}),
           completedTasks: [...completedCheckpointTasks].map(([id, findings]) => ({ id, findings,
+            charterDigest: checkpointCharterDigests.get(id),
             sourceDelivery:sourceReceipt(id) })),
           satisfiedFindingRecheckIds: [...satisfiedFindingRecheckIds],
         },
@@ -3128,6 +3229,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     .then((result) => attachReviewBudgetDisclosure(result, reviewBudgetPlan))
     .then((result) => attachMapReduceDisclosure(result, mapReducePlan, new Map()))
     .then((result) => attachTaskSourceDelivery(result, [...sourceDeliveries.keys()].map(sourceReceipt).filter((value): value is TaskSourceReceipt => value !== undefined)))
+    .then((result) => {
+      const composedResourceObservation = resourceObserver.snapshot('terminal');
+      return composedResourceObservation ? { ...result, composedResourceObservation } : result;
+    })
     .then((result) => {
       options.progress?.emit({ task: 'panel', status: 'completed', durationMs: Date.now() - panelStartedAt });
       return result;

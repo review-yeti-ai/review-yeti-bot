@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
+import { sha256 } from '../../src/review/reviewCore';
 import { gateRecordFor, resolvedThreadsFor } from '../support/priorGateRecord';
 import { logger } from '../../src/utils/logger';
 import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
@@ -40,6 +41,7 @@ import {
   parseWorkerReviewCompletion,
   workerReviewCompletionDigest,
 } from '../../src/review/workerReviewCompletion';
+import { completeCurrentVersionLifecycleHistory, completeEmptyLifecycleHistory } from '../support/groundedReviewFixture';
 
 /**
  * REL-1085 (plan 2026-09-23 section 4 W8): the per-file verdict cache behind
@@ -157,6 +159,25 @@ function source(overrides: Partial<Omit<VerdictCacheSource, 'prior'>> & { prior?
   };
 }
 
+/** Cache wiring fixtures use the authenticated lifecycle shape that accompanies a stored source. */
+function lifecycleHistoryFor(prior?: VerdictCacheSource['prior']) {
+  const history = prior ? completeCurrentVersionLifecycleHistory() : completeEmptyLifecycleHistory();
+  if (!prior) return history;
+  const read = history.read;
+  return {
+    ...history,
+    read: async () => {
+      const loaded = await read();
+      return { ...loaded, events: loaded.events.map((event) => ({ ...event,
+        runId: prior.runId, executionAttempt: prior.executionAttempt, headSha: prior.headSha, baseSha: prior.baseSha,
+        policyDigest: prior.policyDigest, configDigest: prior.configDigest,
+        completionStatus: prior.shipComplete ? 'completed' as const : 'failed' as const,
+        coverageComplete: prior.coverageComplete, quorumSatisfied: prior.coverageComplete,
+      })) };
+    },
+  };
+}
+
 const MAX_AGE = 72 * 3_600_000;
 
 async function decide(options: { src?: VerdictCacheSource | null; world?: Record<string, ComparisonContentFile[]>;
@@ -266,6 +287,27 @@ describe('lane keys and routing', () => {
       { ...input, viewFlags: { diffShrink: true, incremental: false } },
     ];
     for (const variant of variants) expect(verdictCacheLaneKeys(variant)['sec-lane']).not.toBe(keys['sec-lane']);
+  });
+
+  it('versions only grounded V2 cache lanes for the candidate-manifest capability', () => {
+    const v2Flags = { ...input.viewFlags, groundedEvidenceSemantics: 'GroundedReviewEvidenceSemantics.v2' };
+    const priorV2Key = sha256({
+      version: 'VerdictCacheLane.v1', persona: 'sec-lane',
+      promptDigest: sha256({ prompt: input.promptOf({ id: 'sec-lane' }) }),
+      models: [{ id: 'bifrost', model: 'bifrost/pr-reviewer' }],
+      policyDigest: input.policyDigest, configDigest: input.configDigest, engine: input.engine,
+      workerVersion: input.workerVersion, viewFlags: v2Flags,
+    });
+    expect(verdictCacheLaneKeys({ ...input, viewFlags: v2Flags })['sec-lane']).not.toBe(priorV2Key);
+
+    const legacyPriorKey = sha256({
+      version: 'VerdictCacheLane.v1', persona: 'sec-lane',
+      promptDigest: sha256({ prompt: input.promptOf({ id: 'sec-lane' }) }),
+      models: [{ id: 'bifrost', model: 'bifrost/pr-reviewer' }],
+      policyDigest: input.policyDigest, configDigest: input.configDigest, engine: input.engine,
+      workerVersion: input.workerVersion, viewFlags: input.viewFlags,
+    });
+    expect(verdictCacheLaneKeys(input)['sec-lane']).toBe(legacyPriorKey);
   });
 
   it('permits a file only when every routed lane reviewed it under an unchanged key', () => {
@@ -897,12 +939,11 @@ describe('publishing worker wiring', () => {
       panelRunner: panelRunner as never,
       client: {} as never,
       repoFileProviderFactory: (() => ({ readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []) })) as never,
-      prLifecycleHistory: { read: vi.fn(async () => ({ status: 'complete' as const,
-        snapshotId: '00000000-0000-4000-8000-000000000004', contextDigest: 'f'.repeat(64),
-        events: [], findings: [], eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
-        eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
-        eventsDigest: 'a'.repeat(64), findingsDigest: 'b'.repeat(64), omissions: [] })),
-        recordVerification: vi.fn(async () => true) },
+      prLifecycleHistory: lifecycleHistoryFor(baseSource?.prior) as never,
+      findingThreadReader: vi.fn(async (_pr: unknown, expectedHeadSha: string) => ({ source: 'service' as const,
+        headSha: expectedHeadSha, complete: true, omittedCount: 0, threads: [] })),
+      incrementalCompareReader: { compare: vi.fn(async () => ({ status: 'ahead' as const,
+        mergeBaseSha: SOURCE_HEAD, files: [] })) } as never,
       verdictCacheBase,
       verdictCacheCompareReader: contentReader(contentWorld()),
     });
@@ -980,12 +1021,11 @@ describe('publishing worker wiring', () => {
       panelRunner: panelRunner as never,
       client: {} as never,
       repoFileProviderFactory: (() => ({ readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []) })) as never,
-      prLifecycleHistory: { read: vi.fn(async () => ({ status: 'complete' as const,
-        snapshotId: '00000000-0000-4000-8000-000000000005', contextDigest: 'e'.repeat(64),
-        events: [], findings: [], eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
-        eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
-        eventsDigest: 'a'.repeat(64), findingsDigest: 'b'.repeat(64), omissions: [] })),
-        recordVerification: vi.fn(async () => true) },
+      prLifecycleHistory: lifecycleHistoryFor(stored.prior) as never,
+      findingThreadReader: vi.fn(async (_pr: unknown, expectedHeadSha: string) => ({ source: 'service' as const,
+        headSha: expectedHeadSha, complete: true, omittedCount: 0, threads: [] })),
+      incrementalCompareReader: { compare: vi.fn(async () => ({ status: 'ahead' as const,
+        mergeBaseSha: SOURCE_HEAD, files: [] })) } as never,
       verdictCacheBase: { read: vi.fn(async () => ({ source: stored, maxAgeMs: MAX_AGE })) },
       verdictCacheCompareReader: contentReader(contentWorld()),
     });

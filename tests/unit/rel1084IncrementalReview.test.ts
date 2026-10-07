@@ -21,6 +21,7 @@ import {
   renderIncrementalSummary,
   resolveScopedReviewApplicability,
   verifyIncrementalClaim,
+  verifyReviewHeadAncestry,
   type CommitComparison,
   type CommitComparisonReader,
   type IncrementalCurrentIdentity,
@@ -32,6 +33,7 @@ import { gateRecordFor, resolvedThreadsFor } from '../support/priorGateRecord';
 import { logger } from '../../src/utils/logger';
 import { computeArbitration } from '../../src/review/reviewCore';
 import { buildEffectiveReviewFiles, resolveReviewApplicability } from '../../src/review/personaApplicability';
+import { completeCurrentVersionLifecycleHistory } from '../support/groundedReviewFixture';
 import {
   deriveCanonicalWorkerReviewEvidence,
   parseWorkerReviewCompletion,
@@ -839,28 +841,47 @@ describe('worker planning', () => {
 
   it('plans the scope from the service record and GitHub comparisons', async () => {
     const plan = await planIncrementalReview({ env: ON, repository: 'acme/app', current, currentPaths: CURRENT_PATHS, base: base(prior()), reader: reader(world()) });
+    expect(plan?.ancestryVerified).toBe(true);
+    expect(plan?.historyAncestry).toMatchObject({ version: 'ReviewHeadAncestry.v1', result: 'ancestor',
+      priorRunId: prior().runId, priorHeadSha: PREV_HEAD, currentHeadSha: HEAD });
+    expect(plan?.historyAncestry?.comparisonDigest).toMatch(/^[a-f0-9]{64}$/u);
     expect(plan?.scope).toEqual({
       previous: SCOPE.previous, carriedForwardPaths: ['src/unchanged.ts'], openFindingPaths: ['src/open.ts'],
     });
   });
 
+  it('verifies ancestry for durable history identity independently of the incremental flag', async () => {
+    const proof = await verifyReviewHeadAncestry({ priorRunId: PRIOR_RUN, priorHeadSha: PREV_HEAD,
+      currentHeadSha: HEAD, reader: reader(world()) });
+    expect(proof).toMatchObject({ version: 'ReviewHeadAncestry.v1', result: 'ancestor',
+      priorRunId: PRIOR_RUN, priorHeadSha: PREV_HEAD, currentHeadSha: HEAD });
+    expect(proof.comparisonDigest).toMatch(/^[a-f0-9]{64}$/u);
+
+    const manyFiles = Array.from({ length: 300 }, (_, i) => `src/${i}.ts`);
+    const incomplete = await verifyReviewHeadAncestry({ priorRunId: PRIOR_RUN, priorHeadSha: PREV_HEAD,
+      currentHeadSha: HEAD, reader: reader({ [`${PREV_HEAD}...${HEAD}`]: comparison('ahead', manyFiles) }) });
+    expect(incomplete.result).toBe('unavailable');
+  });
+
   it('fails open to a full review on any error, a missing source, or a timeout', async () => {
     const failing = { read: vi.fn(async () => { throw new Error('503'); }) };
     expect(await planIncrementalReview({ env: ON, repository: 'acme/app', current, currentPaths: CURRENT_PATHS, base: failing, reader: reader(world()) }))
-      .toEqual({ scope: null, decision: { mode: 'full', reason: 'error' } });
+      .toEqual({ scope: null, decision: { mode: 'full', reason: 'error' }, ancestryVerified: false });
     expect(await planIncrementalReview({ env: ON, repository: 'acme/app', current, currentPaths: CURRENT_PATHS, base: base(prior()), reader: reader({}) }))
-      .toEqual({ scope: null, decision: { mode: 'full', reason: 'error' } });
+      .toEqual({ scope: null, decision: { mode: 'full', reason: 'error' }, ancestryVerified: false });
     expect(await planIncrementalReview({ env: ON, repository: 'acme/app', current, currentPaths: CURRENT_PATHS }))
-      .toEqual({ scope: null, decision: { mode: 'full', reason: 'error' } });
+      .toEqual({ scope: null, decision: { mode: 'full', reason: 'error' }, ancestryVerified: false });
     const hung = { read: vi.fn(() => new Promise<never>(() => undefined)) };
     expect(await planIncrementalReview({ env: ON, repository: 'acme/app', current, currentPaths: CURRENT_PATHS, base: hung, reader: reader(world()), timeoutMs: 20 }))
-      .toEqual({ scope: null, decision: { mode: 'full', reason: 'error' } });
+      .toEqual({ scope: null, decision: { mode: 'full', reason: 'error' }, ancestryVerified: false });
   });
 
   it('plans a full review, with its reason, after a force-push', async () => {
     const plan = await planIncrementalReview({ env: ON, repository: 'acme/app', current, currentPaths: CURRENT_PATHS, base: base(prior()),
       reader: reader(world({ [`${PREV_HEAD}...${HEAD}`]: comparison('diverged', []) })) });
-    expect(plan).toEqual({ scope: null, decision: { mode: 'full', reason: 'not-ancestor' } });
+    expect(plan).toMatchObject({ scope: null, decision: { mode: 'full', reason: 'not-ancestor' }, ancestryVerified: false,
+      historyAncestry: { version: 'ReviewHeadAncestry.v1', result: 'not-ancestor', priorHeadSha: PREV_HEAD,
+        currentHeadSha: HEAD } });
     expect(renderIncrementalSummary(null, plan)).toEqual([
       '**Incremental re-review** (`REVIEW_YETI_INCREMENTAL`): full review, because the previously reviewed head is not an ancestor of this head (force-push or rebase).',
     ]);
@@ -918,6 +939,7 @@ describe('publishing worker wiring', () => {
     const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) };
     const reportReviewEvidence = vi.fn(async () => {});
     const incrementalBase = { read: vi.fn(async () => ({ prior: priorRecord, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS })) };
+    const lifecycleHistory = completeCurrentVersionLifecycleHistory();
     await runPublishingReviewWorker(env, {
       checkClient,
       completion: { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}), reportReviewEvidence } as never,
@@ -927,15 +949,13 @@ describe('publishing worker wiring', () => {
       panelRunner: panelRunner as never,
       client: {} as never,
       repoFileProviderFactory: (() => ({ readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []) })) as never,
-      prLifecycleHistory: { read: vi.fn(async () => ({ status: 'complete' as const,
-        snapshotId: '00000000-0000-4000-8000-000000000001', contextDigest: 'f'.repeat(64),
-        events: [], findings: [{ findingEventId: '00000000-0000-4000-8000-000000000002', fingerprint: 'fp1_000000000000000000000000',
-          path: 'src/open.ts', firstSeenHead: PREV_HEAD, lastSeenHead: PREV_HEAD, affectedContextDigest: 'a'.repeat(64),
-          sourceSeverity: 'P1', effectiveSeverity: 'P1', disposition: 'current', blocking: true,
-          verificationStatus: 'confirmed' as const, evidenceDigest: 'b'.repeat(64) }],
-        eventCount: 0, findingCount: 1, loadedEventCount: 0, loadedFindingCount: 1, eventOmittedCount: 0,
-        findingOmittedCount: 0, legacyOmittedCount: 0, eventsDigest: 'c'.repeat(64), findingsDigest: 'd'.repeat(64), omissions: [] })),
-        recordVerification: vi.fn(async () => true) },
+      prLifecycleHistory: { read: vi.fn(async () => {
+        const history = await lifecycleHistory.read();
+        return { ...history, events: history.events.map((event) => ({ ...event,
+          completionStatus: priorRecord.shipComplete ? 'completed' as const : 'failed' as const })) };
+      }), recordVerification: vi.fn(async () => true) },
+      findingThreadReader: vi.fn(async (_pr: unknown, expectedHeadSha: string) => ({ source: 'service' as const,
+        headSha: expectedHeadSha, complete: true, omittedCount: 0, threads: [] })),
       incrementalBase,
       incrementalCompareReader: reader(comparisons),
     });

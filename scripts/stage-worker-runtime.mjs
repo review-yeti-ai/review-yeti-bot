@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { nodeFileTrace } from '@vercel/nft';
+import { verifyQualificationFixtureAllowlist } from './normal-engine-qualification-fixtures.mjs';
 
 const require = createRequire(import.meta.url);
 const packageRoot = process.cwd();
@@ -137,6 +138,12 @@ async function main() {
     await collectDomainsFiles(domainsSource);
   } catch {
     // domains directory may not exist in minimal test setups
+  }
+
+  // Qualification images receive only neutral, digest-pinned worker inputs and descriptors.
+  // Oracle/scorer files and the unrelated eight-case offline corpus are never staged.
+  for (const fixture of await verifyQualificationFixtureAllowlist(packageRoot)) {
+    files.add(relativeSafe(path.resolve(packageRoot, fixture.path)));
   }
 
   for (const relative of files) await copyFile(relative);

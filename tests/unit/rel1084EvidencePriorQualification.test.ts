@@ -20,9 +20,10 @@ import {
   verdictCacheSourceFromRows,
   type ComparisonContentFile,
 } from '../../src/review/verdictCache';
-import { parseWorkerReviewEvidence, workerReviewEvidenceDigest, type WorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
+import { parseWorkerReviewEvidence, publishedFindingSeverity, workerReviewEvidenceDigest, type WorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
 import { logger } from '../../src/utils/logger';
 import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
+import { groundedFixtureClient, groundedFixtureProvider, type GroundedFixtureSourceSnapshot } from '../support/groundedReviewFixture';
 
 /**
  * REL-1084 (pilot, non-authoritative repos): review-yeti-bot and example-meta publish their own Review
@@ -57,7 +58,58 @@ function modified(path: string, marker: string): string {
     '@@ -10,2 +10,2 @@', ' const keep = 0;', `-const OLD_${marker} = 1;`, `+const ${marker} = 2;`].join('\n') + '\n';
 }
 const PATHS = ['src/changed.ts', 'src/same.ts', 'src/stable.ts'];
-const DIFF = modified('src/changed.ts', 'CHANGED') + modified('src/same.ts', 'SAME') + modified('src/stable.ts', 'STABLE');
+const ACCESS_CONTROL_FUNCTIONS: Record<string, string> = {
+  'src/changed.ts': 'canReadChanged',
+  'src/same.ts': 'canReadSame',
+  'src/stable.ts': 'canReadStable',
+};
+
+/** Source-bound P1 fixture: a changed TypeScript guard now grants access unconditionally. */
+function accessControlSource(path: string, allowOnlyAdmins: boolean): string {
+  const functionName = ACCESS_CONTROL_FUNCTIONS[path];
+  if (!functionName) throw new Error(`No access-control source fixture for ${path}`);
+  return [
+    ...Array.from({ length: 9 }, (_, index) => `const fixtureLine${index + 1} = ${index + 1};`),
+    `export function ${functionName}(isAdmin: boolean): boolean {`,
+    `  return ${allowOnlyAdmins ? 'isAdmin' : 'true'};`,
+    '}',
+  ].join('\n') + '\n';
+}
+
+function accessControlDiff(path: string): string {
+  const functionName = ACCESS_CONTROL_FUNCTIONS[path];
+  if (!functionName) throw new Error(`No access-control diff fixture for ${path}`);
+  return [
+    `diff --git a/${path} b/${path}`,
+    'index 1111111..2222222 100644',
+    `--- a/${path}`,
+    `+++ b/${path}`,
+    '@@ -10,3 +10,3 @@',
+    ` export function ${functionName}(isAdmin: boolean): boolean {`,
+    '-  return isAdmin;',
+    '+  return true;',
+    ' }',
+  ].join('\n') + '\n';
+}
+
+function accessControlSnapshots(headSha: string, baseSha: string): GroundedFixtureSourceSnapshot[] {
+  return PATHS.flatMap((path) => [
+    { path, revisionSha: baseSha, content: accessControlSource(path, true) },
+    { path, revisionSha: headSha, content: accessControlSource(path, false) },
+  ]);
+}
+
+function accessControlBlockerEvidence(path: string) {
+  const functionName = ACCESS_CONTROL_FUNCTIONS[path];
+  if (!functionName) throw new Error(`No access-control blocker evidence for ${path}`);
+  return {
+    trigger: `A non-admin caller invokes ${functionName} with isAdmin set to false.`,
+    impact: 'The changed guard returns true, allowing the caller to read protected data.',
+    violatedContract: 'Only administrators may read protected data from this resource.',
+  };
+}
+
+const DIFF = PATHS.map(accessControlDiff).join('');
 
 function compared(path: string, blobSha: string): ComparisonContentFile {
   return { path, status: 'modified', blobSha, patch: `@@ -10,2 +10,2 @@\n const keep = 0;\n-old ${path}\n+new ${path}` };
@@ -112,26 +164,10 @@ async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: panelRunner as never,
     client: {} as never,
-    groundedVerifierClient: { complete: vi.fn(async (request: any) => {
-      const prompt = String(request.messages?.[1]?.content ?? '');
-      const claim = JSON.parse(/<claim>(\{[\s\S]*?\})<\/claim>/u.exec(prompt)?.[1] ?? '{}');
-      return { model: 'grounded-test-model', content: JSON.stringify({ status: 'confirmed',
-        violatedInvariant: 'The reviewed contract must be preserved.',
-        failurePath: 'The changed operation reaches the incompatible contract.',
-        benignCheck: 'No guard handles this current input.',
-        changeConnection: 'The current changed source introduces the path.',
-        citations: [`head:${claim.path}`, `base:${claim.path}`, `diff:${claim.path}`] }), usage: null, costUSD: null };
-    }) } as never,
-    repoFileProviderFactory: (input: any) => ({ findFiles: vi.fn(async () => []),
-      readFile: vi.fn(async () => 'export function read(value: string) { return value; }'),
-      readFileAt: vi.fn(async (_path: string, side: 'head' | 'base' | 'merge-base') => ({
-        content: 'export function read(value: string) { return value; }', sha: side === 'head' ? input.headSha : input.baseSha,
-      })),
-      readDiff: (path: string) => {
-        const file = input.changedFiles.find((candidate: { path: string; patch?: string }) => candidate.path === path);
-        return file?.patch ? { patch: file.patch, identity: { repository: `${input.owner}/${input.repo}`,
-          headSha: input.headSha, baseSha: input.baseSha } } : null;
-      },
+    groundedVerifierClient: groundedFixtureClient as never,
+    repoFileProviderFactory: (input: any) => groundedFixtureProvider({
+      owner: input.owner, repo: input.repo, headSha: input.headSha, baseSha: input.baseSha,
+      changedFiles: input.changedFiles, sourceSnapshots: accessControlSnapshots(input.headSha, input.baseSha),
     }) as never,
     prLifecycleHistory: { read: vi.fn(async () => ({ status: 'complete',
       snapshotId: '00000000-0000-4000-8000-000000000004', contextDigest: 'a'.repeat(64),
@@ -143,10 +179,13 @@ async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
     verdictCacheBase: { read: vi.fn(async () => ({ source: null, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS })) },
     verdictCacheCompareReader: contentReader(),
     // ADR 0002: a P2 the author resolved with a stated reason no longer blocks the check.
-    ...(override?.resolvedThreads ? { findingThreadReader: vi.fn(async () => override.resolvedThreads!.map((thread) => ({
-      ...thread, fingerprint: findingFingerprint(thread), severity: 'P2' as const, resolved: true, outdated: false,
-      resolution: { author: 'author1', reason: 'Naming follows the existing public API; renaming would break callers.' },
-    }))) } : {}),
+    ...(override?.resolvedThreads ? { findingThreadReader: vi.fn(async (_pr, headSha: string) => ({
+      source: 'service' as const, headSha, complete: true, omittedCount: 0,
+      threads: override.resolvedThreads!.map((thread) => ({ ...thread,
+        fingerprint: findingFingerprint(thread), severity: 'P2' as const, resolved: true, outdated: false,
+        resolution: { author: 'author1', reason: 'Naming follows the existing public API; renaming would break callers.' },
+      })),
+    })) } : {}),
   });
   expect(reportReviewEvidence).toHaveBeenCalledTimes(1);
   return parseWorkerReviewEvidence((reportReviewEvidence.mock.calls as unknown[][])[0][0]);
@@ -215,9 +254,24 @@ describe('a non-authoritative prior built by the real worker', () => {
 
   it('#1034 shape: a raw P1 published as P2 qualifies; its file is re-reviewed, the rest carried forward', async () => {
     const evidence = await realPriorEvidence({ 'sec-lane': [
-      { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module', body: 'Rename it.' },
-    ] }, { resolvedThreads: [{ path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module' }] });
+      { severity: 'P1', path: 'src/stable.ts', line: 11,
+        title: 'Naming regression: canReadStable grants non-admin callers protected data',
+        body: 'The changed guard returns true when isAdmin is false.', blockerEvidence: accessControlBlockerEvidence('src/stable.ts') },
+    ] }, { resolvedThreads: [{ path: 'src/stable.ts', line: 11,
+      title: 'Naming regression: canReadStable grants non-admin callers protected data' }] });
     expect(evidence.conclusion).toBe('success');
+    const verification = evidence.result.groundedReview?.verification as any;
+    expect(verification).toMatchObject({ version: 'GroundedIndependentVerification.v2',
+      semanticsVersion: 'GroundedReviewEvidenceSemantics.v2', candidates: 1, confirmed: 1, insufficient: 0,
+      coverageComplete: true, calls: 1,
+      candidateManifest: expect.arrayContaining([expect.objectContaining({ severity: 'P1' })]) });
+    expect(verification.outcomes[0]).toMatchObject({ path: 'src/stable.ts', line: 11,
+      severity: 'P1', status: 'confirmed', candidateSide: 'head',
+      evidence: { scopeProof: {
+        identity: { repository: 'acme/app', baseSha: BASE, headSha: PRIOR_HEAD, candidateSide: 'head' },
+        independentVerifier: { role: 'independent-grounded-verifier', status: 'confirmed' },
+      } } });
+    expect(publishedFindingSeverity(evidence.result.personas.flatMap((lane) => lane.findings)[0]!)).toBe('P2');
     const rows = storedRows(evidence);
     expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });
     expect(decideNext(rows)).toMatchObject({
@@ -241,7 +295,8 @@ describe('a non-authoritative prior built by the real worker', () => {
 describe('negative proof: a non-authoritative prior that must not be rested on', () => {
   it('a P1 that survives calibration: the failed check retains full coverage as repair context', async () => {
     const evidence = await realPriorEvidence({ 'sec-lane': [
-      { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Unchecked input reaches the query', body: 'Validate it first.' },
+      { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Non-admin caller can read protected data',
+        body: 'The changed guard returns true when isAdmin is false.', blockerEvidence: accessControlBlockerEvidence('src/stable.ts') },
     ] });
     expect(evidence.conclusion).toBe('failure');
     const rows = storedRows(evidence);

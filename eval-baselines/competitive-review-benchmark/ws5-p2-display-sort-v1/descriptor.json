@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "WS5P2DisplaySortBundle.v1",
+  "caseId": "ws5-p2-display-sort-v1",
+  "repository": {
+    "repositoryId": 73004,
+    "owner": "synthetic",
+    "repo": "fixture-display-sort"
+  },
+  "prNumber": 43,
+  "baseSha": "740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7",
+  "headSha": "e4edc4bd9f74fd9ec3e8f8f7d9a83bd821832497",
+  "baseTreeSha": "69b3deddf471ae8e4a8fe9e5dfaf3fccaf863a66",
+  "headTreeSha": "26b0f2d5ee97785df5de9871024eb84bee6572ca",
+  "changedFileCount": 1,
+  "patchBytes": 529,
+  "inputPath": "eval-baselines/competitive-review-benchmark/ws5-p2-display-sort-v1/inputs/ws5-p2-display-sort-v1.json",
+  "inputSha256": "c71cd3b3cdf2efd6d83705be5aef8eaa8fe3bb8418e24dfbc0b0a565bf660b2e",
+  "commitChain": [
+    {
+      "commitSha": "740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7",
+      "treeSha": "69b3deddf471ae8e4a8fe9e5dfaf3fccaf863a66",
+      "parentSha": null,
+      "commitTimestamp": "2026-10-06T13:20:00+00:00",
+      "commitMessage": "Synthetic display ordering contract"
+    },
+    {
+      "commitSha": "e4edc4bd9f74fd9ec3e8f8f7d9a83bd821832497",
+      "treeSha": "26b0f2d5ee97785df5de9871024eb84bee6572ca",
+      "parentSha": "740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7",
+      "commitTimestamp": "2026-10-06T13:21:00+00:00",
+      "commitMessage": "Remove stable tie-breaker from display ordering"
+    }
+  ]
+}

@@ -20,6 +20,7 @@ import {
   publishFindingThreads,
   readCurrentPullRequestHead,
   readFindingThreads,
+  readFindingThreadsSnapshot,
   resolveFindingThread,
   type FindingThreadTransport,
 } from '../github/findingThreads';
@@ -76,10 +77,12 @@ export function createFindingThreadsHandler(options: FindingThreadsRouteOptions)
     try {
       const transport = await options.transportFor(run.owner, run.repo);
       const pr = { owner: run.owner, repo: run.repo, prNumber: run.prNumber, headSha: run.headSha };
-      const existing = await readFindingThreads(transport, pr);
+      const history = await readFindingThreadsSnapshot(transport, pr);
+      const existing = history.threads;
       if (read.success) {
         return response.status(200).json({ version: 'FindingThreadsReadResult.v1', runId: input.runId,
-          threads: existing.slice(0, 500) });
+          headSha: run.headSha, complete: history.complete, omittedCount: history.omittedCount,
+          threads: existing });
       }
       if (input.version !== 'FindingThreadsRequest.v1') return response.status(400).json({ error: 'Invalid finding-threads request' });
       const published = await publishFindingThreads(transport, pr, input.publish, existing);

@@ -7,6 +7,7 @@ import {
 } from '../review/workerCompletion';
 import {
   deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, workerReviewCompletionDigest,
+  type WorkerReviewResult,
 } from '../review/workerReviewCompletion';
 import {
   evaluateReviewGate,
@@ -22,17 +23,23 @@ import { reviewDispatchPrLockKey } from './reviewCiPersistence';
 import { selectPriorReviewRecord } from './incrementalPriorReview';
 import { loadIncompleteP2RecoveryContext, requiredIncompleteP2RecoveryDigest } from './incompleteP2Recovery';
 import { incompleteP2RecoveryClaimMatches } from '../review/incompleteP2Recovery';
-import { DEFAULT_INCREMENTAL_MAX_AGE_MS, type IncrementalVerificationInput } from '../review/incrementalReview';
+import { DEFAULT_INCREMENTAL_MAX_AGE_MS, type IncrementalVerificationInput, type PriorReviewRecord,
+  type ReviewHeadAncestryReceipt } from '../review/incrementalReview';
 import { selectVerdictCacheSource } from './verdictCacheSource';
 import { coverageContractGateDecision, coverageContractGateDetailOf, PERSONA_COVERAGE_FAILURE_REASON } from '../review/coverageContractGate';
 import type { VerdictCacheVerificationInput } from '../review/verdictCache';
 import { canonicalJson, sha256 } from '../review/reviewCore';
+import type { FindingDispositionDraft } from '../review/findingDisposition';
 import { loadValidatedDisputedFindingRechecks, pendingDisputedFindingRechecks,
   type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import { parseReviewExecutionCheckpoint, reviewCheckpointMatchesCompletion } from '../review/reviewExecutionCheckpoint';
 import { evaluateFindingConvergence, findingFingerprint } from '../review/findingConvergence';
 import { affectedContextDigest } from '../review/semanticContext';
-import { recordTrustedPrReviewCompletion, reservePrReview, type ReviewSemanticFindingInput } from './reviewPrLifecycleRepository';
+import { createTrustedGroundedHistoryContext, recordTrustedPrReviewCompletion, reservePrReview,
+  deriveGroundedOriginAncestryRequests, type ReviewSemanticFindingInput, type TrustedGroundedHistoryContext,
+  type TrustedGroundedHistoryProjection, type TrustedGroundedLifecycleTransitionV1 } from './reviewPrLifecycleRepository';
+import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, GROUNDED_REVIEW_RECEIPT_V2_VERSION } from '../review/groundedEvidenceV2';
+import type { GroundedFindingContinuity, GroundedOriginAncestryRequestsByFingerprint } from '../review/findingContinuity';
 import {
   appendLifecycleEventForRun,
   requireLifecycleEventsMode,
@@ -51,6 +58,26 @@ interface Queryable { query(sql: string, values?: unknown[]): Promise<{ rows: an
 function jsonValue(value: unknown): any {
   if (typeof value !== 'string') return value;
   try { return JSON.parse(value); } catch { return undefined; }
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  const parsed = jsonValue(value);
+  return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+}
+
+function groundedEvidenceV2Projection(outcome: unknown,
+  verifiedContinuity?: GroundedFindingContinuity): Record<string, unknown> | undefined {
+  if (!outcome || typeof outcome !== 'object' || Array.isArray(outcome)) return undefined;
+  const value = outcome as Record<string, unknown>;
+  const evidence = jsonObject(value.evidence);
+  const rootCause = evidence.rootCause;
+  const causeAnchor = evidence.causeAnchor;
+  const causalPath = evidence.causalPath;
+  if (typeof evidence.semanticsVersion !== 'string' || !rootCause || typeof rootCause !== 'object'
+    || !causeAnchor || typeof causeAnchor !== 'object' || !causalPath || typeof causalPath !== 'object'
+    || typeof evidence.sourceWindowManifestDigest !== 'string') return undefined;
+  return { ...evidence, candidateSide: value.candidateSide,
+    ...(verifiedContinuity ? { verifiedContinuity } : {}) };
 }
 
 async function acceptedDisputedFindingRechecksAreComplete(
@@ -111,8 +138,17 @@ async function acceptedDisputedFindingRechecksAreComplete(
     return null;
   }
 }
+type GroundedV2ResolutionManifest = Extract<NonNullable<WorkerReviewResult['groundedReview']>,
+  { version: typeof GROUNDED_REVIEW_RECEIPT_V2_VERSION }>['verification']['sourceResolutionProbeManifest'];
+interface TrustedHistoryAncestryInput {
+  prior?: PriorReviewRecord;
+  hint?: ReviewHeadAncestryReceipt;
+  sourceResolutionProbeManifest?: GroundedV2ResolutionManifest;
+  originRequestsByFingerprint?: GroundedOriginAncestryRequestsByFingerprint;
+}
 type TrustedCompletionResolver = (gate: StoredReviewGate, incremental?: IncrementalVerificationInput,
-  verdictCache?: VerdictCacheVerificationInput) => Promise<TrustedGateCompletionContext>;
+  verdictCache?: VerdictCacheVerificationInput, historyAncestry?: TrustedHistoryAncestryInput)
+  => Promise<TrustedGateCompletionContext>;
 interface Client extends Queryable { release(): void }
 interface Pool extends Queryable { connect(): Promise<Client> }
 
@@ -207,12 +243,16 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
   }
 
   private async resolveCompletion(resolve: TrustedCompletionResolver, gate: StoredReviewGate,
-    incremental?: IncrementalVerificationInput, verdictCache?: VerdictCacheVerificationInput): Promise<TrustedGateCompletionContext> {
+    incremental?: IncrementalVerificationInput, verdictCache?: VerdictCacheVerificationInput,
+    historyAncestry?: TrustedHistoryAncestryInput): Promise<TrustedGateCompletionContext> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      // Only the inputs a completion actually carries are passed on, so a resolver sees exactly (gate) without them.
-      const resolving = verdictCache ? resolve(gate, incremental, verdictCache)
-        : incremental ? resolve(gate, incremental) : resolve(gate);
+      // Preserve the resolver's legacy arity when no optional proof is present. History ancestry
+      // occupies the fourth slot only when the authenticated completion carries a grounded receipt.
+      const resolving = historyAncestry !== undefined
+        ? resolve(gate, incremental, verdictCache, historyAncestry)
+        : verdictCache ? resolve(gate, incremental, verdictCache)
+          : incremental ? resolve(gate, incremental) : resolve(gate);
       return await Promise.race([resolving, new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('Gate completion resolution deadline exceeded')),
           this.completionResolutionTimeoutMs);
@@ -332,6 +372,29 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         run: { runId: coordinates.runId, executionAttempt: coordinates.executionAttempt,
           configDigest: String(row.effective_config_digest) },
       } : undefined;
+      const groundedReceipt = event.result.groundedReview;
+      const groundedV2Receipt = groundedReceipt?.version === GROUNDED_REVIEW_RECEIPT_V2_VERSION
+        ? groundedReceipt : undefined;
+      const v2OutcomeRun = groundedV2Receipt?.verification.outcomes ?? [];
+      const needsHistoryAncestry = deadlineValid && v2OutcomeRun.length > 0;
+      const priorHistoryRecord = needsHistoryAncestry
+        ? await selectPriorReviewRecord(client, event.runId).catch(() => null) : null;
+      const originRequestsByFingerprint = groundedV2Receipt?.history.status === 'complete'
+        && typeof groundedV2Receipt.history.snapshotId === 'string'
+        ? await deriveGroundedOriginAncestryRequests(client, {
+          runId: event.runId, executionAttempt: event.executionAttempt, workerTokenDigest: proof.workerTokenDigest,
+          repositoryId: event.repositoryId, owner: event.owner, repo: event.repo, prNumber: event.prNumber,
+          headSha: event.headSha, baseSha: event.baseSha, policyDigest: event.policyDigest,
+          configDigest: event.configDigest, contextDigest: String(row.snapshot_digest),
+          snapshotId: groundedV2Receipt.history.snapshotId, outcomes: v2OutcomeRun,
+        }) : {};
+      const historyAncestry = groundedV2Receipt ? {
+        ...(priorHistoryRecord ? { prior: priorHistoryRecord } : {}),
+        ...(groundedV2Receipt.history.verifiedAncestry ? { hint: groundedV2Receipt.history.verifiedAncestry } : {}),
+        originRequestsByFingerprint,
+        ...(groundedV2Receipt.verification.sourceResolutionProbeManifest
+          ? { sourceResolutionProbeManifest: groundedV2Receipt.verification.sourceResolutionProbeManifest } : {}),
+      } : undefined;
       // REL-1122: a coverage-contract verdict from the trusted context (the shared applicability
       // decision found a changed file no lane covers) is a terminal gate outcome, not a refusal of
       // the completion: rejecting it left the Gate pending until the deadline reaper. The decision
@@ -339,15 +402,41 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       let coverageFailure: ReturnType<typeof coverageContractGateDecision>;
       let trusted: TrustedGateCompletionContext | undefined;
       if (deadlineValid) {
-        try { trusted = await this.resolveCompletion(resolve, gate, incremental, verdictCache); }
+        try { trusted = await this.resolveCompletion(resolve, gate, incremental, verdictCache, historyAncestry); }
         catch (error) {
           coverageFailure = coverageContractGateDecision(error);
           if (!coverageFailure) throw error;
         }
       }
       const currentDecision = trusted ? evaluateReviewGate({ candidate: coordinates, current: trusted.current }) : undefined;
-      const derived = trusted && currentDecision?.status === 'pending' ? deriveCanonicalWorkerReviewEvidence(event, {
-        ...trusted.coverage,
+      let trustedGroundedHistory: TrustedGroundedHistoryContext | undefined;
+      let trustedGroundedHistoryProjection: TrustedGroundedHistoryProjection | undefined;
+      if (trusted && currentDecision?.status === 'pending' && groundedV2Receipt?.history.status === 'complete') {
+        const historyReceipt = groundedV2Receipt.history;
+        trustedGroundedHistoryProjection = await createTrustedGroundedHistoryContext(client, {
+          runId: event.runId, executionAttempt: event.executionAttempt, workerTokenDigest: proof.workerTokenDigest,
+          repositoryId: event.repositoryId, owner: event.owner, repo: event.repo, prNumber: event.prNumber,
+          headSha: event.headSha, baseSha: event.baseSha, policyDigest: event.policyDigest,
+          configDigest: event.configDigest, contextDigest: String(row.snapshot_digest),
+          history: { status: historyReceipt.status, snapshotId: historyReceipt.snapshotId,
+            contextDigest: historyReceipt.contextDigest, eventOmittedCount: historyReceipt.eventOmittedCount,
+            findingOmittedCount: historyReceipt.findingOmittedCount, legacyOmittedCount: historyReceipt.legacyOmittedCount },
+          outcomes: v2OutcomeRun, disputedRechecks: acceptedDisputedRechecks ?? [],
+          originRequestsByFingerprint,
+          serviceOriginAncestry: trusted.originAncestry ?? [],
+          priorAncestryVerified: trusted.historyAncestryVerified === true,
+          ...(trusted.historyAncestry ? { serviceAncestry: trusted.historyAncestry } : {}),
+        });
+        trustedGroundedHistory = trustedGroundedHistoryProjection?.groundedHistory;
+      }
+      const trustedCoverage = trusted ? { ...trusted.coverage,
+        ...(trustedGroundedHistory ? { groundedHistory: trustedGroundedHistory,
+          ...(trustedGroundedHistoryProjection?.authenticatedDisputes.length
+            ? { authenticatedDisputes: trustedGroundedHistoryProjection.authenticatedDisputes } : {}),
+          ...(trustedGroundedHistoryProjection
+            ? { authenticatedDisputePaths: trustedGroundedHistoryProjection.disputedFindingPaths } : {}) } : {}) } : undefined;
+      const derived = trusted && trustedCoverage && currentDecision?.status === 'pending' ? deriveCanonicalWorkerReviewEvidence(event, {
+        ...trustedCoverage,
         expectedCoordinates: {
           runId: coordinates.runId, repositoryId: coordinates.repositoryId,
           owner: coordinates.owner, repo: coordinates.repo, prNumber: coordinates.prNumber,
@@ -356,6 +445,22 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           executionAttempt: coordinates.executionAttempt,
         },
       }) : undefined;
+      const verifiedGroundedContinuity = derived?.valid ? (derived.groundedContinuity ?? []).filter(
+        (proof): proof is typeof proof & { currentOutcomeEvidenceDigest: string } =>
+          typeof proof.currentOutcomeEvidenceDigest === 'string') : [];
+      const verifiedGroundedTransitions: TrustedGroundedLifecycleTransitionV1[] = derived?.valid
+        ? (derived.groundedTransitions ?? []).map((proof) => ({
+          version: proof.version, kind: proof.transition, durableFindingId: proof.durableFindingId,
+          priorFindingEventId: proof.priorFindingEventId, changedContextDigest: proof.changedContextDigest,
+          historySnapshotId: proof.historySnapshotId, historyContextDigest: proof.historyContextDigest,
+          currentFingerprint: proof.currentFingerprint, candidateSide: proof.candidateSide,
+          outcomeStatus: proof.outcomeStatus, baseSha: proof.baseSha, headSha: proof.headSha,
+          sourceWindowManifestDigest: proof.sourceWindowManifestDigest,
+          currentOutcomeEvidenceDigest: proof.currentOutcomeEvidenceDigest, evidenceDigest: proof.evidenceDigest,
+          ...(proof.causalScope ? { causalScope: proof.causalScope } : {}),
+        })) : [];
+      const continuityByFingerprint = new Map(verifiedGroundedContinuity.map((proof) => [proof.currentFingerprint, proof]));
+      const transitionByFingerprint = new Map(verifiedGroundedTransitions.map((proof) => [proof.currentFingerprint, proof]));
       // The after-review human-risk boundary uses service receipt time, not a
       // worker-controlled timestamp that could make older consent look fresh.
       const workerCompletedAt = Date.parse(event.result.completedAt);
@@ -383,8 +488,15 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
             ? { deltaScope: trusted.coverage.incrementalDeltaFiles } : {}) })
         : undefined;
       const groundedOutcomes = trusted && derived?.valid && timestampValid
-        ? event.result.groundedReview?.verification.outcomes ?? [] : [];
-      const groundedByFingerprint = new Map(groundedOutcomes.map((outcome) => [outcome.fingerprint, outcome]));
+        ? groundedV2Receipt?.verification.outcomes ?? [] : [];
+      const groundedOutcomeForFinding = (fingerprint: string, finding: Record<string, unknown>) => {
+        const candidates = groundedOutcomes.filter((outcome) => outcome.fingerprint === fingerprint
+          || outcome.fingerprint === findingFingerprint(finding));
+        const line = Number.isSafeInteger(finding.line) ? Number(finding.line) : undefined;
+        const path = typeof finding.path === 'string' ? finding.path : '';
+        return candidates.find((outcome) => outcome.path === path && (line === undefined || outcome.line === line))
+          ?? (candidates.length === 1 ? candidates[0] : undefined);
+      };
       const verificationForOutcome = (outcome: (typeof groundedOutcomes)[number]) => {
         const evidence = outcome.evidence ?? { status: 'insufficient' };
         const evidenceDigest = outcome.evidenceDigest ?? sha256(canonicalJson({ fingerprint: outcome.fingerprint,
@@ -393,7 +505,10 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       };
       const semanticFindings: ReviewSemanticFindingInput[] = convergence?.entries.map((entry) => {
         const finding = entry.finding as unknown as Record<string, unknown>;
-        const outcome = groundedByFingerprint.get(entry.fingerprint) ?? groundedByFingerprint.get(findingFingerprint(finding));
+        const outcome = groundedOutcomeForFinding(entry.fingerprint, finding);
+        const verifiedContinuity = outcome ? continuityByFingerprint.get(outcome.fingerprint) : undefined;
+        const verifiedTransition = outcome ? transitionByFingerprint.get(outcome.fingerprint) : undefined;
+        const groundedEvidenceV2 = outcome ? groundedEvidenceV2Projection(outcome, verifiedContinuity) : undefined;
         const severityAdjusted = (entry as unknown as { severityAdjusted?: { from?: string; reason?: string } }).severityAdjusted;
         const sourceSeverity = severityAdjusted?.from ?? String(finding.severity ?? entry.severity);
         return {
@@ -404,9 +519,18 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           disposition: String(entry.status), blocking: Boolean(entry.blocking),
           affectedContextDigest: outcome?.affectedContextDigest ?? affectedContextDigest(finding, trusted!.coverage.changedFiles),
           ...(outcome ? { independentVerification: verificationForOutcome(outcome) } : {}),
+          ...(verifiedContinuity && ['continuous', 'reopened'].includes(verifiedContinuity.status)
+            && verifiedContinuity.durableFindingId ? { durableFindingId: verifiedContinuity.durableFindingId } : {}),
+          ...(verifiedContinuity ? { verifiedContinuity } : {}),
+          ...(verifiedTransition ? { durableFindingId: verifiedTransition.durableFindingId,
+            trustedLifecycleTransition: verifiedTransition } : {}),
+          ...(typeof groundedEvidenceV2?.rootCauseEvidenceKey === 'string'
+            ? { rootCauseEvidenceKey: groundedEvidenceV2.rootCauseEvidenceKey } : {}),
           sourceEvidence: {
             finding, fingerprint: entry.fingerprint, disposition: entry.status,
             resolution: entry.resolution ?? null,
+            ...(groundedEvidenceV2 ? { groundedEvidenceV2 } : {}),
+            ...(verifiedTransition ? { trustedLifecycleTransition: verifiedTransition } : {}),
             matchedThread: entry.matchedThread ? {
               threadId: entry.matchedThread.threadId ?? null,
               fingerprint: entry.matchedThread.fingerprint,
@@ -421,27 +545,45 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
             resolution: entry.resolution ?? null,
             sourceCompletionDigest: resultDigest,
             ...(outcome ? { independentVerification: outcome.status } : {}),
+            ...(groundedEvidenceV2 ? { groundedEvidenceV2 } : {}),
+            ...(verifiedTransition ? { trustedLifecycleTransition: verifiedTransition } : {}),
           },
         };
       }) ?? [];
-      const persistedFindingFingerprints = new Set(semanticFindings.map((finding) => finding.fingerprint));
       for (const outcome of groundedOutcomes) {
-        if (persistedFindingFingerprints.has(outcome.fingerprint)) continue;
+        const verifiedContinuity = continuityByFingerprint.get(outcome.fingerprint);
+        const verifiedTransition = transitionByFingerprint.get(outcome.fingerprint);
+        const groundedEvidenceV2 = groundedEvidenceV2Projection(outcome, verifiedContinuity);
+        if (semanticFindings.some((finding) => finding.fingerprint === outcome.fingerprint
+          && finding.path === outcome.path && (!Number.isSafeInteger(outcome.line) || finding.line === outcome.line)
+          && (!groundedEvidenceV2?.rootCauseEvidenceKey || finding.rootCauseEvidenceKey === groundedEvidenceV2.rootCauseEvidenceKey))) continue;
         const verification = verificationForOutcome(outcome);
         semanticFindings.push({ fingerprint: outcome.fingerprint, path: outcome.path, line: outcome.line,
           severity: outcome.severity, sourceSeverity: outcome.severity,
           disposition: `independent-${outcome.status}`, blocking: false,
+          ...(verifiedContinuity && ['continuous', 'reopened'].includes(verifiedContinuity.status)
+            && verifiedContinuity.durableFindingId ? { durableFindingId: verifiedContinuity.durableFindingId } : {}),
+          ...(verifiedContinuity ? { verifiedContinuity } : {}),
+          ...(verifiedTransition ? { durableFindingId: verifiedTransition.durableFindingId,
+            trustedLifecycleTransition: verifiedTransition } : {}),
+          ...(typeof groundedEvidenceV2?.rootCauseEvidenceKey === 'string'
+            ? { rootCauseEvidenceKey: groundedEvidenceV2.rootCauseEvidenceKey } : {}),
           affectedContextDigest: outcome.affectedContextDigest, independentVerification: verification,
           sourceEvidence: { claim: { fingerprint: outcome.fingerprint, path: outcome.path, line: outcome.line,
             title: outcome.title, severity: outcome.severity, claimType: outcome.claimType },
             independentVerification: { status: outcome.status, evidence: verification.evidence,
-              evidenceDigest: verification.evidenceDigest } },
-          provenance: { sourceCompletionDigest: resultDigest, independentVerification: outcome.status },
+              evidenceDigest: verification.evidenceDigest }, ...(groundedEvidenceV2 ? { groundedEvidenceV2 } : {}),
+            ...(verifiedTransition ? { trustedLifecycleTransition: verifiedTransition } : {}) },
+          provenance: { sourceCompletionDigest: resultDigest, independentVerification: outcome.status,
+            ...(groundedEvidenceV2 ? { groundedEvidenceV2 } : {}),
+            ...(verifiedTransition ? { trustedLifecycleTransition: verifiedTransition } : {}) },
         });
       }
-      const reviewDecisionV2 = derived?.valid
-        ? (derived.evidence as unknown as { reviewDecision?: Record<string, unknown> }).reviewDecision
-        : undefined;
+      const reviewDecisionV2 = derived?.valid ? derived.evidence.reviewDecision : undefined;
+      const candidateEvidenceSemanticsVersion = groundedV2Receipt?.semanticsVersion;
+      const evidenceSemanticsVersion = derived?.valid && timestampValid
+        && typeof candidateEvidenceSemanticsVersion === 'string'
+        && candidateEvidenceSemanticsVersion.length <= 120 ? candidateEvidenceSemanticsVersion : undefined;
 
       // Persist a bounded diagnostic before retiring the worker execution. The
       // callback's persona error class is the only worker-supplied category we
@@ -494,6 +636,132 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         policyDigest: event.policyDigest, configDigest: event.configDigest,
         contextDigest: String(row.snapshot_digest), at: now,
       });
+      const findingDispositions: FindingDispositionDraft[] = [];
+      for (const entry of convergence?.entries ?? []) {
+        const thread = entry.matchedThread;
+        const resolution = entry.resolution;
+        const findingRecord = entry.finding as unknown as Record<string, unknown>;
+        const finding = semanticFindings.find((row) => row.fingerprint === entry.fingerprint
+          && row.path === findingRecord.path
+          && (!Number.isSafeInteger(findingRecord.line) || row.line === Number(findingRecord.line)));
+        if (!thread?.threadId || !resolution?.author || !resolution.reason || !finding) continue;
+        const explanationEvidence = { threadId: thread.threadId, author: resolution.author,
+          reason: resolution.reason, at: resolution.at ?? null };
+        const explanationDigest = sha256(canonicalJson(explanationEvidence));
+        findingDispositions.push({
+          version: 'PrFindingDisposition.v1', kind: 'author_explanation',
+          fingerprint: entry.fingerprint,
+          ...(finding.rootCauseEvidenceKey ? { sourceOccurrenceKey: finding.rootCauseEvidenceKey } : {}),
+          path: finding.path, runId: event.runId, executionAttempt: event.executionAttempt,
+          headSha: event.headSha, baseSha: event.baseSha, policyDigest: event.policyDigest,
+          configDigest: event.configDigest, contextDigest: String(row.snapshot_digest),
+          affectedContextDigest: finding.affectedContextDigest, evidenceDigest: explanationDigest,
+          provenance: { actorType: 'human', actorDigest: sha256(resolution.author.trim().toLowerCase()),
+            source: 'github_review_thread', receiptDigest: explanationDigest, sourceIdDigest: sha256(thread.threadId) },
+          explanation: { text: resolution.reason.slice(0, 1_000), trust: 'untrusted' },
+        });
+      }
+      for (const outcome of groundedOutcomes) {
+        const groundedEvidenceV2 = groundedEvidenceV2Projection(outcome);
+        const finding = semanticFindings.find((row) => row.fingerprint === outcome.fingerprint && row.path === outcome.path
+          && (!Number.isSafeInteger(outcome.line) || row.line === outcome.line)
+          && (!groundedEvidenceV2?.rootCauseEvidenceKey || row.rootCauseEvidenceKey === groundedEvidenceV2.rootCauseEvidenceKey));
+        if (outcome.status !== 'contradicted' || !outcome.evidence || !finding) continue;
+        const proofDigest = outcome.evidenceDigest ?? sha256(canonicalJson({ fingerprint: outcome.fingerprint,
+          status: outcome.status, affectedContextDigest: outcome.affectedContextDigest, evidence: outcome.evidence }));
+        findingDispositions.push({
+          version: 'PrFindingDisposition.v1', kind: 'adjudicated_false_positive',
+          fingerprint: outcome.fingerprint,
+          ...(finding.rootCauseEvidenceKey ? { sourceOccurrenceKey: finding.rootCauseEvidenceKey } : {}),
+          path: finding.path, runId: event.runId, executionAttempt: event.executionAttempt,
+          headSha: event.headSha, baseSha: event.baseSha, policyDigest: event.policyDigest,
+          configDigest: event.configDigest, contextDigest: String(row.snapshot_digest),
+          affectedContextDigest: outcome.affectedContextDigest, evidenceDigest: proofDigest,
+          provenance: { actorType: 'service', actorDigest: sha256('service:independent-grounded-verifier'),
+            source: 'grounded_verifier', receiptDigest: proofDigest },
+          adjudication: { method: 'independent_grounded_verifier', status: 'contradicted', proofDigest },
+        });
+      }
+      for (const transition of verifiedGroundedTransitions) {
+        const outcome = groundedOutcomes.find((candidate) => candidate.fingerprint === transition.currentFingerprint);
+        const finding = semanticFindings.find((candidate) => candidate.fingerprint === transition.currentFingerprint
+          && (!outcome || candidate.path === outcome.path));
+        if (!outcome || !finding || finding.durableFindingId !== transition.durableFindingId
+          || transition.changedContextDigest !== finding.affectedContextDigest) continue;
+        const actorDigest = sha256('service:independent-grounded-verifier');
+        const common = {
+          version: 'PrFindingDisposition.v1' as const,
+          fingerprint: transition.currentFingerprint,
+          ...(finding.rootCauseEvidenceKey ? { sourceOccurrenceKey: finding.rootCauseEvidenceKey } : {}),
+          findingId: transition.durableFindingId, path: finding.path, runId: event.runId,
+          executionAttempt: event.executionAttempt, headSha: event.headSha, baseSha: event.baseSha,
+          policyDigest: event.policyDigest, configDigest: event.configDigest, contextDigest: String(row.snapshot_digest),
+          affectedContextDigest: transition.changedContextDigest, evidenceDigest: transition.evidenceDigest,
+          provenance: { actorType: 'service' as const, actorDigest, source: 'grounded_verifier' as const,
+            receiptDigest: transition.evidenceDigest },
+        };
+        if (transition.kind === 'fixed' && outcome.status === 'contradicted') {
+          findingDispositions.push({ ...common, kind: 'fixed', adjudication: {
+            method: 'independent_grounded_verifier', status: 'contradicted', proofDigest: transition.currentOutcomeEvidenceDigest,
+            priorFindingEventId: transition.priorFindingEventId, changedContextDigest: transition.changedContextDigest,
+          } });
+        }
+        if (transition.kind === 'regressed' && outcome.status === 'confirmed' && finding.rootCauseEvidenceKey) {
+          const causalScope = transition.causalScope;
+          if (causalScope !== 'introduced' && causalScope !== 'exacerbated') continue;
+          findingDispositions.push({ ...common, kind: 'regressed', adjudication: {
+            method: 'independent_grounded_verifier', status: 'confirmed', proofDigest: transition.currentOutcomeEvidenceDigest,
+            priorFixedEventId: transition.priorFindingEventId, rootCauseEvidenceKey: finding.rootCauseEvidenceKey,
+            causalScope,
+          } });
+        }
+      }
+      const conventionCandidates = [...new Map(semanticFindings.flatMap((finding) => {
+        const groundedV2 = jsonValue(finding.sourceEvidence) && jsonObject(finding.sourceEvidence).groundedEvidenceV2;
+        const verified = finding.independentVerification;
+        return finding.durableFindingId && verified
+          && jsonObject(groundedV2).semanticsVersion === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
+          ? [[`${finding.durableFindingId}:${verified.evidenceDigest}`, {
+            findingId: finding.durableFindingId, evidenceDigest: verified.evidenceDigest,
+          }] as const] : [];
+      }))].map(([, currentFinding]) => currentFinding);
+      if (trusted?.readTrustedConventionAdjudications && conventionCandidates.length > 0) {
+        try {
+          const conventionRead = await trusted.readTrustedConventionAdjudications({
+            currentFindings: conventionCandidates,
+            ...(trustedGroundedHistoryProjection?.consumedConventionSourceIdDigests.length
+              ? { consumedCommentSourceIdDigests: trustedGroundedHistoryProjection.consumedConventionSourceIdDigests } : {}),
+          });
+          if (conventionRead.status === 'available') {
+            for (const adjudication of conventionRead.adjudications) {
+              if (adjudication.repository !== `${event.owner}/${event.repo}` || adjudication.prNumber !== event.prNumber
+                || adjudication.headSha !== event.headSha) continue;
+              const finding = semanticFindings.find((candidate) => candidate.durableFindingId === adjudication.findingId
+                && candidate.independentVerification?.evidenceDigest === adjudication.evidenceDigest
+                && jsonObject(jsonObject(candidate.sourceEvidence).groundedEvidenceV2).semanticsVersion
+                  === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION);
+              if (!finding) continue;
+              findingDispositions.push({
+                version: 'PrFindingDisposition.v1', kind: 'accepted_convention',
+                fingerprint: finding.fingerprint,
+                ...(finding.rootCauseEvidenceKey ? { sourceOccurrenceKey: finding.rootCauseEvidenceKey } : {}),
+                findingId: finding.durableFindingId, path: finding.path, runId: event.runId,
+                executionAttempt: event.executionAttempt, headSha: event.headSha, baseSha: event.baseSha,
+                policyDigest: event.policyDigest, configDigest: event.configDigest,
+                contextDigest: String(row.snapshot_digest), affectedContextDigest: finding.affectedContextDigest,
+                evidenceDigest: adjudication.receiptDigest,
+                provenance: { actorType: 'human', actorDigest: adjudication.actorDigest,
+                  source: 'trusted_operator_adjudication', sourceIdDigest: adjudication.sourceIdDigest,
+                  permission: adjudication.permission, receiptDigest: adjudication.receiptDigest },
+                adjudication: { method: 'authorized_human', conventionId: adjudication.conventionId,
+                  status: 'accepted', proofDigest: adjudication.receiptDigest },
+              });
+            }
+          }
+        } catch {
+          // Comment reads are optional lifecycle context; they never affect current-source gate policy.
+        }
+      }
       await recordTrustedPrReviewCompletion(client, {
         runId: event.runId, executionAttempt: event.executionAttempt,
         status: decision.status === 'success' ? 'completed'
@@ -508,10 +776,13 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           contextDigest: String(row.snapshot_digest),
           gateDecision: decision,
           gateEvidence: evidence ?? null,
+          ...(evidenceSemanticsVersion ? { evidenceSemanticsVersion } : {}),
+          serviceCoverage: { coverageComplete: evidence?.coverageComplete === true,
+            quorumSatisfied: evidence?.quorumSatisfied === true },
           ...(reviewDecisionV2 ? { reviewDecisionV2 } : {}),
           ...(derived?.valid ? { serviceDerivedEvidence: derived.evidence } : {}),
         },
-        findings: semanticFindings, at: now,
+        findings: semanticFindings, dispositions: findingDispositions, at: now,
         ...(acceptedDisputedRechecks === null ? {} : {
           satisfiedRecheckRequestIds: acceptedDisputedRechecks.map((recheck) => recheck.requestId),
         }),
