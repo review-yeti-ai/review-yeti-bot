@@ -182,7 +182,7 @@ export function evaluateReviewGate(input: {
     || [evidence.coverageComplete, evidence.quorumSatisfied, evidence.infrastructureFailure]
       .some((value) => typeof value !== 'boolean')) return invalid;
   if (evidence.infrastructureFailure) return { status: 'failure', eligible: false, reason: 'infrastructure-failure' };
-  if (evidence.blockerFastPath === true || (evidence.p0Count > 0 && evidence.verdict === 'BLOCK')) {
+  if (evidence.blockerFastPath === true) {
     return { status: 'failure', eligible: false, reason: 'blocking-findings' };
   }
   if (!evidence.coverageComplete || !evidence.quorumSatisfied) {

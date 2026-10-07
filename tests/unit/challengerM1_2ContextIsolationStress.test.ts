@@ -38,6 +38,8 @@ reviewers:
       arbiter_timeout_s: 5
   arbiter:
     order: [codex]
+composed:
+  swarm_context_isolation: true
 `) as any;
 
 function messageText(messages: any[]): string {

@@ -728,7 +728,7 @@ export function projectPublishingRosterBounds(panelResult: PanelResult): Publish
   const isFastPathOrCoverage = (panelResult as any).blockerFastPath === true
     || (panelResult?.quorum as any)?.blockerFastPath === true
     || (panelResult as any).fileCoverageSatisfied === true
-    || (panelResult?.quorum as any)?.fileCoverage?.satisfied === true;
+    || ((panelResult?.quorum as any)?.coverageMode === 'file_coverage' && (panelResult?.quorum as any)?.satisfied === true);
   const missingConfiguredLaneCount = configuredSet.size > 0 && !isFastPathOrCoverage
     ? [...configuredSet].filter((id) => !returnedSet.has(id)).length
     : 0;
@@ -794,7 +794,7 @@ function rawPublicationRoster(
   const isBlockerFastPath = (panelResult as any).blockerFastPath === true
     || (panelResult?.quorum as any)?.blockerFastPath === true;
   const isFileCoverageQuorum = (panelResult as any).fileCoverageSatisfied === true
-    || (panelResult?.quorum as any)?.fileCoverage?.satisfied === true;
+    || ((panelResult?.quorum as any)?.coverageMode === 'file_coverage' && (panelResult?.quorum as any)?.satisfied === true);
 
   const configuredIds = panelResult.applicablePersonaIds;
   const expectedLaneCount = configuredRosterValid
@@ -2923,7 +2923,7 @@ export async function runPublishingReviewWorker(
       const isBlockerFastPath = (panelResult as any).blockerFastPath === true
         || (panelResult?.quorum as any)?.blockerFastPath === true;
       const isFileCoverageQuorum = (panelResult as any).fileCoverageSatisfied === true
-        || (panelResult?.quorum as any)?.fileCoverage?.satisfied === true;
+        || ((panelResult?.quorum as any)?.coverageMode === 'file_coverage' && (panelResult?.quorum as any)?.satisfied === true);
       const panelQuorumSatisfied = panelResult?.quorum?.satisfied === true
         || isBlockerFastPath
         || isFileCoverageQuorum;
@@ -3419,7 +3419,6 @@ export async function runPublishingReviewWorker(
           ...(reviewEngine === 'composed' && panelResult.taskPlan ? { taskPlan: panelResult.taskPlan } : {}),
           coverageComplete: (isBlockerFastPath || coverageGaps.length === 0) && !gracefulPartial && (isBlockerFastPath || groundedReviewComplete),
           quorumSatisfied: (panelResult.quorum?.satisfied === true || isBlockerFastPath || isFileCoverageQuorum) && !unreportedNoVerdict && !gracefulPartial,
-          ...(isBlockerFastPath ? { blockerFastPath: true } : {}),
           ...(deletionClassification && deletionClassification.status !== 'disabled' && deletionClassification.totalFiles > 0
             ? { deletionClassification: {
               version: deletionClassification.version, digest: deletionClassification.digest, status: deletionClassification.status,

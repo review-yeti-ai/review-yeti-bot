@@ -969,27 +969,41 @@ function buildStaticPrefix(input: {
 
   if (input.phase === 'plan') {
     const range = input.baseSha && input.headSha ? `${input.baseSha}...${input.headSha}` : input.headSha || 'HEAD';
-    const treeOutline = input.astOutline || generateFileTreeOutline(input.effectiveFiles, {
-      domainLanes: input.domainLanes,
-      baseSha: input.baseSha,
-      headSha: input.headSha,
-      repository: input.repository,
-    });
-    const lockfileSummaries = input.effectiveFiles
-      .filter((f) => (f.path.endsWith('-lock.json') || f.path.endsWith('.lock') || f.path === 'package-lock.json' || f.path === 'yarn.lock' || f.path === 'pnpm-lock.yaml') && f.patch)
-      .map((f) => `--- ${f.path} (summarized)\n${f.patch}`);
-    const lockfileSection = lockfileSummaries.length > 0
-      ? `\n\n=== SUMMARIZED LOCKFILES ===\n${lockfileSummaries.join('\n\n')}`
-      : '';
-    contextSection = [
-      `=== PLAN CONTEXT: WHOLE ADMITTED PULL REQUEST (${input.scopeLabel || 'ALL FILES -- UNSCOPED'}) ===`,
-      `=== GIT RANGE ===`,
-      `git diff ${range}`,
-      ...(input.baseSha ? [`Base SHA: ${input.baseSha}`] : []),
-      `Head SHA: ${input.headSha}`,
-      ``,
-      treeOutline.summaryText + lockfileSection,
-    ].join('\n');
+    if (input.astOutline) {
+      const lockfileSummaries = input.effectiveFiles
+        .filter((f) => (f.path.endsWith('-lock.json') || f.path.endsWith('.lock') || f.path === 'package-lock.json' || f.path === 'yarn.lock' || f.path === 'pnpm-lock.yaml') && f.patch)
+        .map((f) => `--- ${f.path} (summarized)\n${f.patch}`);
+      const lockfileSection = lockfileSummaries.length > 0
+        ? `\n\n=== SUMMARIZED LOCKFILES ===\n${lockfileSummaries.join('\n\n')}`
+        : '';
+      contextSection = [
+        `=== PLAN CONTEXT: WHOLE ADMITTED PULL REQUEST (${input.scopeLabel || 'ALL FILES -- UNSCOPED'}) ===`,
+        `=== GIT RANGE ===`,
+        `git diff ${range}`,
+        ...(input.baseSha ? [`Base SHA: ${input.baseSha}`] : []),
+        `Head SHA: ${input.headSha}`,
+        ``,
+        input.astOutline.summaryText + lockfileSection,
+      ].join('\n');
+    } else {
+      const diffSection = buildDiffSection(input.effectiveFiles, {
+        ...(input.inlineTokenBudget ? { tokenBudget: input.inlineTokenBudget } : {}),
+        baseSha: input.baseSha || '',
+        headSha: input.headSha,
+        domainLanes: input.domainLanes,
+        canonicalShared: true,
+        fileIndexScope: 'pull-request',
+      });
+      contextSection = [
+        `=== PLAN CONTEXT: WHOLE ADMITTED PULL REQUEST (${input.scopeLabel || 'ALL FILES -- UNSCOPED'}) ===`,
+        `=== GIT RANGE ===`,
+        `git diff ${range}`,
+        ...(input.baseSha ? [`Base SHA: ${input.baseSha}`] : []),
+        `Head SHA: ${input.headSha}`,
+        ``,
+        diffSection,
+      ].join('\n');
+    }
   } else {
     const diffSection = buildDiffSection(input.effectiveFiles, {
       ...(input.inlineTokenBudget ? { tokenBudget: input.inlineTokenBudget } : {}),
@@ -1003,17 +1017,9 @@ function buildStaticPrefix(input: {
       fileIndexScope: 'task-assignment',
     });
 
-    const taskOutline = input.astOutline || generateFileTreeOutline(input.effectiveFiles, {
-      domainLanes: input.domainLanes,
-      baseSha: input.baseSha,
-      headSha: input.headSha,
-      repository: input.repository,
-    });
-
     contextSection = [
       `=== WORK CONTEXT: ASSIGNED TASK (${input.taskPathCount ?? 0} path(s)); see the task directive for exact obligations ===`,
-      taskOutline.summaryText,
-      ``,
+      ...(input.astOutline ? [input.astOutline.summaryText, ''] : []),
       diffSection,
     ].join('\n');
   }
@@ -2204,13 +2210,18 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       `[HUMAN REVIEWER GUIDANCE${g.createdBy ? ` (${g.createdBy})` : ''}]: ${g.guidanceText}`
     );
 
+    const swarmIsolation = config.composed?.swarm_context_isolation === true
+      || (options as any).swarmContextIsolation === true;
+
     const planFiles = budgeted ? budgeted.promptFiles : effectiveFiles;
-    const planTreeOutline = generateFileTreeOutline(planFiles, {
-      domainLanes,
-      baseSha: options.baseSha,
-      headSha,
-      repository,
-    });
+    const planTreeOutline = swarmIsolation
+      ? generateFileTreeOutline(planFiles, {
+        domainLanes,
+        baseSha: options.baseSha,
+        headSha,
+        repository,
+      })
+      : undefined;
 
     const staticPrefixText = buildStaticPrefix({
       phase: 'plan',
@@ -3346,18 +3357,25 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
 
     const legacySatisfied = unreportedLanes.length === 0 && optionalFailures.length === 0 && personas.length === planOutcome.tasks.length;
     let quorumSatisfied = legacySatisfied;
+    let blockerFastPathActive = false;
+    let fileCoverageActive = false;
+
     if (quorumPolicy) {
       if (blockerFindingDetected && (quorumPolicy.mode === 'blocker_fast_path' || quorumPolicy.mode === 'file_coverage' || quorumPolicy.blocker_fast_path_enabled !== false)) {
         quorumSatisfied = true;
+        blockerFastPathActive = true;
       } else if (quorumPolicy.mode === 'file_coverage') {
         quorumSatisfied = fileCoverage.satisfied;
+        fileCoverageActive = fileCoverage.satisfied;
       } else if (quorumPolicy.mode === 'blocker_fast_path') {
         quorumSatisfied = blockerFindingDetected || legacySatisfied;
+        blockerFastPathActive = blockerFindingDetected;
       } else if (quorumPolicy.mode === 'all_tasks') {
         quorumSatisfied = legacySatisfied;
       }
     } else if (blockerFindingDetected && (options as any).blockerFastPath === true) {
       quorumSatisfied = true;
+      blockerFastPathActive = true;
     }
 
     return {
@@ -3378,14 +3396,14 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       // arbitration call site (see `src/cli/publishingReview.ts`) is what actually prevents a
       // longer task plan from silently raising the P1 blocking threshold; this field must not be
       // read as a substitute for that.
-      blockerFastPath: blockerFindingDetected,
-      fileCoverageSatisfied: fileCoverage.satisfied,
+      ...(blockerFastPathActive ? { blockerFastPath: true } : {}),
+      ...(fileCoverageActive ? { fileCoverageSatisfied: true } : {}),
       quorum: {
         required: 1,
         distinctProviders: [providerId],
         satisfied: quorumSatisfied,
-        coverageMode: (quorumPolicy?.mode ?? 'file_coverage') as 'file_coverage' | 'all_tasks',
-        blockerFastPath: blockerFindingDetected,
+        coverageMode: (quorumPolicy?.mode ?? 'all_tasks') as 'file_coverage' | 'all_tasks',
+        blockerFastPath: blockerFastPathActive,
         fileCoverage,
       },
       moderator: { providerId, model: 'none', decision: 'RECONCILED', findings: [],
