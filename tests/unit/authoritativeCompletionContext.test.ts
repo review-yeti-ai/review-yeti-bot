@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StoredReviewGate } from '../../src/persistence/reviewGateRepository';
 import { AuthoritativeReviewReader } from '../../src/github/authoritativeReviewReader';
+import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError }
+  from '../../src/github/authoritativeReadFailure';
 import { AuthoritativePublishingResolver } from '../../src/review/authoritativePublishingResolver';
 import { createAuthoritativeCompletionContext, type AuthoritativeCompletionContextOptions } from '../../src/review/authoritativeCompletionContext';
 import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
@@ -151,6 +153,23 @@ describe('REL-1056 trusted-completion failure classification', () => {
     const f = fixture();
     f.exactCurrentDiff.mockRejectedValue(new Error('transient upstream'));
     const reason = await reasonOfRejection(f.context(f.gate));
+    expect(isDeterministicCompletionFailure(reason as never)).toBe(false);
+  });
+
+  it.each([
+    [new TransientAuthoritativeReadError('network'), 'reader-network-unavailable'],
+    [new TransientAuthoritativeReadError('rate_limit'), 'reader-rate-limited'],
+    [new TransientAuthoritativeReadError('retryable_server'), 'reader-server-unavailable'],
+    [new TransientAuthoritativeReadError('deadline'), 'deadline'],
+    [new InternalGitHubDependencyUnavailableError(), 'reader-app-unavailable'],
+  ])('preserves the finite reader failure class without upstream details %#', async (cause, reason) => {
+    const f = fixture();
+    f.currentCandidate.mockRejectedValue(cause);
+
+    const failure = await rejected(f.context(f.gate)) as TrustedCompletionResolutionError;
+
+    redacted(failure);
+    expect(failure).toMatchObject({ substage: 'current-candidate', reason });
     expect(isDeterministicCompletionFailure(reason as never)).toBe(false);
   });
 

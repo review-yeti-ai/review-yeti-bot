@@ -52,6 +52,10 @@ export const trustedCompletionResolutionReasons = [
   'no-patch-file',
   'coverage-no-persona',
   'reader-unavailable',
+  'reader-network-unavailable',
+  'reader-rate-limited',
+  'reader-server-unavailable',
+  'reader-app-unavailable',
   'unknown',
 ] as const;
 export type TrustedCompletionResolutionReason = typeof trustedCompletionResolutionReasons[number];
