@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.120.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.120.1...v1.120.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* bind composed completion authority and source coverage ([#1424](https://github.com/review-yeti-ai/review-yeti-bot/issues/1424)) ([1ddbc65](https://github.com/review-yeti-ai/review-yeti-bot/commit/1ddbc65d2fdae527a604c94fb6ae1d941471dfe9))
+
 ## [1.120.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.120.0...v1.120.1) (2026-10-07)
 
 
