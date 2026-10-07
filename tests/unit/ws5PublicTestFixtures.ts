@@ -249,7 +249,8 @@ export function createWs5PublicTestFixture(repoRoot = process.cwd()) {
     artifactRoot,
     unitOnlyLabels,
     bundle: {
-      rootPath: artifactRoot,
+      rootPath: path.resolve(repoRoot),
+      dataRootPath: artifactRoot,
       plan,
       panelSha256: planArtifact.sha256,
       manifest,

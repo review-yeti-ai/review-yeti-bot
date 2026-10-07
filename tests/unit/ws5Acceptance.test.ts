@@ -62,7 +62,8 @@ function makePinnedYetiDiscoveryEnvelope(bundle: any, armId: string, runtimeShaO
   const baseline = arm.purpose === 'baseline';
   const purpose = baseline ? 'baseline' : 'qualification';
   const effortProfile = arm.effortProfile;
-  const policyPath = path.join(bundle.rootPath, 'eval-baselines/competitive-review-benchmark/policy-projections',
+  const policyPath = path.join(bundle.dataRootPath || bundle.rootPath,
+    'eval-baselines/competitive-review-benchmark/policy-projections',
     effortProfile === 'native_omitted' ? 'yeti-v1-native-omitted.json' : 'yeti-v1-medium.json');
   const policyInput = JSON.parse(fs.readFileSync(policyPath, 'utf8'));
   const policyProjectionSha256 = crypto.createHash('sha256').update(fs.readFileSync(policyPath)).digest('hex');

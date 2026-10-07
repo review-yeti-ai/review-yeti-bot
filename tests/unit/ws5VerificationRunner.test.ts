@@ -128,6 +128,10 @@ describe('WS5 fixed verification-reference runner', () => {
       const result = await runner.runWs5VerificationPanel({
         authorizeModelDispatch: true,
         repoRoot,
+        dataRoot: path.join(os.tmpdir(), 'ws5-unit-private-data-root'),
+        planPath: 'eval-baselines/competitive-review-benchmark/ws5-acceptance-v1.json',
+        externalDataContractPath: path.join(os.tmpdir(), 'ws5-unit-external-data-contract.json'),
+        externalDataContractSha256: 'a'.repeat(64),
         outputDirectory,
         sourceCacheRoot: os.tmpdir(),
         alibabaBinaryPath: process.execPath,
@@ -174,6 +178,10 @@ describe('WS5 fixed verification-reference runner', () => {
       const result = await runner.runWs5VerificationPanel({
         authorizeModelDispatch: true,
         repoRoot,
+        dataRoot: path.join(os.tmpdir(), 'ws5-unit-private-data-root'),
+        planPath: 'eval-baselines/competitive-review-benchmark/ws5-acceptance-v1.json',
+        externalDataContractPath: path.join(os.tmpdir(), 'ws5-unit-external-data-contract.json'),
+        externalDataContractSha256: 'a'.repeat(64),
         outputDirectory,
         sourceCacheRoot: os.tmpdir(),
         alibabaBinaryPath: process.execPath,

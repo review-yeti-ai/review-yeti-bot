@@ -25,13 +25,21 @@ import {
   assertExactCaseIdSet,
   discoveryResourceProfile,
 } from './competitive-review-benchmark.mjs';
+import { resolveWs5ExternalDataPath, verifyWs5ExternalDataContract } from './ws5-external-data-contract.mjs';
 
 export { WS5_AACR_MANIFEST_SHA256 };
 
 export const WS5_ACCEPTANCE_PLAN_SHA256 = '9644d10aa9247d72eedd73cd358725a7dc8f0ff751b788e38965ba874fa09b9c';
 const PLAN_PATH = 'eval-baselines/competitive-review-benchmark/ws5-acceptance-v1.json';
-const PROFILE_PATH = 'eval-baselines/competitive-review-benchmark/aacr-ws5-source-profile-v1.json';
+const PROFILE_PATH = 'eval-baselines/competitive-review-benchmark/aacr-ws5-source-profile-v2.json';
+const LEGACY_PROFILE_PATH = 'eval-baselines/competitive-review-benchmark/aacr-ws5-source-profile-v1.json';
 const MANIFEST_PATH = 'eval-baselines/competitive-review-benchmark/aacr-ws5-heldout-v1.json';
+const DISCOVERY_INPUT_PATH = 'eval-baselines/competitive-review-benchmark/ws5-acceptance-inputs/discovery-v2-full-index.json';
+const VERIFICATION_INPUT_PATH = 'eval-baselines/competitive-review-benchmark/ws5-acceptance-inputs/verification-v2-full-index.json';
+const LEGACY_DISCOVERY_INPUT_PATH = 'eval-baselines/competitive-review-benchmark/ws5-acceptance-inputs/discovery-v1.json';
+const LEGACY_VERIFICATION_INPUT_PATH = 'eval-baselines/competitive-review-benchmark/ws5-acceptance-inputs/verification-v1.json';
+const NATIVE_OMITTED_POLICY_PATH = 'eval-baselines/competitive-review-benchmark/policy-projections/yeti-v1-native-omitted.json';
+const MEDIUM_POLICY_PATH = 'eval-baselines/competitive-review-benchmark/policy-projections/yeti-v1-medium.json';
 const LIFECYCLE_DESCRIPTOR_PATH = 'eval-baselines/competitive-review-benchmark/ws5-lifecycle-inputs-v1.json';
 const REPAIR_DESCRIPTOR_PATH = 'eval-baselines/competitive-review-benchmark/ws5-repair-sequence-v1/descriptor.json';
 const LIVE_ARMS_DESCRIPTOR_PATH = 'eval-baselines/competitive-review-benchmark/ws5-live-arms-v1.json';
@@ -40,35 +48,56 @@ const SHA256_RE = /^[a-f0-9]{64}$/iu;
 const CAUSAL_CLASSES = new Set([
   'introduced_defect', 'preexisting_defect', 'nit', 'false_positive', 'unresolved',
 ]);
+const SOURCE_ROOT = fs.realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
 function safeRepoPath(root, relativePath) {
-  if (typeof relativePath !== 'string' || path.isAbsolute(relativePath)) throw new Error('invalid_panel_artifact_path');
-  const resolved = path.resolve(root, relativePath);
-  const relative = path.relative(path.resolve(root), resolved);
-  if (!relative || relative === '..' || relative.startsWith('..' + path.sep)) throw new Error('panel_artifact_path_escape');
-  return resolved;
-}
-
-function readPinnedJson(root, relativePath, expectedSha256, reasonCode) {
-  if (typeof expectedSha256 !== 'string' || !SHA256_RE.test(expectedSha256)) throw new Error(reasonCode);
-  const bytes = fs.readFileSync(safeRepoPath(root, relativePath));
-  if (sha256(bytes) !== expectedSha256) throw new Error(reasonCode);
-  try {
-    return JSON.parse(bytes.toString('utf8'));
-  } catch {
-    throw new Error('panel_artifact_invalid_json');
+  try { return resolveWs5ExternalDataPath(root, relativePath); }
+  catch (error) {
+    const code = String(error?.message || '');
+    throw new Error(code === 'ws5_external_data_path_escape' || code === 'ws5_external_data_path_invalid'
+      ? 'panel_artifact_path_escape' : 'panel_artifact_path_invalid');
   }
 }
 
-function verifyInputRecord(root, record) {
+function readPinnedDataJson(dataRoot, relativePath, expectedSha256, reasonCode) {
+  if (typeof expectedSha256 !== 'string' || !SHA256_RE.test(expectedSha256)) throw new Error(reasonCode);
+  const resolved = resolveWs5ExternalDataPath(dataRoot, relativePath);
+  const bytes = fs.readFileSync(resolved);
+  if (sha256(bytes) !== expectedSha256) throw new Error(reasonCode);
+  try { return { value: JSON.parse(bytes.toString('utf8')), bytes, path: resolved }; }
+  catch { throw new Error('panel_artifact_invalid_json'); }
+}
+
+function readPinnedRepoJson(sourceRoot, relativePath, expectedSha256, reasonCode) {
+  if (typeof expectedSha256 !== 'string' || !SHA256_RE.test(expectedSha256)) throw new Error(reasonCode);
+  const resolved = safeRepoPath(sourceRoot, relativePath);
+  const bytes = fs.readFileSync(resolved);
+  if (sha256(bytes) !== expectedSha256) throw new Error(reasonCode);
+  try { return { value: JSON.parse(bytes.toString('utf8')), bytes, path: resolved }; }
+  catch { throw new Error('panel_artifact_invalid_json'); }
+}
+
+function externalDataContractEntry(binding, relativePath) {
+  return binding?.contract?.inputs?.find((entry) => entry.path === relativePath) || null;
+}
+
+function assertExternalDataContractEntry(binding, relativePath, role, expectedSha256) {
+  const entry = externalDataContractEntry(binding, relativePath);
+  if (!entry || entry.role !== role || entry.sha256 !== expectedSha256) {
+    throw new Error('ws5_external_data_contract_asset_binding_mismatch');
+  }
+  return entry;
+}
+
+function verifyInputRecord(sourceRoot, record) {
   if (!record || typeof record.caseId !== 'string' || !SHA256_RE.test(record.inputSha256 || '')) {
     throw new Error('synthetic_input_manifest_invalid');
   }
-  const bytes = fs.readFileSync(safeRepoPath(root, record.inputPath));
+  const bytes = fs.readFileSync(safeRepoPath(sourceRoot, record.inputPath));
   if (sha256(bytes) !== record.inputSha256) throw new Error('synthetic_input_digest_mismatch');
   let value;
   try { value = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('synthetic_input_invalid_json'); }
@@ -141,29 +170,66 @@ function matchesPerRequestAttestation(attempts, attestation) {
   });
 }
 
-/** Read fixed panel artifacts; oracle bytes are hashed but never parsed or returned. */
-export function loadPinnedAcceptancePlan(root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')) {
-  const planBytes = fs.readFileSync(safeRepoPath(root, PLAN_PATH));
-  const panelSha256 = sha256(planBytes);
-  if (panelSha256 !== WS5_ACCEPTANCE_PLAN_SHA256) throw new Error('ws5_acceptance_plan_digest_mismatch');
-  let plan;
-  try { plan = JSON.parse(planBytes.toString('utf8')); } catch { throw new Error('ws5_acceptance_plan_invalid_json'); }
+/** Load the pinned panel from an explicit external data bundle; sourceRoot remains the Git runner. */
+export function loadPinnedAcceptancePlan({
+  repoRoot = SOURCE_ROOT,
+  dataRoot,
+  planPath,
+  externalDataContractPath,
+  externalDataContractSha256,
+} = {}) {
+  if (typeof dataRoot !== 'string' || !path.isAbsolute(dataRoot)
+    || typeof planPath !== 'string' || !planPath
+    || typeof externalDataContractPath !== 'string' || !path.isAbsolute(externalDataContractPath)
+    || typeof externalDataContractSha256 !== 'string' || !SHA256_RE.test(externalDataContractSha256)) {
+    throw new Error('ws5_external_data_bundle_required');
+  }
+  const root = fs.realpathSync(path.resolve(repoRoot));
+  if (root !== SOURCE_ROOT) throw new Error('ws5_runner_source_root_mismatch');
+  if (planPath !== PLAN_PATH) throw new Error('ws5_external_acceptance_plan_path_invalid');
+  const externalBinding = verifyWs5ExternalDataContract({
+    sourceRoot: root,
+    dataRoot,
+    contractPath: externalDataContractPath,
+    expectedContractSha256: externalDataContractSha256,
+    expectedPlanPath: planPath,
+    expectedPlanSha256: WS5_ACCEPTANCE_PLAN_SHA256,
+  });
+  const planInput = readPinnedDataJson(dataRoot, planPath, WS5_ACCEPTANCE_PLAN_SHA256,
+    'ws5_acceptance_plan_digest_mismatch');
+  assertExternalDataContractEntry(externalBinding, planPath, 'acceptance-plan', WS5_ACCEPTANCE_PLAN_SHA256);
+  const plan = planInput.value;
+  const panelSha256 = sha256(planInput.bytes);
   if (plan.schemaVersion !== 'ReviewYetiWS5Acceptance.v1'
     || plan.publicPanel?.datasetSha256 !== AACR_BENCHMARK.sha256) {
     throw new Error('ws5_acceptance_plan_incompatible');
   }
 
-  const manifestBytes = fs.readFileSync(safeRepoPath(root, plan.publicPanel.manifestPath || MANIFEST_PATH));
+  const manifestPath = plan.publicPanel.manifestPath || MANIFEST_PATH;
+  if (manifestPath !== MANIFEST_PATH) throw new Error('ws5_public_manifest_path_mismatch');
+  const manifestBytes = fs.readFileSync(safeRepoPath(root, manifestPath));
   const manifestSha256 = sha256(manifestBytes);
   if (manifestSha256 !== plan.publicPanel.manifestSha256
     || manifestSha256 !== WS5_AACR_MANIFEST_SHA256) throw new Error('ws5_acceptance_manifest_digest_mismatch');
+  assertExternalDataContractEntry(externalBinding, manifestPath, 'public-manifest', manifestSha256);
   const { manifest } = assertCanonicalHeldoutManifestBytes(manifestBytes);
   assertExactCaseIdSet(manifest.cases.map((entry) => entry.id), plan.publicPanel.caseIds);
   if (manifest.cases.length !== 7) throw new Error('ws5_acceptance_public_case_count_mismatch');
 
-  const sourceProfile = readPinnedJson(root, plan.publicPanel.sourceProfilePath || PROFILE_PATH,
-    plan.publicPanel.sourceProfileSha256, 'ws5_source_profile_digest_mismatch');
-  if (sourceProfile.heldoutManifestSha256 !== manifestSha256
+  const sourceProfilePath = plan.publicPanel.sourceProfilePath || PROFILE_PATH;
+  if (sourceProfilePath !== PROFILE_PATH) throw new Error('ws5_source_profile_v2_required');
+  const sourceProfileBytes = fs.readFileSync(safeRepoPath(root, sourceProfilePath));
+  const sourceProfileSha256 = sha256(sourceProfileBytes);
+  if (sourceProfileSha256 !== plan.publicPanel.sourceProfileSha256
+    || sourceProfileSha256 !== externalBinding.sourceProfileMapping.v2ProfileSha256) {
+    throw new Error('ws5_source_profile_digest_mismatch');
+  }
+  assertExternalDataContractEntry(externalBinding, sourceProfilePath, 'source-profile-v2', sourceProfileSha256);
+  let sourceProfile;
+  try { sourceProfile = JSON.parse(sourceProfileBytes.toString('utf8')); }
+  catch { throw new Error('ws5_source_profile_invalid_json'); }
+  if (sourceProfile.schemaVersion !== 'WS5SourceProfile.v2'
+    || sourceProfile.heldoutManifestSha256 !== manifestSha256
     || sourceProfile.cases?.length !== manifest.cases.length
     || sourceProfile.cases.some((entry, index) => entry.caseId !== manifest.cases[index].id
       || entry.diffBaseSha !== manifest.cases[index].diffBaseSha
@@ -173,11 +239,73 @@ export function loadPinnedAcceptancePlan(root = path.resolve(path.dirname(fileUR
       || entry.compare?.status !== 'verified')) {
     throw new Error('ws5_source_profile_identity_or_completeness_mismatch');
   }
+  const mapping = externalBinding.sourceProfileMapping;
+  const normalization = plan.publicPanel.indexMetadataCanonicalization;
+  const discoveryPin = plan.publicPanel.preparedInputs?.discovery;
+  const verificationPin = plan.publicPanel.preparedInputs?.verification;
+  const legacyInputs = mapping?.legacyPreparedInputs;
+  const currentInputs = mapping?.currentPreparedInputs;
+  if (mapping?.status !== 'verified'
+    || mapping?.v1ProfilePath !== LEGACY_PROFILE_PATH
+    || !externalDataContractEntry(externalBinding, LEGACY_PROFILE_PATH)
+    || externalDataContractEntry(externalBinding, LEGACY_PROFILE_PATH)?.role !== 'legacy-source-profile'
+    || externalDataContractEntry(externalBinding, LEGACY_PROFILE_PATH)?.sha256 !== mapping?.v1ProfileSha256
+    || mapping?.normalizationReportPath !== normalization?.reportPath
+    || mapping?.normalizationReportSha256 !== normalization?.reportSha256
+    || legacyInputs?.discovery?.path !== LEGACY_DISCOVERY_INPUT_PATH
+    || legacyInputs?.discovery?.sha256 !== normalization?.oldDiscoveryInputSha256
+    || legacyInputs?.verification?.path !== LEGACY_VERIFICATION_INPUT_PATH
+    || legacyInputs?.verification?.sha256 !== normalization?.oldVerificationInputSha256
+    || currentInputs?.discovery?.path !== DISCOVERY_INPUT_PATH
+    || currentInputs?.discovery?.sha256 !== discoveryPin?.sha256
+    || currentInputs?.verification?.path !== VERIFICATION_INPUT_PATH
+    || currentInputs?.verification?.sha256 !== verificationPin?.sha256) {
+    throw new Error('ws5_source_profile_v2_migration_receipt_mismatch');
+  }
+  for (const legacyInput of Object.values(legacyInputs || {})) {
+    if (!legacyInput || typeof legacyInput.path !== 'string'
+      || externalDataContractEntry(externalBinding, legacyInput.path)?.role !== 'legacy-prepared-input'
+      || externalDataContractEntry(externalBinding, legacyInput.path)?.sha256 !== legacyInput.sha256) {
+      throw new Error('ws5_source_profile_v2_migration_receipt_mismatch');
+    }
+  }
+  if (sourceProfile.indexNormalization?.path !== normalization?.reportPath
+    || sourceProfile.indexNormalization?.sha256 !== normalization?.reportSha256
+    || sourceProfile.indexNormalization?.mode !== 'full_index_blob_ids') {
+    throw new Error('ws5_source_profile_v2_normalization_binding_mismatch');
+  }
 
-  const preparedDiscovery = readPinnedJson(root, plan.publicPanel.preparedInputs.discovery.path,
-    plan.publicPanel.preparedInputs.discovery.sha256, 'ws5_prepared_discovery_input_digest_mismatch');
-  const preparedVerification = readPinnedJson(root, plan.publicPanel.preparedInputs.verification.path,
-    plan.publicPanel.preparedInputs.verification.sha256, 'ws5_prepared_verification_input_digest_mismatch');
+  if (discoveryPin?.path !== DISCOVERY_INPUT_PATH || verificationPin?.path !== VERIFICATION_INPUT_PATH
+    || discoveryPin.sha256 !== plan.publicPanel.preparedInputSha256
+    || verificationPin.sha256 !== plan.verificationPanel?.preparedInputSha256) {
+    throw new Error('ws5_v2_prepared_input_paths_required');
+  }
+  assertExternalDataContractEntry(externalBinding, discoveryPin.path, 'prepared-input-v2', discoveryPin.sha256);
+  assertExternalDataContractEntry(externalBinding, verificationPin.path, 'prepared-input-v2', verificationPin.sha256);
+  const childInputPaths = new Set(externalBinding.contract.childVisibleInputIds.map((id) =>
+    externalBinding.contract.inputs.find((entry) => entry.id === id)?.path).filter(Boolean));
+  if (childInputPaths.size !== 3 || !childInputPaths.has(manifestPath)
+    || !childInputPaths.has(discoveryPin.path) || !childInputPaths.has(verificationPin.path)) {
+    throw new Error('ws5_external_child_input_set_mismatch');
+  }
+  const discoveryInput = readPinnedDataJson(dataRoot, discoveryPin.path, discoveryPin.sha256,
+    'ws5_prepared_discovery_input_digest_mismatch');
+  const verificationInput = readPinnedDataJson(dataRoot, verificationPin.path, verificationPin.sha256,
+    'ws5_prepared_verification_input_digest_mismatch');
+  const nativePolicyPin = assertExternalDataContractEntry(externalBinding, NATIVE_OMITTED_POLICY_PATH,
+    'policy-projection', externalDataContractEntry(externalBinding, NATIVE_OMITTED_POLICY_PATH)?.sha256);
+  const mediumPolicyPin = assertExternalDataContractEntry(externalBinding, MEDIUM_POLICY_PATH,
+    'policy-projection', externalDataContractEntry(externalBinding, MEDIUM_POLICY_PATH)?.sha256);
+  const nativePolicyBytes = fs.readFileSync(safeRepoPath(root, nativePolicyPin.path));
+  const mediumPolicyBytes = fs.readFileSync(safeRepoPath(root, mediumPolicyPin.path));
+  if (sha256(nativePolicyBytes) !== nativePolicyPin.sha256 || sha256(mediumPolicyBytes) !== mediumPolicyPin.sha256) {
+    throw new Error('ws5_policy_projection_digest_mismatch');
+  }
+  for (const policyBytes of [nativePolicyBytes, mediumPolicyBytes]) {
+    try { JSON.parse(policyBytes.toString('utf8')); } catch { throw new Error('ws5_policy_projection_invalid_json'); }
+  }
+  const preparedDiscovery = discoveryInput.value;
+  const preparedVerification = verificationInput.value;
   if (preparedDiscovery.heldoutManifestSha256 !== manifestSha256
     || preparedDiscovery.cases?.length !== 7 || preparedDiscovery.cases.some((entry, index) =>
       entry.caseId !== manifest.cases[index].id || entry.sourceOmissions?.length !== 0)
@@ -190,8 +318,10 @@ export function loadPinnedAcceptancePlan(root = path.resolve(path.dirname(fileUR
     throw new Error('ws5_verification_input_case_set_mismatch');
   }
 
-  const lifecycleDescriptor = readPinnedJson(root, plan.synthetic.lifecycleDescriptorPath || LIFECYCLE_DESCRIPTOR_PATH,
+  const lifecycleDescriptorPath = plan.synthetic.lifecycleDescriptorPath || LIFECYCLE_DESCRIPTOR_PATH;
+  const lifecycleDescriptorRead = readPinnedRepoJson(root, lifecycleDescriptorPath,
     plan.synthetic.lifecycleDescriptorSha256, 'ws5_lifecycle_descriptor_digest_mismatch');
+  const lifecycleDescriptor = lifecycleDescriptorRead.value;
   if (!Array.isArray(lifecycleDescriptor.cases) || lifecycleDescriptor.cases.length !== 8) {
     throw new Error('ws5_lifecycle_case_count_mismatch');
   }
@@ -201,14 +331,21 @@ export function loadPinnedAcceptancePlan(root = path.resolve(path.dirname(fileUR
   }));
   assertBlindDiscoveryInputCases(syntheticCases.map((entry) => entry.inputValue));
 
-  const repairDescriptor = readPinnedJson(root, plan.synthetic.repairDescriptorPath || REPAIR_DESCRIPTOR_PATH,
+  const repairDescriptorPath = plan.synthetic.repairDescriptorPath || REPAIR_DESCRIPTOR_PATH;
+  const repairDescriptorRead = readPinnedRepoJson(root, repairDescriptorPath,
     plan.synthetic.repairDescriptorSha256, 'ws5_repair_descriptor_digest_mismatch');
+  assertExternalDataContractEntry(externalBinding, repairDescriptorPath, 'synthetic-descriptor',
+    plan.synthetic.repairDescriptorSha256);
+  const repairDescriptor = repairDescriptorRead.value;
   if (!Array.isArray(repairDescriptor.phases) || repairDescriptor.phases.length !== 2) {
     throw new Error('ws5_repair_phase_count_mismatch');
   }
   const repairCases = repairDescriptor.phases.map((record) => ({
     ...record,
-    inputValue: verifyInputRecord(root, record),
+    inputValue: (() => {
+      assertExternalDataContractEntry(externalBinding, record.inputPath, 'synthetic-worker-input', record.inputSha256);
+      return verifyInputRecord(root, record);
+    })(),
   }));
   assertBlindDiscoveryInputCases(repairCases.map((entry) => entry.inputValue));
   const repairCommits = repairDescriptor.commitChain || [];
@@ -227,13 +364,16 @@ export function loadPinnedAcceptancePlan(root = path.resolve(path.dirname(fileUR
   if (!largePlan || largePlan.descriptorPath !== 'eval-baselines/competitive-review-benchmark/ws5-large-crossfile-v1/descriptor.json') {
     throw new Error('ws5_large_crossfile_plan_missing');
   }
-  const largeDescriptor = readPinnedJson(root, largePlan.descriptorPath,
-    largePlan.descriptorSha256, 'ws5_large_crossfile_descriptor_digest_mismatch');
+  const largeDescriptor = readPinnedRepoJson(root, largePlan.descriptorPath,
+    largePlan.descriptorSha256, 'ws5_large_crossfile_descriptor_digest_mismatch').value;
+  assertExternalDataContractEntry(externalBinding, largePlan.descriptorPath, 'synthetic-descriptor',
+    largePlan.descriptorSha256);
   const largeInputRecord = {
     caseId: largeDescriptor.caseId,
     inputPath: largeDescriptor.inputPath,
     inputSha256: largeDescriptor.inputSha256,
   };
+  assertExternalDataContractEntry(externalBinding, largeInputRecord.inputPath, 'synthetic-worker-input', largeInputRecord.inputSha256);
   const largeCrossfileInput = verifyInputRecord(root, largeInputRecord);
   assertBlindDiscoveryInputCases([largeCrossfileInput]);
   assertNoWorkerHistoryOrOracle(largeCrossfileInput);
@@ -252,14 +392,13 @@ export function loadPinnedAcceptancePlan(root = path.resolve(path.dirname(fileUR
     || largeCrossfileInput.source.headSha !== largeDescriptor.headSha) {
     throw new Error('ws5_large_crossfile_fixture_not_within_frozen_size_contract');
   }
-  const largeOracleBytes = fs.readFileSync(safeRepoPath(root, largePlan.oraclePath));
-  const largeOracleSha256 = sha256(largeOracleBytes);
-  if (largeOracleSha256 !== largePlan.oracleSha256) throw new Error('ws5_large_crossfile_oracle_digest_mismatch');
-  if (largeInputRecord.inputPath === largePlan.oraclePath) throw new Error('ws5_large_crossfile_oracle_must_not_be_worker_input');
   const p2Plan = plan.synthetic.p2DisplaySort;
-  const p2Descriptor = readPinnedJson(root, p2Plan.descriptorPath,
-    p2Plan.descriptorSha256, 'ws5_p2_descriptor_digest_mismatch');
+  const p2Descriptor = readPinnedRepoJson(root, p2Plan.descriptorPath,
+    p2Plan.descriptorSha256, 'ws5_p2_descriptor_digest_mismatch').value;
+  assertExternalDataContractEntry(externalBinding, p2Plan.descriptorPath, 'synthetic-descriptor',
+    p2Plan.descriptorSha256);
   const p2InputRecord = { caseId: p2Descriptor.caseId, inputPath: p2Descriptor.inputPath, inputSha256: p2Descriptor.inputSha256 };
+  assertExternalDataContractEntry(externalBinding, p2InputRecord.inputPath, 'synthetic-worker-input', p2InputRecord.inputSha256);
   const p2Input = verifyInputRecord(root, p2InputRecord);
   assertBlindDiscoveryInputCases([p2Input]);
   assertNoWorkerHistoryOrOracle(p2Input, { forbidCandidates: true });
@@ -268,36 +407,66 @@ export function loadPinnedAcceptancePlan(root = path.resolve(path.dirname(fileUR
     verifyFullRevision(revision);
     return !p2RevisionShas.has(revision.commitSha);
   })) throw new Error('ws5_p2_full_source_snapshot_mismatch');
-  const p2OracleBytes = fs.readFileSync(safeRepoPath(root, p2Plan.oraclePath));
-  const p2OracleSha256 = sha256(p2OracleBytes);
-  if (p2OracleSha256 !== p2Plan.oracleSha256 || p2InputRecord.inputPath === p2Plan.oraclePath) {
-    throw new Error('ws5_p2_oracle_digest_or_blindness_mismatch');
-  }
-  const repairOracleBytes = fs.readFileSync(safeRepoPath(root, plan.synthetic.repairOraclePath));
-  const repairOracleSha256 = sha256(repairOracleBytes);
-  if (repairOracleSha256 !== plan.synthetic.repairOracleSha256
-    || repairDescriptor.phases.some((entry) => entry.inputPath === plan.synthetic.repairOraclePath)) {
-    throw new Error('ws5_repair_oracle_digest_or_blindness_mismatch');
-  }
-  const liveArms = readPinnedJson(root, plan.synthetic.normalCanaryArmDescriptorPath,
-    plan.synthetic.normalCanaryArmDescriptorSha256, 'ws5_live_arms_descriptor_digest_mismatch');
+  const liveArms = readPinnedRepoJson(root, plan.synthetic.normalCanaryArmDescriptorPath,
+    plan.synthetic.normalCanaryArmDescriptorSha256, 'ws5_live_arms_descriptor_digest_mismatch').value;
+  assertExternalDataContractEntry(externalBinding, plan.synthetic.normalCanaryArmDescriptorPath,
+    'live-arm-descriptor', plan.synthetic.normalCanaryArmDescriptorSha256);
   if (liveArms.arms?.length !== 10 || liveArms.execution?.maxCaseRuns !== 10
     || liveArms.arms.some((entry) => !entry.runId || !entry.caseId || !entry.inputId)) {
     throw new Error('ws5_live_arms_descriptor_invalid');
   }
+  const assertOraclePin = (oraclePath, oracleSha256) => {
+    const entry = externalDataContractEntry(externalBinding, oraclePath);
+    if (!entry || entry.role !== 'scorer-oracle' || entry.sha256 !== oracleSha256) {
+      throw new Error('ws5_oracle_contract_binding_mismatch');
+    }
+    return { path: oraclePath, sha256: oracleSha256, visibility: 'post_run_scorer_only' };
+  };
   const oraclePath = plan.synthetic.oraclePath;
-  const oracleBytes = fs.readFileSync(safeRepoPath(root, oraclePath));
-  const oracleSha256 = sha256(oracleBytes);
-  if (oracleSha256 !== plan.synthetic.oracleSha256) throw new Error('ws5_oracle_digest_mismatch');
+  const oraclePin = assertOraclePin(oraclePath, plan.synthetic.oracleSha256);
+  const repairOraclePin = assertOraclePin(plan.synthetic.repairOraclePath, plan.synthetic.repairOracleSha256);
+  const largeOraclePin = assertOraclePin(largePlan.oraclePath, largePlan.oracleSha256);
+  const p2OraclePin = assertOraclePin(p2Plan.oraclePath, p2Plan.oracleSha256);
   if (lifecycleDescriptor.cases.some((entry) => entry.inputPath === oraclePath)
-    || repairDescriptor.phases.some((entry) => entry.inputPath === oraclePath)
+    || repairDescriptor.phases.some((entry) => entry.inputPath === oraclePath || entry.inputPath === repairOraclePin.path)
+    || largeInputRecord.inputPath === largeOraclePin.path || p2InputRecord.inputPath === p2OraclePin.path
     || liveArms.p2DisplaySortBundle?.inputSha256 !== p2InputRecord.inputSha256) {
     throw new Error('ws5_oracle_must_not_be_a_worker_input');
   }
 
-  return {
-    rootPath: path.resolve(root),
-    plan,
+  const publicLargeDescriptor = structuredClone(largeDescriptor);
+  delete publicLargeDescriptor.oraclePath;
+  delete publicLargeDescriptor.oracleSha256;
+  const publicP2Descriptor = structuredClone(p2Descriptor);
+  delete publicP2Descriptor.oraclePath;
+  delete publicP2Descriptor.oracleSha256;
+  const runtimePlan = structuredClone(plan);
+  delete runtimePlan.synthetic.oraclePath;
+  delete runtimePlan.synthetic.oracleSha256;
+  delete runtimePlan.synthetic.repairOraclePath;
+  delete runtimePlan.synthetic.repairOracleSha256;
+  delete runtimePlan.synthetic.largeCrossfile.oraclePath;
+  delete runtimePlan.synthetic.largeCrossfile.oracleSha256;
+  delete runtimePlan.synthetic.p2DisplaySort.oraclePath;
+  delete runtimePlan.synthetic.p2DisplaySort.oracleSha256;
+  delete runtimePlan.publicPanel.preparedVerificationInputSha256;
+  delete runtimePlan.publicPanel.indexMetadataCanonicalization;
+  const bundle = {
+    rootPath: root,
+    externalDataContract: {
+      schemaVersion: 'ReviewYetiWS5ExternalDataContract.v1',
+      sha256: externalBinding.contractSha256,
+      preservedInputCount: externalBinding.preservedInputCount,
+      scorerOracleCount: externalBinding.scorerOracleCount,
+      childVisibleInputCount: externalBinding.childVisibleInputCount,
+      sourceRootGit: externalBinding.sourceRootGit,
+      sourceProfileMapping: {
+        status: externalBinding.sourceProfileMapping.status,
+        v2ProfileSha256: externalBinding.sourceProfileMapping.v2ProfileSha256,
+        normalizationReportSha256: externalBinding.sourceProfileMapping.normalizationReportSha256,
+      },
+    },
+    plan: runtimePlan,
     panelSha256,
     manifest,
     manifestSha256,
@@ -308,20 +477,34 @@ export function loadPinnedAcceptancePlan(root = path.resolve(path.dirname(fileUR
     repairCases,
     liveArms,
     p2DisplaySort: {
-      descriptor: p2Descriptor,
+      descriptor: publicP2Descriptor,
       inputRecord: p2InputRecord,
       inputValue: p2Input,
-      oracle: { path: p2Plan.oraclePath, sha256: p2OracleSha256, visibility: 'post_run_scorer_only' },
     },
     largeCrossfile: {
-      descriptor: largeDescriptor,
+      descriptor: publicLargeDescriptor,
       inputRecord: largeInputRecord,
       inputValue: largeCrossfileInput,
       changedPatchBytes,
-      oracle: { path: largePlan.oraclePath, sha256: largeOracleSha256, visibility: 'post_run_scorer_only' },
     },
-    syntheticOracle: { path: oraclePath, sha256: oracleSha256, visibility: 'post_run_scorer_only' },
   };
+  Object.defineProperties(bundle, {
+    dataRootPath: { enumerable: false, value: externalBinding.dataRoot },
+    planPath: { enumerable: false, value: externalBinding.planPath },
+  });
+  Object.defineProperty(bundle, 'pinnedChildInputBytes', {
+    enumerable: false,
+    value: Object.freeze({
+      manifest: Buffer.from(manifestBytes),
+      discovery: Buffer.from(discoveryInput.bytes),
+      verification: Buffer.from(verificationInput.bytes),
+      policyProjections: {
+        native_omitted: Buffer.from(nativePolicyBytes),
+        medium: Buffer.from(mediumPolicyBytes),
+      },
+    }),
+  });
+  return bundle;
 }
 
 export function expectedPublicRunCells(plan) {
@@ -1049,7 +1232,8 @@ function assertDiscoveryRunArmBinding(bundle, arm, run, expectedRuntimeSha, expe
       ? 'eval-baselines/competitive-review-benchmark/policy-projections/yeti-v1-medium.json'
       : null;
   if (!projectionPath || !projectionSha256) throw new Error('ws5_discovery_arm_policy_not_supported');
-  const root = bundle?.rootPath || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const root = bundle?.dataRootPath || bundle?.rootPath
+    || path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const projectionBytes = fs.readFileSync(safeRepoPath(root, projectionPath));
   if (sha256(projectionBytes) !== projectionSha256) throw new Error('ws5_discovery_policy_projection_pin_mismatch');
   let sourcePolicy;

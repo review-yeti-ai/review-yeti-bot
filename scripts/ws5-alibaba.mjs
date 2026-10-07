@@ -392,9 +392,14 @@ export function preflightAlibabaPanel({
   binaryPath,
   cacheRoot = DEFAULT_CACHE_ROOT,
   root = ROOT,
+  dataRoot,
+  planPath,
+  externalDataContractPath,
+  externalDataContractSha256,
   tempRoot = os.tmpdir(),
 } = {}) {
-  const bundle = loadPinnedAcceptancePlan(root);
+  const bundle = loadPinnedAcceptancePlan({ repoRoot: root, dataRoot, planPath,
+    externalDataContractPath, externalDataContractSha256 });
   const binary = assertPinnedAlibabaBinary(binaryPath);
   const planArm = bundle.plan.publicRunMatrix.arms.find((entry) => entry.id === 'alibaba-open-code-review');
   if (!planArm || planArm.sourceCommit !== ALIBABA_OPEN_CODE_REVIEW_PIN.sourceCommit
@@ -469,7 +474,7 @@ export function preflightAlibabaPanel({
       ? 'READY_FOR_PROVIDER_PREFLIGHT_WITH_DECLARED_COMPARATOR_SCOPE_LIMITATION'
       : 'READY_FOR_PROVIDER_PREFLIGHT_AND_ROOT_AUTHORIZATION',
     datasetSha256: bundle.manifestSha256,
-    preparedInputSha256: sha256(fs.readFileSync(safePath(root, bundle.plan.publicPanel.preparedInputs.discovery.path))),
+    preparedInputSha256: bundle.plan.publicPanel.preparedInputs.discovery.sha256,
     binary,
     panelCaseIds: planArm.caseIds,
     caseCount: caseReceipts.length,
@@ -1424,13 +1429,22 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const args = parseArgs(process.argv.slice(2));
     const binaryPath = args.binary || process.env.WS5_ALIBABA_BINARY;
     if (!binaryPath) throw new Error('alibaba_binary_path_required');
+    const root = args.root || ROOT;
+    const privateBundle = {
+      repoRoot: root,
+      dataRoot: args['data-root'],
+      planPath: args.plan,
+      externalDataContractPath: args.contract,
+      externalDataContractSha256: args['contract-sha256'],
+    };
     if (args.preflight) {
-      const receipt = preflightAlibabaPanel({ binaryPath, cacheRoot: args['cache-root'] || DEFAULT_CACHE_ROOT });
+      const receipt = preflightAlibabaPanel({ ...privateBundle,
+        binaryPath, cacheRoot: args['cache-root'] || DEFAULT_CACHE_ROOT });
       process.stdout.write(JSON.stringify(receipt, null, 2) + '\n');
       process.exitCode = receipt.status === 'ABSTAIN' ? 2 : 0;
     } else if (args.runOne) {
       if (!args['case-id'] || !args.out) throw new Error('run_one_requires_case_and_output');
-      const bundle = loadPinnedAcceptancePlan(ROOT);
+      const bundle = loadPinnedAcceptancePlan(privateBundle);
       runAlibabaCase({
         bundle,
         caseId: args['case-id'],

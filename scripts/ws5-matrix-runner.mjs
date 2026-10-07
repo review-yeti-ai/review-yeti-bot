@@ -22,6 +22,7 @@ import {
   normalizeDiscoveryRunEnvelope,
   runPublicRunCells,
 } from './ws5-acceptance.mjs';
+import { createWs5PublicInputStage } from './ws5-external-data-contract.mjs';
 import {
   buildAlibabaSourceScopeAbstention,
   createBifrostMeterProxy,
@@ -188,10 +189,12 @@ export function verifyPublicSourceFreeze(repoRoot, freezePath, expectedFreezeSha
     'scripts/competitive-review-benchmark.mjs',
     'scripts/ws5-acceptance.mjs',
     'scripts/ws5-alibaba.mjs',
+    'scripts/ws5-external-data-contract.mjs',
     'scripts/ws5-matrix-runner.mjs',
     'scripts/ws5-verification-runner.mjs',
     'tests/unit/competitiveReviewBenchmark.test.ts',
     'tests/unit/ws5Acceptance.test.ts',
+    'tests/unit/ws5ExternalDataContract.test.ts',
     'tests/unit/ws5MatrixRunner.test.ts',
     'tests/unit/ws5VerificationRunner.test.ts',
   ];
@@ -663,8 +666,14 @@ function cacheRepositoryPath(cacheRoot, repository) {
   return path.resolve(cacheRoot, repository.replace(/[^A-Za-z0-9._-]+/gu, '__'));
 }
 
-function performPublicNoCallPreflight({ root, cacheRoot, binaryPath }) {
-  const bundle = loadPinnedAcceptancePlan(root);
+function performPublicNoCallPreflight({ root, dataRoot, planPath, contractPath, contractSha256, cacheRoot, binaryPath }) {
+  const bundle = loadPinnedAcceptancePlan({
+    repoRoot: root,
+    dataRoot,
+    planPath,
+    externalDataContractPath: contractPath,
+    externalDataContractSha256: contractSha256,
+  });
   const sourceCases = bundle.preparedDiscovery.cases.map((sourceCase) => {
     const repoPath = cacheRepositoryPath(cacheRoot, sourceCase.repository);
     const proof = preflightPinnedGitSnapshot(sourceCase, repoPath);
@@ -673,7 +682,8 @@ function performPublicNoCallPreflight({ root, cacheRoot, binaryPath }) {
     return { caseId: sourceCase.caseId, status: 'verified', sourceOmissions: [],
       changedFileCount: proof.changedFileCount, patchSetSha256: proof.patchSetSha256 };
   });
-  const alibaba = preflightAlibabaPanel({ binaryPath, cacheRoot, root });
+  const alibaba = preflightAlibabaPanel({ binaryPath, cacheRoot, root, dataRoot, planPath,
+    externalDataContractPath: contractPath, externalDataContractSha256: contractSha256 });
   return { sourceCases, alibaba };
 }
 
@@ -681,16 +691,23 @@ function parsePreflightArgs(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 1) {
     const key = argv[index];
-    if (!['--root', '--cache-root', '--binary'].includes(key)) throw new Error('ws5_preflight_argument_invalid');
+    if (!['--root', '--data-root', '--plan', '--contract', '--contract-sha256', '--cache-root', '--binary'].includes(key)) {
+      throw new Error('ws5_preflight_argument_invalid');
+    }
     const value = argv[index + 1];
     if (typeof value !== 'string' || value.startsWith('--')) throw new Error('ws5_preflight_argument_missing');
     values[key] = value;
     index += 1;
   }
-  if (!values['--root'] || !values['--cache-root'] || !values['--binary']) {
+  if (!values['--root'] || !values['--data-root'] || !values['--plan'] || !values['--contract']
+    || !values['--contract-sha256'] || !values['--cache-root'] || !values['--binary']) {
     throw new Error('ws5_preflight_argument_missing');
   }
-  return { root: values['--root'], cacheRoot: values['--cache-root'], binaryPath: values['--binary'] };
+  return {
+    root: values['--root'], dataRoot: values['--data-root'], planPath: values['--plan'],
+    contractPath: values['--contract'], contractSha256: values['--contract-sha256'],
+    cacheRoot: values['--cache-root'], binaryPath: values['--binary'],
+  };
 }
 
 function modelCellFailureReceipt(bundle, cell, sourcePreflight, failureCode, durationMs, proxySnapshot = null, providerAttestation = null) {
@@ -829,12 +846,15 @@ function writePrivateJson(filePath, value) {
   return sha256(bytes);
 }
 
-function assertPrivateOutputDirectory(repoRoot, outputDirectory) {
+function assertPrivateOutputDirectory(repoRoot, dataRoot, outputDirectory) {
   if (typeof outputDirectory !== 'string' || outputDirectory.length === 0) throw new Error('ws5_run_output_directory_required');
   const root = fs.realpathSync(repoRoot);
+  const privateDataRoot = fs.realpathSync(dataRoot);
   const destination = path.resolve(outputDirectory);
   const relative = path.relative(root, destination);
-  if (!relative || (relative !== '..' && !relative.startsWith('..' + path.sep))) {
+  const dataRelative = path.relative(privateDataRoot, destination);
+  if (!relative || (relative !== '..' && !relative.startsWith('..' + path.sep))
+    || !dataRelative || (dataRelative !== '..' && !dataRelative.startsWith('..' + path.sep))) {
     throw new Error('ws5_run_output_must_be_outside_source_tree');
   }
 }
@@ -865,6 +885,10 @@ function assertBifrostEndpoint(value) {
 export async function runWs5Matrix({
   authorizeModelDispatch = false,
   repoRoot = ROOT,
+  dataRoot,
+  planPath,
+  externalDataContractPath,
+  externalDataContractSha256,
   outputDirectory,
   sourceCacheRoot,
   alibabaBinaryPath,
@@ -874,13 +898,17 @@ export async function runWs5Matrix({
 } = {}) {
   if (authorizeModelDispatch !== true) throw new Error('ws5_model_dispatch_not_authorized_by_root');
   const root = fs.realpathSync(path.resolve(repoRoot));
-  const bundle = loadPinnedAcceptancePlan(root);
+  if (!dataRoot || !planPath || !externalDataContractPath || !externalDataContractSha256) {
+    throw new Error('ws5_external_data_bundle_required');
+  }
+  const bundle = loadPinnedAcceptancePlan({ repoRoot: root, dataRoot, planPath,
+    externalDataContractPath, externalDataContractSha256 });
   const schedule = createPublicRunCellPlan(bundle.plan);
   if (schedule.length !== WS5_MATRIX_BOUNDS.expectedCells
     || schedule.filter((entry) => entry.execution === 'model_run').length !== MODEL_CELLS) {
     throw new Error('ws5_frozen_matrix_shape_mismatch');
   }
-  assertPrivateOutputDirectory(root, outputDirectory);
+  assertPrivateOutputDirectory(root, bundle.dataRootPath, outputDirectory);
   if (typeof sourceCacheRoot !== 'string' || !path.isAbsolute(sourceCacheRoot)
     || typeof alibabaBinaryPath !== 'string' || !path.isAbsolute(alibabaBinaryPath)) {
     throw new Error('ws5_local_pinned_inputs_required');
@@ -975,7 +1003,9 @@ export async function runWs5Matrix({
       const child = await runBoundedChildProcess({
         command: process.execPath,
         args: [path.join(root, 'scripts/ws5-matrix-runner.mjs'), '--ws5-public-preflight',
-          '--root', root, '--cache-root', path.resolve(sourceCacheRoot), '--binary', path.resolve(alibabaBinaryPath)],
+          '--root', root, '--data-root', bundle.dataRootPath, '--plan', planPath,
+          '--contract', externalDataContractPath, '--contract-sha256', externalDataContractSha256,
+          '--cache-root', path.resolve(sourceCacheRoot), '--binary', path.resolve(alibabaBinaryPath)],
         cwd: root,
         env: createSanitizedPreflightEnvironment({ home: preflightHome, temporaryDirectory: preflightTemp }),
         maxWallMs: Math.max(1, preflightDeadline - Date.now()),
@@ -1101,6 +1131,11 @@ export async function runWs5Matrix({
           receipt.providerAttestation = null;
         }
         receipt.qualityScore = null;
+        receipt.childInputBoundary = {
+          runnerWorkingDirectory: 'isolated_exact_public_source_projection',
+          privateDataRootExposed: false,
+          scorerOraclePathsExposed: false,
+        };
         return receipt;
       } catch (error) {
         return modelCellFailureReceipt(bundle, cell, verifiedSourceCases.get(cell.caseId),
@@ -1121,22 +1156,32 @@ export async function runWs5Matrix({
     let proxy = null;
     let tlsMaterial = null;
     let localTlsBoundary = null;
+    let childInputBoundary = null;
     let attestationAttempted = false;
     const rawRunPath = path.join(scratch, 'runtime-run.json');
     const purpose = cell.armId === 'yeti-v1-native-baseline' ? 'baseline' : 'qualification';
     const effortProfile = arm.effortProfile;
     const verifierMode = arm.verifierMode;
-    const policyPath = path.join(root, 'eval-baselines/competitive-review-benchmark/policy-projections',
-      effortProfile === 'native_omitted' ? 'yeti-v1-native-omitted.json' : 'yeti-v1-medium.json');
+    const childInputStageDirectory = path.join(scratch, 'public-inputs');
+    fs.mkdirSync(childInputStageDirectory, { recursive: false, mode: 0o700 });
+    const childInputStage = createWs5PublicInputStage(bundle, childInputStageDirectory, 'discovery', {
+      policyProjectionBytes: bundle.pinnedChildInputBytes.policyProjections[effortProfile],
+    });
+    childInputBoundary = {
+      stagedFiles: childInputStage.stagedFileNames,
+      privateDataRootExposed: childInputStage.externalDataRootPathExposed,
+      scorerOraclePathsExposed: childInputStage.privateOraclePathStaged,
+      policyProjectionStagedForAdapterOnly: childInputStage.adapterPolicyStaged,
+    };
     const args = [
       path.join(root, 'scripts/competitive-review-benchmark.mjs'), 'run-discovery',
-      '--manifest', path.join(root, bundle.plan.publicPanel.manifestPath),
-      '--cases', path.join(root, bundle.plan.publicPanel.preparedInputs.discovery.path),
+      '--manifest', childInputStage.manifestPath,
+      '--cases', childInputStage.casesPath,
       '--runtime-root', path.resolve(runtimeRoot),
       '--cache', path.resolve(sourceCacheRoot),
       '--expected-runtime-sha', expectedRuntimeSha,
       '--purpose', purpose,
-      '--policy-file', policyPath,
+      '--policy-file', childInputStage.adapterPolicyPath,
       '--effort-profile', effortProfile,
       '--verifier-mode', verifierMode,
       '--case-id', cell.caseId,
@@ -1144,6 +1189,7 @@ export async function runWs5Matrix({
     ];
     const withLocalTlsBoundary = (receipt) => {
       if (localTlsBoundary) receipt.localTransportBoundary = localTlsBoundary;
+      if (childInputBoundary) receipt.childInputBoundary = childInputBoundary;
       return receipt;
     };
     try {
@@ -1296,6 +1342,11 @@ export async function runWs5Matrix({
       panelWallMs: Date.now() - startedAt,
       globalWallCapExceeded,
       interrupted: runSignal.aborted && !globalWallCapExceeded,
+      runnerSourceRootGit: bundle.externalDataContract?.sourceRootGit || null,
+      externalDataContractSha256: bundle.externalDataContract?.sha256 || null,
+      retainedPrivateInputCount: bundle.externalDataContract?.preservedInputCount ?? null,
+      scorerOracleCount: bundle.externalDataContract?.scorerOracleCount ?? null,
+      modelChildOraclePathsExposed: false,
       sourceFreeze: sourceFreezeIdentity,
       revisedRuntime: revisedRuntimeIdentity ? {
         commit: revisedRuntimeIdentity.commit, tree: revisedRuntimeIdentity.tree, worktreeClean: revisedRuntimeIdentity.worktreeClean,

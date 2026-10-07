@@ -32,6 +32,7 @@ import {
   verifyImagePinReceipt,
   verifyPublicSourceFreeze,
 } from './ws5-matrix-runner.mjs';
+import { createWs5PublicInputStage } from './ws5-external-data-contract.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MODEL_ALIAS = 'pr-reviewer';
@@ -271,7 +272,8 @@ function sourcePreflightEnv(home, temporaryDirectory) {
   return createSanitizedPreflightEnvironment({ home, temporaryDirectory });
 }
 
-async function runBoundedPublicPreflight({ root, sourceCacheRoot, alibabaBinaryPath, deadline, signal }) {
+async function runBoundedPublicPreflight({ root, dataRoot, planPath, externalDataContractPath,
+  externalDataContractSha256, sourceCacheRoot, alibabaBinaryPath, deadline, signal }) {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ws5-verification-preflight-'));
   const home = path.join(scratch, 'home');
   const temporaryDirectory = path.join(scratch, 'tmp');
@@ -281,7 +283,9 @@ async function runBoundedPublicPreflight({ root, sourceCacheRoot, alibabaBinaryP
     const child = await runBoundedChildProcess({
       command: process.execPath,
       args: [path.join(root, 'scripts/ws5-matrix-runner.mjs'), '--ws5-public-preflight',
-        '--root', root, '--cache-root', sourceCacheRoot, '--binary', alibabaBinaryPath],
+        '--root', root, '--data-root', dataRoot, '--plan', planPath,
+        '--contract', externalDataContractPath, '--contract-sha256', externalDataContractSha256,
+        '--cache-root', sourceCacheRoot, '--binary', alibabaBinaryPath],
       cwd: root,
       env: sourcePreflightEnv(home, temporaryDirectory),
       maxWallMs: Math.max(1, deadline - Date.now()),
@@ -343,20 +347,28 @@ function verifyPins(bundle, root, pins) {
   return { sourceFreeze, baselineRuntime: baseline, revisedRuntime: revised, repeatRuntime: repeated, image };
 }
 
-function verificationOutputDirectory(root, value) {
+function verificationOutputDirectory(root, dataRoot, value) {
   if (typeof value !== 'string' || !value) throw new Error('ws5_verification_output_required');
   const destination = path.resolve(value);
   const relative = path.relative(root, destination);
+  const dataRelative = path.relative(dataRoot, destination);
   if (!relative || (relative !== '..' && !relative.startsWith('..' + path.sep))) {
     throw new Error('ws5_verification_output_must_be_outside_source');
+  }
+  if (!dataRelative || (dataRelative !== '..' && !dataRelative.startsWith('..' + path.sep))) {
+    throw new Error('ws5_verification_output_must_be_outside_data_root');
   }
   fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
   const info = fs.lstatSync(destination);
   const real = fs.realpathSync(destination);
   const actualRelative = path.relative(root, real);
+  const actualDataRelative = path.relative(dataRoot, real);
   if (!info.isDirectory() || info.isSymbolicLink() || !actualRelative
     || (actualRelative !== '..' && !actualRelative.startsWith('..' + path.sep))) {
     throw new Error('ws5_verification_output_must_be_outside_source');
+  }
+  if (!actualDataRelative || (actualDataRelative !== '..' && !actualDataRelative.startsWith('..' + path.sep))) {
+    throw new Error('ws5_verification_output_must_be_outside_data_root');
   }
   if (fs.readdirSync(destination).length !== 0) throw new Error('ws5_verification_output_not_empty');
   return destination;
@@ -365,6 +377,10 @@ function verificationOutputDirectory(root, value) {
 export async function runWs5VerificationPanel({
   authorizeModelDispatch = false,
   repoRoot = ROOT,
+  dataRoot,
+  planPath,
+  externalDataContractPath,
+  externalDataContractSha256,
   outputDirectory,
   sourceCacheRoot,
   alibabaBinaryPath,
@@ -375,9 +391,13 @@ export async function runWs5VerificationPanel({
 } = {}) {
   if (authorizeModelDispatch !== true) throw new Error('ws5_verification_dispatch_not_authorized_by_root');
   const root = fs.realpathSync(path.resolve(repoRoot));
-  const bundle = loadPinnedAcceptancePlan(root);
+  if (!dataRoot || !planPath || !externalDataContractPath || !externalDataContractSha256) {
+    throw new Error('ws5_external_data_bundle_required');
+  }
+  const bundle = loadPinnedAcceptancePlan({ repoRoot: root, dataRoot, planPath,
+    externalDataContractPath, externalDataContractSha256 });
   const cells = createVerificationCellPlan(bundle);
-  const output = verificationOutputDirectory(root, outputDirectory);
+  const output = verificationOutputDirectory(root, bundle.dataRootPath, outputDirectory);
   if (typeof sourceCacheRoot !== 'string' || !path.isAbsolute(sourceCacheRoot)
     || typeof alibabaBinaryPath !== 'string' || !path.isAbsolute(alibabaBinaryPath)) {
     throw new Error('ws5_verification_pinned_inputs_required');
@@ -444,6 +464,10 @@ export async function runWs5VerificationPanel({
         if (scoringCases.some((entry) => !entry)) throw new Error('ws5_verification_scorer_case_set_mismatch');
         const publicPreflight = await runBoundedPublicPreflight({
           root,
+          dataRoot: bundle.dataRootPath,
+          planPath,
+          externalDataContractPath,
+          externalDataContractSha256,
           sourceCacheRoot: cacheRoot,
           alibabaBinaryPath: binaryPath,
           deadline: preflightDeadline,
@@ -503,10 +527,19 @@ export async function runWs5VerificationPanel({
         let proxy = null;
         let tlsMaterial = null;
         let localTlsBoundary = null;
+        let childInputBoundary = null;
         let attestationAttempted = false;
         let row;
         const rawPath = path.join(scratch, 'verification-run.json');
         try {
+          const childInputStageDirectory = path.join(scratch, 'public-inputs');
+          fs.mkdirSync(childInputStageDirectory, { recursive: false, mode: 0o700 });
+          const childInputStage = createWs5PublicInputStage(bundle, childInputStageDirectory, 'verification');
+          childInputBoundary = {
+            stagedFiles: childInputStage.stagedFileNames,
+            privateDataRootExposed: childInputStage.externalDataRootPathExposed,
+            scorerOraclePathsExposed: childInputStage.privateOraclePathStaged,
+          };
           tlsMaterial = createEphemeralLoopbackTls(scratch);
           proxy = createBifrostMeterProxy({
             upstreamBaseUrl: parentBroker.bifrostBaseUrl,
@@ -535,8 +568,8 @@ export async function runWs5VerificationPanel({
           });
           const args = [
             path.join(root, 'scripts/competitive-review-benchmark.mjs'), 'run-verification',
-            '--manifest', path.join(root, bundle.plan.publicPanel.manifestPath),
-            '--cases', path.join(root, bundle.plan.publicPanel.preparedInputs.verification.path),
+            '--manifest', childInputStage.manifestPath,
+            '--cases', childInputStage.casesPath,
             '--runtime-root', path.resolve(pins.revisedRuntimeRoot),
             '--transport', pinEvidence.transportProfilesByArm.revised.transportName,
             '--max-output-tokens', '4096',
@@ -663,6 +696,7 @@ export async function runWs5VerificationPanel({
           };
         }
         if (localTlsBoundary) row.localTransportBoundary = localTlsBoundary;
+        if (childInputBoundary) row.childInputBoundary = childInputBoundary;
         rows.push(row);
         writeVerificationCellReceipt(output, cell, row);
       }
@@ -710,6 +744,11 @@ export async function runWs5VerificationPanel({
       globalWallCapExceeded: Date.now() - start > MAX_PANEL_WALL_MS,
       interrupted: signal.aborted && Date.now() - start <= MAX_PANEL_WALL_MS,
       sourcePreflight: sourceEvidence ? 'verified_all_seven_public_cases' : 'not_ready',
+      runnerSourceRootGit: bundle.externalDataContract?.sourceRootGit || null,
+      externalDataContractSha256: bundle.externalDataContract?.sha256 || null,
+      retainedPrivateInputCount: bundle.externalDataContract?.preservedInputCount ?? null,
+      scorerOracleCount: bundle.externalDataContract?.scorerOracleCount ?? null,
+      modelChildOraclePathsExposed: false,
       providerAttestation: attemptsAccounted ? 'verified_for_all_observed_local_attempts' : 'incomplete_or_unattested',
       logicalCompletionDispatches: rows.reduce((sum, row) => sum + (Number(row.callAccounting?.logicalCompletionDispatches) || 0), 0),
       localHttpRequestAttempts: rows.reduce((sum, row) => sum + (Number(row.callAccounting?.localHttpRequestAttempts) || 0), 0),
@@ -738,6 +777,11 @@ export async function runWs5VerificationPanel({
       panelWallMs: Date.now() - start,
       globalWallCapExceeded,
       sourceFreeze: pinEvidence?.sourceFreeze || null,
+      runnerSourceRootGit: bundle.externalDataContract?.sourceRootGit || null,
+      externalDataContractSha256: bundle.externalDataContract?.sha256 || null,
+      retainedPrivateInputCount: bundle.externalDataContract?.preservedInputCount ?? null,
+      scorerOracleCount: bundle.externalDataContract?.scorerOracleCount ?? null,
+      modelChildOraclePathsExposed: false,
       revisedRuntime: pinEvidence?.revisedRuntime
         ? { commit: pinEvidence.revisedRuntime.commit, tree: pinEvidence.revisedRuntime.tree,
           worktreeClean: pinEvidence.revisedRuntime.worktreeClean } : null,
