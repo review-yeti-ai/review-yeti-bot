@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { GROUNDED_VERIFICATION_V2_VERSION } from '../review/groundedEvidenceV2';
+import { GROUNDED_VERIFICATION_V2_VERSION } from '../review/groundedEvidenceContract';
 import { GROUNDED_CANDIDATE_MANIFEST_CAPABILITY } from '../review/groundedCandidateManifestCapability';
 import {
   DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,

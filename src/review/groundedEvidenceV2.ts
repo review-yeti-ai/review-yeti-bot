@@ -1,11 +1,17 @@
 import { createHash } from 'node:crypto';
 import { canonicalJson, sha256 } from './reviewCore';
+import {
+  GROUNDED_SOURCE_WINDOW_MANIFEST_VERSION,
+  GROUNDED_SOURCE_WINDOW_VERSION,
+} from './groundedEvidenceContract';
 
-export const GROUNDED_SOURCE_WINDOW_VERSION = 'GroundedSourceWindow.v1' as const;
-export const GROUNDED_SOURCE_WINDOW_MANIFEST_VERSION = 'GroundedSourceWindowManifest.v1' as const;
-export const GROUNDED_VERIFICATION_V2_VERSION = 'GroundedIndependentVerification.v2' as const;
-export const GROUNDED_REVIEW_RECEIPT_V2_VERSION = 'GroundedReviewReceipt.v2' as const;
-export const GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION = 'GroundedReviewEvidenceSemantics.v2' as const;
+export {
+  GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+  GROUNDED_REVIEW_RECEIPT_V2_VERSION,
+  GROUNDED_SOURCE_WINDOW_MANIFEST_VERSION,
+  GROUNDED_SOURCE_WINDOW_VERSION,
+  GROUNDED_VERIFICATION_V2_VERSION,
+} from './groundedEvidenceContract';
 
 /** SHA-256 over raw file bytes. `reviewCore.sha256` canonicalizes non-string inputs, so do not pass Buffers to it. */
 export function sha256Bytes(value: Uint8Array): string {

@@ -1,4 +1,4 @@
-import { GROUNDED_VERIFICATION_V2_VERSION } from './groundedEvidenceV2';
+import { GROUNDED_VERIFICATION_V2_VERSION } from './groundedEvidenceContract';
 
 export const GROUNDED_CANDIDATE_MANIFEST_CAPABILITY = 'GroundedCandidateSeverityManifest.v1' as const;
 
