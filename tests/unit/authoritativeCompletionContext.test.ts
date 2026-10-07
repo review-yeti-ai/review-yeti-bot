@@ -7,6 +7,10 @@ import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritative
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { sha256 } from '../../src/review/reviewCore';
 import { deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
+import { buildDeterministicCoverageManifest, GROUNDED_DEFAULT_BUDGET } from '../../src/review/groundedReviewEngine';
+import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, GROUNDED_REVIEW_RECEIPT_V2_VERSION,
+  GROUNDED_VERIFICATION_V2_VERSION } from '../../src/review/groundedEvidenceV2';
+import { completeComposedRuntimeResources, ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
 import { parseGroundedRelativeImports, groundedRelativeImportCandidates } from '../../src/review/groundedContractResolver';
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
 import { TrustedCompletionResolutionError, isDeterministicCompletionFailure }
@@ -345,6 +349,62 @@ describe('service-owned authoritative completion context', () => {
     receipt.effective.profile.value = 'assertive';
     await expect(f.context(f.gate)).rejects.toThrow('Authoritative completion context unavailable');
     expect(f.readerFactory).not.toHaveBeenCalled();
+  });
+
+  it('derives a legacy-severity composed V2 worker receipt with the service-prepared config', async () => {
+    const f = fixture({}, composedPrepared());
+    const context = await f.context(f.gate);
+    const configuration = f.stored.config.review_configuration_receipt;
+    if (!configuration) throw new Error('composed prepared config lacks its effective configuration receipt');
+    const coordinates = { runId: f.gate.coordinates.runId, ...target,
+      policyDigest: f.gate.coordinates.policyDigest, configDigest: f.stored.policy.effectiveConfigDigest,
+      executionAttempt: f.gate.coordinates.executionAttempt };
+    const task = { id: 'task-a', dimension: 'security' as const, paths: ['src/a.ts'],
+      question: 'Could this source change violate its contract?', rationale: 'The changed source must be checked.' };
+    const file = context.coverage.changedFiles[0]!;
+    const patchText = file.patch!;
+    const sourceDelivery = { version: 'TaskSourceDelivery.v1' as const, taskId: task.id,
+      headSha: target.headSha, baseSha: target.baseSha, contextDigests: [sha256('task-context')], complete: true,
+      files: [{ path: file.path, patchDigest: sha256(patchText), totalChars: patchText.length,
+        ranges: [[0, patchText.length] as [number, number]], inline: true }] };
+    const observer = new ComposedRuntimeResourceObserver({ configDigest: coordinates.configDigest, configuration });
+    observer.configureBudget({ configuredTotalTurns: 100, investigationTurns: 88, verificationReserveTurns: 12 });
+    observer.setPlan([task]);
+    observer.markTaskStarted(task.id);
+    observer.markTaskOutcome(task.id, 'completed', sourceDelivery);
+    const observation = observer.snapshot('terminal');
+    if (!observation) throw new Error('composed runtime observation was not produced');
+    const composedResources = completeComposedRuntimeResources({ observation,
+      configDigest: coordinates.configDigest, verifierCalls: 0 });
+    if (!composedResources) throw new Error('composed runtime receipt was not produced');
+    const manifest = buildDeterministicCoverageManifest(context.coverage.changedFiles);
+    const completion = { version: 'WorkerReviewCompletion.v1', ...coordinates, result: {
+      version: 'WorkerReviewResult.v1', completedAt: '2026-10-07T21:00:00.000Z',
+      personas: [{ id: task.id, decision: 'APPROVE', status: 'COMPLETE', findings: [], sourceDelivery }],
+      taskPlan: [task], coverageComplete: true, quorumSatisfied: true, verdict: 'SHIP',
+      findingCount: 0, blockingFindingCount: 0, composedResources,
+      groundedReview: { version: GROUNDED_REVIEW_RECEIPT_V2_VERSION,
+        semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+        coverage: { digest: manifest.digest, regionCount: manifest.regions.length,
+          assignmentCount: manifest.assignments.length, coveredRegionCount: manifest.coveredRegionIds.length,
+          complete: manifest.complete, omissions: manifest.omissions },
+        history: { status: 'unavailable', eventCount: 0, findingCount: 0, loadedEventCount: 0,
+          loadedFindingCount: 0, eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+          omissions: ['offline no-history fixture'], memorySources: { honcho: 'unavailable', mcp: 'unavailable' },
+          verificationWrites: { attempted: 0, recorded: 0, failed: 0 } },
+        verification: { version: GROUNDED_VERIFICATION_V2_VERSION,
+          semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, candidates: 0, confirmed: 0,
+          contradicted: 0, insufficient: 0, unverifiedBlockerCount: 0, coverageComplete: manifest.complete,
+          calls: 0, budget: GROUNDED_DEFAULT_BUDGET, outcomes: [] } },
+    } };
+
+    const derived = deriveCanonicalWorkerReviewEvidence(completion, { ...context.coverage, expectedCoordinates: coordinates });
+
+    if (!derived.valid) {
+      expect(derived.message).toBe('composed runtime resource receipt is not bound to the service-prepared effective configuration');
+    }
+    expect(derived).toMatchObject({ valid: true, evidence: { reviewEngine: 'composed', verdict: 'SHIP',
+      coverageComplete: true, quorumSatisfied: true, expectedLanes: 1, completedLanes: 1 } });
   });
 
   it.each([{ configured: 4, admitted: 4 }, { configured: 20, admitted: 8 }])(
