@@ -14,16 +14,23 @@ import {
 
 export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_READY_PATH = '/workspace/.review-yeti/normal-engine-qualification-capture.ready.json';
 export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_ACK_PATH = '/workspace/.review-yeti/qualification-capture.complete';
+export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_PATH =
+  '/workspace/.review-yeti/normal-engine-qualification-capture.termination.json';
 export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_READY_VERSION = 'NormalEngineQualificationCaptureReady.v1' as const;
 export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_ACK_VERSION = 'NormalEngineQualificationCaptureAck.v1' as const;
 export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_OUTCOME_VERSION = 'NormalEngineQualificationCaptureOutcome.v1' as const;
+export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_VERSION =
+  'NormalEngineQualificationCaptureTerminationMessage.v1' as const;
 export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_PURPOSE = 'normal-engine-qualification-artifact-capture' as const;
 export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_ACK_PURPOSE = 'normal-engine-qualification-capture-ack' as const;
 export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_OUTCOME_PURPOSE = 'normal-engine-qualification-capture' as const;
+export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_PURPOSE =
+  'normal-engine-qualification-capture-termination' as const;
 export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_TIMEOUT_MS = 15 * 60 * 1_000;
 export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_MAX_ARTIFACTS = 20_514;
 export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_MAX_ACK_BYTES = 4_000_000;
 export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024;
+export const NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_MAX_BYTES = 4_096;
 const DEFAULT_REVIEW_YETI_ROOT = dirname(NORMAL_ENGINE_QUALIFICATION_RECEIPT_PATH);
 const runIdSchema = z.string().regex(/^nq_[a-f0-9]{32}$/u);
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -616,6 +623,85 @@ export const normalEngineQualificationCaptureOutcomeV1Schema = z.object({
   }
 });
 
+export interface NormalEngineQualificationCaptureTerminationMessageV1 {
+  schemaVersion: typeof NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_VERSION;
+  purpose: typeof NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_PURPOSE;
+  outcomeSchemaVersion: typeof NORMAL_ENGINE_QUALIFICATION_CAPTURE_OUTCOME_VERSION;
+  outcomeByteCount: number;
+  outcomeSha256: string;
+  outcomeBase64: string;
+}
+
+function canonicalCaptureOutcomeBytes(outcome: NormalEngineQualificationCaptureOutcomeV1): Buffer {
+  return Buffer.from(`${canonicalJson(outcome)}\n`, 'utf8');
+}
+
+const captureTerminationMessageCoreSchema = z.object({
+  schemaVersion: z.literal(NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_VERSION),
+  purpose: z.literal(NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_PURPOSE),
+  outcomeSchemaVersion: z.literal(NORMAL_ENGINE_QUALIFICATION_CAPTURE_OUTCOME_VERSION),
+  outcomeByteCount: z.number().int().positive().safe(),
+  outcomeSha256: digestSchema,
+  outcomeBase64: z.string().min(1).max(NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_MAX_BYTES * 2),
+}).strict();
+
+/** Strict envelope that carries only the canonical, schema-bounded qualification outcome. */
+export const normalEngineQualificationCaptureTerminationMessageV1Schema = captureTerminationMessageCoreSchema
+  .superRefine((message, context) => {
+    const envelopeBytes = Buffer.from(`${canonicalJson(message)}\n`, 'utf8');
+    if (envelopeBytes.byteLength >= NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_MAX_BYTES) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['outcomeBase64'],
+        message: 'capture termination message exceeds the Kubernetes message bound' });
+    }
+
+    const outcomeBytes = Buffer.from(message.outcomeBase64, 'base64');
+    if (outcomeBytes.toString('base64') !== message.outcomeBase64
+      || outcomeBytes.byteLength !== message.outcomeByteCount
+      || sha256(outcomeBytes) !== message.outcomeSha256) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['outcomeSha256'],
+        message: 'capture termination outcome byte count or digest is invalid' });
+      return;
+    }
+
+    let rawOutcome: unknown;
+    try { rawOutcome = JSON.parse(outcomeBytes.toString('utf8')); }
+    catch {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['outcomeBase64'],
+        message: 'capture termination outcome JSON is invalid' });
+      return;
+    }
+    const outcome = normalEngineQualificationCaptureOutcomeV1Schema.safeParse(rawOutcome);
+    if (!outcome.success || outcome.data.schemaVersion !== message.outcomeSchemaVersion
+      || !canonicalCaptureOutcomeBytes(outcome.data).equals(outcomeBytes)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['outcomeBase64'],
+        message: 'capture termination outcome is not canonical Outcome.v1 JSON' });
+    }
+  });
+
+/** Decodes the exact Kubernetes termination message and returns its validated private outcome. */
+export function parseNormalEngineQualificationCaptureTerminationMessage(
+  input: string | Uint8Array,
+): { envelope: NormalEngineQualificationCaptureTerminationMessageV1; outcome: NormalEngineQualificationCaptureOutcomeV1 } {
+  const bytes = typeof input === 'string' ? Buffer.from(input, 'utf8') : Buffer.from(input);
+  if (bytes.byteLength >= NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_MAX_BYTES) {
+    throw new Error('normal_engine_qualification_capture_termination_message_too_large');
+  }
+  const text = bytes.toString('utf8');
+  if (!Buffer.from(text, 'utf8').equals(bytes)) {
+    throw new Error('normal_engine_qualification_capture_termination_message_utf8_invalid');
+  }
+  let rawEnvelope: unknown;
+  try { rawEnvelope = JSON.parse(text); }
+  catch { throw new Error('normal_engine_qualification_capture_termination_message_json_invalid'); }
+  const envelope = normalEngineQualificationCaptureTerminationMessageV1Schema.parse(rawEnvelope);
+  if (!Buffer.from(`${canonicalJson(envelope)}\n`, 'utf8').equals(bytes)) {
+    throw new Error('normal_engine_qualification_capture_termination_message_not_canonical');
+  }
+  const outcomeBytes = Buffer.from(envelope.outcomeBase64, 'base64');
+  const outcome = normalEngineQualificationCaptureOutcomeV1Schema.parse(JSON.parse(outcomeBytes.toString('utf8')));
+  return { envelope, outcome };
+}
+
 export interface PersistedNormalEngineQualificationCaptureOutcome {
   path: string;
   sha256Path: string;
@@ -633,8 +719,33 @@ export async function persistNormalEngineQualificationCaptureOutcome(
   const relativePath = `${storeRootName}/${outcome.runId}/capture-handoff.record/capture-outcome.json`;
   const path = join(root, relativePath);
   const sha256Path = `${path.slice(0, -'.json'.length)}.sha256`;
-  const body = `${JSON.stringify(outcome, null, 2)}\n`;
+  const body = `${canonicalJson(outcome)}\n`;
   const digest = sha256(body);
+
+  const outcomeBytes = Buffer.from(body, 'utf8');
+  const rawEnvelope = {
+    schemaVersion: NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_VERSION,
+    purpose: NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_PURPOSE,
+    outcomeSchemaVersion: NORMAL_ENGINE_QUALIFICATION_CAPTURE_OUTCOME_VERSION,
+    outcomeByteCount: outcomeBytes.byteLength,
+    outcomeSha256: digest,
+    outcomeBase64: outcomeBytes.toString('base64'),
+  };
+  const terminationMessageBody = `${canonicalJson(rawEnvelope)}\n`;
+  if (Buffer.byteLength(terminationMessageBody, 'utf8') >= NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_MAX_BYTES) {
+    throw new Error('normal_engine_qualification_capture_termination_message_too_large');
+  }
+  const envelope = normalEngineQualificationCaptureTerminationMessageV1Schema.parse(rawEnvelope);
+  const validatedTerminationMessageBody = `${canonicalJson(envelope)}\n`;
+  if (validatedTerminationMessageBody !== terminationMessageBody) {
+    throw new Error('normal_engine_qualification_capture_termination_message_not_canonical');
+  }
+  const terminationMessagePath = join(root, basename(NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_PATH));
+  const terminationMessageSha256Path = `${terminationMessagePath}.sha256`;
+  const terminationMessageSha256 = sha256(terminationMessageBody);
+
   const idempotent = await persistPrivatePair(path, sha256Path, body, digest);
+  await persistPrivatePair(terminationMessagePath, terminationMessageSha256Path,
+    terminationMessageBody, terminationMessageSha256);
   return { path, sha256Path, sha256: digest, idempotent };
 }

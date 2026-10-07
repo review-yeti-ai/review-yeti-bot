@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, open, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { basename, join, relative } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { canonicalJson } from '../../src/review/reviewCore';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from '../../src/review/groundedEvidenceV2';
@@ -30,10 +30,14 @@ import { NormalEngineQualificationProviderAttestor, normalEngineQualificationPro
   from '../../src/qualification/normalEngineQualificationProvider';
 import {
   NORMAL_ENGINE_QUALIFICATION_CAPTURE_ACK_PATH,
+  NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_PATH,
+  NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_MAX_BYTES,
   normalEngineQualificationCaptureAckV1Schema,
   normalEngineQualificationCaptureReadyV1Schema,
   normalEngineQualificationCaptureOutcomeV1Schema,
+  normalEngineQualificationCaptureTerminationMessageV1Schema,
   normalEngineQualificationCaptureArtifactSource,
+  parseNormalEngineQualificationCaptureTerminationMessage,
   persistNormalEngineQualificationCaptureOutcome,
   waitForNormalEngineQualificationCapture,
   writeNormalEngineQualificationCaptureReady,
@@ -681,6 +685,66 @@ async function readyFixture(root: string) {
     recordPaths: artifactPaths.sort() };
 }
 
+function captureOutcomeForWait(
+  ready: Awaited<ReturnType<typeof readyFixture>>['ready'],
+  wait: Awaited<ReturnType<typeof waitForNormalEngineQualificationCapture>>,
+  planTerminalStatus: 'completed' | 'failed',
+) {
+  return normalEngineQualificationCaptureOutcomeV1Schema.parse({
+    schemaVersion: 'NormalEngineQualificationCaptureOutcome.v1',
+    purpose: 'normal-engine-qualification-capture',
+    planId: ready.manifest.planId,
+    runId: ready.manifest.runId,
+    planSha256: ready.manifest.planSha256,
+    planTerminalStatus,
+    captureRequested: wait.requested,
+    captureStatus: wait.status,
+    readySha256: wait.readySha256,
+    ackSha256: wait.ackSha256,
+    artifactSetSha256: wait.artifactSetSha256,
+    artifactCount: wait.artifactCount,
+    captureReason: wait.reason,
+    completedAt: '2026-10-06T12:00:00.000Z',
+  });
+}
+
+async function persistAndReadTerminationOutcome(
+  root: string,
+  ready: Awaited<ReturnType<typeof readyFixture>>['ready'],
+  wait: Awaited<ReturnType<typeof waitForNormalEngineQualificationCapture>>,
+  planTerminalStatus: 'completed' | 'failed',
+) {
+  const outcome = captureOutcomeForWait(ready, wait, planTerminalStatus);
+  const persisted = await persistNormalEngineQualificationCaptureOutcome(outcome, root);
+  const outcomeBytes = await readFile(persisted.path);
+  const outcomeShaBytes = await readFile(persisted.sha256Path, 'utf8');
+  expect(outcomeBytes.toString('utf8')).toBe(`${canonicalJson(outcome)}\n`);
+  expect(digest(outcomeBytes.toString('utf8'))).toBe(persisted.sha256);
+  expect(outcomeShaBytes).toBe(`${persisted.sha256}\n`);
+  expect((await stat(persisted.path)).mode & 0o777).toBe(0o600);
+
+  const messagePath = join(root, basename(NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_PATH));
+  const messageShaPath = `${messagePath}.sha256`;
+  const messageBytes = await readFile(messagePath);
+  const messageSha = digest(messageBytes.toString('utf8'));
+  const envelope = normalEngineQualificationCaptureTerminationMessageV1Schema.parse(JSON.parse(messageBytes.toString('utf8')));
+  const decoded = parseNormalEngineQualificationCaptureTerminationMessage(messageBytes);
+  expect(messageBytes.byteLength).toBeLessThan(NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_MAX_BYTES);
+  expect(messageBytes.toString('utf8')).toBe(`${canonicalJson(envelope)}\n`);
+  expect(await readFile(messageShaPath, 'utf8')).toBe(`${messageSha}\n`);
+  expect((await stat(messagePath)).mode & 0o777).toBe(0o600);
+  expect((await stat(messageShaPath)).mode & 0o777).toBe(0o600);
+  expect(Object.keys(envelope).sort()).toEqual([
+    'schemaVersion', 'purpose', 'outcomeSchemaVersion', 'outcomeByteCount', 'outcomeSha256', 'outcomeBase64',
+  ].sort());
+  expect(envelope.outcomeByteCount).toBe(outcomeBytes.byteLength);
+  expect(envelope.outcomeSha256).toBe(persisted.sha256);
+  expect(Buffer.from(envelope.outcomeBase64, 'base64')).toEqual(outcomeBytes);
+  expect(decoded).toEqual({ envelope, outcome });
+  expect(messageBytes.toString('utf8')).not.toMatch(/prompt|authorization|api.?key|finding|sourcePath|requestId/iu);
+  return { persisted, outcome, envelope, messagePath, messageShaPath, messageBytes };
+}
+
 describe('normal engine qualification capture handshake', () => {
   it('seals exactly the Plan-derived private artifact inventory and verifies every file digest', async () => {
     const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-ready-'));
@@ -849,7 +913,7 @@ describe('normal engine qualification capture handshake', () => {
     const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-ack-'));
     const markerPath = join(root, 'qualification-capture.complete');
     try {
-      const { ready } = await readyFixture(root);
+      const { ready, plan } = await readyFixture(root);
       const ack = {
         schemaVersion: 'NormalEngineQualificationCaptureAck.v1',
         purpose: 'normal-engine-qualification-capture-ack',
@@ -864,9 +928,12 @@ describe('normal engine qualification capture handshake', () => {
         NODE_ENV: 'test', REVIEW_NORMAL_ENGINE_QUALIFICATION_CAPTURE_HOLD: 'true',
         REVIEW_NORMAL_ENGINE_QUALIFICATION_PLAN: NORMAL_ENGINE_QUALIFICATION_PLAN_ID,
       }, ready, { markerPath, timeoutMs: 100, pollIntervalMs: 1 });
+      const delivered = await persistAndReadTerminationOutcome(root, ready, result, plan.terminal.status);
       expect(result).toMatchObject({ requested: true, status: 'acknowledged', readySha256: ready.sha256,
         ackSha256: digest(`${JSON.stringify(ack)}\n`), artifactSetSha256: ready.manifest.artifactSetSha256,
         artifactCount: ready.manifest.artifactCount, reason: null });
+      expect(delivered.outcome).toMatchObject({ captureStatus: 'acknowledged', captureRequested: true,
+        planTerminalStatus: plan.terminal.status, readySha256: ready.sha256 });
       await expect(readFile(markerPath)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -877,7 +944,7 @@ describe('normal engine qualification capture handshake', () => {
     const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-invalid-ack-'));
     const markerPath = join(root, 'qualification-capture.complete');
     try {
-      const { ready } = await readyFixture(root);
+      const { ready, plan } = await readyFixture(root);
       const ack = {
         schemaVersion: 'NormalEngineQualificationCaptureAck.v1', purpose: 'normal-engine-qualification-capture-ack',
         planId: ready.manifest.planId, runId: ready.manifest.runId, planSha256: ready.manifest.planSha256,
@@ -889,9 +956,12 @@ describe('normal engine qualification capture handshake', () => {
         NODE_ENV: 'test', REVIEW_NORMAL_ENGINE_QUALIFICATION_CAPTURE_HOLD: 'true',
         REVIEW_NORMAL_ENGINE_QUALIFICATION_PLAN: NORMAL_ENGINE_QUALIFICATION_PLAN_ID,
       }, ready, { markerPath, timeoutMs: 100, pollIntervalMs: 1 });
+      const delivered = await persistAndReadTerminationOutcome(root, ready, result, plan.terminal.status);
       expect(result).toMatchObject({ requested: true, status: 'invalid_ack', reason: 'ack-invalid' });
       expect(result.ackSha256).toBe(digest(`${JSON.stringify(ack)}\n`));
       expect(result.artifactSetSha256).toBe(ready.manifest.artifactSetSha256);
+      expect(delivered.outcome).toMatchObject({ captureStatus: 'invalid_ack', captureRequested: true,
+        planTerminalStatus: plan.terminal.status, captureReason: 'ack-invalid' });
       await expect(readFile(markerPath)).rejects.toMatchObject({ code: 'ENOENT' });
       expect(normalEngineQualificationCaptureOutcomeV1Schema.safeParse({ schemaVersion: 'NormalEngineQualificationCaptureOutcome.v1',
         ...result }).success).toBe(false);
@@ -941,24 +1011,20 @@ describe('normal engine qualification capture handshake', () => {
   it('times out distinctly and leaves the original Plan.v1 terminal state unchanged in the outcome', async () => {
     const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-outcome-'));
     try {
-      const { ready } = await readyFixture(root);
+      const { ready, plan } = await readyFixture(root);
       let now = 0;
       const wait = await waitForNormalEngineQualificationCapture({
         NODE_ENV: 'test', REVIEW_NORMAL_ENGINE_QUALIFICATION_CAPTURE_HOLD: 'true',
         REVIEW_NORMAL_ENGINE_QUALIFICATION_PLAN: NORMAL_ENGINE_QUALIFICATION_PLAN_ID,
       }, ready, { markerPath: join(root, 'missing-ack'), timeoutMs: 50, pollIntervalMs: 25,
         now: () => now, sleep: async (duration) => { now += duration; } });
-      const persisted = await persistNormalEngineQualificationCaptureOutcome({ schemaVersion: 'NormalEngineQualificationCaptureOutcome.v1',
-        purpose: 'normal-engine-qualification-capture', planId: ready.manifest.planId,
-        runId: ready.manifest.runId, planSha256: ready.manifest.planSha256, planTerminalStatus: 'failed',
-        captureRequested: wait.requested, captureStatus: wait.status, readySha256: wait.readySha256,
-        ackSha256: wait.ackSha256, artifactSetSha256: wait.artifactSetSha256, artifactCount: wait.artifactCount,
-        captureReason: wait.reason, completedAt: '2026-10-06T12:00:00.000Z' }, root);
+      const delivered = await persistAndReadTerminationOutcome(root, ready, wait, plan.terminal.status);
+      const { persisted } = delivered;
       const body = await readFile(persisted.path, 'utf8');
       const checksum = await readFile(persisted.sha256Path, 'utf8');
       const file = JSON.parse(body);
       expect(file).toMatchObject({ schemaVersion: 'NormalEngineQualificationCaptureOutcome.v1',
-        planTerminalStatus: 'failed', captureRequested: true, captureStatus: 'timed_out',
+        planTerminalStatus: plan.terminal.status, captureRequested: true, captureStatus: 'timed_out',
         readySha256: ready.sha256, ackSha256: null, captureReason: 'ack-timeout' });
       expect(checksum).toBe(`${persisted.sha256}\n`);
       expect((await stat(persisted.path)).mode & 0o777).toBe(0o600);
@@ -972,21 +1038,100 @@ describe('normal engine qualification capture handshake', () => {
   it('records hold-off as not requested and rejects an invalid ACK schema', async () => {
     const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-off-'));
     try {
-      const { ready } = await readyFixture(root);
+      const { ready, plan } = await readyFixture(root);
       const result = await waitForNormalEngineQualificationCapture({ NODE_ENV: 'test' }, null, {
         markerPath: NORMAL_ENGINE_QUALIFICATION_CAPTURE_ACK_PATH,
       });
       expect(result).toMatchObject({ requested: false, status: 'not_requested', reason: 'hold-disabled',
         readySha256: null, ackSha256: null, artifactSetSha256: null, artifactCount: 0 });
       expect(normalEngineQualificationCaptureAckV1Schema.safeParse({ ...ready.manifest, decision: 'SHIP' }).success).toBe(false);
-      const outcome = await persistNormalEngineQualificationCaptureOutcome({ schemaVersion: 'NormalEngineQualificationCaptureOutcome.v1',
-        purpose: 'normal-engine-qualification-capture', planId: ready.manifest.planId,
-        runId: ready.manifest.runId, planSha256: ready.manifest.planSha256, planTerminalStatus: 'completed',
-        captureRequested: false, captureStatus: result.status, readySha256: result.readySha256,
-        ackSha256: result.ackSha256, artifactSetSha256: result.artifactSetSha256, artifactCount: result.artifactCount,
-        captureReason: result.reason, completedAt: '2026-10-06T12:00:00.000Z' }, root);
-      expect(normalEngineQualificationCaptureOutcomeV1Schema.parse(JSON.parse(await readFile(outcome.path, 'utf8'))))
-        .toMatchObject({ captureStatus: 'not_requested', planTerminalStatus: 'completed' });
+      const delivered = await persistAndReadTerminationOutcome(root, ready, result, plan.terminal.status);
+      expect(normalEngineQualificationCaptureOutcomeV1Schema.parse(JSON.parse(await readFile(delivered.persisted.path, 'utf8'))))
+        .toMatchObject({ captureStatus: 'not_requested', planTerminalStatus: plan.terminal.status });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects missing, truncated, hash-tampered, and payload-tampered termination messages', async () => {
+    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-termination-tamper-'));
+    try {
+      const { ready, plan } = await readyFixture(root);
+      const wait = await waitForNormalEngineQualificationCapture({ NODE_ENV: 'test' }, null);
+      const delivered = await persistAndReadTerminationOutcome(root, ready, wait, plan.terminal.status);
+      expect(() => parseNormalEngineQualificationCaptureTerminationMessage(Buffer.alloc(0))).toThrow();
+      expect(() => parseNormalEngineQualificationCaptureTerminationMessage(
+        delivered.messageBytes.subarray(0, delivered.messageBytes.byteLength - 1),
+      )).toThrow();
+
+      const wrongHash = { ...delivered.envelope, outcomeSha256: '0'.repeat(64) };
+      expect(() => parseNormalEngineQualificationCaptureTerminationMessage(
+        `${canonicalJson(wrongHash)}\n`,
+      )).toThrow();
+
+      const modifiedOutcome = { ...delivered.outcome, planTerminalStatus: 'completed' as const };
+      const modifiedOutcomeBytes = Buffer.from(`${canonicalJson(modifiedOutcome)}\n`, 'utf8');
+      const wrongPayload = {
+        ...delivered.envelope,
+        outcomeByteCount: modifiedOutcomeBytes.byteLength,
+        outcomeBase64: modifiedOutcomeBytes.toString('base64'),
+      };
+      expect(() => parseNormalEngineQualificationCaptureTerminationMessage(
+        `${canonicalJson(wrongPayload)}\n`,
+      )).toThrow();
+      expect(normalEngineQualificationCaptureTerminationMessageV1Schema.safeParse({
+        ...delivered.envelope, unexpectedReviewField: 'SHIP',
+      }).success).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed before persisting either file when the bounded termination message would overflow', async () => {
+    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-termination-overflow-'));
+    try {
+      const { ready, plan } = await readyFixture(root);
+      const wait = await waitForNormalEngineQualificationCapture({ NODE_ENV: 'test' }, null);
+      const baseOutcome = captureOutcomeForWait(ready, wait, plan.terminal.status);
+      const oversized = {
+        ...baseOutcome,
+        completedAt: `2026-10-06T12:00:00.${'1'.repeat(4_000)}Z`,
+      };
+      expect(normalEngineQualificationCaptureOutcomeV1Schema.safeParse(oversized).success).toBe(true);
+      await expect(persistNormalEngineQualificationCaptureOutcome(oversized, root))
+        .rejects.toThrow('normal_engine_qualification_capture_termination_message_too_large');
+      const outcomePath = join(root, NORMAL_ENGINE_QUALIFICATION_STORE_ROOT.split('/').at(-1)!, ready.manifest.runId,
+        'capture-handoff.record', 'capture-outcome.json');
+      const terminationPath = join(root, basename(NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_PATH));
+      await expect(readFile(outcomePath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(`${outcomePath.slice(0, -'.json'.length)}.sha256`)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(terminationPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(`${terminationPath}.sha256`)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not create a termination channel for ordinary non-qualification data', async () => {
+    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-termination-ordinary-'));
+    const terminationPath = join(root, basename(NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_PATH));
+    try {
+      await expect(persistNormalEngineQualificationCaptureOutcome({ verdict: 'SHIP' }, root)).rejects.toThrow();
+      await expect(readFile(terminationPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(`${terminationPath}.sha256`)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not create the qualification termination channel for ordinary review-shaped data', async () => {
+    const root = await mkdtemp(join('/private/tmp', 'normal-qualification-capture-ordinary-review-'));
+    const messagePath = join(root, basename(NORMAL_ENGINE_QUALIFICATION_CAPTURE_TERMINATION_MESSAGE_PATH));
+    try {
+      await expect(persistNormalEngineQualificationCaptureOutcome({ verdict: 'SHIP', source: 'ordinary-review' }, root))
+        .rejects.toThrow();
+      await expect(readFile(messagePath)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(`${messagePath}.sha256`)).rejects.toMatchObject({ code: 'ENOENT' });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
