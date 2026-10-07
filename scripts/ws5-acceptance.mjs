@@ -898,8 +898,8 @@ function loadWs5ResumeContext(acceptance, options) {
   }
   const sourceRoot = fs.realpathSync(SOURCE_ROOT);
   const dataRoot = fs.realpathSync(acceptance.dataRootPath || acceptance.rootPath || SOURCE_ROOT);
-  const priorPath = path.resolve(priorOutputDirectory);
-  assertPrivateDirectory(priorPath, 'ws5_resume_prior_directory_not_private');
+  const priorPath = assertPrivateDirectory(path.resolve(priorOutputDirectory),
+    'ws5_resume_prior_directory_not_private');
   assertOutsideRoots(priorPath, [sourceRoot, dataRoot], 'ws5_resume_prior_directory_inside_protected_root');
 
   const manifestArtifact = readPrivateJsonArtifact(path.join(priorPath, 'run-manifest.json'),

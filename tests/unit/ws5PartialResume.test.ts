@@ -579,4 +579,34 @@ describe('WS5 partial-resume contract', () => {
     expect(preflightCalls).toBe(0);
     expect(dispatchCalls).toBe(0);
   });
+
+  it('rejects a prior run reached through an ancestor symlink into protected data', async () => {
+    const parent = await createPriorRun(bundle);
+    const protectedTree = path.join(bundle.dataRootPath, `ws5-resume-symlink-${crypto.randomUUID()}`);
+    const protectedPrior = path.join(protectedTree, 'prior');
+    fs.mkdirSync(protectedTree, { recursive: true, mode: 0o700 });
+    fs.cpSync(parent.priorOutputDirectory, protectedPrior, { recursive: true });
+    fs.chmodSync(protectedTree, 0o700);
+    fs.chmodSync(protectedPrior, 0o700);
+    for (const fileName of fs.readdirSync(protectedPrior)) {
+      fs.chmodSync(path.join(protectedPrior, fileName), 0o600);
+    }
+
+    const symlinkParent = temporaryDirectory('ws5-partial-resume-symlink-');
+    const outsideAlias = path.join(symlinkParent, 'alias');
+    fs.symlinkSync(protectedTree, outsideAlias, 'dir');
+    const outputParent = temporaryDirectory('ws5-partial-resume-symlink-output-');
+    let preflightCalls = 0;
+    let dispatchCalls = 0;
+
+    await expect((acceptance as any).resumePublicRunCells(bundle, {
+      ...resumeOptions(parent, path.join(outputParent, 'child')),
+      priorOutputDirectory: path.join(outsideAlias, 'prior'),
+      preflightPanel: async () => { preflightCalls += 1; return readyPreflight(bundle); },
+      dispatchCell: async (cell: any) => { dispatchCalls += 1; return neverDispatchedReceipt(cell); },
+      preflightAbstention: async () => ({}),
+    })).rejects.toThrow('ws5_resume_prior_directory_inside_protected_root');
+    expect(preflightCalls).toBe(0);
+    expect(dispatchCalls).toBe(0);
+  });
 });
