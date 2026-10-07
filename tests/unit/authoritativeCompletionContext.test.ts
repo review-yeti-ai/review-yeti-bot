@@ -170,6 +170,44 @@ describe('REL-1056 trusted-completion failure classification', () => {
 });
 
 describe('service-owned authoritative completion context', () => {
+  it.each([true, false])('accepts current repository visibility from the GitHub REST candidate (private=%s)', async (isPrivate) => {
+    const visibleCurrent = { ...current, private: isPrivate };
+    const response = new Response(JSON.stringify({
+      number: target.prNumber, state: 'open', draft: false, merged: false,
+      head: { sha: target.headSha },
+      base: { sha: target.baseSha, repo: { id: target.repositoryId,
+        full_name: `${target.owner}/${target.repo}`, private: isPrivate } },
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response);
+    const reader = new AuthoritativeReviewReader({ token: 'ghs_completion-context.header.signature',
+      baseUrl: 'https://github.example.invalid/api/v3', timeoutMs: 250, fetchImplementation: fetcher });
+    const f = fixture({ readerFactory: async () => ({
+      currentCandidate: reader.currentCandidate.bind(reader),
+      exactCurrentDiff: vi.fn(async () => ({ current: visibleCurrent, diff, expectedFileCount: 1 })),
+    }) });
+    f.resolve.mockResolvedValue({ ...resolution(f.stored), current: visibleCurrent });
+
+    const context = await f.context(f.gate);
+
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(
+      'https://github.example.invalid/api/v3/repos/example/candidate/pulls/42', expect.any(Object));
+    expect(context.current).toMatchObject({ ...visibleCurrent, policyDigest: f.stored.policy.effectivePolicyDigest });
+  });
+
+  it.each([
+    { label: 'non-boolean visibility', candidate: { ...current, private: 'false' } },
+    { label: 'unknown current field', candidate: { ...current, visibility: 'private' } },
+  ])('rejects a $label on the strict current candidate schema', async ({ candidate }) => {
+    const f = fixture();
+    f.currentCandidate.mockResolvedValue(candidate as never);
+
+    const error = await rejected(f.context(f.gate));
+
+    expect(error).toMatchObject({ substage: 'current-candidate' });
+    expect(f.resolve).not.toHaveBeenCalled();
+    expect(f.exactCurrentDiff).not.toHaveBeenCalled();
+  });
+
   it('marks a force-pushed-away cause head as not-ancestor after the exact service comparison', async () => {
     const request = { sourceEventId: '00000000-0000-4000-8000-000000000041', sourceKind: 'cause' as const,
       priorRunId: `run_${'4'.repeat(32)}`, priorHeadSha: 'd'.repeat(40), currentHeadSha: target.headSha };

@@ -41,6 +41,19 @@ async function expectRedacted(pending: Promise<unknown>, message = reportError):
   expect((error as Error).cause).toBeUndefined();
   expect(`${(error as Error).stack}\n${JSON.stringify(error)}`).not.toContain(token);
   expect(`${(error as Error).stack}\n${JSON.stringify(error)}`).not.toContain(diagnostic);
+  expect(`${(error as Error).stack}\n${JSON.stringify(error)}`).not.toContain(endpoint);
+}
+
+async function expectFailure(pending: Promise<unknown>, code: string, httpStatus?: number): Promise<void> {
+  const error = await pending.then(() => undefined, (failure: unknown) => failure);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toBe(reportError);
+  expect((error as Error).cause).toBeUndefined();
+  const serialized = `${(error as Error).stack}\n${JSON.stringify(error)}`;
+  expect(serialized).not.toContain(token);
+  expect(serialized).not.toContain(diagnostic);
+  expect(serialized).not.toContain(endpoint);
+  expect(error).toMatchObject({ code, ...(httpStatus === undefined ? {} : { httpStatus }) });
 }
 
 function sizedEvent(bytes: number): WorkerReviewCompletion {
@@ -153,7 +166,7 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
   ])('rejects malformed/untrusted outgoing fields %j without sending', async (override) => {
     const f = fixture();
     const payload = { ...event(), ...override } as WorkerReviewCompletion;
-    await expectRedacted(f.adapter.reportReviewResult(payload));
+    await expectFailure(f.adapter.reportReviewResult(payload), 'payload_invalid');
     expect(f.fetchImplementation).not.toHaveBeenCalled();
   });
 
@@ -161,7 +174,7 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     const f = fixture();
     const payload = event();
     Object.defineProperty(payload, 'runId', { enumerable: true, get: () => { throw new Error(`${token} ${diagnostic}`); } });
-    await expectRedacted(f.adapter.reportReviewResult(payload));
+    await expectFailure(f.adapter.reportReviewResult(payload), 'payload_invalid');
     expect(f.fetchImplementation).not.toHaveBeenCalled();
   });
 
@@ -171,7 +184,7 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     await f.adapter.reportReviewResult(exact);
     expect(Buffer.byteLength(String(f.fetchImplementation.mock.calls[0][1]?.body), 'utf8')).toBe(MAX_COMPLETION_BYTES);
     const over = fixture();
-    await expectRedacted(over.adapter.reportReviewResult(sizedEvent(MAX_COMPLETION_BYTES + 1)));
+    await expectFailure(over.adapter.reportReviewResult(sizedEvent(MAX_COMPLETION_BYTES + 1)), 'payload_invalid');
     expect(over.fetchImplementation).not.toHaveBeenCalled();
   });
 
@@ -180,7 +193,7 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     payload.result.personas[0].findings[0].body = 'é'.repeat(16_000);
     expect(JSON.stringify(payload).length).toBe(MAX_COMPLETION_BYTES);
     const f = fixture();
-    await expectRedacted(f.adapter.reportReviewResult(payload));
+    await expectFailure(f.adapter.reportReviewResult(payload), 'payload_invalid');
     expect(f.fetchImplementation).not.toHaveBeenCalled();
   });
 
@@ -189,7 +202,7 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     const wire = streamingResponse([Buffer.from(diagnostic)], false);
     const response = new Response(status === 204 ? null : wire.response.body, { status });
     const f = fixture(response);
-    await expectRedacted(f.adapter.reportReviewResult(event()));
+    await expectFailure(f.adapter.reportReviewResult(event()), 'http_rejected', status);
     expect(f.fetchImplementation).toHaveBeenCalledOnce();
     expect(wire.pull).not.toHaveBeenCalled();
     if (status !== 204) expect(wire.cancel).toHaveBeenCalledOnce();
@@ -218,19 +231,24 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
   });
 
   it.each([
-    '', diagnostic, 'null', '[]', '{}', JSON.stringify({ ...receipt(), runId: `run_${'f'.repeat(32)}` }),
+    '', diagnostic, 'null', '[]', '{}',
     JSON.stringify(receipt({ version: 'WorkerReviewCompletionAccepted.v2' })),
     JSON.stringify(receipt({ status: 'accepted' })), JSON.stringify(receipt({ status: 'success' })),
     JSON.stringify(receipt({ status: null })), JSON.stringify(receipt({ status: undefined })),
     JSON.stringify(receipt({ conclusion: 'success' })), JSON.stringify(receipt({ transcript: diagnostic })),
   ])('rejects malformed or nonmatching receipt %j', async (body) => {
     const f = fixture(new Response(body));
-    await expectRedacted(f.adapter.reportReviewResult(event()));
+    await expectFailure(f.adapter.reportReviewResult(event()), 'invalid_receipt');
     expect(f.fetchImplementation).toHaveBeenCalledOnce();
   });
 
+  it('distinguishes a receipt bound to another run without exposing either run id', async () => {
+    const f = fixture(new Response(JSON.stringify(receipt({ runId: `run_${'f'.repeat(32)}` }))));
+    await expectFailure(f.adapter.reportReviewResult(event()), 'mismatched_runId');
+  });
+
   it('rejects a missing response stream', async () => {
-    await expectRedacted(fixture(new Response(null)).adapter.reportReviewResult(event()));
+    await expectFailure(fixture(new Response(null)).adapter.reportReviewResult(event()), 'invalid_receipt');
   });
 
   it('reads a chunked receipt at exactly the 16 KiB boundary', async () => {
@@ -247,17 +265,17 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     const chunks = kind === 'chunked' ? [bytes.subarray(0, MAX_WORKER_REVIEW_RESPONSE_BYTES), bytes.subarray(MAX_WORKER_REVIEW_RESPONSE_BYTES)] : [bytes];
     const wire = streamingResponse(chunks, false);
     if (kind === 'lying content-length') wire.response.headers.set('content-length', '1');
-    await expectRedacted(fixture(wire.response).adapter.reportReviewResult(event()));
+    await expectFailure(fixture(wire.response).adapter.reportReviewResult(event()), 'invalid_receipt');
     expect(wire.cancel).toHaveBeenCalledOnce();
     expect(wire.response.body?.locked).toBe(false);
   });
 
   it('bounds multibyte response bytes and rejects invalid UTF-8', async () => {
     const wire = streamingResponse([Buffer.from('é'.repeat(MAX_WORKER_REVIEW_RESPONSE_BYTES / 2 + 1))], false);
-    await expectRedacted(fixture(wire.response).adapter.reportReviewResult(event()));
+    await expectFailure(fixture(wire.response).adapter.reportReviewResult(event()), 'invalid_receipt');
     expect(wire.cancel).toHaveBeenCalledOnce();
     const invalid = Buffer.concat([Buffer.from(JSON.stringify(receipt())), Buffer.from([0xff])]);
-    await expectRedacted(fixture(new Response(invalid)).adapter.reportReviewResult(event()));
+    await expectFailure(fixture(new Response(invalid)).adapter.reportReviewResult(event()), 'invalid_receipt');
   });
 
   it.each(['throw', 'reject'])('redacts a fetch %s after bounded retry exhaustion', async (kind) => {
@@ -266,7 +284,7 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
       return Promise.reject(new Error(`${token} ${diagnostic}`));
     });
     const adapter = new HttpWorkerReviewCompletionAdapter({ token, endpoint, fetchImplementation });
-    const failure = expectRedacted(adapter.reportReviewResult(event()));
+    const failure = expectFailure(adapter.reportReviewResult(event()), 'delivery_unavailable');
     await vi.advanceTimersByTimeAsync(750);
     await failure;
     expect(fetchImplementation).toHaveBeenCalledTimes(3);
@@ -289,7 +307,7 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     const fetchImplementation = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>(() => {}));
     const adapter = new HttpWorkerReviewCompletionAdapter({ token, endpoint, timeoutMs, fetchImplementation });
     let settled = false;
-    const failure = expectRedacted(adapter.reportReviewResult(event())).then(() => { settled = true; });
+    const failure = expectFailure(adapter.reportReviewResult(event()), 'deadline_exceeded').then(() => { settled = true; });
     await vi.advanceTimersByTimeAsync((timeoutMs ?? 30_000) - 1);
     expect(settled).toBe(false);
     expect(fetchImplementation.mock.calls[0][1]?.signal?.aborted).toBe(false);
@@ -357,7 +375,7 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     const cancel = vi.fn(async () => {});
     const releaseLock = vi.fn();
     const response = { status: 200, redirected: false, body: { getReader: () => ({ read, cancel, releaseLock }) } } as unknown as Response;
-    const failure = expectRedacted(fixture(response).adapter.reportReviewResult(event()));
+    const failure = expectFailure(fixture(response).adapter.reportReviewResult(event()), 'delivery_unavailable');
     await vi.advanceTimersByTimeAsync(750);
     await failure;
     expect(cancel).toHaveBeenCalledTimes(3);
@@ -411,7 +429,7 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     const fetchImplementation = vi.fn<typeof fetch>();
     for (const wire of wires) fetchImplementation.mockResolvedValueOnce(new Response(wire.response.body, { status: 503 }));
     const adapter = new HttpWorkerReviewCompletionAdapter({ token, endpoint, fetchImplementation });
-    const failure = expectRedacted(adapter.reportReviewResult(event()));
+    const failure = expectFailure(adapter.reportReviewResult(event()), 'http_rejected', 503);
     await vi.advanceTimersByTimeAsync(249);
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
@@ -450,7 +468,7 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
 
   it('does not sleep or start a retry when the delay would consume the remaining deadline', async () => {
     const f = fixture(new Response(null, { status: 503 }), 250);
-    await expectRedacted(f.adapter.reportReviewResult(event()));
+    await expectFailure(f.adapter.reportReviewResult(event()), 'deadline_exceeded');
     expect(f.fetchImplementation).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -461,7 +479,8 @@ describe('HttpWorkerReviewCompletionAdapter', () => {
     const fetchImplementation = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(null, { status: 503 })).mockResolvedValueOnce(next);
     const adapter = new HttpWorkerReviewCompletionAdapter({ token, endpoint, fetchImplementation });
-    const failure = expectRedacted(adapter.reportReviewResult(event()));
+    const failure = expectFailure(adapter.reportReviewResult(event()), kind === '403' || kind === '409'
+      ? 'http_rejected' : 'invalid_receipt', kind === '403' || kind === '409' ? Number(kind) : undefined);
     await vi.advanceTimersByTimeAsync(1_000);
     await failure;
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
