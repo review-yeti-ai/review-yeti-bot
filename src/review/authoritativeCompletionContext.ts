@@ -528,6 +528,8 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
           reviewEngine: 'composed' as const,
           composedChangedPaths: applicability.effectiveFiles.map((file) => file.path),
           composedMaxTasks: resolveComposedMaxTasks(stored.config.composed?.max_tasks),
+          ...(stored.config.review_configuration_receipt
+            ? { composedEffectiveConfiguration: stored.config.review_configuration_receipt } : {}),
         } : {}),
         // REL-1092: the same decision the worker's coverage reads. An analyzable
         // file whose changed text no lane could see is never counted as reviewed.
