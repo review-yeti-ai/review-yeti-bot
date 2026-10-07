@@ -902,15 +902,23 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const workerStartedAt = 1_790_000_130_000;
     const addedLinesPatch = ['@@ -0,0 +1,20 @@', ...Array.from({ length: 20 }, (_, index) =>
       `+const coveredLine${index + 1} = ${index + 1};`), ''].join('\n');
+    let plannerCalls = 0;
+    let taskCalls = 0;
     const complete = vi.fn(async (payload: any) => {
       const last = payload.messages.at(-1)?.content;
       const text = typeof last === 'string' ? last : (last ?? []).map((part: any) => part.text ?? '').join('\n');
-      const task = text.match(/Task id: (task-\d+)/u)?.[1];
       const nonce = text.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/u)?.[1];
+      expect(nonce).toBeDefined();
+      if (text.includes('=== PLAN TURN ===')) {
+        plannerCalls += 1;
+        return { model: 'local-fixture', content: JSON.stringify({ nonce, tasks: seeded.checkpoint.plan }),
+          usage: { prompt: 10, completion: 10, total: 20 }, costUSD: 0, raw: {} };
+      }
+      const task = text.match(/Task id: (task-\d+)/u)?.[1];
+      taskCalls += 1;
       // Legacy checkpoint tasks have no original-source receipts. Every task
       // must earn new delivery evidence rather than inheriting old completion.
       expect(task).toMatch(/^task-[1-8]$/u);
-      expect(nonce).toBeDefined();
       expect(payload.messages.map((message: any) => typeof message.content === 'string' ? message.content :
         (message.content ?? []).map((part: any) => part.text ?? '').join('\n')).join('\n')).toContain(addedLinesPatch);
       const findings = seeded.checkpoint.completedTasks.find((completed) => completed.id === task)?.findings ?? [];
@@ -923,7 +931,9 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       changedFiles: seeded.checkpoint.plan.map((task) => ({ path: task.paths[0], patch: addedLinesPatch })),
       client: { complete }, checkpoint: { resumed: a2Checkpoint, save: async () => undefined },
     });
-    expect(complete).toHaveBeenCalledTimes(8);
+    expect(plannerCalls).toBe(1);
+    expect(taskCalls).toBe(8);
+    expect(complete).toHaveBeenCalledTimes(9);
     expect(resumed.sourceDelivery).toHaveLength(8);
     expect(resumed.sourceDelivery?.every((receipt) => receipt.complete)).toBe(true);
     expect(resumed.personas.map((persona) => persona.id).sort()).toEqual(seeded.checkpoint.plan.map((task) => task.id).sort());
