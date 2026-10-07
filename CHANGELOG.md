@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.120.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.120.0...v1.120.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **review:** repair completion acknowledgement ([#1422](https://github.com/review-yeti-ai/review-yeti-bot/issues/1422)) ([5de1886](https://github.com/review-yeti-ai/review-yeti-bot/commit/5de1886af726c3d4c6052623d38a1a53703b7794))
+
 ## [1.120.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.119.4...v1.120.0) (2026-10-07)
 
 
