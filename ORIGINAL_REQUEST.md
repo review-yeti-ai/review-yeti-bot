@@ -347,3 +347,58 @@ Development Rules:
 - NEVER PKILL.
 - NEVER add "🤖 Generated with Claude Code" or "Co-Authored-By: Claude" in commits or PRs.
 Resume and drive to completion through the worker, reviewer, challenger, and auditor gates.
+
+## 2026-10-07T20:09:11Z
+
+Implement next-generation AI code review capabilities for Review Yeti by adopting competitive industry best practices from CodeRabbit, Qodo, GitHub Copilot/Bugbot, and Greptile. Eliminate the Incremental Review Catch-22 bug, abolish artificial 25k hard context limits through unbounded AST streaming and ephemeral context compaction, establish content-addressed subtask checkpointing, enforce blocker fast-path quorums, and wire deterministic SAST candidate hypotheses.
+
+Working directory: `/Users/jasonbarbee/Documents/ct-master/review-yeti-bot-jasonbarbee`
+Integrity mode: development
+
+## Requirements
+
+### R1. Finding-Centric Incremental State Machine (Fix the Catch-22)
+Decouple diff coverage verification from gate verdict in `src/review/incrementalReview.ts`. When a prior review concludes with a blocking finding (verdict `BLOCK`, run status `failed`), retain its diff coverage and finding fingerprints as valid prior context. On subsequent pushes, route open findings to a targeted `recheck_lane` that inspects only the modified lines for bug resolution, eliminating the Catch-22 loop where fixes trigger expensive 100% full re-reviews.
+
+### R2. Unbounded Context Scaling & Ephemeral Compaction (Abolish 25k Walls)
+Eliminate monolithic diff broadcasting (`staticPrefixText`) and dismantle artificial 25k token context limits. Implement streaming AST file-tree dispatching that scales gracefully across arbitrarily large pull requests:
+- Subagents inspect path-bounded AST outlines and fetch hunks on demand (`get_hunk(filePath, startLine, endLine)`).
+- Evict raw diff hunks from conversation turn history after inspection, maintaining a bounded running synopsis.
+- Enable review support for large multi-megabyte PRs without arbitrary product-limiting token ceilings.
+
+### R3. Content-Addressed Subtask Checkpoints (Escape the Exact-Head Trap)
+Refactor subagent task checkpoint caching in `src/cli/publishingReview.ts` and persistence layers to key on content-addressed tuples `(filePath, contentHash, laneId)` rather than literal `headSha`. Rebasing, squashing, or amending commits must instantly reuse cached reviewer outputs for all untouched files.
+
+### R4. Blocker Fast-Path Quorum & Adaptive Lane Gating
+Replace the rigid all-tasks-must-report quorum with adaptive file coverage validation and blocker fast-pathing. As soon as any persona confirms a verified P0/critical regression, immediately halt remaining exploratory/style lanes, abort pending upstream LLM streams via SIGTERM/AbortController, and publish the blocking check run.
+
+### R5. Deterministic SAST Pre-Check Candidate Hypotheses
+Run fast static analyzers (linters, security scanners, secrets detection) in the review sandbox prior to LLM evaluation. Format analyzer detections as structured candidate hypotheses (with path, line range, rule, and confidence) for personas to verify or refute, preventing raw SAST false positives while focusing LLM attention on confirmed defects.
+
+## Verification Resources
+
+- Test suite: `npm test tests/unit/incrementalReview.test.ts`
+- Panel engine suite: `npm test tests/unit/panelEngine.test.ts`
+- Dispatch & lifecycle suite: `npm test tests/unit/reviewDispatchRepository.test.ts`
+- Publishing suite: `npm test tests/unit/publishingReview.test.ts`
+- Build check: `npm run build`
+
+## Acceptance Criteria
+
+### Incremental Review & Catch-22 Elimination
+- [ ] Pushing a commit following a failed review (with P2 findings) successfully triggers incremental delta review rather than aborting to full review.
+- [ ] Unresolved findings from the prior run are verified by `recheck_lane`; resolved findings are marked "Resolved" with commit references.
+
+### Unbounded Context & Ephemeral Compaction
+- [ ] Pull requests exceeding 25k tokens are processed without context overflow, truncation, or arbitrary token cap rejections.
+- [ ] Subagents fetch hunks on demand via `get_hunk`; raw hunks are evicted from context after turn completion, keeping per-turn prompt size bounded.
+
+### Checkpoint Resilience
+- [ ] Amending a commit or rebasing on upstream retains cached subtask results for all files whose content hashes did not change.
+- [ ] Checkpoint replay completes in zero GPU tokens for untouched files.
+
+### Blocker Fast-Path & SAST Hypotheses
+- [ ] Confirmed P0 findings trigger immediate early-exit and mark check-runs without waiting for lagging non-critical lanes.
+- [ ] SAST analyzer hits are delivered as structured hypotheses for LLM verification.
+- [ ] `npm test` passes with zero regressions across all unit, integration, and E2E review tests.
+- [ ] TypeScript builds cleanly with zero errors (`npm run build`).
