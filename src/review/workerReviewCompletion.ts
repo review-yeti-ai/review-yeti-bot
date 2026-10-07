@@ -105,6 +105,7 @@ const reviewHeadAncestryV1Schema = z.object({ version: z.literal('ReviewHeadAnce
   result: z.enum(['ancestor', 'not-ancestor', 'unavailable']), priorRunId: z.string().regex(/^run_[a-f0-9]{32}$/u),
   priorHeadSha: sha, currentHeadSha: sha, comparisonDigest: digest }).strict();
 const groundedHistoryReceiptV2Schema = z.object({ ...groundedHistoryReceiptFields,
+  /** Historical aggregate hint; retained for receipt parsing but never continuity authority. */
   verifiedAncestry: reviewHeadAncestryV1Schema.optional() }).strict().superRefine((history, context) => {
     if (history.status === 'complete' && (!history.snapshotId || !history.contextDigest || !history.eventsDigest || !history.findingsDigest)) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['snapshotId'], message: 'complete history requires its authenticated snapshot digests' });
@@ -210,6 +211,22 @@ const groundedCauseAnchorV2Schema = z.object({ componentPath: z.string().min(1).
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['endLine'], message: 'cause anchor exceeds its line bound' });
     }
   });
+export interface GroundedOriginAncestryV1 {
+  version: 'GroundedOriginAncestry.v1';
+  sourceEventId: string;
+  sourceKind: 'cause' | 'repair';
+  priorRunId: string;
+  priorHeadSha: string;
+  currentHeadSha: string;
+  result: 'ancestor' | 'not-ancestor' | 'unavailable';
+  comparisonDigest: string;
+}
+const groundedOriginAncestryV1Schema = z.object({
+  version: z.literal('GroundedOriginAncestry.v1'), sourceEventId: z.string().min(1).max(128),
+  sourceKind: z.enum(['cause', 'repair']), priorRunId: z.string().regex(/^run_[a-f0-9]{32}$/u),
+  priorHeadSha: sha, currentHeadSha: sha, result: z.enum(['ancestor', 'not-ancestor', 'unavailable']),
+  comparisonDigest: digest,
+}).strict();
 const groundedFindingContinuityV1Schema = z.object({
   version: z.literal('GroundedFindingContinuity.v1'),
   status: z.enum(['new', 'continuous', 'reopened', 'unavailable']),
@@ -225,6 +242,8 @@ const groundedFindingContinuityV1Schema = z.object({
   causeAnchor: groundedCauseAnchorV2Schema,
   sourceWindowManifestDigest: digest,
   currentOutcomeEvidenceDigest: digest.optional(),
+  /** Per-origin ancestry receipts supersede the generic latest-head hint for continuity authority. */
+  verifiedOriginAncestry: z.array(groundedOriginAncestryV1Schema).max(2).optional(),
   evidenceDigest: digest,
   unavailableReason: z.string().min(1).max(500).optional(),
 }).strict().superRefine((continuity, context) => {
@@ -242,6 +261,14 @@ const groundedFindingContinuityV1Schema = z.object({
     || continuity.historyContextDigest !== undefined && continuity.historySnapshotId === undefined) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['status'],
       message: 'unavailable continuity requires a reason and cannot claim a durable match' });
+  }
+  const origins = continuity.verifiedOriginAncestry;
+  if (origins && origins.some((origin, index) => index > 0
+    && (origins[index - 1]!.sourceKind > origin.sourceKind
+      || origins[index - 1]!.sourceKind === origin.sourceKind
+        && origins[index - 1]!.sourceEventId >= origin.sourceEventId))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['verifiedOriginAncestry'],
+      message: 'origin ancestry proofs must be sorted and unique by source kind and event ID' });
   }
 });
 export type GroundedFindingContinuityV1 = z.infer<typeof groundedFindingContinuityV1Schema>;
@@ -352,6 +379,8 @@ const groundedOutcomeV2Schema = z.object({
   status: z.enum(['confirmed', 'contradicted', 'insufficient']), reason: boundedText(2_000).optional(),
   affectedContextDigest: digest, relatedDiffPaths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).max(13),
   evidenceDigest: digest.optional(), evidence: z.union([groundedConfirmedEvidenceV2Schema, groundedContradictedEvidenceV2Schema]).optional(),
+  /** Exact current-head ancestry for the matched lifecycle origins; the Gate joins this to trusted history. */
+  verifiedOriginAncestry: z.array(groundedOriginAncestryV1Schema).max(2).optional(),
   verifiedContinuity: groundedFindingContinuityV1Schema.optional(),
   verifierRoute: groundedVerifierRouteV1Schema.optional(),
 }).strict().superRefine((outcome, context) => {
@@ -368,9 +397,17 @@ const groundedOutcomeV2Schema = z.object({
   if (outcome.status === 'insufficient' && (outcome.evidenceDigest !== undefined || outcome.evidence !== undefined)) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['evidence'], message: 'insufficient outcomes cannot carry verification proof' });
   }
+  const origins = outcome.verifiedOriginAncestry;
+  if (origins && origins.some((origin, index) => index > 0
+    && (origins[index - 1]!.sourceKind > origin.sourceKind
+      || origins[index - 1]!.sourceKind === origin.sourceKind
+        && origins[index - 1]!.sourceEventId >= origin.sourceEventId))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['verifiedOriginAncestry'],
+      message: 'origin ancestry proofs must be sorted and unique by source kind and event ID' });
+  }
   // Continuity is an optional, untrusted history hint. It must have a strict shape, but a stale or
   // forged hint cannot invalidate otherwise valid finding verification; the Gate service accepts
-  // it only after rechecking the canonical continuity digest and an exact authenticated history row.
+  // it only after rechecking the canonical digest, exact authenticated row, and per-origin ancestry.
   if (outcome.claimType === 'absence' && outcome.status === 'confirmed' && outcome.evidence
     && !outcome.evidence.citations.some((citation) => citation.window?.path === outcome.path
       && citation.window.role === 'candidate' && citation.window.exhaustive)) {
@@ -844,6 +881,8 @@ export interface TrustedGroundedHistoryContext {
   currentRunId: string;
   currentHeadSha: string;
   expectedContinuityByFingerprint: Readonly<Record<string, GroundedFindingContinuityV1>>;
+  /** Service-rederived exact cause/repair origins for each current candidate; a generic ancestry hint is not authority. */
+  expectedOriginAncestryByFingerprint?: Readonly<Record<string, readonly GroundedOriginAncestryV1[]>>;
   verifiedAncestry?: ReviewHeadAncestryV1;
   /** Transitions already rechecked by the service against stored events and current exact source. */
   expectedTransitionsByFingerprint?: Readonly<Record<string, TrustedGroundedLifecycleTransitionV1>>;
@@ -1879,6 +1918,30 @@ function groundedReviewReceiptV2Error(input: { receipt: GroundedReviewReceiptV2;
   return null;
 }
 
+function matchedOriginAncestryForOutcome(input: { outcome: GroundedReviewReceiptV2['verification']['outcomes'][number];
+  trusted: TrustedGroundedHistoryContext; kinds: readonly ('cause' | 'repair')[];
+  currentHeadSha: string; eventIds: ReadonlySet<string> }): GroundedOriginAncestryV1[] | undefined {
+  if (input.kinds.length === 0) return undefined;
+  const supplied = input.outcome.verifiedOriginAncestry;
+  const expected = input.trusted.expectedOriginAncestryByFingerprint?.[input.outcome.fingerprint];
+  const parsedExpected = z.array(groundedOriginAncestryV1Schema).max(2).safeParse(expected);
+  if (!supplied || !parsedExpected.success || supplied.length !== input.kinds.length
+    || parsedExpected.data.length !== input.kinds.length
+    || canonicalJson(supplied) !== canonicalJson(parsedExpected.data)) return undefined;
+  if (supplied.some((origin, index) => origin.sourceKind !== input.kinds[index]
+    || origin.result !== 'ancestor' || origin.currentHeadSha !== input.currentHeadSha
+    || origin.currentHeadSha !== input.trusted.currentHeadSha || !input.eventIds.has(origin.sourceEventId))) return undefined;
+  return parsedExpected.data;
+}
+
+function hasNoExpectedOriginAncestry(input: { outcome: GroundedReviewReceiptV2['verification']['outcomes'][number];
+  continuity: GroundedFindingContinuityV1; trusted: TrustedGroundedHistoryContext }): boolean {
+  const expected = input.trusted.expectedOriginAncestryByFingerprint?.[input.outcome.fingerprint];
+  return (input.outcome.verifiedOriginAncestry === undefined || input.outcome.verifiedOriginAncestry.length === 0)
+    && (input.continuity.verifiedOriginAncestry === undefined || input.continuity.verifiedOriginAncestry.length === 0)
+    && (expected === undefined || Array.isArray(expected) && expected.length === 0);
+}
+
 function groundedContinuityForGate(input: { result: WorkerReviewResult; contract: TrustedReviewCoverageContract;
   coordinates: TrustedWorkerReviewCoordinates }): { accepted: GroundedFindingContinuityV1[];
   transitions: GroundedLifecycleTransitionV1[] } {
@@ -1899,16 +1962,12 @@ function groundedContinuityForGate(input: { result: WorkerReviewResult; contract
     || !reviewHeadAncestryV1Schema.safeParse(trusted.verifiedAncestry).success)) {
     return { accepted: [], transitions: [] };
   }
-  const hintedAncestry = receiptHistory.verifiedAncestry;
-  const ancestryMatches = Boolean(hintedAncestry && trusted.verifiedAncestry
-    && canonicalJson(hintedAncestry) === canonicalJson(trusted.verifiedAncestry)
-    && hintedAncestry.currentHeadSha === input.coordinates.headSha);
   const eventIds = new Set(trusted.eventIds);
   const accepted: GroundedFindingContinuityV1[] = [];
   const transitions: GroundedLifecycleTransitionV1[] = [];
   for (const outcome of receipt.verification.outcomes) {
     const hint = outcome.verifiedContinuity;
-    if (hint && hint.status !== 'unavailable') {
+    if (hint && hint.status !== 'unavailable' && outcome.status === 'confirmed') {
       const expected = trusted.expectedContinuityByFingerprint[hint.currentFingerprint];
       const { evidenceDigest: hintDigest, ...hintMaterial } = hint;
       const expectedMaterial = expected && (({ evidenceDigest: _expectedDigest, ...material }) => material)(expected);
@@ -1927,6 +1986,17 @@ function groundedContinuityForGate(input: { result: WorkerReviewResult; contract
         ? 'rootCause' in hintEvidence && canonicalJson(hint.rootCause) === canonicalJson(hintEvidence.rootCause)
           && canonicalJson(hint.causeAnchor) === canonicalJson(hintEvidence.causeAnchor)
         : outcome.status === 'contradicted' && anchorBound));
+      const requiredKinds: readonly ('cause' | 'repair')[] = hint.status === 'continuous' ? ['cause']
+        : hint.status === 'reopened' ? ['cause', 'repair'] : [];
+      const matchedOrigins = requiredKinds.length > 0
+        ? matchedOriginAncestryForOutcome({ outcome, trusted, kinds: requiredKinds,
+          currentHeadSha: input.coordinates.headSha, eventIds })
+        : undefined;
+      const originContinuityBound = requiredKinds.length > 0
+        ? Boolean(matchedOrigins && hint.verifiedOriginAncestry
+          && canonicalJson(hint.verifiedOriginAncestry) === canonicalJson(outcome.verifiedOriginAncestry)
+          && canonicalJson(hint.sourceEventIds) === canonicalJson(matchedOrigins.map((origin) => origin.sourceEventId).sort()))
+        : hint.status === 'new' && hasNoExpectedOriginAncestry({ outcome, continuity: hint, trusted });
       if (expected && groundedFindingContinuityV1Schema.safeParse(expected).success && expectedDigestValid
         && groundedFindingContinuityV1Schema.safeParse(hint).success
         && hintDigest === groundedFindingContinuityDigest(hintMaterial)
@@ -1935,8 +2005,7 @@ function groundedContinuityForGate(input: { result: WorkerReviewResult; contract
         && canonicalJson(expected) === canonicalJson(hint)
         && hint.historySnapshotId === trusted.snapshotId && hint.historyContextDigest === trusted.contextDigest
         && hint.sourceEventIds.every((id) => eventIds.has(id))
-        && (!(hint.status === 'continuous' || hint.status === 'reopened')
-          || ancestryMatches && hintedAncestry?.result === 'ancestor')) accepted.push(hint);
+        && originContinuityBound) accepted.push(hint);
     }
 
     const trustedTransition = trusted.expectedTransitionsByFingerprint?.[outcome.fingerprint];
@@ -1945,6 +2014,11 @@ function groundedContinuityForGate(input: { result: WorkerReviewResult; contract
     const transition = parsedTransition.data;
     const { evidenceDigest: transitionDigest, ...transitionMaterial } = transition;
     const evidence = outcome.evidence;
+    const requiredTransitionKinds: readonly ('cause' | 'repair')[] | undefined = transition.kind === 'fixed'
+      ? outcome.status === 'contradicted' ? ['cause'] : undefined
+      : outcome.status === 'confirmed' ? ['cause', 'repair'] : undefined;
+    const transitionOrigins = requiredTransitionKinds && matchedOriginAncestryForOutcome({ outcome, trusted,
+      kinds: requiredTransitionKinds, currentHeadSha: input.coordinates.headSha, eventIds });
     if (!evidence || transition.currentFingerprint !== outcome.fingerprint
       || sha256(canonicalJson(transitionMaterial)) !== transitionDigest
       || transition.candidateSide !== outcome.candidateSide || transition.outcomeStatus !== outcome.status
@@ -1954,11 +2028,16 @@ function groundedContinuityForGate(input: { result: WorkerReviewResult; contract
       || !eventIds.has(transition.priorFindingEventId)
       || transition.sourceWindowManifestDigest !== evidence.sourceWindowManifestDigest
       || transition.currentOutcomeEvidenceDigest !== outcome.evidenceDigest
-      || !ancestryMatches || hintedAncestry?.result !== 'ancestor') continue;
+      || !transitionOrigins) continue;
     if (transition.kind === 'fixed' && outcome.status !== 'contradicted') continue;
+    if (transition.kind === 'fixed' && transition.priorFindingEventId !== transitionOrigins[0]!.sourceEventId) continue;
     if (transition.kind === 'regressed' && (outcome.status !== 'confirmed' || !('rootCause' in evidence)
       || !['introduced', 'exacerbated'].includes(evidence.scopeDecision.causalScope)
-      || transition.causalScope !== evidence.scopeDecision.causalScope)) continue;
+      || transition.causalScope !== evidence.scopeDecision.causalScope
+      || transition.priorFindingEventId !== transitionOrigins[1]!.sourceEventId
+      || !accepted.some((continuity) => continuity.currentFingerprint === outcome.fingerprint
+        && continuity.status === 'reopened'
+        && canonicalJson(continuity.verifiedOriginAncestry) === canonicalJson(outcome.verifiedOriginAncestry)))) continue;
     transitions.push({ version: transition.version, transition: transition.kind,
       currentFingerprint: transition.currentFingerprint, outcomeStatus: outcome.status,
       candidateSide: transition.candidateSide, durableFindingId: transition.durableFindingId,

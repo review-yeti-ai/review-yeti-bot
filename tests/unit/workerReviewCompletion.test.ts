@@ -1246,6 +1246,9 @@ describe('versioned v2 worker/Gate decision agreement', () => {
     const priorRunId = `run_${'3'.repeat(32)}`;
     const ancestry = { version: 'ReviewHeadAncestry.v1', result: 'ancestor', priorRunId,
       priorHeadSha: '4'.repeat(40), currentHeadSha: expectedCoordinates.headSha, comparisonDigest: '5'.repeat(64) };
+    const causeOrigin = { version: 'GroundedOriginAncestry.v1', sourceEventId: 'event-a', sourceKind: 'cause',
+      priorRunId, priorHeadSha: '4'.repeat(40), currentHeadSha: expectedCoordinates.headSha,
+      result: 'ancestor', comparisonDigest: '8'.repeat(64) } as const;
     const continuityCompletion = structuredClone(v2Completion);
     const continuityOutcome: any = continuityCompletion.result.groundedReview!.verification.outcomes[0]!;
     const continuityEvidence = continuityOutcome.evidence as any;
@@ -1256,10 +1259,12 @@ describe('versioned v2 worker/Gate decision agreement', () => {
       rootCause: continuityEvidence.rootCause, causeAnchor: continuityEvidence.causeAnchor,
       sourceWindowManifestDigest: continuityEvidence.sourceWindowManifestDigest,
       currentOutcomeEvidenceDigest: continuityOutcome.evidenceDigest,
+      verifiedOriginAncestry: [causeOrigin],
     };
     const continuity = { ...continuityMaterial,
       evidenceDigest: groundedFindingContinuityDigest(continuityMaterial as any) };
     continuityOutcome.verifiedContinuity = continuity;
+    (continuityOutcome as any).verifiedOriginAncestry = [causeOrigin];
     continuityCompletion.result.groundedReview!.history = {
       status: 'complete', snapshotId, contextDigest, eventCount: 1, findingCount: 1, loadedEventCount: 1,
       loadedFindingCount: 1, eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
@@ -1269,10 +1274,92 @@ describe('versioned v2 worker/Gate decision agreement', () => {
     } as any;
     const trustedHistory = { snapshotId, contextDigest, eventIds: ['event-a'], currentRunId: expectedCoordinates.runId,
       currentHeadSha: expectedCoordinates.headSha, expectedContinuityByFingerprint: { [continuity.currentFingerprint]: continuity },
+      expectedOriginAncestryByFingerprint: { [continuity.currentFingerprint]: [causeOrigin] },
       verifiedAncestry: ancestry } as any;
     const continuityAccepted = derive(continuityCompletion, { ...trusted, groundedHistory: trustedHistory });
     expect(continuityAccepted, JSON.stringify(continuityAccepted)).toMatchObject({ valid: true,
       groundedContinuity: [continuity] });
+
+    const genericOnly = structuredClone(continuityCompletion);
+    delete (genericOnly.result.groundedReview!.verification.outcomes[0]! as any).verifiedOriginAncestry;
+    const genericOnlyResult = derive(genericOnly, { ...trusted, groundedHistory: { ...trustedHistory,
+      expectedOriginAncestryByFingerprint: {} } });
+    expect(genericOnlyResult, JSON.stringify(genericOnlyResult)).toMatchObject({ valid: true, evidence: { verdict: 'FIX_FIRST' } });
+    if (genericOnlyResult.valid) expect(genericOnlyResult.groundedContinuity).toBeUndefined();
+
+    const forcePushedOrigin = structuredClone(continuityCompletion);
+    const forcePushedOutcome: any = forcePushedOrigin.result.groundedReview!.verification.outcomes[0]!;
+    forcePushedOutcome.verifiedOriginAncestry[0].result = 'not-ancestor';
+    const { evidenceDigest: _oldForcePushDigest, ...forcePushMaterial } = forcePushedOutcome.verifiedContinuity;
+    forcePushedOutcome.verifiedContinuity.evidenceDigest = groundedFindingContinuityDigest(forcePushMaterial);
+    const forcePushedExpected = { ...causeOrigin, result: 'not-ancestor' };
+    const forcePushedResult = derive(forcePushedOrigin, { ...trusted, groundedHistory: { ...trustedHistory,
+      expectedContinuityByFingerprint: { [continuity.currentFingerprint]: forcePushedOutcome.verifiedContinuity },
+      expectedOriginAncestryByFingerprint: { [continuity.currentFingerprint]: [forcePushedExpected] } } });
+    expect(forcePushedResult, JSON.stringify(forcePushedResult)).toMatchObject({ valid: true, evidence: { verdict: 'FIX_FIRST' } });
+    if (forcePushedResult.valid) expect(forcePushedResult.groundedContinuity).toBeUndefined();
+
+    const staleOriginHead = structuredClone(continuityCompletion);
+    const staleHeadOutcome: any = staleOriginHead.result.groundedReview!.verification.outcomes[0]!;
+    const staleOrigin = { ...causeOrigin, currentHeadSha: 'a'.repeat(40) };
+    staleHeadOutcome.verifiedOriginAncestry = [staleOrigin];
+    staleHeadOutcome.verifiedContinuity.verifiedOriginAncestry = [staleOrigin];
+    const { evidenceDigest: _oldStaleHeadDigest, ...staleHeadMaterial } = staleHeadOutcome.verifiedContinuity;
+    staleHeadOutcome.verifiedContinuity.evidenceDigest = groundedFindingContinuityDigest(staleHeadMaterial);
+    const staleHeadResult = derive(staleOriginHead, { ...trusted, groundedHistory: { ...trustedHistory,
+      expectedContinuityByFingerprint: { [continuity.currentFingerprint]: staleHeadOutcome.verifiedContinuity },
+      expectedOriginAncestryByFingerprint: { [continuity.currentFingerprint]: [staleOrigin] } } });
+    expect(staleHeadResult, JSON.stringify(staleHeadResult)).toMatchObject({ valid: true, evidence: { verdict: 'FIX_FIRST' } });
+    if (staleHeadResult.valid) expect(staleHeadResult.groundedContinuity).toBeUndefined();
+
+    const reopenedCompletion = structuredClone(continuityCompletion);
+    const reopenedOutcome: any = reopenedCompletion.result.groundedReview!.verification.outcomes[0]!;
+    const repairOrigin = { ...causeOrigin, sourceEventId: 'event-repair', sourceKind: 'repair' as const,
+      comparisonDigest: '9'.repeat(64) };
+    const reopenedOrigins = [causeOrigin, repairOrigin];
+    reopenedOutcome.verifiedOriginAncestry = reopenedOrigins;
+    reopenedOutcome.verifiedContinuity.status = 'reopened';
+    reopenedOutcome.verifiedContinuity.sourceEventIds = ['event-a', 'event-repair'];
+    reopenedOutcome.verifiedContinuity.verifiedOriginAncestry = reopenedOrigins;
+    const { evidenceDigest: _oldReopenedDigest, ...reopenedMaterial } = reopenedOutcome.verifiedContinuity;
+    reopenedOutcome.verifiedContinuity.evidenceDigest = groundedFindingContinuityDigest(reopenedMaterial);
+    const reopenedExpected = reopenedOutcome.verifiedContinuity;
+    const reopenedResult = derive(reopenedCompletion, { ...trusted, groundedHistory: { ...trustedHistory,
+      eventIds: ['event-a', 'event-repair'], expectedContinuityByFingerprint: { [continuity.currentFingerprint]: reopenedExpected },
+      expectedOriginAncestryByFingerprint: { [continuity.currentFingerprint]: reopenedOrigins } } });
+    expect(reopenedResult, JSON.stringify(reopenedResult)).toMatchObject({ valid: true,
+      groundedContinuity: [{ status: 'reopened', sourceEventIds: ['event-a', 'event-repair'] }] });
+
+    const reopenedMissingRepair = structuredClone(reopenedCompletion);
+    const missingRepairOutcome: any = reopenedMissingRepair.result.groundedReview!.verification.outcomes[0]!;
+    missingRepairOutcome.verifiedOriginAncestry = [causeOrigin];
+    missingRepairOutcome.verifiedContinuity.verifiedOriginAncestry = [causeOrigin];
+    missingRepairOutcome.verifiedContinuity.sourceEventIds = ['event-a'];
+    const { evidenceDigest: _oldMissingRepairDigest, ...missingRepairMaterial } = missingRepairOutcome.verifiedContinuity;
+    missingRepairOutcome.verifiedContinuity.evidenceDigest = groundedFindingContinuityDigest(missingRepairMaterial);
+    const missingRepairResult = derive(reopenedMissingRepair, { ...trusted, groundedHistory: { ...trustedHistory,
+      eventIds: ['event-a', 'event-repair'], expectedContinuityByFingerprint: { [continuity.currentFingerprint]: reopenedExpected },
+      expectedOriginAncestryByFingerprint: { [continuity.currentFingerprint]: reopenedOrigins } } });
+    expect(missingRepairResult, JSON.stringify(missingRepairResult)).toMatchObject({ valid: true, evidence: { verdict: 'FIX_FIRST' } });
+    if (missingRepairResult.valid) expect(missingRepairResult.groundedContinuity).toBeUndefined();
+
+    const regressedTransitionMaterial = {
+      version: 'GroundedLifecycleTransition.v1', kind: 'regressed', durableFindingId: 'finding-123',
+      priorFindingEventId: 'event-repair', changedContextDigest: continuityOutcome.affectedContextDigest,
+      historySnapshotId: snapshotId, historyContextDigest: contextDigest,
+      currentFingerprint: continuityOutcome.fingerprint, candidateSide: continuityOutcome.candidateSide,
+      outcomeStatus: 'confirmed', baseSha: expectedCoordinates.baseSha, headSha: expectedCoordinates.headSha,
+      sourceWindowManifestDigest: continuityEvidence.sourceWindowManifestDigest,
+      currentOutcomeEvidenceDigest: continuityOutcome.evidenceDigest, causalScope: 'introduced',
+    };
+    const regressedTransition = { ...regressedTransitionMaterial,
+      evidenceDigest: sha256(canonicalJson(regressedTransitionMaterial)) };
+    const regressedResult = derive(reopenedCompletion, { ...trusted, groundedHistory: { ...trustedHistory,
+      eventIds: ['event-a', 'event-repair'], expectedContinuityByFingerprint: { [continuity.currentFingerprint]: reopenedExpected },
+      expectedOriginAncestryByFingerprint: { [continuity.currentFingerprint]: reopenedOrigins },
+      expectedTransitionsByFingerprint: { [continuity.currentFingerprint]: regressedTransition } } });
+    expect(regressedResult, JSON.stringify(regressedResult)).toMatchObject({ valid: true,
+      groundedTransitions: [{ transition: 'regressed', priorFindingEventId: 'event-repair', causalScope: 'introduced' }] });
 
     const forgedContinuity = structuredClone(continuityCompletion);
     (forgedContinuity.result.groundedReview!.verification.outcomes[0]! as any).verifiedContinuity.durableFindingId = 'forged-finding-id';
@@ -1304,20 +1391,17 @@ describe('versioned v2 worker/Gate decision agreement', () => {
     const fixedOutcome: any = fixedCompletion.result.groundedReview!.verification.outcomes[0]!;
     const confirmedEvidence = fixedOutcome.evidence;
     const baseCitation = confirmedEvidence.citations.find((citation: any) => citation.side === 'base');
-    const fixedAnchor = { componentPath: 'src/example.ts', side: 'base', startLine: 1, endLine: 1,
-      citationIds: [baseCitation.id], contentDigest: sha256('oldOperation();\n') };
     const contradictedEvidence = { semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
       citations: confirmedEvidence.citations, usedCitationIds: confirmedEvidence.usedCitationIds,
       sourceWindowManifestDigest: confirmedEvidence.sourceWindowManifestDigest,
       causalDiffPaths: confirmedEvidence.causalDiffPaths, explanation: 'The new implementation removes the prior unsafe call.' };
     fixedOutcome.status = 'contradicted';
     fixedOutcome.evidence = contradictedEvidence;
-    fixedOutcome.verifiedContinuity.causeAnchor = fixedAnchor;
+    delete fixedOutcome.verifiedContinuity;
+    fixedOutcome.verifiedOriginAncestry = [causeOrigin];
+    fixedOutcome.candidateSide = 'head';
     fixedOutcome.evidenceDigest = sha256(canonicalJson({ fingerprint: fixedOutcome.fingerprint,
       currentAffectedContextDigest: fixedOutcome.affectedContextDigest, evidence: contradictedEvidence }));
-    fixedOutcome.verifiedContinuity.currentOutcomeEvidenceDigest = fixedOutcome.evidenceDigest;
-    const { evidenceDigest: _oldContinuityDigest, ...fixedContinuityMaterial } = fixedOutcome.verifiedContinuity;
-    fixedOutcome.verifiedContinuity.evidenceDigest = groundedFindingContinuityDigest(fixedContinuityMaterial);
     fixedCompletion.result.groundedReview!.verification.confirmed = 0;
     fixedCompletion.result.groundedReview!.verification.contradicted = 1;
     fixedCompletion.result.groundedReview!.verification.outcomes[0] = fixedOutcome;
@@ -1339,7 +1423,8 @@ describe('versioned v2 worker/Gate decision agreement', () => {
     };
     const fixedTransition = { ...fixedTransitionMaterial, evidenceDigest: sha256(canonicalJson(fixedTransitionMaterial)) };
     const fixedTrustedHistory = { ...trustedHistory,
-      expectedContinuityByFingerprint: { [fixedOutcome.fingerprint]: fixedOutcome.verifiedContinuity },
+      expectedContinuityByFingerprint: {},
+      expectedOriginAncestryByFingerprint: { [fixedOutcome.fingerprint]: [causeOrigin] },
       expectedTransitionsByFingerprint: { [fixedOutcome.fingerprint]: fixedTransition } };
     const fixedResult = derive(fixedCompletion, { ...trusted, groundedHistory: fixedTrustedHistory });
     expect(fixedResult, JSON.stringify(fixedResult)).toMatchObject({ valid: true, evidence: { verdict: 'SHIP' },
