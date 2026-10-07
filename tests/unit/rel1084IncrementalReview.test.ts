@@ -33,6 +33,7 @@ import { gateRecordFor, resolvedThreadsFor } from '../support/priorGateRecord';
 import { logger } from '../../src/utils/logger';
 import { computeArbitration } from '../../src/review/reviewCore';
 import { buildEffectiveReviewFiles, resolveReviewApplicability } from '../../src/review/personaApplicability';
+import { completeCurrentVersionLifecycleHistory } from '../support/groundedReviewFixture';
 import {
   deriveCanonicalWorkerReviewEvidence,
   parseWorkerReviewCompletion,
@@ -40,7 +41,6 @@ import {
   workerReviewCompletionDigest,
   workerReviewEvidenceDigest,
 } from '../../src/review/workerReviewCompletion';
-import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from '../../src/review/groundedEvidenceV2';
 
 /**
  * REL-1084 (plan 2026-09-23 section 4 W7): incremental re-review on synchronize
@@ -939,6 +939,7 @@ describe('publishing worker wiring', () => {
     const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) };
     const reportReviewEvidence = vi.fn(async () => {});
     const incrementalBase = { read: vi.fn(async () => ({ prior: priorRecord, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS })) };
+    const lifecycleHistory = completeCurrentVersionLifecycleHistory();
     await runPublishingReviewWorker(env, {
       checkClient,
       completion: { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}), reportReviewEvidence } as never,
@@ -948,20 +949,11 @@ describe('publishing worker wiring', () => {
       panelRunner: panelRunner as never,
       client: {} as never,
       repoFileProviderFactory: (() => ({ readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []) })) as never,
-      prLifecycleHistory: { read: vi.fn(async () => ({ status: 'complete' as const,
-        snapshotId: '00000000-0000-4000-8000-000000000001', contextDigest: 'f'.repeat(64),
-        events: [{ eventId: '00000000-0000-4000-8000-000000000003', eventType: 'review.completion_recorded',
-          runId: priorRecord.runId, executionAttempt: priorRecord.executionAttempt, headSha: priorRecord.headSha,
-          baseSha: priorRecord.baseSha, policyDigest: priorRecord.policyDigest, configDigest: priorRecord.configDigest,
-          evidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, verificationStatus: 'insufficient' as const }],
-        findings: [{ findingEventId: '00000000-0000-4000-8000-000000000002', fingerprint: 'fp1_000000000000000000000000',
-          path: 'src/open.ts', firstSeenHead: PREV_HEAD, lastSeenHead: PREV_HEAD, affectedContextDigest: 'a'.repeat(64),
-          sourceSeverity: 'P1', effectiveSeverity: 'P1', disposition: 'current', blocking: true,
-          verificationStatus: 'confirmed' as const, evidenceDigest: 'b'.repeat(64) }],
-        eventCount: 1, findingCount: 1, loadedEventCount: 1, loadedFindingCount: 1, eventOmittedCount: 0,
-        findingOmittedCount: 0, legacyOmittedCount: 0, authenticatedDisputes: { status: 'complete' as const, disputes: [], paths: [] },
-        eventsDigest: 'c'.repeat(64), findingsDigest: 'd'.repeat(64), omissions: [] })),
-        recordVerification: vi.fn(async () => true) },
+      prLifecycleHistory: { read: vi.fn(async () => {
+        const history = await lifecycleHistory.read();
+        return { ...history, events: history.events.map((event) => ({ ...event,
+          completionStatus: priorRecord.shipComplete ? 'completed' as const : 'failed' as const })) };
+      }), recordVerification: vi.fn(async () => true) },
       findingThreadReader: vi.fn(async (_pr: unknown, expectedHeadSha: string) => ({ source: 'service' as const,
         headSha: expectedHeadSha, complete: true, omittedCount: 0, threads: [] })),
       incrementalBase,

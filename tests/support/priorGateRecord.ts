@@ -5,6 +5,7 @@ import {
   deriveCanonicalWorkerReviewEvidence,
   parseWorkerReviewCompletion,
   workerReviewCompletionDigest,
+  type TrustedGroundedVerifierRouting,
 } from '../../src/review/workerReviewCompletion';
 
 /**
@@ -25,6 +26,8 @@ export function gateRecordFor(completionInput: unknown, trusted: {
   acceptance?: ReviewRiskAcceptance;
   /** ADR 0002: the bot's finding threads the service read; a resolved-with-reason P2 is satisfied. */
   findingThreads?: readonly PriorFindingThread[];
+  /** Trusted test-side mirror of the prepared primary/alternate verifier configuration. */
+  groundedVerifierRouting?: TrustedGroundedVerifierRouting;
 }) {
   const completion = parseWorkerReviewCompletion(completionInput);
   const { version: _version, result: _result, ...expectedCoordinates } = completion;
@@ -34,6 +37,7 @@ export function gateRecordFor(completionInput: unknown, trusted: {
     changedFiles: trusted.changedFiles,
     coverageComplete: trusted.coverageComplete ?? true,
     quorumSatisfied: trusted.quorumSatisfied ?? true,
+    ...(trusted.groundedVerifierRouting ? { groundedVerifierRouting: trusted.groundedVerifierRouting } : {}),
     ...(trusted.findingThreads ? { findingThreads: trusted.findingThreads } : {}),
   });
   const candidate = {

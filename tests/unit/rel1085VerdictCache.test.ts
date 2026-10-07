@@ -41,6 +41,7 @@ import {
   parseWorkerReviewCompletion,
   workerReviewCompletionDigest,
 } from '../../src/review/workerReviewCompletion';
+import { completeCurrentVersionLifecycleHistory, completeEmptyLifecycleHistory } from '../support/groundedReviewFixture';
 
 /**
  * REL-1085 (plan 2026-09-23 section 4 W8): the per-file verdict cache behind
@@ -155,6 +156,25 @@ function source(overrides: Partial<Omit<VerdictCacheSource, 'prior'>> & { prior?
     entries: [entry('src/changed.ts'), entry('src/open.ts'), entry('src/same.ts')],
     lanes: ['arch-lane', 'sec-lane'],
     ...rest,
+  };
+}
+
+/** Cache wiring fixtures use the authenticated lifecycle shape that accompanies a stored source. */
+function lifecycleHistoryFor(prior?: VerdictCacheSource['prior']) {
+  const history = prior ? completeCurrentVersionLifecycleHistory() : completeEmptyLifecycleHistory();
+  if (!prior) return history;
+  const read = history.read;
+  return {
+    ...history,
+    read: async () => {
+      const loaded = await read();
+      return { ...loaded, events: loaded.events.map((event) => ({ ...event,
+        runId: prior.runId, executionAttempt: prior.executionAttempt, headSha: prior.headSha, baseSha: prior.baseSha,
+        policyDigest: prior.policyDigest, configDigest: prior.configDigest,
+        completionStatus: prior.shipComplete ? 'completed' as const : 'failed' as const,
+        coverageComplete: prior.coverageComplete, quorumSatisfied: prior.coverageComplete,
+      })) };
+    },
   };
 }
 
@@ -919,12 +939,11 @@ describe('publishing worker wiring', () => {
       panelRunner: panelRunner as never,
       client: {} as never,
       repoFileProviderFactory: (() => ({ readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []) })) as never,
-      prLifecycleHistory: { read: vi.fn(async () => ({ status: 'complete' as const,
-        snapshotId: '00000000-0000-4000-8000-000000000004', contextDigest: 'f'.repeat(64),
-        events: [], findings: [], eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
-        eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
-        eventsDigest: 'a'.repeat(64), findingsDigest: 'b'.repeat(64), omissions: [] })),
-        recordVerification: vi.fn(async () => true) },
+      prLifecycleHistory: lifecycleHistoryFor(baseSource?.prior) as never,
+      findingThreadReader: vi.fn(async (_pr: unknown, expectedHeadSha: string) => ({ source: 'service' as const,
+        headSha: expectedHeadSha, complete: true, omittedCount: 0, threads: [] })),
+      incrementalCompareReader: { compare: vi.fn(async () => ({ status: 'ahead' as const,
+        mergeBaseSha: SOURCE_HEAD, files: [] })) } as never,
       verdictCacheBase,
       verdictCacheCompareReader: contentReader(contentWorld()),
     });
@@ -1002,12 +1021,11 @@ describe('publishing worker wiring', () => {
       panelRunner: panelRunner as never,
       client: {} as never,
       repoFileProviderFactory: (() => ({ readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []) })) as never,
-      prLifecycleHistory: { read: vi.fn(async () => ({ status: 'complete' as const,
-        snapshotId: '00000000-0000-4000-8000-000000000005', contextDigest: 'e'.repeat(64),
-        events: [], findings: [], eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
-        eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
-        eventsDigest: 'a'.repeat(64), findingsDigest: 'b'.repeat(64), omissions: [] })),
-        recordVerification: vi.fn(async () => true) },
+      prLifecycleHistory: lifecycleHistoryFor(stored.prior) as never,
+      findingThreadReader: vi.fn(async (_pr: unknown, expectedHeadSha: string) => ({ source: 'service' as const,
+        headSha: expectedHeadSha, complete: true, omittedCount: 0, threads: [] })),
+      incrementalCompareReader: { compare: vi.fn(async () => ({ status: 'ahead' as const,
+        mergeBaseSha: SOURCE_HEAD, files: [] })) } as never,
       verdictCacheBase: { read: vi.fn(async () => ({ source: stored, maxAgeMs: MAX_AGE })) },
       verdictCacheCompareReader: contentReader(contentWorld()),
     });
