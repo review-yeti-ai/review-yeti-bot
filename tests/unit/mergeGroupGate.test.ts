@@ -24,7 +24,10 @@ const currentOperatorReviewId = deriveOperatorPassthroughExternalId(
 const currentOperatorGateId = deriveOperatorPassthroughExternalId(
   CURRENT_OPERATOR_PUBLICATION_ID, CURRENT_OPERATOR_AUDIT_DIGEST, REVIEW_GATE_CHECK_NAME);
 const currentOperatorReceipt = { publicationId: CURRENT_OPERATOR_PUBLICATION_ID,
-  auditDigest: CURRENT_OPERATOR_AUDIT_DIGEST, mergeEligible: true };
+  auditDigest: CURRENT_OPERATOR_AUDIT_DIGEST, mergeEligible: true,
+  publicationState: 'published' as const, publicationReceiptAvailable: true };
+const pendingOperatorReceipt = { ...currentOperatorReceipt, mergeEligible: false,
+  publicationState: 'pending' as const };
 const oldOperatorReviewId = deriveOperatorPassthroughExternalId(
   OLD_OPERATOR_PUBLICATION_ID, OLD_OPERATOR_AUDIT_DIGEST, REVIEW_WORKER_CHECK_NAME);
 const oldOperatorGateId = deriveOperatorPassthroughExternalId(
@@ -420,10 +423,149 @@ describe('native merge-group Review Yeti gate', () => {
     }
   });
 
+  it('rechecks a durable pending operator publication and consumes the paired SHIP when it arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const pausedConfig = { ...config, passthroughEnabled: true };
+      let publication: typeof pendingOperatorReceipt | typeof currentOperatorReceipt = pendingOperatorReceipt;
+      let pairPublished = false;
+      setTimeout(() => { publication = currentOperatorReceipt; pairPublished = true; }, 500);
+      let graphqlReads = 0;
+      const calls: Array<{ url: string; method?: string; body?: any }> = [];
+      const exactHeadChecks = [
+        { id: 8100, name: 'Review Yeti', head_sha: PR_HEAD, external_id: currentOperatorReviewId,
+          status: 'completed', conclusion: 'success', app: officialApp,
+          output: { title: 'Review Yeti: SHIP (passthrough: no review performed)',
+            summary: 'review-mode=passthrough Zero review lanes ran.' } },
+        { id: 8101, name: 'Review Yeti Gate', head_sha: PR_HEAD, external_id: currentOperatorGateId,
+          status: 'completed', conclusion: 'success', app: officialApp,
+          output: { title: 'Review Yeti Gate: SHIP (operator passthrough SHIP)',
+            summary: 'review-mode=passthrough Zero review lanes ran.' } },
+      ];
+      const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ url, method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+        if (url.endsWith(`/commits/${GROUP_HEAD}/check-runs?filter=all&per_page=100`)) {
+          return response({ total_count: 0, check_runs: [] });
+        }
+        if (url.endsWith('/check-runs') && init?.method === 'POST') return groupCheckResponse(9060, init, true);
+        if (url === 'https://api.github.com/graphql') { graphqlReads += 1; return response(queue()); }
+        if (url.endsWith(`/commits/${PR_HEAD}/check-runs?filter=all&per_page=100`)) {
+          return response({ total_count: pairPublished ? exactHeadChecks.length : 0,
+            check_runs: pairPublished ? exactHeadChecks : [] });
+        }
+        if (url.endsWith('/check-runs/9060') && init?.method === 'PATCH') {
+          return groupCheckResponse(9060, init, true);
+        }
+        return response({ error: 'unexpected request' }, 500);
+      }) as typeof fetch;
+      const ensureOperatorPassthrough = vi.fn(async () => publication);
+      const gate = createMergeGroupGate({ config: pausedConfig, repository: repository() as any,
+        tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation, ensureOperatorPassthrough });
+
+      const pendingGate = gate(payload(), { deliveryId: 'delivery-pending', deliveryDigest: 'a'.repeat(64) });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(pendingGate).resolves.toEqual({ checkId: 9060, conclusion: 'success',
+        snapshotDigest: queueSnapshotDigest(true), constituents: 1 });
+      expect(ensureOperatorPassthrough).toHaveBeenCalledTimes(2);
+      expect(graphqlReads).toBe(3);
+      expect((fetchImplementation as any).mock.calls.some(([url]: [unknown]) =>
+        String(url).endsWith(`/commits/${PR_HEAD}/check-runs?filter=all&per_page=100`))).toBe(true);
+      const completion = calls.find((call) => call.url.endsWith('/check-runs/9060')
+        && call.method === 'PATCH' && call.body?.status === 'completed');
+      expect(completion?.body?.conclusion).toBe('success');
+      expect(completion?.body?.output?.title).toBe('Review Yeti merge group: SHIP (passthrough: no review performed)');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops retrying a pending operator publication when the queue snapshot changes', async () => {
+    vi.useFakeTimers();
+    try {
+      const pausedConfig = { ...config, passthroughEnabled: true };
+      const changedQueue = queue();
+      changedQueue.data.repository.mergeQueue.entries.nodes[0].pullRequest.headRefOid = 'e'.repeat(40);
+      let graphqlReads = 0;
+      const calls: Array<{ url: string; method?: string; body?: any }> = [];
+      const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ url, method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+        if (url.endsWith(`/commits/${GROUP_HEAD}/check-runs?filter=all&per_page=100`)) {
+          return response({ total_count: 0, check_runs: [] });
+        }
+        if (url.endsWith('/check-runs') && init?.method === 'POST') return groupCheckResponse(9061, init, true);
+        if (url === 'https://api.github.com/graphql') {
+          graphqlReads += 1;
+          return response(graphqlReads === 1 ? queue() : changedQueue);
+        }
+        if (url.endsWith('/check-runs/9061') && init?.method === 'PATCH') return groupCheckResponse(9061, init, true);
+        return response({ error: 'unexpected request' }, 500);
+      }) as typeof fetch;
+      const ensureOperatorPassthrough = vi.fn(async () => pendingOperatorReceipt);
+      const gate = createMergeGroupGate({ config: pausedConfig, repository: repository() as any,
+        tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation, ensureOperatorPassthrough });
+
+      const pendingGate = gate(payload(), { deliveryId: 'delivery-changed', deliveryDigest: 'b'.repeat(64) });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(pendingGate).resolves.toEqual({ checkId: 9061, conclusion: 'failure',
+        snapshotDigest: queueSnapshotDigest(true), constituents: 1 });
+      expect(ensureOperatorPassthrough).toHaveBeenCalledOnce();
+      expect(calls.some((call) => call.url.endsWith(`/commits/${PR_HEAD}/check-runs?filter=all&per_page=100`))).toBe(false);
+      const completion = calls.find((call) => call.url.endsWith('/check-runs/9061')
+        && call.method === 'PATCH' && call.body?.status === 'completed');
+      expect(completion?.body?.conclusion).toBe('failure');
+      expect(completion?.body?.output?.summary).toContain('merge queue changed during operator SHIP publication wait');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fails closed when a durable operator publication remains pending past its bounded wait', async () => {
+    vi.useFakeTimers();
+    try {
+      const pausedConfig = { ...config, passthroughEnabled: true };
+      const calls: Array<{ url: string; method?: string; body?: any }> = [];
+      const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push({ url, method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+        if (url.endsWith(`/commits/${GROUP_HEAD}/check-runs?filter=all&per_page=100`)) {
+          return response({ total_count: 0, check_runs: [] });
+        }
+        if (url.endsWith('/check-runs') && init?.method === 'POST') return groupCheckResponse(9062, init, true);
+        if (url === 'https://api.github.com/graphql') return response(queue());
+        if (url.endsWith('/check-runs/9062') && init?.method === 'PATCH') return groupCheckResponse(9062, init, true);
+        return response({ error: 'unexpected request' }, 500);
+      }) as typeof fetch;
+      const ensureOperatorPassthrough = vi.fn(async () => pendingOperatorReceipt);
+      const gate = createMergeGroupGate({ config: pausedConfig, repository: repository() as any,
+        tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation, ensureOperatorPassthrough });
+
+      const pendingGate = gate(payload(), { deliveryId: 'delivery-timeout', deliveryDigest: 'c'.repeat(64) });
+      await vi.advanceTimersByTimeAsync(30_001);
+
+      await expect(pendingGate).resolves.toEqual({ checkId: 9062, conclusion: 'failure',
+        snapshotDigest: queueSnapshotDigest(true), constituents: 1 });
+      expect(ensureOperatorPassthrough.mock.calls.length).toBeGreaterThan(1);
+      expect(calls.some((call) => call.url.endsWith(`/commits/${PR_HEAD}/check-runs?filter=all&per_page=100`))).toBe(false);
+      const completion = calls.find((call) => call.url.endsWith('/check-runs/9062')
+        && call.method === 'PATCH' && call.body?.status === 'completed');
+      expect(completion?.body?.conclusion).toBe('failure');
+      expect(completion?.body?.output?.summary).toContain('operator SHIP publication did not become durable within 30000ms');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
-    ['missing durable receipt', null],
-    ['pending durable receipt', { ...currentOperatorReceipt, mergeEligible: false }],
-  ])('fails paused merge-group admission when the %s is unavailable', async (_label, operatorReceipt) => {
+    ['missing durable receipt', null, 'operator SHIP publication is unavailable'],
+    ['pending publication without a durable receipt', { ...pendingOperatorReceipt, publicationReceiptAvailable: false },
+      'pending operator SHIP publication has no durable receipt'],
+    ['terminally unavailable publication', { ...pendingOperatorReceipt, publicationState: 'unavailable' as const,
+      publicationReceiptAvailable: false }, 'operator SHIP publication reached terminal state unavailable'],
+  ])('does not wait for the %s', async (_label, operatorReceipt, terminalFailure) => {
     const pausedConfig = { ...config, passthroughEnabled: true };
     const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -443,7 +585,7 @@ describe('native merge-group Review Yeti gate', () => {
     const completion = (fetchImplementation as any).mock.calls.find(([url, init]: [unknown, RequestInit]) =>
       String(url).endsWith('/check-runs/9040') && init?.method === 'PATCH');
     expect(JSON.parse(String(completion[1].body)).output.summary)
-      .toContain('exact operator SHIP checks are not durably published');
+      .toContain(terminalFailure);
   });
 
   it.each([

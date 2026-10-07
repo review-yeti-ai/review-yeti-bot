@@ -37,6 +37,11 @@ const mergeGroupWebhook = z.object({
 const QUEUE_QUERY = 'query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,name:$name){mergeQueue(branch:$branch){id entries(first:100){totalCount nodes{position state baseCommit{oid} headCommit{oid} pullRequest{number state baseRefName headRefOid repository{nameWithOwner}}} pageInfo{hasNextPage}}}}}';
 const QUALIFYING_STATES = new Set(['QUEUED', 'AWAITING_CHECKS', 'LOCKED', 'MERGEABLE']);
 const CHECK_LOOKUP_CONCURRENCY = 5;
+const OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MS = 30_000;
+const OPERATOR_PASSTHROUGH_PUBLICATION_RECHECK_MS = 1_000;
+
+type MergeGroupOperatorReceipt = Pick<OperatorPassthroughAdmissionReceipt,
+  'publicationId' | 'auditDigest' | 'mergeEligible' | 'publicationState' | 'publicationReceiptAvailable'>;
 
 interface QueueEntry {
   position: number;
@@ -72,8 +77,7 @@ export interface MergeGroupGateOptions {
   fetchImplementation?: typeof fetch;
   baseUrl?: string;
   githubClientFor?(token: string): GitHubJsonClient;
-  ensureOperatorPassthrough?(input: MergeGroupOperatorAdmission): Promise<Pick<OperatorPassthroughAdmissionReceipt,
-    'publicationId' | 'auditDigest' | 'mergeEligible'> | null>;
+  ensureOperatorPassthrough?(input: MergeGroupOperatorAdmission): Promise<MergeGroupOperatorReceipt | null>;
 }
 
 async function mapConcurrent<T, U>(items: readonly T[], concurrency: number, operation: (item: T) => Promise<U>): Promise<U[]> {
@@ -186,8 +190,38 @@ function isOfficialReviewCheck(run: any): boolean {
     && run?.app?.slug === AUTHORITATIVE_REVIEW_APP_SLUG;
 }
 
+function hasDurableOperatorReceiptIdentity(receipt: MergeGroupOperatorReceipt | null | undefined): receipt is MergeGroupOperatorReceipt & {
+  publicationId: string; auditDigest: string;
+} {
+  return receipt?.publicationReceiptAvailable === true
+    && typeof receipt.publicationId === 'string' && /^[a-f0-9]{64}$/u.test(receipt.publicationId)
+    && typeof receipt.auditDigest === 'string' && /^[a-f0-9]{64}$/u.test(receipt.auditDigest);
+}
+
+function isDurableOperatorReceipt(receipt: MergeGroupOperatorReceipt | null | undefined): receipt is MergeGroupOperatorReceipt & {
+  publicationId: string; auditDigest: string; mergeEligible: true;
+} {
+  return receipt?.mergeEligible === true && receipt.publicationState === 'published'
+    && hasDurableOperatorReceiptIdentity(receipt);
+}
+
+function isPendingDurableOperatorReceipt(receipt: MergeGroupOperatorReceipt | null | undefined): receipt is MergeGroupOperatorReceipt & {
+  publicationId: string; auditDigest: string; mergeEligible: false; publicationState: 'pending';
+} {
+  return receipt?.mergeEligible === false && receipt.publicationState === 'pending'
+    && hasDurableOperatorReceiptIdentity(receipt);
+}
+
+function terminalOperatorPassthroughFailure(prNumber: number, receipt: MergeGroupOperatorReceipt | null): string {
+  if (!receipt) return `PR #${prNumber}: operator SHIP publication is unavailable`;
+  if (receipt.publicationState === 'pending') {
+    return `PR #${prNumber}: pending operator SHIP publication has no durable receipt`;
+  }
+  return `PR #${prNumber}: operator SHIP publication reached terminal state ${receipt.publicationState}`;
+}
+
 function exactReviewFailure(checks: any, expectedHead: string,
-  operatorReceipt?: Pick<OperatorPassthroughAdmissionReceipt, 'publicationId' | 'auditDigest' | 'mergeEligible'>): string | undefined {
+  operatorReceipt?: MergeGroupOperatorReceipt): string | undefined {
   if (!Number.isSafeInteger(checks?.total_count) || !Array.isArray(checks?.check_runs)
     || checks.total_count !== checks.check_runs.length || checks.total_count > 100) return 'check-run evidence is incomplete';
   const runs = checks.check_runs.filter(isOfficialReviewCheck);
@@ -204,10 +238,7 @@ function exactReviewFailure(checks: any, expectedHead: string,
   }
   const latestIsOperatorPassthrough = isOperatorPassthroughReviewExternalId(latest.external_id);
   const allowOperatorPassthrough = operatorReceipt !== undefined;
-  const durableOperatorReceipt = operatorReceipt && operatorReceipt.mergeEligible
-    && typeof operatorReceipt.publicationId === 'string' && /^[a-f0-9]{64}$/u.test(operatorReceipt.publicationId)
-    && typeof operatorReceipt.auditDigest === 'string' && /^[a-f0-9]{64}$/u.test(operatorReceipt.auditDigest)
-    ? { publicationId: operatorReceipt.publicationId, auditDigest: operatorReceipt.auditDigest } : undefined;
+  const durableOperatorReceipt = isDurableOperatorReceipt(operatorReceipt) ? operatorReceipt : undefined;
   if (allowOperatorPassthrough && !durableOperatorReceipt) {
     return 'current operator SHIP publication is not durably ready';
   }
@@ -287,6 +318,7 @@ export function createMergeGroupGate(options: MergeGroupGateOptions) {
       ...snapshot,
       operatorPassthroughEnabled: options.config.passthroughEnabled === true,
     });
+    const boundSnapshotDigest = (snapshot: Record<string, unknown>) => snapshotDigest(bindMode(snapshot));
     let queue = await queueRead();
     let digest = snapshotDigest(bindMode(queue.snapshot));
     let claimToken = randomUUID();
@@ -394,11 +426,31 @@ export function createMergeGroupGate(options: MergeGroupGateOptions) {
             const itemDigest = sha256(canonicalJson({ version: 'MergeGroupOperatorAdmission.v1',
               deliveryDigest: delivery.deliveryDigest, queueSnapshotDigest: digest,
               repositoryId, prNumber: entry.pullRequest.number, headSha: head }));
-            const operatorReceipt = await options.ensureOperatorPassthrough({ repositoryId, owner: identity.owner, repo: identity.repo,
+            const operatorAdmission = { repositoryId, owner: identity.owner, repo: identity.repo,
               prNumber: entry.pullRequest.number, headSha: head, queueSnapshotDigest: digest,
               deliveryId: `github-app:merge-group:${delivery.deliveryId}:${entry.pullRequest.number}:${head}`,
-              deliveryDigest: itemDigest });
-            if (!operatorReceipt?.mergeEligible) return `PR #${entry.pullRequest.number}: exact operator SHIP checks are not durably published`;
+              deliveryDigest: itemDigest };
+            const deadlineAt = performance.now() + OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MS;
+            let operatorReceipt = await options.ensureOperatorPassthrough(operatorAdmission);
+            const timeoutMessage = `PR #${entry.pullRequest.number}: operator SHIP publication did not become durable within ${OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MS}ms`;
+            if (performance.now() >= deadlineAt) return timeoutMessage;
+            while (!isDurableOperatorReceipt(operatorReceipt) && isPendingDurableOperatorReceipt(operatorReceipt)) {
+              const remainingMs = deadlineAt - performance.now();
+              if (remainingMs <= 0) return timeoutMessage;
+              await new Promise<void>((resolve) => setTimeout(resolve,
+                Math.min(OPERATOR_PASSTHROUGH_PUBLICATION_RECHECK_MS, remainingMs)));
+              if (performance.now() >= deadlineAt) return timeoutMessage;
+              const pendingSnapshot = await queueRead();
+              if (boundSnapshotDigest(pendingSnapshot.snapshot) !== digest) {
+                return `PR #${entry.pullRequest.number}: merge queue changed during operator SHIP publication wait`;
+              }
+              if (performance.now() >= deadlineAt) return timeoutMessage;
+              operatorReceipt = await options.ensureOperatorPassthrough(operatorAdmission);
+              if (performance.now() >= deadlineAt) return timeoutMessage;
+            }
+            if (!isDurableOperatorReceipt(operatorReceipt)) {
+              return terminalOperatorPassthroughFailure(entry.pullRequest.number, operatorReceipt);
+            }
             const result = await client.request(`${api}/commits/${head}/check-runs?filter=all&per_page=100`);
             const failure = exactReviewFailure(result, head, operatorReceipt);
             return failure ? `PR #${entry.pullRequest.number}: ${failure}` : undefined;
@@ -409,7 +461,7 @@ export function createMergeGroupGate(options: MergeGroupGateOptions) {
         });
         failures.push(...constituentFailures.filter((failure): failure is string => Boolean(failure)));
         const fresh = await queueRead();
-        if (snapshotDigest(bindMode(fresh.snapshot)) !== digest) failures.push('merge queue changed during exact-head qualification');
+        if (boundSnapshotDigest(fresh.snapshot) !== digest) failures.push('merge queue changed during exact-head qualification');
       } catch {
         failures.push('merge-group evidence could not be verified');
       }
