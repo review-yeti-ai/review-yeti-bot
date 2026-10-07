@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.119.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.119.3...v1.119.4) (2026-10-07)
+
+
+### Bug Fixes
+
+* recheck pending merge-group operator publication ([#1415](https://github.com/review-yeti-ai/review-yeti-bot/issues/1415)) ([77937d5](https://github.com/review-yeti-ai/review-yeti-bot/commit/77937d5213f1717a871ef771552320db807d22bf))
+
 ## [1.119.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.119.2...v1.119.3) (2026-10-06)
 
 
