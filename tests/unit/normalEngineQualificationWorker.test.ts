@@ -193,7 +193,8 @@ function receiptForPlanCase(env: NodeJS.ProcessEnv, profile: string) {
     testBudget: { profile, panelBudgetSeconds, maxPhysicalModelRequests: panelBudgetSeconds === 60 || panelBudgetSeconds === 30 ? 1 : null,
       terminalDeadlineAt: panelBudgetSeconds === null ? null : '2026-10-06T00:07:00.000Z',
       resourceExhaustion: request.arm === 'resource-exhaustion' ? { status: 'observed', physicalRequestCap: 1,
-        logicalCompletionAttempts: 2, physicalRequests: 1, blockedPhysicalRequestAttempts: 1, firstResponseHttpStatus: 200 } : null },
+        logicalCompletionAttempts: 2, physicalRequests: 1, blockedPhysicalRequestAttempts: 1, firstResponseHttpStatus: 200,
+        firstLogicalCompletionSucceeded: true } : null },
     publication: { mode: 'disabled', githubWrites: 0, appChecks: 0, reviews: 0, comments: 0,
       ordinaryGateTouched: false, promptsPersisted: false, responsesPersisted: false, providerCredentialsPersisted: false },
     terminal: { status: diagnosticIncomplete ? 'incomplete' : 'completed',
@@ -858,12 +859,85 @@ describe('normal engine qualification source and capture', () => {
     expect(result).toMatchObject({ arm: 'resource-exhaustion', terminal: { status: 'incomplete' },
       outcome: { workerOutcomeClass: 'incomplete', gateOutcomeClass: 'incomplete' },
       testBudget: { resourceExhaustion: { status: 'observed', physicalRequestCap: 1,
-        physicalRequests: 1, blockedPhysicalRequestAttempts: 1, firstResponseHttpStatus: 200 } } });
+        physicalRequests: 1, blockedPhysicalRequestAttempts: 1, firstResponseHttpStatus: 200,
+        firstLogicalCompletionSucceeded: true } } });
     expect(result.composedLimits).toMatchObject({ maxFindings: 25, maxConcurrentTasks: 3, ambientOverrides: 'absent' });
     expect(result.composedLimits.configuredTotalTurns).toBe(result.composedLimits.investigationTurns
       + result.composedLimits.verificationReserveTurns);
     expect(result).not.toHaveProperty('verdict');
     expect(result).not.toHaveProperty('eligible');
+  });
+
+  it('does not qualify an exhaustion arm whose first HTTP 200 cannot be decoded as a completion', async () => {
+    const { env, model } = providerFailureEnvironment();
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'resource-exhaustion';
+    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+      value: 'qualification-test-key' });
+    let physicalRequests = 0;
+    const result = await runNormalEngineQualificationCase(env, {
+      verifyRuntimeManifest: async () => VALID_ENV.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256!,
+      providerFetchImplementation: async () => {
+        physicalRequests += 1;
+        return new Response('{invalid json', { status: 200, headers: { 'content-type': 'application/json' } });
+      },
+      runPublishingWorker: async (_workerEnv, workerDeps) => {
+        const request = { model, messages: [{ role: 'user' as const, content: 'synthetic malformed response probe' }],
+          timeoutMs: 1_000, maxRetries: 0 };
+        await expect(workerDeps.client!.complete(request)).rejects.toBeDefined();
+        await expect(workerDeps.client!.complete(request)).rejects.toThrow(/resource.*budget|resource.*cap/iu);
+        return { conclusion: 'failure', verdict: 'INCOMPLETE', coverage: {
+          fullPanelComplete: false, groundedReviewComplete: false,
+        } } as never;
+      },
+      persistProviderCapture: providerCapturePersistenceStub(),
+      persistProviderIdentifiers: async () => ({ identifiersPath: 'private/provider-identifiers.json',
+        sha256Path: 'private/provider-identifiers.sha256', privateIdentifiersSha256: 'f'.repeat(64), idempotent: false }),
+      persistCaseReceipt: async () => ({ receiptPath: 'private/receipt.json', sha256Path: 'private/receipt.sha256',
+        receiptSha256: 'e'.repeat(64), idempotent: false }),
+    } as NormalEngineQualificationWorkerDependencies);
+
+    expect(physicalRequests).toBe(1);
+    expect(result.testBudget.resourceExhaustion).toMatchObject({ status: 'observed', physicalRequests: 1,
+      blockedPhysicalRequestAttempts: 1, firstResponseHttpStatus: 200, firstLogicalCompletionSucceeded: false });
+    expect(result.outcome).toMatchObject({ workerOutcomeClass: 'incomplete', gateOutcomeClass: 'incomplete' });
+    expect(result.terminal.status).toBe('failed');
+  });
+
+  it('does not follow a redirect inside the one-physical-request resource envelope', async () => {
+    const { env, model } = providerFailureEnvironment();
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'resource-exhaustion';
+    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+      value: 'qualification-test-key' });
+    let delegatedFetches = 0;
+    let redirectPolicy: RequestRedirect | undefined;
+    const result = await runNormalEngineQualificationCase(env, {
+      verifyRuntimeManifest: async () => VALID_ENV.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256!,
+      providerFetchImplementation: async (_input, init) => {
+        delegatedFetches += 1;
+        redirectPolicy = init?.redirect;
+        return new Response('synthetic redirect', { status: 302, headers: { location: 'https://target.example.invalid/' } });
+      },
+      runPublishingWorker: async (_workerEnv, workerDeps) => {
+        const request = { model, messages: [{ role: 'user' as const, content: 'synthetic redirect probe' }],
+          timeoutMs: 1_000, maxRetries: 0 };
+        await expect(workerDeps.client!.complete(request)).rejects.toBeDefined();
+        await expect(workerDeps.client!.complete(request)).rejects.toThrow(/resource.*budget|resource.*cap/iu);
+        return { conclusion: 'failure', verdict: 'INCOMPLETE', coverage: {
+          fullPanelComplete: false, groundedReviewComplete: false,
+        } } as never;
+      },
+      persistProviderCapture: providerCapturePersistenceStub(),
+      persistProviderIdentifiers: async () => ({ identifiersPath: 'private/provider-identifiers.json',
+        sha256Path: 'private/provider-identifiers.sha256', privateIdentifiersSha256: 'f'.repeat(64), idempotent: false }),
+      persistCaseReceipt: async () => ({ receiptPath: 'private/receipt.json', sha256Path: 'private/receipt.sha256',
+        receiptSha256: 'e'.repeat(64), idempotent: false }),
+    } as NormalEngineQualificationWorkerDependencies);
+
+    expect(delegatedFetches).toBe(1);
+    expect(redirectPolicy).toBe('manual');
+    expect(result.testBudget.resourceExhaustion).toMatchObject({ status: 'observed', physicalRequests: 1,
+      blockedPhysicalRequestAttempts: 1, firstResponseHttpStatus: 302, firstLogicalCompletionSucceeded: false });
+    expect(result.terminal.status).toBe('failed');
   });
 
   it('fails the resource control when no physical request reaches the declared cap', async () => {

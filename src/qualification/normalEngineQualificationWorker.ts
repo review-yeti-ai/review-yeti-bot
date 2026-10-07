@@ -878,7 +878,7 @@ export async function runNormalEngineQualificationCase(
     }
     resourceExhaustionPhysicalRequests += 1;
     const response = await (dependencies.providerFetchImplementation || ((requestInput, requestInit) =>
-      globalThis.fetch(requestInput, requestInit)))(input, init);
+      globalThis.fetch(requestInput, requestInit)))(input, { ...init, redirect: 'manual' });
     if (resourceExhaustionPhysicalRequests === 1) resourceExhaustionFirstResponseHttpStatus = response.status;
     return response;
   } : undefined;
@@ -1253,10 +1253,19 @@ export async function runNormalEngineQualificationCase(
     physicalRequests: resourceExhaustionPhysicalRequests,
     blockedPhysicalRequestAttempts: resourceExhaustionBlockedPhysicalAttempts,
     firstResponseHttpStatus: resourceExhaustionFirstResponseHttpStatus,
+    firstLogicalCompletionSucceeded: (() => {
+      const firstRequest = providerCapture?.requests.slice().sort((left, right) =>
+        left.physicalOrdinal - right.physicalOrdinal)[0];
+      if (!firstRequest || firstRequest.status !== 'response_received'
+        || firstRequest.httpStatus.availability !== 'available' || firstRequest.httpStatus.value !== 200) return false;
+      return calls.some((call) => call.clientRequestIdSha256 === firstRequest.cidSha256
+        && call.httpStatus === 200 && call.fetchFailureClass === null);
+    })(),
   } : null;
   const resourceExhaustionControlSatisfied = request.arm !== 'resource-exhaustion' || (
     resourceExhaustionPhysicalRequests === 1 && resourceExhaustionBlockedPhysicalAttempts > 0
       && resourceExhaustionFirstResponseHttpStatus === 200
+      && resourceExhaustion?.firstLogicalCompletionSucceeded === true
       && providerCaptureStatus === 'captured'
       && providerCapture?.requests.some((row) => row.httpStatus.availability === 'available' && row.httpStatus.value === 200) === true
       && providerCapture.requests.some((row) => row.status === 'fetch_failed'

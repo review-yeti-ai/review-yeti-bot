@@ -426,7 +426,8 @@ export interface NormalEngineQualificationReceipt {
   testBudget: { profile: NormalEngineQualificationBudgetProfile; panelBudgetSeconds: number | null;
     maxPhysicalModelRequests: number | null; terminalDeadlineAt: string | null;
     resourceExhaustion: { status: 'observed' | 'not_observed'; physicalRequestCap: 1; logicalCompletionAttempts: number;
-      physicalRequests: number; blockedPhysicalRequestAttempts: number; firstResponseHttpStatus: number | null } | null };
+      physicalRequests: number; blockedPhysicalRequestAttempts: number; firstResponseHttpStatus: number | null;
+      firstLogicalCompletionSucceeded: boolean } | null };
   provider: {
     identityStatus: 'unknown' | 'response_reported_unverified';
     upstreamProviderIdentity: 'unknown';
@@ -758,6 +759,7 @@ const qualificationReceiptSchema = z.object({
       physicalRequests: z.number().int().nonnegative().safe(),
       blockedPhysicalRequestAttempts: z.number().int().nonnegative().safe(),
       firstResponseHttpStatus: z.number().int().min(100).max(599).nullable(),
+      firstLogicalCompletionSucceeded: z.boolean(),
     }).strict().nullable(),
   }).strict(),
   provider: z.object({
@@ -859,7 +861,8 @@ export function assertNormalEngineQualificationReceipt(input: unknown): NormalEn
       && exhaustion.physicalRequestCap === 1
       && exhaustion.physicalRequests === 1
       && exhaustion.blockedPhysicalRequestAttempts > 0
-      && exhaustion.firstResponseHttpStatus === 200;
+      && exhaustion.firstResponseHttpStatus === 200
+      && exhaustion.firstLogicalCompletionSucceeded;
     const incompleteWorkerAndGate = parsed.data.outcome.workerOutcomeClass === 'incomplete'
       && parsed.data.outcome.gateOutcomeClass === 'incomplete';
     if (parsed.data.testBudget.profile !== 'resource-exhaustion-60s-one-request'
@@ -867,8 +870,10 @@ export function assertNormalEngineQualificationReceipt(input: unknown): NormalEn
       || !exhaustion || exhaustion.physicalRequests > 1
       || exhaustion.logicalCompletionAttempts < exhaustion.physicalRequests
       || (exhaustion.status === 'observed' && (exhaustion.blockedPhysicalRequestAttempts === 0
-        || exhaustion.physicalRequests !== 1 || exhaustion.firstResponseHttpStatus !== 200))
+        || exhaustion.physicalRequests !== 1))
       || (exhaustion.status === 'not_observed' && exhaustion.blockedPhysicalRequestAttempts !== 0)
+      || (exhaustion.firstLogicalCompletionSucceeded
+        && (exhaustion.physicalRequests !== 1 || exhaustion.firstResponseHttpStatus !== 200))
       || (parsed.data.terminal.status === 'completed')
       || (parsed.data.terminal.status === 'incomplete' && (!observed || !incompleteWorkerAndGate))) {
       throw new Error('normal-engine qualification resource-exhaustion control evidence is invalid');

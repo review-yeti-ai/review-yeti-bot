@@ -403,7 +403,8 @@ function receiptForPlanCase(input: {
       maxPhysicalModelRequests: panelBudgetSeconds === 30 || panelBudgetSeconds === 60 ? 1 : null,
       terminalDeadlineAt: panelBudgetSeconds === null ? null : '2026-10-06T00:07:00.000Z',
       resourceExhaustion: request.arm === 'resource-exhaustion' ? { status: 'observed', physicalRequestCap: 1,
-        logicalCompletionAttempts: 2, physicalRequests: 1, blockedPhysicalRequestAttempts: 1, firstResponseHttpStatus: 200 } : null,
+        logicalCompletionAttempts: 2, physicalRequests: 1, blockedPhysicalRequestAttempts: 1, firstResponseHttpStatus: 200,
+        firstLogicalCompletionSucceeded: true } : null,
     },
     provider: {
       identityStatus: 'unknown',
