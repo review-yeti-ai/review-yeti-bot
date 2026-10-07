@@ -49,6 +49,309 @@ export interface ToolRuntimeResult {
   isExhaustive: boolean;
 }
 
+export interface GetHunkArgs {
+  filePath: string;
+  startLine?: number;
+  endLine?: number;
+  contextLines?: number;
+}
+
+export interface ModifiedLineItem {
+  line: number;
+  type: 'add' | 'delete' | 'context';
+  content: string;
+}
+
+export interface DiffHunkBoundary {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  modifiedLineNumbers: number[];
+  section?: string;
+}
+
+export type GetHunkResult =
+  | {
+      status: 'success';
+      filePath: string;
+      startLine: number;
+      endLine: number;
+      patch: string;
+      modifiedLines: ModifiedLineItem[];
+      scope: 'assigned-hunk';
+      isExhaustive: boolean;
+    }
+  | {
+      status: 'rejected';
+      error: 'path_not_changed' | 'invalid_arguments' | 'no_diff_in_range' | 'range_out_of_bounds';
+      message: string;
+      filePath: string;
+    };
+
+export const GET_HUNK_TOOL_SCHEMA = {
+  name: 'get_hunk',
+  description: 'Extracts specific diff hunk lines for admitted changed files intersecting [startLine, endLine]. Returns unified diff patch, line annotations, and scope.',
+  parameters: {
+    type: 'object',
+    properties: {
+      filePath: { type: 'string', description: 'Relative path of the changed file in the repository.' },
+      startLine: { type: 'integer', minimum: 1, description: '1-indexed start line number in head file to inspect.' },
+      endLine: { type: 'integer', minimum: 1, description: '1-indexed end line number in head file to inspect.' },
+      contextLines: { type: 'integer', minimum: 0, maximum: 10, default: 3, description: 'Number of surrounding context lines to include (0-10, default 3).' },
+    },
+    required: ['filePath'],
+  },
+} as const;
+
+export function parseDiffHunks(patch: string): {
+  hunkBoundaries: DiffHunkBoundary[];
+  additions: number;
+  deletions: number;
+} {
+  if (!patch || !patch.trim()) {
+    return { hunkBoundaries: [], additions: 0, deletions: 0 };
+  }
+  const lines = patch.split('\n');
+  const hunkBoundaries: DiffHunkBoundary[] = [];
+  let additions = 0;
+  let deletions = 0;
+  let currentBoundary: DiffHunkBoundary | null = null;
+  let currentNewLine = 0;
+
+  for (const line of lines) {
+    const hunkHeader = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/);
+    if (hunkHeader) {
+      const oldStart = parseInt(hunkHeader[1], 10);
+      const oldCount = hunkHeader[2] !== undefined ? parseInt(hunkHeader[2], 10) : 1;
+      const newStart = parseInt(hunkHeader[3], 10);
+      const newCount = hunkHeader[4] !== undefined ? parseInt(hunkHeader[4], 10) : 1;
+      const section = hunkHeader[5]?.trim();
+      currentNewLine = newStart;
+      currentBoundary = {
+        oldStart,
+        oldCount,
+        newStart,
+        newCount,
+        modifiedLineNumbers: [],
+        section: section || undefined,
+      };
+      hunkBoundaries.push(currentBoundary);
+      continue;
+    }
+
+    if (!currentBoundary) continue;
+
+    if (line.startsWith('+') && !line.startsWith('+++')) {
+      additions++;
+      currentBoundary.modifiedLineNumbers.push(currentNewLine);
+      currentNewLine++;
+    } else if (line.startsWith('-') && !line.startsWith('---')) {
+      deletions++;
+    } else if (!line.startsWith('\\')) {
+      currentNewLine++;
+    }
+  }
+
+  return { hunkBoundaries, additions, deletions };
+}
+
+export function executeGetHunk(
+  args: GetHunkArgs,
+  admittedPatches: any,
+): GetHunkResult {
+  const rawPath = String(args?.filePath || (args as any)?.path || '');
+  const normPath = rawPath.replace(/\\/g, '/').trim();
+  if (!normPath || normPath.includes('..') || normPath.startsWith('/')) {
+    return {
+      status: 'rejected',
+      error: 'invalid_arguments',
+      message: 'Path traversal or absolute path not allowed',
+      filePath: normPath,
+    };
+  }
+
+  // Find patch in admittedPatches
+  let rawPatch: string | null = null;
+  let fileFound = false;
+
+  if (Array.isArray(admittedPatches)) {
+    const found = admittedPatches.find((f: any) => {
+      const p = String(f?.path || f?.filePath || '').replace(/\\/g, '/').trim();
+      return p === normPath || p.endsWith('/' + normPath);
+    });
+    if (found) {
+      fileFound = true;
+      rawPatch = typeof found.patch === 'string' ? found.patch : '';
+    }
+  } else if (admittedPatches instanceof Map) {
+    if (admittedPatches.has(normPath)) {
+      fileFound = true;
+      rawPatch = admittedPatches.get(normPath) ?? '';
+    }
+  } else if (admittedPatches && typeof admittedPatches === 'object') {
+    if (normPath in admittedPatches) {
+      fileFound = true;
+      const val = admittedPatches[normPath];
+      rawPatch = typeof val === 'string' ? val : (val?.patch ?? '');
+    } else {
+      for (const [k, v] of Object.entries(admittedPatches)) {
+        const p = k.replace(/\\/g, '/').trim();
+        if (p === normPath || p.endsWith('/' + normPath)) {
+          fileFound = true;
+          rawPatch = typeof v === 'string' ? v : ((v as any)?.patch ?? '');
+          break;
+        }
+      }
+    }
+  }
+
+  if (!fileFound) {
+    return {
+      status: 'rejected',
+      error: 'path_not_changed',
+      message: 'File is not in admitted changed files',
+      filePath: normPath,
+    };
+  }
+
+  if (!rawPatch || !rawPatch.trim()) {
+    return {
+      status: 'rejected',
+      error: 'no_diff_in_range',
+      message: 'No diff modifications in requested line range',
+      filePath: normPath,
+    };
+  }
+
+  // Validate line numbers if provided
+  if (args.startLine !== undefined) {
+    if (typeof args.startLine !== 'number' || !Number.isSafeInteger(args.startLine) || args.startLine <= 0) {
+      return {
+        status: 'rejected',
+        error: 'invalid_arguments',
+        message: 'startLine must be <= endLine and >= 1',
+        filePath: normPath,
+      };
+    }
+  }
+
+  if (args.endLine !== undefined) {
+    if (typeof args.endLine !== 'number' || !Number.isSafeInteger(args.endLine) || args.endLine <= 0) {
+      return {
+        status: 'rejected',
+        error: 'invalid_arguments',
+        message: 'startLine must be <= endLine and >= 1',
+        filePath: normPath,
+      };
+    }
+  }
+
+  if (args.startLine !== undefined && args.endLine !== undefined && args.startLine > args.endLine) {
+    return {
+      status: 'rejected',
+      error: 'invalid_arguments',
+      message: 'startLine must be <= endLine and >= 1',
+      filePath: normPath,
+    };
+  }
+
+  const { hunkBoundaries } = parseDiffHunks(rawPatch);
+  const contextLines = Math.min(Math.max(args.contextLines ?? 3, 0), 10);
+
+  const effectiveStart = args.startLine ?? 1;
+  const effectiveEnd = args.endLine ?? Number.MAX_SAFE_INTEGER;
+
+  const overlappingHunks = hunkBoundaries.filter((h) => {
+    if (h.modifiedLineNumbers.some((ml) => ml >= effectiveStart - contextLines && ml <= effectiveEnd + contextLines)) {
+      return true;
+    }
+    if (h.newCount === 0 && h.newStart >= effectiveStart - contextLines && h.newStart <= effectiveEnd + contextLines) {
+      return true;
+    }
+    const hunkStart = h.newStart;
+    const hunkEnd = h.newStart + Math.max(0, h.newCount - 1);
+    return hunkStart <= effectiveEnd + contextLines && hunkEnd >= effectiveStart - contextLines;
+  });
+
+  if (overlappingHunks.length === 0) {
+    return {
+      status: 'rejected',
+      error: 'no_diff_in_range',
+      message: 'No diff modifications in requested line range',
+      filePath: normPath,
+    };
+  }
+
+  const modifiedLines: ModifiedLineItem[] = [];
+  const lines = rawPatch.split('\n');
+  let inHunk = false;
+  let curLine = 0;
+  const patchLines: string[] = [];
+
+  for (const l of lines) {
+    if (l.startsWith('@@')) {
+      const match = l.match(/\+(\d+)/);
+      if (match) curLine = parseInt(match[1], 10);
+      inHunk = true;
+      patchLines.push(l);
+      continue;
+    }
+    if (!inHunk) continue;
+
+    if (l.startsWith('+') && !l.startsWith('+++')) {
+      if (curLine >= effectiveStart - contextLines && curLine <= effectiveEnd + contextLines) {
+        modifiedLines.push({ line: curLine, type: 'add', content: l.slice(1) });
+        patchLines.push(l);
+      }
+      curLine++;
+    } else if (l.startsWith('-') && !l.startsWith('---')) {
+      if (curLine >= effectiveStart - contextLines && curLine <= effectiveEnd + contextLines) {
+        modifiedLines.push({ line: curLine, type: 'delete', content: l.slice(1) });
+        patchLines.push(l);
+      }
+    } else if (!l.startsWith('\\')) {
+      if (curLine >= effectiveStart - contextLines && curLine <= effectiveEnd + contextLines) {
+        modifiedLines.push({ line: curLine, type: 'context', content: l.slice(1) });
+        patchLines.push(l);
+      }
+      curLine++;
+    }
+  }
+
+  return {
+    status: 'success',
+    filePath: normPath,
+    startLine: effectiveStart,
+    endLine: args.endLine ?? (modifiedLines.length > 0 ? Math.max(...modifiedLines.map((m) => m.line)) : effectiveStart),
+    patch: patchLines.join('\n'),
+    modifiedLines,
+    scope: 'assigned-hunk',
+    isExhaustive: true,
+  };
+}
+
+export function get_hunk(
+  filePathOrArgs: string | GetHunkArgs,
+  startLineOrPatches?: number | Record<string, string> | any[],
+  endLine?: number,
+  contextLines?: number,
+  admittedPatches?: Record<string, string> | any[],
+): GetHunkResult {
+  if (typeof filePathOrArgs === 'object' && filePathOrArgs !== null) {
+    return executeGetHunk(filePathOrArgs, startLineOrPatches);
+  }
+  return executeGetHunk(
+    {
+      filePath: filePathOrArgs,
+      startLine: typeof startLineOrPatches === 'number' ? startLineOrPatches : undefined,
+      endLine,
+      contextLines,
+    },
+    admittedPatches,
+  );
+}
+
 function boundedUtf8(text: string, maxBytes: number): string {
   const bytes = Buffer.from(text, 'utf8');
   if (bytes.length <= maxBytes) return text;
@@ -151,7 +454,7 @@ export async function runReadOnlyTool(
   const searchQ = toolCall.args?.query || toolCall.args?.pattern || '';
 
   // Whitelist check: Code Reading, Context Searching, Dashboard MCPs, Zoekt, Fleet MCPs
-  const isCodeReading = ['view_file', 'read_file', 'get_diff'].includes(tName);
+  const isCodeReading = ['view_file', 'read_file', 'get_diff', 'get_hunk'].includes(tName);
   const isSearching = ['grep_search', 'find_files', 'symbol_search', 'search_code', 'code_search_zoekt', 'zoekt_search'].includes(tName);
   const readOnlyMcpNames = new Set([
     // External documentation & tracking
@@ -243,6 +546,29 @@ export async function runReadOnlyTool(
 
     toolOutput = `Tool '${tName}' execution result:\n`;
     if (isCodeReading) {
+      if (tName === 'get_hunk') {
+        const rawPath = String(toolCall.args?.filePath || toolCall.args?.path || '');
+        const normArgs: GetHunkArgs = {
+          filePath: rawPath,
+          startLine: toolCall.args?.startLine ?? toolCall.args?.start_line,
+          endLine: toolCall.args?.endLine ?? toolCall.args?.end_line,
+          contextLines: toolCall.args?.contextLines ?? toolCall.args?.context_lines,
+        };
+        const res = executeGetHunk(normArgs, changedFiles);
+        if (res.status === 'success') {
+          return {
+            toolOutput: `Tool 'get_hunk' execution result:\n${JSON.stringify(res, null, 2)}`,
+            toolScope: 'assigned-hunk',
+            isExhaustive: true,
+          };
+        }
+        return {
+          toolOutput: `Tool 'get_hunk' execution rejected: [${res.error}] ${res.message}`,
+          toolScope: 'assigned-hunk',
+          isExhaustive: false,
+        };
+      }
+
       const rawStart = toolCall.args?.startLine ?? toolCall.args?.start_line;
       const rawEnd = toolCall.args?.endLine ?? toolCall.args?.end_line;
       const reqStart = typeof rawStart === 'number' && Number.isFinite(rawStart) && rawStart > 0 ? Math.floor(rawStart) : undefined;

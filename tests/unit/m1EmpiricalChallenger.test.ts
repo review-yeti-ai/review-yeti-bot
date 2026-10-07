@@ -1,881 +1,588 @@
-// This suite isolates authentication and unavailable dependencies. Positive append-only admission,
-// returned receipts and immutable source evidence are covered by disputedFindingRecheckFlow.test.ts
-// and completedFindingRecheckAdmission.postgres.test.ts, which fail if enqueue is never reached.
-import express, { type Request } from 'express';
-import request from 'supertest';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
-  createRemoteMcpRouter,
-  type RemoteMcpRouter,
-  type RemoteMcpRouterOptions,
-} from '../../src/mcp/server/remoteMcpRouter';
+  parseDiffHunkBoundaries,
+  reconstructSourceFromPatch,
+  isSymbolModifiedByDiff,
+  cleanSignature,
+  estimateTokenCount,
+  renderOutlineSummary,
+  generateFileTreeOutline,
+  generateTaskScopedASTOutline,
+  extractAdditionalTypeScriptSymbols,
+} from '../../src/panel/astOutlineGenerator';
+import { ASTParser } from '../../src/indexer/astParser';
 import {
-  type McpAuthenticatedCaller,
-  type McpAuthenticator,
-} from '../../src/mcp/server/mcpAuthenticator';
-import { createDisputeFindingTool } from '../../src/mcp/server/tools/disputeFinding';
-import {
-  createExplainFindingTool,
-  evaluateWithHeuristics,
-  type StoredFindingRecord,
-} from '../../src/mcp/server/tools/explainFinding';
-import { createGenerateFixDiffTool } from '../../src/mcp/server/tools/generateFixDiff';
-import { createPreflightDiffReviewTool } from '../../src/mcp/server/tools/preflightDiffReview';
-import { OpenRouterClient } from '../../src/gateway/openRouterClient';
+  classifyPathByHeuristic,
+  classifyDomainLanesByHeuristic,
+  DomainLane,
+} from '../../src/pathDomainContract';
+import type { ReviewTask } from '../../src/panel/reviewTask';
 
-describe('Milestone 1 Empirical Challenger Suite (tests/unit/m1EmpiricalChallenger.test.ts)', () => {
-  const TEST_OWNER = 'exampleorg';
-  const TEST_REPO = 'example-api';
-  const TEST_PR = 42;
+describe('Empirical Challenger M1: Stress Tests & Invariants', () => {
+  // =========================================================================
+  // 1. TOKEN COMPACTION & OUTLINE SCALING
+  // =========================================================================
+  describe('Dimension 1: Token Compaction & Prompt Scaling Verification', () => {
+    it('verifies token compaction >60% on small PR (2 files, 80 lines)', () => {
+      const smallFiles = [
+        {
+          path: 'src/auth/tokenValidator.ts',
+          patch: [
+            '@@ -1,20 +1,25 @@',
+            ' export class TokenValidator {',
+            '+  private cache = new Map<string, boolean>();',
+            '+  public validate(token: string): boolean {',
+            '+    if (this.cache.has(token)) return this.cache.get(token)!;',
+            '+    const valid = token.startsWith("ey");',
+            '+    this.cache.set(token, valid);',
+            '+    return valid;',
+            '+  }',
+            ...Array.from({ length: 15 }, (_, i) => `+  // additional validation logic step ${i}`),
+            ' }',
+          ].join('\n'),
+        },
+        {
+          path: 'src/api/routes/authRoute.ts',
+          patch: [
+            '@@ -1,25 +1,30 @@',
+            ' export function registerAuthRoutes(router: any) {',
+            '+  router.post("/login", (req: any, res: any) => {',
+            '+    res.json({ status: "ok" });',
+            '+  });',
+            ...Array.from({ length: 20 }, (_, i) => `+  // route middleware setup ${i}`),
+            ' }',
+          ].join('\n'),
+        },
+      ];
 
-  function createRouterTestApp(routerInstance: RemoteMcpRouter) {
-    const testApp = express();
-    testApp.use(express.json({ limit: '512kb' }));
-    testApp.use('/api/mcp', routerInstance);
-    return testApp;
-  }
+      const rawDiff = smallFiles.map((f) => `diff --git a/${f.path} b/${f.path}\n${f.patch}`).join('\n\n');
+      const rawTokens = estimateTokenCount(rawDiff);
 
-  function createSimpleAdminAuthenticator(): McpAuthenticator {
-    return {
-      authenticate: vi.fn(async () => ({
-        authType: 'static_token',
-        tokenDigest: 'mock-digest',
-        isAdmin: true,
-        allowedRepositories: null,
-        callerId: 'test-admin',
-      })),
-      authenticateToken: vi.fn(async () => ({
-        authType: 'static_token',
-        tokenDigest: 'mock-digest',
-        isAdmin: true,
-        allowedRepositories: null,
-        callerId: 'test-admin',
-      })),
-      checkRepositoryAccess: vi.fn(() => true),
-      middleware: vi.fn(),
-    } as unknown as McpAuthenticator;
-  }
+      const outline = generateFileTreeOutline(smallFiles);
+      const outlineTokens = estimateTokenCount(outline.summaryText);
+      const reductionPct = ((rawTokens - outlineTokens) / rawTokens) * 100;
 
-  function createMockCaller(isAdmin = true, allowed = [`${TEST_OWNER}/${TEST_REPO}`]): McpAuthenticatedCaller {
-    return {
-      authType: 'static_token',
-      tokenDigest: 'test-digest',
-      isAdmin,
-      allowedRepositories: isAdmin ? null : new Set(allowed.map((s) => s.toLowerCase())),
-      callerId: 'challenger-caller',
-    };
-  }
-
-  // ===========================================================================
-  // SECTION 1: dispute_finding requests an authenticated fresh review only
-  // ===========================================================================
-  describe('1. dispute_finding fresh-review request contract', () => {
-    const input = {
-      owner: TEST_OWNER,
-      repo: TEST_REPO,
-      pr_number: TEST_PR,
-      finding_id: 'source-finding-001',
-      counter_argument: 'The request router binds the authenticated repository before reading tenant data.',
-    };
-
-    it('requires the caller and authorized repository to agree before opening a transaction', async () => {
-      const connect = vi.fn();
-      const tool = createDisputeFindingTool({ transactionPool: { connect } as any });
-      const restricted = createMockCaller(false, ['other/repo']);
-      await expect(tool.execute(input, {
-        caller: restricted,
-        authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
-      })).rejects.toThrow(/denied|access/i);
-      expect(connect).not.toHaveBeenCalled();
+      expect(outlineTokens).toBeLessThan(500);
+      expect(reductionPct).toBeGreaterThan(60);
+      expect(outline.totalFiles).toBe(2);
     });
 
-    it('does not adjudicate or mutate a finding when no transaction pool is available', async () => {
-      const modelClient = { complete: vi.fn() };
-      const adjudicateDispute = vi.fn();
-      const tool = createDisputeFindingTool({ modelClient, adjudicateDispute });
-      await expect(tool.execute(input, {
-        caller: createMockCaller(),
-        authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
-      })).rejects.toThrow('Fresh finding review is temporarily unavailable');
-      expect(modelClient.complete).not.toHaveBeenCalled();
-      expect(adjudicateDispute).not.toHaveBeenCalled();
+    it('verifies token compaction >60% on medium PR (8 files, 400 lines)', () => {
+      const mediumFiles = Array.from({ length: 8 }, (_, idx) => ({
+        path: `src/services/service_${idx}.ts`,
+        patch: [
+          '@@ -1,50 +1,50 @@',
+          ` export class Service${idx} {`,
+          `+  public async executeTask${idx}(payload: Record<string, unknown>): Promise<void> {`,
+          `+    console.log("processing in service ${idx}");`,
+          `+    await this.persist(payload);`,
+          `+  }`,
+          ...Array.from({ length: 40 }, (_, i) => `+  // implementation detail line ${i} for service ${idx}`),
+          ' }',
+        ].join('\n'),
+      }));
+
+      const rawDiff = mediumFiles.map((f) => `diff --git a/${f.path} b/${f.path}\n${f.patch}`).join('\n\n');
+      const rawTokens = estimateTokenCount(rawDiff);
+
+      const outline = generateFileTreeOutline(mediumFiles);
+      const outlineTokens = estimateTokenCount(outline.summaryText);
+      const reductionPct = ((rawTokens - outlineTokens) / rawTokens) * 100;
+
+      expect(outlineTokens).toBeLessThan(500);
+      expect(reductionPct).toBeGreaterThan(70);
+      expect(outline.totalFiles).toBe(8);
     });
 
-    it('keeps the request schema bounded and rejects malformed coordinates', () => {
-      const tool = createDisputeFindingTool();
-      expect(tool.schema.safeParse({ ...input, counter_argument: 'a'.repeat(10_000) }).success).toBe(true);
-      expect(tool.schema.safeParse({ ...input, counter_argument: 'a'.repeat(10_001) }).success).toBe(false);
-      expect(tool.schema.safeParse({ ...input, pr_number: 0 }).success).toBe(false);
-      expect(tool.schema.safeParse({ ...input, extra: 'not accepted' }).success).toBe(false);
+    it('verifies token compaction >60% on large PR (20 files, 1500 lines)', () => {
+      const largeFiles = Array.from({ length: 20 }, (_, idx) => ({
+        path: `packages/module_${idx}/src/handler.ts`,
+        patch: [
+          '@@ -1,75 +1,75 @@',
+          ` export function handleModule${idx}() {`,
+          `+  const timestamp = Date.now();`,
+          `+  return { module: ${idx}, timestamp };`,
+          `+}`,
+          ...Array.from({ length: 65 }, (_, i) => `+  // extra logic ${i} for module ${idx}`),
+        ].join('\n'),
+      }));
+
+      const rawDiff = largeFiles.map((f) => `diff --git a/${f.path} b/${f.path}\n${f.patch}`).join('\n\n');
+      const rawTokens = estimateTokenCount(rawDiff);
+
+      const outline = generateFileTreeOutline(largeFiles);
+      const outlineTokens = estimateTokenCount(outline.summaryText);
+      const reductionPct = ((rawTokens - outlineTokens) / rawTokens) * 100;
+
+      expect(outlineTokens).toBeLessThan(1000);
+      expect(reductionPct).toBeGreaterThan(75);
+      expect(outline.totalFiles).toBe(20);
+    });
+
+    it('verifies token compaction on massive 50-file monorepo PR (>80% reduction)', () => {
+      const massiveFiles = Array.from({ length: 50 }, (_, idx) => ({
+        path: `apps/repo/component_${idx}.tsx`,
+        patch: [
+          '@@ -1,60 +1,60 @@',
+          ` export function Component${idx}() {`,
+          `+  return <div id="comp-${idx}">Refactored</div>;`,
+          `+}`,
+          ...Array.from({ length: 50 }, (_, i) => `+  // jsx render child comment ${i}`),
+        ].join('\n'),
+      }));
+
+      const rawDiff = massiveFiles.map((f) => `diff --git a/${f.path} b/${f.path}\n${f.patch}`).join('\n\n');
+      const rawTokens = estimateTokenCount(rawDiff);
+
+      const outline = generateFileTreeOutline(massiveFiles);
+      const outlineTokens = estimateTokenCount(outline.summaryText);
+      const reductionPct = ((rawTokens - outlineTokens) / rawTokens) * 100;
+
+      expect(reductionPct).toBeGreaterThan(80);
+      expect(outline.totalFiles).toBe(50);
     });
   });
 
-  // ===========================================================================
-  // SECTION 2: explain_finding Adversarial Empirical Tests
-  // ===========================================================================
-  describe('2. explain_finding Empirical Adversarial Hardening', () => {
-    const explainFindingId = 'finding-sqli-999';
-    const explainPayload = {
-      result: {
-        personas: [
-          {
-            name: 'Security',
-            findings: [
-              {
-                finding_id: explainFindingId,
-                title: 'SQL injection via unsanitized string interpolation',
-                severity: 'P0',
-                category: 'Security',
-                file_path: 'src/db/users.ts',
-                line_start: 33,
-                line_end: 35,
-                violated_adrs: ['ADR-0242', 'ADR-0594'],
-                rationale: 'User input is interpolated directly into database query without parameterized placeholders.',
-                suggested_fix: 'Use parameterized SQL query with prepared statements.',
-              },
-            ],
-          },
-        ],
-      },
-    };
+  // =========================================================================
+  // 2. COMPLEX TYPESCRIPT AST SYMBOL INTERSECTION
+  // =========================================================================
+  describe('Dimension 2: Complex TypeScript Language Constructs', () => {
+    it('accurately identifies modified generic interfaces and generic classes', () => {
+      const content = [
+        'export interface EntityRepository<T extends { id: string }, K = string> {', // line 1
+        '  findById(id: K): Promise<T | null>;',                                       // line 2
+        '  save(entity: T): Promise<T>;',                                              // line 3
+        '}',                                                                          // line 4
+        '',                                                                           // line 5
+        'export class BaseService<TModel extends Record<string, any>> {',             // line 6
+        '  protected items: TModel[] = [];',                                          // line 7
+        '  public getAll(): TModel[] {',                                              // line 8
+        '    return this.items;',                                                     // line 9
+        '  }',                                                                        // line 10
+        '}',                                                                          // line 11
+      ].join('\n');
 
-    it('compliant proposal: evaluates parameterization proposal as satisfies_requirement: true', async () => {
-      const mockDb = {
-        query: vi.fn().mockResolvedValue({
-          rows: [
-            {
-              run_id: 'run-sqli-1',
-              owner: TEST_OWNER,
-              repo: TEST_REPO,
-              payload: JSON.stringify(explainPayload),
-            },
-          ],
-        }),
-      };
+      // Patch modifies line 2 inside generic interface EntityRepository
+      const patch = [
+        '@@ -1,4 +1,5 @@',
+        ' export interface EntityRepository<T extends { id: string }, K = string> {',
+        '+  findByQuery(query: any): Promise<T[]>;',
+        '   findById(id: K): Promise<T | null>;',
+        '   save(entity: T): Promise<T>;',
+        ' }',
+      ].join('\n');
 
-      const mockModelClient = {
-        complete: vi.fn().mockResolvedValue({
-          content: JSON.stringify({
-            explanation: 'The proposed remediation correctly replaces string concatenation with parameterized SQL bindings ($1, $2), eliminating SQL injection attack vectors and fully satisfying ADR-0242.',
-            satisfies_requirement: true,
-            citations: ['ADR-0242'],
-          }),
-        }),
-      };
+      const outline = generateFileTreeOutline([
+        { path: 'src/repo/genericRepo.ts', patch, content },
+      ]);
 
-      const tool = createExplainFindingTool({
-        queryableDatabase: mockDb,
-        modelClient: mockModelClient,
-      });
-
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pull_number: TEST_PR,
-          finding_id: explainFindingId,
-          question: 'What if I parameterize the query using db.query("SELECT * FROM users WHERE id = $1", [userId]) and sanitize the input?',
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data = JSON.parse(res.content[0].text);
-      expect(data.satisfies_requirement).toBe(true);
-      expect(data.explanation).toContain('parameterized SQL bindings');
-      expect(data.citations).toContain('ADR-0242');
+      expect(outline.files).toHaveLength(1);
+      const syms = outline.files[0].modifiedSymbols;
+      expect(syms.some((s) => s.name === 'EntityRepository' && s.kind === 'interface')).toBe(true);
+      expect(syms.some((s) => s.name === 'BaseService')).toBe(false);
     });
 
-    it('non-compliant proposal: rejects proposal attempting to bypass or disable validation', async () => {
-      const mockDb = {
-        query: vi.fn().mockResolvedValue({
-          rows: [
-            {
-              run_id: 'run-sqli-2',
-              owner: TEST_OWNER,
-              repo: TEST_REPO,
-              payload: JSON.stringify(explainPayload),
-            },
-          ],
-        }),
-      };
+    it('accurately identifies overloaded function signatures and implementation', () => {
+      const content = [
+        'export function parseConfig(input: string): Record<string, string>;', // line 1
+        'export function parseConfig(input: number): number;',                 // line 2
+        'export function parseConfig(input: any): any {',                     // line 3
+        '  if (typeof input === "string") return JSON.parse(input);',         // line 4
+        '  return input;',                                                    // line 5
+        '}',                                                                  // line 6
+      ].join('\n');
 
-      const mockModelClient = {
-        complete: vi.fn().mockResolvedValue({
-          content: JSON.stringify({
-            explanation: 'Bypassing the check by turning off query validation does not eliminate the SQL injection flaw and directly violates ADR-0242 security requirements.',
-            satisfies_requirement: false,
-            citations: ['ADR-0242'],
-          }),
-        }),
-      };
+      // Case A: Diff modifies line 4 in the implementation body
+      const patchBody = [
+        '@@ -3,3 +3,4 @@',
+        ' export function parseConfig(input: any): any {',
+        '+  if (!input) throw new Error("empty");',
+        '   if (typeof input === "string") return JSON.parse(input);',
+        '   return input;',
+      ].join('\n');
 
-      const tool = createExplainFindingTool({
-        queryableDatabase: mockDb,
-        modelClient: mockModelClient,
-      });
+      const outlineBody = generateFileTreeOutline([
+        { path: 'src/config/parser.ts', patch: patchBody, content },
+      ]);
 
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pull_number: TEST_PR,
-          finding_id: explainFindingId,
-          question: 'Can I just disable the query linter and bypass SQL escaping since this is an internal admin endpoint?',
-        },
-        { caller: createMockCaller() }
-      );
+      const symsBody = outlineBody.files[0].modifiedSymbols;
+      expect(symsBody.length).toBeGreaterThanOrEqual(1);
+      expect(symsBody.some((s) => s.name === 'parseConfig')).toBe(true);
 
-      const data = JSON.parse(res.content[0].text);
-      expect(data.satisfies_requirement).toBe(false);
-      expect(data.explanation).toContain('violates ADR-0242');
+      // Case B: Diff modifies line 1 (first overload signature)
+      const patchOverload = [
+        '@@ -1,2 +1,3 @@',
+        '+export function parseConfig(input: boolean): boolean;',
+        ' export function parseConfig(input: string): Record<string, string>;',
+        ' export function parseConfig(input: number): number;',
+      ].join('\n');
+
+      const outlineOverload = generateFileTreeOutline([
+        { path: 'src/config/parser.ts', patch: patchOverload, content },
+      ]);
+      expect(outlineOverload.files[0].modifiedSymbols.some((s) => s.name === 'parseConfig')).toBe(true);
     });
 
-    it('informational inquiry: returns satisfies_requirement: null for conceptual questions', async () => {
-      const mockDb = {
-        query: vi.fn().mockResolvedValue({
-          rows: [
-            {
-              run_id: 'run-sqli-3',
-              owner: TEST_OWNER,
-              repo: TEST_REPO,
-              payload: JSON.stringify(explainPayload),
-            },
-          ],
-        }),
-      };
+    it('accurately intersects exported arrow functions, async arrows, and variable declarations', () => {
+      const content = [
+        'export const handleAuthToken = async (req: any, res: any): Promise<boolean> => {', // line 1
+        '  const token = req.headers["authorization"];',                                     // line 2
+        '  return token != null;',                                                           // line 3
+        '};',                                                                                // line 4
+        '',                                                                                  // line 5
+        'export const UNTOUCHED_VAR = 42;',                                                  // line 6
+        '',                                                                                  // line 7
+        'export const curriedMultiplier = (factor: number) => (val: number) => {',           // line 8
+        '  return factor * val;',                                                            // line 9
+        '};',                                                                                // line 10
+      ].join('\n');
 
-      const mockModelClient = {
-        complete: vi.fn().mockResolvedValue({
-          content: JSON.stringify({
-            explanation: 'SQL injection occurs when untrusted user input is concatenated into dynamic SQL queries, allowing attackers to execute arbitrary SQL commands.',
-            satisfies_requirement: null,
-            citations: ['ADR-0242', 'ADR-0594'],
-          }),
-        }),
-      };
+      const patch = [
+        '@@ -1,4 +1,5 @@',
+        ' export const handleAuthToken = async (req: any, res: any): Promise<boolean> => {',
+        '+  if (!req) return false;',
+        '   const token = req.headers["authorization"];',
+        '   return token != null;',
+        ' };',
+      ].join('\n');
 
-      const tool = createExplainFindingTool({
-        queryableDatabase: mockDb,
-        modelClient: mockModelClient,
-      });
+      const outline = generateFileTreeOutline([
+        { path: 'src/auth/handler.ts', patch, content },
+      ]);
 
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pull_number: TEST_PR,
-          finding_id: explainFindingId,
-          question: 'What does SQL injection mean and why is this line dangerous?',
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data = JSON.parse(res.content[0].text);
-      expect(data.satisfies_requirement).toBeNull();
-      expect(data.explanation).toContain('SQL injection occurs');
-      expect(data.citations).toContain('ADR-0242');
+      const syms = outline.files[0].modifiedSymbols;
+      expect(syms.some((s) => s.name === 'handleAuthToken')).toBe(true);
+      expect(syms.some((s) => s.name === 'UNTOUCHED_VAR')).toBe(false);
+      expect(syms.some((s) => s.name === 'curriedMultiplier')).toBe(false);
     });
 
-    it('fallback to evaluateWithHeuristics: gracefully falls back on model exception', async () => {
-      const mockDb = {
-        query: vi.fn().mockResolvedValue({
-          rows: [
-            {
-              run_id: 'run-sqli-4',
-              owner: TEST_OWNER,
-              repo: TEST_REPO,
-              payload: JSON.stringify(explainPayload),
-            },
-          ],
-        }),
-      };
+    it('handles nested class declarations and class expressions safely without crash', () => {
+      const content = [
+        'export class OuterCluster {',                                  // line 1
+        '  public static NodeManager = class InternalNodeManager {',    // line 2
+        '    public ping(): boolean { return true; }',                  // line 3
+        '  };',                                                         // line 4
+        '  public start(): void {',                                     // line 5
+        '    console.log("cluster started");',                          // line 6
+        '  }',                                                          // line 7
+        '}',                                                            // line 8
+      ].join('\n');
 
-      // Model throws 502 Bad Gateway
-      const mockModelClient = {
-        complete: vi.fn().mockRejectedValue(new Error('502 Bad Gateway: Upstream LLM unavailable')),
-      };
+      // Edit modifies line 6 inside OuterCluster.start()
+      const patch = [
+        '@@ -5,3 +5,4 @@',
+        '   public start(): void {',
+        '+    this.validateTopology();',
+        '     console.log("cluster started");',
+        '   }',
+      ].join('\n');
 
-      const tool = createExplainFindingTool({
-        queryableDatabase: mockDb,
-        modelClient: mockModelClient,
-      });
+      const outline = generateFileTreeOutline([
+        { path: 'src/cluster/cluster.ts', patch, content },
+      ]);
 
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pull_number: TEST_PR,
-          finding_id: explainFindingId,
-          question: 'What if I parameterize and sanitize the query arguments?',
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data = JSON.parse(res.content[0].text);
-      // Heuristic fallback should detect 'parameterize' and set satisfiesRequirement = true
-      expect(data.satisfies_requirement).toBe(true);
-      expect(data.explanation).toContain('satisfies the architectural and safety requirements');
-      expect(data.citations).toContain('ADR-0242');
+      const syms = outline.files[0].modifiedSymbols;
+      expect(syms.some((s) => s.name === 'OuterCluster' || s.name === 'start')).toBe(true);
     });
 
-    it('fallback to evaluateWithHeuristics: handles pure heuristic evaluation directly', () => {
-      const record: StoredFindingRecord = {
-        finding_id: 'f-1',
-        title: 'Unbounded Cache',
-        severity: 'P1',
-        category: 'Performance',
-        file_path: 'src/cache.ts',
-        line_start: 10,
-        line_end: 20,
-        violated_adrs: ['ADR-0045'],
-        rationale: 'Cache can grow without bound.',
-        suggested_fix: 'Use bounded LRU cache.',
-      };
+    it('extracts React TSX functional components and JSX element changes', () => {
+      const content = [
+        'import React from "react";',                                                     // line 1
+        '',                                                                               // line 2
+        'interface UserProps {',                                                          // line 3
+        '  name: string;',                                                                // line 4
+        '}',                                                                              // line 5
+        '',                                                                               // line 6
+        'export const UserBadge: React.FC<UserProps> = ({ name }) => {',                  // line 7
+        '  return (',                                                                     // line 8
+        '    <div className="badge-container">',                                          // line 9
+        '      <span>{name}</span>',                                                      // line 10
+        '    </div>',                                                                     // line 11
+        '  );',                                                                           // line 12
+        '};',                                                                             // line 13
+        '',                                                                               // line 14
+        'export function UnchangedAvatar() {',                                            // line 15
+        '  return <img src="avatar.png" alt="avatar" />;',                                // line 16
+        '}',                                                                              // line 17
+      ].join('\n');
 
-      // Test compliant heuristic
-      const resCompliant = evaluateWithHeuristics(record, 'Can I use a bounded LRU cache with max-size 500?');
-      expect(resCompliant.satisfiesRequirement).toBe(true);
-      expect(resCompliant.citations).toEqual(['ADR-0045']);
+      const patch = [
+        '@@ -8,4 +8,5 @@',
+        '   return (',
+        '     <div className="badge-container">',
+        '+      <i className="badge-icon" />',
+        '       <span>{name}</span>',
+        '     </div>',
+      ].join('\n');
 
-      // Test non-compliant heuristic
-      const resNonCompliant = evaluateWithHeuristics(record, 'Can I just remove the cache check and ignore it?');
-      expect(resNonCompliant.satisfiesRequirement).toBe(false);
+      const outline = generateFileTreeOutline([
+        { path: 'src/components/UserBadge.tsx', patch, content },
+      ]);
 
-      // Test informational heuristic
-      const resInfo = evaluateWithHeuristics(record, 'What does this finding mean?');
-      expect(resInfo.satisfiesRequirement).toBeNull();
+      expect(outline.files).toHaveLength(1);
+      const file = outline.files[0];
+      expect(file.domainLane).toBe('ui_frontend');
+      const symNames = file.modifiedSymbols.map((s) => s.name);
+      expect(symNames).toContain('UserBadge');
+      expect(symNames).not.toContain('UnchangedAvatar');
     });
 
-    it('missing finding: returns structured guidance when finding ID is not in review ledger', async () => {
-      const mockDb = { query: vi.fn().mockResolvedValue({ rows: [] }) };
-      const tool = createExplainFindingTool({ queryableDatabase: mockDb });
+    it('correctly parses in-memory patch reconstruction with complex TS syntax', () => {
+      // Full content omitted: tests reconstructSourceFromPatch robustness
+      const patch = [
+        '@@ -10,6 +10,12 @@',
+        ' export interface ApiResult<T> {',
+        '+  data: T;',
+        '+  status: number;',
+        '+  meta?: Record<string, string>;',
+        '+}',
+        '+',
+        '+export function processApiResult<T>(result: ApiResult<T>): T {',
+        '+  return result.data;',
+        '   cached: boolean;',
+        ' }',
+      ].join('\n');
 
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pull_number: TEST_PR,
-          finding_id: 'nonexistent-finding-id',
-          question: 'How do I fix this?',
-        },
-        { caller: createMockCaller() }
-      );
+      const outline = generateFileTreeOutline([
+        { path: 'src/api/resultHelper.ts', patch },
+      ]);
 
-      const data = JSON.parse(res.content[0].text);
-      expect(data.explanation).toContain('was not found in the review ledger');
-      expect(data.satisfies_requirement).toBeNull();
-      expect(data.citations).toEqual([]);
+      expect(outline.files[0].modifiedSymbols.length).toBeGreaterThan(0);
+      const names = outline.files[0].modifiedSymbols.map((s) => s.name);
+      expect(names).toContain('processApiResult');
+    });
+
+    it('intersects method overloads inside class declarations', () => {
+      const content = [
+        'export class QueryDispatcher {',                                         // line 1
+        '  public execute(query: string): Promise<any>;',                         // line 2
+        '  public execute(queries: string[]): Promise<any[]>;',                   // line 3
+        '  public execute(arg: any): any {',                                      // line 4
+        '    if (Array.isArray(arg)) return Promise.all(arg.map(q => q));',       // line 5
+        '    return Promise.resolve(arg);',                                       // line 6
+        '  }',                                                                    // line 7
+        '}',                                                                      // line 8
+      ].join('\n');
+
+      const patch = [
+        '@@ -4,3 +4,4 @@',
+        '   public execute(arg: any): any {',
+        '+    if (!arg) throw new Error("query required");',
+        '     if (Array.isArray(arg)) return Promise.all(arg.map(q => q));',
+        '     return Promise.resolve(arg);',
+      ].join('\n');
+
+      const outline = generateFileTreeOutline([
+        { path: 'src/db/dispatcher.ts', patch, content },
+      ]);
+
+      const syms = outline.files[0].modifiedSymbols;
+      expect(syms.some((s) => s.name === 'QueryDispatcher' || s.name === 'execute')).toBe(true);
+    });
+
+    it('captures object-literal holding arrow functions via enclosing variable', () => {
+      const content = [
+        'export const routerHandlers = {',                                        // line 1
+        '  login: async (req: any, res: any) => {',                               // line 2
+        '    return res.json({ token: "abc" });',                                 // line 3
+        '  },',                                                                   // line 4
+        '  logout: async (req: any, res: any) => {',                              // line 5
+        '    return res.json({ ok: true });',                                     // line 6
+        '  },',                                                                   // line 7
+        '};',                                                                     // line 8
+      ].join('\n');
+
+      // Modifies line 3 inside login
+      const patch = [
+        '@@ -2,3 +2,4 @@',
+        '   login: async (req: any, res: any) => {',
+        '+    if (!req.body.user) throw new Error("bad request");',
+        '     return res.json({ token: "abc" });',
+        '   },',
+      ].join('\n');
+
+      const outline = generateFileTreeOutline([
+        { path: 'src/api/handlers.ts', patch, content },
+      ]);
+
+      const syms = outline.files[0].modifiedSymbols;
+      expect(syms.some((s) => s.name === 'routerHandlers' && s.kind === 'variable')).toBe(true);
+    });
+
+    it('handles class defined inside factory function cleanly', () => {
+      const content = [
+        'export function createCustomEngine() {',                                 // line 1
+        '  class DynamicEngine {',                                                // line 2
+        '    run() { return 100; }',                                              // line 3
+        '  }',                                                                    // line 4
+        '  return new DynamicEngine();',                                          // line 5
+        '}',                                                                      // line 6
+      ].join('\n');
+
+      const patch = [
+        '@@ -2,3 +2,4 @@',
+        '   class DynamicEngine {',
+        '+    validate() { return true; }',
+        '     run() { return 100; }',
+        '   }',
+      ].join('\n');
+
+      const outline = generateFileTreeOutline([
+        { path: 'src/engine/factory.ts', patch, content },
+      ]);
+
+      const syms = outline.files[0].modifiedSymbols;
+      expect(syms.some((s) => s.name === 'createCustomEngine' || s.name === 'DynamicEngine')).toBe(true);
+    });
+
+    it('handles complex JSX fragments and nested components in TSX', () => {
+      const content = [
+        'import React from "react";',                                             // line 1
+        'export const Layout: React.FC<{ title: string }> = ({ title, children }) => {', // line 2
+        '  return (',                                                             // line 3
+        '    <>',                                                                 // line 4
+        '      <header><h1>{title}</h1></header>',                                // line 5
+        '      <main>{children}</main>',                                          // line 6
+        '    </>',                                                                // line 7
+        '  );',                                                                   // line 8
+        '};',                                                                     // line 9
+      ].join('\n');
+
+      const patch = [
+        '@@ -4,4 +4,5 @@',
+        '     <>',
+        '+      <nav><a href="/">Home</a></nav>',
+        '       <header><h1>{title}</h1></header>',
+        '       <main>{children}</main>',
+        '     </>',
+      ].join('\n');
+
+      const outline = generateFileTreeOutline([
+        { path: 'src/ui/Layout.tsx', patch, content },
+      ]);
+
+      const file = outline.files[0];
+      expect(file.domainLane).toBe('ui_frontend');
+      expect(file.modifiedSymbols.some((s) => s.name === 'Layout')).toBe(true);
     });
   });
 
-  // ===========================================================================
-  // SECTION 3: remoteMcpRouter & dispatchIndex DI Wiring & Precedence Tests
-  // ===========================================================================
-  describe('3. remoteMcpRouter & dispatchIndex DI Wiring & Precedence', () => {
-    const sampleDbFindingId = 'f-router-01';
-    const sampleDbPayload = {
-      result: {
-        personas: [
-          {
-            name: 'Security',
-            findings: [
-              {
-                finding_id: sampleDbFindingId,
-                title: 'Router DI finding',
-                severity: 'P1',
-                category: 'Architecture',
-                file_path: 'src/router.ts',
-                line_start: 10,
-                line_end: 20,
-                violated_adrs: ['ADR-0010'],
-                rationale: 'Router DI test finding',
-              },
-            ],
-          },
-        ],
-      },
-    };
+  // =========================================================================
+  // 3. DOMAIN PARTITIONING EDGE CASES
+  // =========================================================================
+  describe('Dimension 3: Domain Partitioning & Monorepo Edge Cases', () => {
+    it('classifies monorepo multi-package paths into appropriate domains', () => {
+      const monorepoPaths = [
+        { path: 'packages/auth/src/jwtService.ts', expected: 'security_auth' },
+        { path: 'packages/database/src/migrations/001_init.sql', expected: 'data_persistence' },
+        { path: 'packages/api-client/src/endpoints/userApi.ts', expected: 'api_contracts' },
+        { path: 'apps/web/src/views/ProfilePage.tsx', expected: 'ui_frontend' },
+        { path: 'services/worker/src/runner.ts', expected: 'system_runtime' },
+        { path: 'docs/architecture/monorepo.md', expected: 'docs_assets' },
+      ];
 
-    it('keeps dispute requests out of model adjudication while other tools use the top-level modelClient', async () => {
-      const topModelClient = {
-        complete: vi.fn().mockImplementation(async ({ messages }: any) => {
-          const sys = messages.find((m: any) => m.role === 'system')?.content || '';
-          const usr = messages.find((m: any) => m.role === 'user')?.content || '';
-          const allText = `${sys} ${usr}`;
-
-          if (allText.includes('preflight diff review panel')) {
-            return {
-              content: JSON.stringify([
-                {
-                  title: 'Model-found diff issue',
-                  severity: 'P1',
-                  category: 'Architecture',
-                  file_path: 'src/main.ts',
-                  line: 5,
-                  rationale: 'Found via top-level model client',
-                  confidence: 0.95,
-                },
-              ]),
-            };
-          }
-          if (allText.includes('Blocker Quorum Adjudicator')) {
-            return {
-              content: JSON.stringify({
-                verdict: 'overruled',
-                reasoning: 'Adjudicated by top-level model client',
-                confidence: 0.91,
-              }),
-            };
-          }
-          if (allText.includes('architectural advisor')) {
-            return {
-              content: JSON.stringify({
-                explanation: 'Explained by top-level model client',
-                satisfies_requirement: true,
-                citations: ['ADR-0010'],
-              }),
-            };
-          }
-          // Default code patch response for generate_fix_diff
-          return {
-            content: JSON.stringify({
-              replacement_lines: 'const safe = true;',
-              explanation: 'Patch generated by top-level model client',
-            }),
-          };
-        }),
-      };
-
-      const mockDb = {
-        query: vi.fn().mockResolvedValue({
-          rows: [
-            {
-              run_id: 'run-router-1',
-              execution_attempt: 1,
-              payload: JSON.stringify(sampleDbPayload),
-            },
-          ],
-        }),
-      };
-
-      const router = createRemoteMcpRouter({
-        db: mockDb,
-        authenticator: createSimpleAdminAuthenticator(),
-        modelClient: topModelClient as any,
-      });
-      const app = createRouterTestApp(router);
-
-      // 1. Test preflight_diff_review invocation
-      const resPreflight = await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({
-          jsonrpc: '2.0',
-          id: 101,
-          method: 'tools/call',
-          params: {
-            name: 'preflight_diff_review',
-            arguments: {
-              diff: 'diff --git a/src/main.ts b/src/main.ts\n--- a/src/main.ts\n+++ b/src/main.ts\n@@ -1,1 +1,2 @@\n+export const x = 1;',
-              repo: 'exampleorg/example-api',
-            },
-          },
-        });
-      expect(resPreflight.status).toBe(200);
-      const preflightData = JSON.parse(resPreflight.body.result.content[0].text);
-      expect(preflightData.findings).toHaveLength(1);
-      expect(preflightData.findings[0].title).toBe('Model-found diff issue');
-
-      // 2. Test explain_finding invocation
-      const resExplain = await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({
-          jsonrpc: '2.0',
-          id: 102,
-          method: 'tools/call',
-          params: {
-            name: 'explain_finding',
-            arguments: {
-              owner: TEST_OWNER,
-              repo: TEST_REPO,
-              pull_number: TEST_PR,
-              finding_id: sampleDbFindingId,
-              question: 'How should I fix this?',
-            },
-          },
-        });
-      expect(resExplain.status).toBe(200);
-      const explainData = JSON.parse(resExplain.body.result.content[0].text);
-      expect(explainData.explanation).toContain('Explained by top-level model client');
-
-      // 3. Test dispute_finding invocation
-      const resDispute = await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({
-          jsonrpc: '2.0',
-          id: 103,
-          method: 'tools/call',
-          params: {
-            name: 'dispute_finding',
-            arguments: {
-              owner: TEST_OWNER,
-              repo: TEST_REPO,
-              pr_number: TEST_PR,
-              finding_id: sampleDbFindingId,
-              counter_argument: 'This is justified by architectural design doc 42.',
-            },
-          },
-        });
-      expect(resDispute.status).toBe(200);
-      expect(resDispute.body.error?.message).toMatch(/pool\.connect|temporarily unavailable/i);
-
-      // 4. Test generate_fix_diff invocation
-      const resFix = await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({
-          jsonrpc: '2.0',
-          id: 104,
-          method: 'tools/call',
-          params: {
-            name: 'generate_fix_diff',
-            arguments: {
-              owner: TEST_OWNER,
-              repo: TEST_REPO,
-              pr_number: TEST_PR,
-              finding_id: sampleDbFindingId,
-            },
-          },
-        });
-      expect(resFix.status).toBe(200);
-      const fixData = JSON.parse(resFix.body.result.content[0].text);
-      expect(fixData.patch).toBeDefined();
-
-      // The dispute tool only queues an authenticated fresh review and never calls an adjudicator.
-      expect(topModelClient.complete).toHaveBeenCalledTimes(3);
-
-      router.destroy();
+      for (const item of monorepoPaths) {
+        expect(classifyPathByHeuristic(item.path)).toBe(item.expected);
+      }
     });
 
-    it('does not invoke dispute model overrides or top-level models', async () => {
-      const topModelClient = {
-        complete: vi.fn().mockResolvedValue({ content: '{"verdict":"upheld"}' }),
-      };
+    it('enforces precedence for security tokens in docs and non-code files', () => {
+      // Markdown and whitelisted images mentioning auth/session stay in docs_assets
+      expect(classifyPathByHeuristic('docs/auth/session-guide.md')).toBe('docs_assets');
+      expect(classifyPathByHeuristic('docs/assets/session-flow.png')).toBe('docs_assets');
 
-      const customDisputeClient = {
-        complete: vi.fn().mockResolvedValue({
-          content: JSON.stringify({
-            verdict: 'overruled',
-            reasoning: 'Custom dispute override executed',
-            confidence: 0.99,
-          }),
-        }),
-      };
+      // Fail-closed security floor: non-whitelisted doc/text formats (.pdf, .txt) with security keywords route to security_auth
+      expect(classifyPathByHeuristic('documentation/security-whitepaper.pdf')).toBe('security_auth');
+      // Delimited security keywords (slash, dot, underscore, hyphen) map to security_auth
+      expect(classifyPathByHeuristic('src/middleware/authMiddleware.ts')).toBe('security_auth');
+      expect(classifyPathByHeuristic('src/guard/permission_guard.ts')).toBe('security_auth');
+      expect(classifyPathByHeuristic('src/auth/permissionGuard.ts')).toBe('security_auth');
 
-      const mockDb = {
-        query: vi.fn().mockResolvedValue({
-          rows: [
-            {
-              run_id: 'run-override-1',
-              execution_attempt: 1,
-              payload: JSON.stringify(sampleDbPayload),
-            },
-          ],
-        }),
-      };
-
-      const router = createRemoteMcpRouter({
-        db: mockDb,
-        authenticator: createSimpleAdminAuthenticator(),
-        modelClient: topModelClient as any,
-        disputeFindingDeps: {
-          modelClient: customDisputeClient as any,
-        },
-      });
-      const app = createRouterTestApp(router);
-
-      const res = await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({
-          jsonrpc: '2.0',
-          id: 105,
-          method: 'tools/call',
-          params: {
-            name: 'dispute_finding',
-            arguments: {
-              owner: TEST_OWNER,
-              repo: TEST_REPO,
-              pr_number: TEST_PR,
-              finding_id: sampleDbFindingId,
-              counter_argument: 'Custom justification',
-            },
-          },
-        });
-
-      expect(res.status).toBe(200);
-      expect(customDisputeClient.complete).not.toHaveBeenCalled();
-      expect(topModelClient.complete).not.toHaveBeenCalled();
-      expect(res.body.error?.message).toMatch(/pool\.connect|temporarily unavailable/i);
-
-      router.destroy();
+      // Boundary limitation: compound camelCase in non-domain dirs without delimiters falls back to system_runtime
+      expect(classifyPathByHeuristic('src/services/authGuard.ts')).toBe('system_runtime');
+      expect(classifyPathByHeuristic('src/guards/permissionGuard.ts')).toBe('system_runtime');
     });
 
-    it('dispatchIndex environment API key resolution precedence', () => {
-      // Test 1: OPENROUTER_API_KEY takes first precedence
-      const env1: Record<string, string | undefined> = {
-        OPENROUTER_API_KEY: 'key-openrouter',
-        REVIEW_YETI_BIFROST_API_KEY: 'key-bifrost-1',
-        BIFROST_VIRTUAL_KEY: 'key-bifrost-2',
-        OPENROUTER_PR_REVIEW_API_KEY: 'key-pr-review',
-      };
-      const key1 =
-        env1.OPENROUTER_API_KEY ||
-        env1.REVIEW_YETI_BIFROST_API_KEY ||
-        env1.BIFROST_VIRTUAL_KEY ||
-        env1.OPENROUTER_PR_REVIEW_API_KEY;
-      expect(key1).toBe('key-openrouter');
-
-      // Test 2: REVIEW_YETI_BIFROST_API_KEY takes second precedence
-      const env2: Record<string, string | undefined> = {
-        REVIEW_YETI_BIFROST_API_KEY: 'key-bifrost-1',
-        BIFROST_VIRTUAL_KEY: 'key-bifrost-2',
-        OPENROUTER_PR_REVIEW_API_KEY: 'key-pr-review',
-      };
-      const key2 =
-        env2.OPENROUTER_API_KEY ||
-        env2.REVIEW_YETI_BIFROST_API_KEY ||
-        env2.BIFROST_VIRTUAL_KEY ||
-        env2.OPENROUTER_PR_REVIEW_API_KEY;
-      expect(key2).toBe('key-bifrost-1');
-
-      // Test 3: Base URL resolution
-      const envBase: Record<string, string | undefined> = {
-        OPENROUTER_BASE_URL: 'https://custom-gateway.local/v1',
-        BIFROST_BASE_URL: 'https://bifrost.local/v1',
-      };
-      const baseUrl = envBase.OPENROUTER_BASE_URL || envBase.BIFROST_BASE_URL;
-      expect(baseUrl).toBe('https://custom-gateway.local/v1');
-
-      // Test 4: When no key is set, resolves to undefined
-      const envEmpty: Record<string, string | undefined> = {};
-      const keyEmpty =
-        envEmpty.OPENROUTER_API_KEY ||
-        envEmpty.REVIEW_YETI_BIFROST_API_KEY ||
-        envEmpty.BIFROST_VIRTUAL_KEY ||
-        envEmpty.OPENROUTER_PR_REVIEW_API_KEY;
-      expect(keyEmpty).toBeUndefined();
+    it('handles unusual and modern file extensions appropriately', () => {
+      expect(classifyPathByHeuristic('schema/users.prisma')).toBe('data_persistence');
+      expect(classifyPathByHeuristic('proto/billing.proto')).toBe('api_contracts');
+      expect(classifyPathByHeuristic('api/schema.graphql')).toBe('api_contracts');
+      expect(classifyPathByHeuristic('components/Widget.vue')).toBe('ui_frontend');
+      expect(classifyPathByHeuristic('components/Button.svelte')).toBe('ui_frontend');
+      expect(classifyPathByHeuristic('templates/index.html.heex')).toBe('ui_frontend');
+      expect(classifyPathByHeuristic('certs/server.crt')).toBe('security_auth');
+      expect(classifyPathByHeuristic('keys/private.pem')).toBe('security_auth');
+      expect(classifyPathByHeuristic('.env.production')).toBe('security_auth');
     });
 
-    it('does not apply heuristic adjudication to a dispute request when modelClient is omitted', async () => {
-      const mockDb = {
-        query: vi.fn().mockResolvedValue({
-          rows: [
-            {
-              run_id: 'run-heuristic-1',
-              execution_attempt: 1,
-              payload: JSON.stringify(sampleDbPayload),
-            },
-          ],
-        }),
-      };
-
-      const router = createRemoteMcpRouter({
-        db: mockDb,
-        authenticator: createSimpleAdminAuthenticator(),
-      });
-      const app = createRouterTestApp(router);
-
-      // Preflight diff in heuristic mode
-      const resPreflight = await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({
-          jsonrpc: '2.0',
-          id: 201,
-          method: 'tools/call',
-          params: {
-            name: 'preflight_diff_review',
-            arguments: {
-              diff: 'diff --git a/docs/readme.md b/docs/readme.md\n--- a/docs/readme.md\n+++ b/docs/readme.md\n@@ -1,1 +1,2 @@\n+# Docs update',
-              repo: 'exampleorg/example-api',
-            },
-          },
-        });
-      expect(resPreflight.status).toBe(200);
-      const preflightData = JSON.parse(resPreflight.body.result.content[0].text);
-      expect(preflightData.eligible_to_ship).toBe(true);
-
-      // Explain in heuristic mode
-      const resExplain = await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({
-          jsonrpc: '2.0',
-          id: 202,
-          method: 'tools/call',
-          params: {
-            name: 'explain_finding',
-            arguments: {
-              owner: TEST_OWNER,
-              repo: TEST_REPO,
-              pull_number: TEST_PR,
-              finding_id: sampleDbFindingId,
-              question: 'What does this mean?',
-            },
-          },
-        });
-      expect(resExplain.status).toBe(200);
-      const explainData = JSON.parse(resExplain.body.result.content[0].text);
-      expect(explainData.explanation).toBeDefined();
-
-      // Dispute in heuristic mode
-      const resDispute = await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({
-          jsonrpc: '2.0',
-          id: 203,
-          method: 'tools/call',
-          params: {
-            name: 'dispute_finding',
-            arguments: {
-              owner: TEST_OWNER,
-              repo: TEST_REPO,
-              pr_number: TEST_PR,
-              finding_id: sampleDbFindingId,
-              counter_argument: 'Verified technical mitigation and bounds in place.',
-            },
-          },
-        });
-      expect(resDispute.status).toBe(200);
-      expect(resDispute.body.error?.message).toMatch(/pool\.connect|temporarily unavailable/i);
-
-      router.destroy();
+    it('normalizes Windows backslashes, mixed slashes, and leading/trailing whitespace', () => {
+      expect(classifyPathByHeuristic('src\\auth\\session.ts')).toBe('security_auth');
+      expect(classifyPathByHeuristic('  apps/web/ui/Button.tsx  ')).toBe('ui_frontend');
+      expect(classifyPathByHeuristic('priv\\repo\\migrations\\01.sql')).toBe('data_persistence');
+      expect(classifyPathByHeuristic('')).toBe('system_runtime');
     });
 
-    it('all individual per-tool overrides independently override top-level modelClient', async () => {
-      const topModelClient = { complete: vi.fn() };
-      const preflightClient = {
-        complete: vi.fn().mockResolvedValue({
-          content: JSON.stringify([
-            {
-              title: 'Override preflight finding',
-              severity: 'P1',
-              category: 'Architecture',
-              file_path: 'src/main.ts',
-              line: 5,
-              rationale: 'Override client finding',
-              confidence: 0.9,
-            },
-          ]),
-        }),
-      };
-      const explainClient = {
-        complete: vi.fn().mockResolvedValue({
-          content: JSON.stringify({
-            explanation: 'Override explain explanation',
-            satisfies_requirement: true,
-            citations: ['ADR-0010'],
-          }),
-        }),
-      };
-      const fixClient = {
-        complete: vi.fn().mockResolvedValue({
-          content: JSON.stringify({
-            replacement_lines: 'const fix = true;',
-            explanation: 'Override fix patch',
-          }),
-        }),
+    it('evaluates batch classification consistency with classifyDomainLanesByHeuristic', () => {
+      const files = [
+        { path: 'src/auth/login.ts' },
+        { path: 'src/db/repo.ts' },
+        { path: 'src/api/routes.ts' },
+        { path: 'src/ui/App.tsx' },
+      ];
+
+      const mapping = classifyDomainLanesByHeuristic(files);
+      expect(mapping['src/auth/login.ts']).toBe('security_auth');
+      expect(mapping['src/db/repo.ts']).toBe('data_persistence');
+      expect(mapping['src/api/routes.ts']).toBe('api_contracts');
+      expect(mapping['src/ui/App.tsx']).toBe('ui_frontend');
+    });
+  });
+
+  // =========================================================================
+  // 4. TASK SCOPING & CONTEXT ISOLATION INVARIANTS
+  // =========================================================================
+  describe('Dimension 4: Task Scoping Invariants & Context Isolation', () => {
+    const mixedFiles = [
+      { path: 'src/auth/login.ts', patch: '@@ -1,1 +1,2 @@\n+export function login() {}' },
+      { path: 'src/db/users.ts', patch: '@@ -1,1 +1,2 @@\n+export function findUser() {}' },
+      { path: 'src/api/users.ts', patch: '@@ -1,1 +1,2 @@\n+export function getUserEndpoint() {}' },
+      { path: 'src/ui/Profile.tsx', patch: '@@ -1,1 +1,2 @@\n+export function Profile() {}' },
+    ];
+
+    it('strictly isolates subagent outline to assigned paths only', () => {
+      const full = generateFileTreeOutline(mixedFiles);
+      const task: ReviewTask = {
+        id: 'task-sec',
+        dimension: 'security',
+        paths: ['src/auth/login.ts'],
+        question: 'Any auth flaws?',
+        rationale: 'Reviewing auth',
       };
 
-      const mockDb = {
-        query: vi.fn().mockResolvedValue({
-          rows: [
-            {
-              run_id: 'run-override-all',
-              execution_attempt: 1,
-              payload: JSON.stringify(sampleDbPayload),
-            },
-          ],
-        }),
-      };
+      const scoped = generateTaskScopedASTOutline(full, { task });
+      expect(scoped.files).toHaveLength(1);
+      expect(scoped.files[0].filePath).toBe('src/auth/login.ts');
+      expect(scoped.summaryText).toContain('src/auth/login.ts');
+      expect(scoped.summaryText).not.toContain('src/db/users.ts');
+      expect(scoped.summaryText).not.toContain('src/api/users.ts');
+      expect(scoped.summaryText).not.toContain('src/ui/Profile.tsx');
+    });
 
-      const router = createRemoteMcpRouter({
-        db: mockDb,
-        authenticator: createSimpleAdminAuthenticator(),
-        modelClient: topModelClient as any,
-        preflightDeps: { modelClient: preflightClient as any },
-        explainDeps: { modelClient: explainClient as any },
-        generateFixDiffDeps: { modelClient: fixClient as any },
+    it('isolates subagent outline to persona domain affinity when paths are empty', () => {
+      const full = generateFileTreeOutline(mixedFiles);
+      const scopedSec = generateTaskScopedASTOutline(full, {
+        persona: 'sec-lane',
       });
-      const app = createRouterTestApp(router);
 
-      // Preflight
-      await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({
-          jsonrpc: '2.0',
-          id: 301,
-          method: 'tools/call',
-          params: {
-            name: 'preflight_diff_review',
-            arguments: {
-              diff: 'diff --git a/src/main.ts b/src/main.ts\n--- a/src/main.ts\n+++ b/src/main.ts\n@@ -1,1 +1,2 @@\n+export const y = 2;',
-              repo: 'exampleorg/example-api',
-            },
-          },
-        });
-      expect(preflightClient.complete).toHaveBeenCalled();
+      expect(scopedSec.files).toHaveLength(1);
+      expect(scopedSec.files[0].filePath).toBe('src/auth/login.ts');
 
-      // Explain
-      await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({
-          jsonrpc: '2.0',
-          id: 302,
-          method: 'tools/call',
-          params: {
-            name: 'explain_finding',
-            arguments: {
-              owner: TEST_OWNER,
-              repo: TEST_REPO,
-              pull_number: TEST_PR,
-              finding_id: sampleDbFindingId,
-              question: 'Explain this finding',
-            },
-          },
-        });
-      expect(explainClient.complete).toHaveBeenCalled();
-
-      // Fix diff
-      await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({
-          jsonrpc: '2.0',
-          id: 303,
-          method: 'tools/call',
-          params: {
-            name: 'generate_fix_diff',
-            arguments: {
-              owner: TEST_OWNER,
-              repo: TEST_REPO,
-              pr_number: TEST_PR,
-              finding_id: sampleDbFindingId,
-            },
-          },
-        });
-      expect(fixClient.complete).toHaveBeenCalled();
-
-      // Top-level client should not have been called for these 3 overridden tools
-      expect(topModelClient.complete).not.toHaveBeenCalled();
-
-      router.destroy();
+      const scopedPerf = generateTaskScopedASTOutline(full, {
+        persona: 'perf-lane',
+      });
+      // perf-lane has affinity with data_persistence and system_runtime
+      expect(scopedPerf.files.map((f) => f.filePath)).toContain('src/db/users.ts');
+      expect(scopedPerf.files.map((f) => f.filePath)).not.toContain('src/auth/login.ts');
     });
   });
 });

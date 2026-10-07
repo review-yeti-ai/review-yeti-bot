@@ -60,6 +60,47 @@ export interface MessageWindowPolicy {
    * rather than throwing -- compaction must never fail a review turn.
    */
   toolCalls?: readonly MessageWindowToolCall[];
+  /** Ephemeral tools whose raw diff payloads are evicted from older turns into finding synopses */
+  ephemeralTools?: readonly string[];
+}
+
+export const DEFAULT_EPHEMERAL_TOOLS: readonly string[] = ['get_hunk', 'get_diff'];
+
+export function isEphemeralTool(toolName: string | undefined, ephemeralTools?: readonly string[]): boolean {
+  if (!toolName) return false;
+  if (ephemeralTools) {
+    return ephemeralTools.includes(toolName);
+  }
+  return DEFAULT_EPHEMERAL_TOOLS.includes(toolName);
+}
+
+export function parseHunkTarget(call: MessageWindowToolCall | undefined): { filePath: string; startLine?: number; endLine?: number } {
+  if (!call) return { filePath: 'unknown' };
+  const args = call.args as any;
+  let filePath = typeof args?.filePath === 'string' ? args.filePath : (typeof args?.path === 'string' ? args.path : undefined);
+  let startLine = typeof args?.startLine === 'number' ? args.startLine : (typeof args?.start_line === 'number' ? args.start_line : undefined);
+  let endLine = typeof args?.endLine === 'number' ? args.endLine : (typeof args?.end_line === 'number' ? args.end_line : undefined);
+
+  if (!filePath && call.scope) {
+    const match = call.scope.match(/^(.*?):(\d+)-(\d+)$/);
+    if (match) {
+      filePath = match[1];
+      startLine = parseInt(match[2], 10);
+      endLine = parseInt(match[3], 10);
+    } else {
+      filePath = call.scope;
+    }
+  }
+
+  return { filePath: filePath || 'unknown', startLine, endLine };
+}
+
+export function extractSynopsis(assistantMessage: OpenRouterMessage | undefined): string {
+  if (!assistantMessage || typeof assistantMessage.content !== 'string') return 'inspected';
+  const text = assistantMessage.content.trim();
+  const clean = text.replace(/```[\s\S]*?```/g, '').replace(/[\r\n]+/g, ' ').trim();
+  if (!clean) return 'inspected';
+  return clean.slice(0, 40);
 }
 
 function isToolResultMessage(message: OpenRouterMessage): message is OpenRouterMessage & { content: string } {
@@ -68,10 +109,25 @@ function isToolResultMessage(message: OpenRouterMessage): message is OpenRouterM
     && message.content.startsWith(PI_TOOL_RESULT_MARKER);
 }
 
-function formatReceiptLine(call: MessageWindowToolCall | undefined, elidedBytes: number): string {
+function formatReceiptLine(
+  call: MessageWindowToolCall | undefined,
+  elidedBytes: number,
+  synopsis?: string,
+  ephemeralTools?: readonly string[],
+): string {
   const tool = call?.tool ?? 'unknown';
   const scope = call?.scope ?? 'unknown';
   const exhaustive = call?.exhaustive ?? false;
+
+  if (isEphemeralTool(tool, ephemeralTools)) {
+    const { filePath, startLine, endLine } = parseHunkTarget(call);
+    const lineStr = startLine !== undefined && endLine !== undefined
+      ? `${startLine}-${endLine}`
+      : 'all';
+    const syn = (synopsis || (call as any)?.synopsis || 'inspected').slice(0, 40);
+    return `${PI_TOOL_RESULT_MARKER}_RECEIPT tool=${tool} scope=${scope} exhaustive=${exhaustive} bytes_elided=${elidedBytes} [DIFF_EVICTION_RECEIPT: file=${filePath}, lines=${lineStr}, bytes_elided=${elidedBytes}, synopsis=${syn}]`;
+  }
+
   return `${PI_TOOL_RESULT_MARKER}_RECEIPT tool=${tool} scope=${scope} exhaustive=${exhaustive} bytes_elided=${elidedBytes}`;
 }
 
@@ -125,11 +181,27 @@ export function compactMessageWindow(
   // `toolResultIndex` walks `toolCalls[]` in lockstep with encounter order of `[PI_TOOL_RESULT]`
   // messages, starting from the very first older turn -- the same order panelEngine.ts populated
   // both arrays in, so this stays aligned without needing to touch the active window.
+  // Aligned scan of older tool-result messages with their corresponding toolCall
+  const olderToolResults: Array<{ message: OpenRouterMessage & { content: string }; call?: MessageWindowToolCall; turnIndex: number }> = [];
+  let trScanIdx = 0;
+  for (let t = 0; t < olderTurns.length; t++) {
+    for (const msg of olderTurns[t]) {
+      if (isToolResultMessage(msg)) {
+        olderToolResults.push({ message: msg, call: toolCalls[trScanIdx], turnIndex: t });
+        trScanIdx++;
+      }
+    }
+  }
+
   const retained = new Set<OpenRouterMessage>();
   if (policy.retainSmallToolResults === true) {
     let retainedBytes = 0;
-    for (const message of olderTurns.flat().reverse()) {
-      if (!isToolResultMessage(message)) continue;
+    for (let i = olderToolResults.length - 1; i >= 0; i--) {
+      const { message, call } = olderToolResults[i];
+      // Ephemeral tool results (get_hunk, get_diff) are evicted regardless of payload size
+      if (isEphemeralTool(call?.tool, policy.ephemeralTools)) {
+        continue;
+      }
       const bytes = Buffer.byteLength(message.content, 'utf8');
       if (bytes <= SMALL_TOOL_RESULT_MAX_BYTES && retainedBytes + bytes <= RETAINED_TOOL_RESULTS_MAX_BYTES) {
         retained.add(message);
@@ -140,15 +212,28 @@ export function compactMessageWindow(
 
   let toolResultIndex = 0;
   const compactedOlder: OpenRouterMessage[] = [];
-  for (const turn of olderTurns) {
+  for (let t = 0; t < olderTurns.length; t++) {
+    const turn = olderTurns[t];
     for (const message of turn) {
       if (isToolResultMessage(message)) {
         const call = toolCalls[toolResultIndex];
         toolResultIndex += 1;
-        compactedOlder.push(retained.has(message) ? message : {
-          role: 'user',
-          content: formatReceiptLine(call, Buffer.byteLength(message.content, 'utf8')),
-        });
+        if (retained.has(message)) {
+          compactedOlder.push(message);
+        } else {
+          const nextTurn = olderTurns[t + 1] ?? turns[splitAt];
+          const nextAssistantMsg = nextTurn?.[0];
+          const synopsis = extractSynopsis(nextAssistantMsg);
+          compactedOlder.push({
+            role: 'user',
+            content: formatReceiptLine(
+              call,
+              Buffer.byteLength(message.content, 'utf8'),
+              synopsis,
+              policy.ephemeralTools,
+            ),
+          });
+        }
       } else {
         compactedOlder.push(message);
       }

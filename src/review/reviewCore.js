@@ -537,7 +537,20 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   }
 
   const coverageComplete = options.coverageComplete !== false;
-  const quorumSatisfied = expected > 0 && failedLanes.length === 0 && completedResults.length === expected && coverageComplete;
+  const isBlockerFastPath = options.blockerFastPath === true;
+  const isFileCoverageMode = options.coverageMode === 'file_coverage'
+    || options.fileCoverageSatisfied === true
+    || (Boolean(options.fileCoverageQuorum) && options.fileCoverageQuorum.satisfied === true);
+
+  let quorumSatisfied;
+  if (isBlockerFastPath) {
+    quorumSatisfied = true;
+  } else if (isFileCoverageMode) {
+    quorumSatisfied = expected > 0 && failedLanes.length === 0 && coverageComplete;
+  } else {
+    quorumSatisfied = expected > 0 && failedLanes.length === 0 && completedResults.length === expected && coverageComplete;
+  }
+
   const incomplete = !quorumSatisfied;
   const verdict = incomplete ? 'BLOCK' : candidateVerdict;
   const status = incomplete ? 'INCOMPLETE_REVIEW' : verdict;
@@ -581,6 +594,8 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
     rawFindings,
     metrics: { p0Count, p1Count, p2Count, p3Count, nitCount, totalFindings: findings.length, rawFindingCount: rawFindings.length },
     findings,
+    ...(isBlockerFastPath ? { blockerFastPath: true } : {}),
+    ...(isFileCoverageMode ? { fileCoverageSatisfied: true } : {}),
   };
 }
 

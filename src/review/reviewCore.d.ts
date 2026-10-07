@@ -69,6 +69,8 @@ export interface CanonicalArbitration {
   totalPersonas: number;
   completedPersonas: number;
   quorumSatisfied: boolean;
+  blockerFastPath?: boolean;
+  fileCoverageSatisfied?: boolean;
   verdict: CanonicalVerdict;
   status: ReviewStatus;
   rationale: string;
@@ -86,6 +88,9 @@ export interface CoverageGap {
 export interface ArbitrationOptions {
   changedFiles?: ReviewChangedFile[];
   coverageComplete?: boolean;
+  blockerFastPath?: boolean;
+  fileCoverageSatisfied?: boolean;
+  quorumSatisfied?: boolean;
   /**
    * Named evidence/coverage artifacts that caused `coverageComplete` to be false (e.g. a
    * submodule policy decision or a failed `.gitmodules` fetch). When a clean persona panel is

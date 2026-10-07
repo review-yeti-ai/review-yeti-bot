@@ -1761,6 +1761,8 @@ describeWithPostgres('grounded v2 continuity through the real PostgreSQL Gate tr
         if (input.forgedContinuity) {
           const forgedMaterial = { ...continuity, status: 'reopened' as const,
             durableFindingId: `lf1_${'a'.repeat(32)}`, historySnapshotId: randomUUID(),
+            historyContextDigest: continuity.historyContextDigest ?? sha256('forged-history-context'),
+            unavailableReason: undefined,
             sourceEventIds: continuity.status === 'continuous' || continuity.status === 'reopened'
               ? continuity.sourceEventIds : [randomUUID()] };
           const { evidenceDigest: _ignored, ...unsigned } = forgedMaterial as GroundedFindingContinuity;

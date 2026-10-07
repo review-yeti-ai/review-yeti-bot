@@ -24,6 +24,7 @@
  *    security-floor check below for why that specifically matters.
  */
 
+import { createHash } from 'node:crypto';
 import { classifyDomainLanesByHeuristic, isBypassDiffOnlyPath } from './pathDomainContract';
 
 // ---------------------------------------------------------------------------
@@ -425,3 +426,512 @@ export function validateTaskPlan(
 
   return { valid: true, tasks: normalizedTasks };
 }
+
+// ===========================================================================
+// ReviewTaskContract v2: Lean Finding Summary & Execution Contract
+// ===========================================================================
+
+export type FindingSeverity = 'P0' | 'P1' | 'P2';
+
+export interface LeanFindingSummary {
+  severity: FindingSeverity;
+  file: string;
+  line: number;
+  fingerprint: string;
+  summary: string;
+}
+
+export type ReviewFindingDigest = LeanFindingSummary;
+
+export interface ReviewTaskResultV2 {
+  nonce: string;
+  task: string;
+  status: 'COMPLETE' | 'BLOCKED';
+  blockedReason?: string | null;
+  findings: LeanFindingSummary[];
+}
+
+export function computeFindingFingerprint(
+  runId: string,
+  persona: string,
+  file: string,
+  line: number,
+  summary: string,
+): string {
+  const normFile = (file || '').toLowerCase().replace(/\\/g, '/').trim();
+  const normSummary = (summary || '').trim().replace(/\s+/g, ' ');
+  return createHash('sha256')
+    .update(`${runId}:${persona}:${normFile}:${line}:${normSummary}`)
+    .digest('hex')
+    .slice(0, 16);
+}
+
+export function isDeterministicFingerprint(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    (/^fp1_[a-f0-9]{24}$/u.test(value) || /^[a-f0-9]{16}$/i.test(value) || /^[a-f0-9]{64}$/i.test(value))
+  );
+}
+
+export interface ValidateFindingDigestContext {
+  changedFiles: string[] | Array<{ path: string }>;
+  addedLinesByFile?: Record<string, number[]>;
+  runId?: string;
+  persona?: string;
+}
+
+export function validateFindingDigest(
+  raw: unknown,
+  context: string[] | ValidateFindingDigestContext,
+): { valid: true; digest: LeanFindingSummary } | { valid: false; reason: string; error: string } {
+  const ctx: ValidateFindingDigestContext = Array.isArray(context)
+    ? { changedFiles: context }
+    : (context || { changedFiles: [] });
+
+  const changedFileList = (ctx.changedFiles || []).map((f) =>
+    typeof f === 'string' ? f.replace(/\\/g, '/').trim() : (f?.path || '').replace(/\\/g, '/').trim(),
+  );
+
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { valid: false, reason: 'invalid_shape', error: 'Finding must be an object' };
+  }
+
+  const rawObj = raw as Record<string, unknown>;
+
+  if (rawObj.severity !== 'P0' && rawObj.severity !== 'P1' && rawObj.severity !== 'P2') {
+    return { valid: false, reason: 'severity_invalid', error: `Invalid severity: ${String(rawObj.severity)}` };
+  }
+
+  const file = typeof rawObj.file === 'string'
+    ? rawObj.file.replace(/\\/g, '/').trim()
+    : typeof rawObj.path === 'string'
+      ? rawObj.path.replace(/\\/g, '/').trim()
+      : '';
+
+  if (!file) {
+    return { valid: false, reason: 'path_invalid', error: 'Finding file path must be a non-empty string' };
+  }
+
+  if (!changedFileList.includes(file)) {
+    return { valid: false, reason: 'path_not_changed', error: `File is not in changed files: ${file}` };
+  }
+
+  const line = rawObj.line;
+  if (typeof line !== 'number' || !Number.isSafeInteger(line) || line <= 0) {
+    return { valid: false, reason: 'line_invalid', error: `Invalid line number: ${String(line)}` };
+  }
+
+  if (ctx.addedLinesByFile && ctx.addedLinesByFile[file]) {
+    const addedLines = ctx.addedLinesByFile[file];
+    if (!addedLines.includes(line)) {
+      return { valid: false, reason: 'line_not_added', error: `line_not_added: Line ${line} was not added in diff` };
+    }
+  }
+
+  const rawSummary = typeof rawObj.summary === 'string'
+    ? rawObj.summary
+    : typeof rawObj.title === 'string'
+      ? rawObj.title
+      : '';
+  const summary = rawSummary.trim();
+
+  if (!summary) {
+    return { valid: false, reason: 'summary_empty', error: 'Summary cannot be empty' };
+  }
+
+  if (summary.length > 400) {
+    return { valid: false, reason: 'summary_too_long', error: 'Summary exceeds 400 characters' };
+  }
+
+  const fingerprint = isDeterministicFingerprint(rawObj.fingerprint)
+    ? (rawObj.fingerprint as string)
+    : computeFindingFingerprint(ctx.runId || 'default-run', ctx.persona || 'reviewer', file, line, summary);
+
+  return {
+    valid: true,
+    digest: {
+      severity: rawObj.severity as FindingSeverity,
+      file,
+      line,
+      fingerprint,
+      summary,
+    },
+  };
+}
+
+export interface ValidateReviewTaskResultV2Context {
+  changedFiles: string[] | Array<{ path: string }>;
+  expectedNonce?: string;
+  expectedTaskId?: string;
+  addedLinesByFile?: Record<string, number[]>;
+  runId?: string;
+  persona?: string;
+}
+
+export type ReviewTaskResultV2ValidationResult =
+  | { valid: true; result: ReviewTaskResultV2 }
+  | { valid: false; error: string; reason: string; index?: number };
+
+export function validateReviewTaskResultV2(
+  raw: unknown,
+  context: string[] | ValidateReviewTaskResultV2Context,
+): ReviewTaskResultV2ValidationResult {
+  const ctx: ValidateReviewTaskResultV2Context = Array.isArray(context)
+    ? { changedFiles: context }
+    : (context || { changedFiles: [] });
+
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { valid: false, reason: 'response_shape', error: 'Review task result must be an object' };
+  }
+
+  const obj = raw as Record<string, unknown>;
+
+  if (typeof obj.nonce !== 'string' || !obj.nonce) {
+    return { valid: false, reason: 'nonce_invalid', error: 'Task result nonce must be a non-empty string' };
+  }
+  if (ctx.expectedNonce !== undefined && obj.nonce !== ctx.expectedNonce) {
+    return { valid: false, reason: 'nonce_mismatch', error: `Nonce mismatch: expected ${ctx.expectedNonce}, got ${obj.nonce}` };
+  }
+
+  if (typeof obj.task !== 'string' || !obj.task) {
+    return { valid: false, reason: 'task_invalid', error: 'Task result task id must be a non-empty string' };
+  }
+  if (ctx.expectedTaskId !== undefined && obj.task !== ctx.expectedTaskId) {
+    return { valid: false, reason: 'task_mismatch', error: `Task mismatch: expected ${ctx.expectedTaskId}, got ${obj.task}` };
+  }
+
+  if (obj.status !== 'COMPLETE' && obj.status !== 'BLOCKED') {
+    return { valid: false, reason: 'status_enum', error: `Invalid status: ${String(obj.status)}, must be COMPLETE or BLOCKED` };
+  }
+
+  const blockedReason = obj.blockedReason === null || typeof obj.blockedReason === 'string'
+    ? (obj.blockedReason as string | null)
+    : undefined;
+
+  if (!Array.isArray(obj.findings)) {
+    return { valid: false, reason: 'findings_not_array', error: 'Task result findings must be an array' };
+  }
+
+  const findings: LeanFindingSummary[] = [];
+  for (let i = 0; i < obj.findings.length; i++) {
+    const rawFinding = obj.findings[i];
+    const validation = validateFindingDigest(rawFinding, ctx);
+    if (!validation.valid) {
+      return {
+        valid: false,
+        reason: validation.reason,
+        error: `Finding at index ${i} is invalid: ${validation.error}`,
+        index: i,
+      };
+    }
+    findings.push(validation.digest);
+  }
+
+  return {
+    valid: true,
+    result: {
+      nonce: obj.nonce,
+      task: obj.task,
+      status: obj.status as 'COMPLETE' | 'BLOCKED',
+      blockedReason,
+      findings,
+    },
+  };
+}
+
+export function hydrateLeanFinding(summary: LeanFindingSummary): {
+  severity: FindingSeverity;
+  path: string;
+  line: number;
+  startLine: number;
+  title: string;
+  body: string;
+  fingerprint: string;
+} {
+  return {
+    severity: summary.severity,
+    path: summary.file,
+    line: summary.line,
+    startLine: summary.line,
+    title: summary.summary.slice(0, 160),
+    body: summary.summary,
+    fingerprint: summary.fingerprint,
+  };
+}
+
+// ===========================================================================
+// File Coverage Quorum Validator & Contract (R4)
+// ===========================================================================
+
+export interface FileCoverageOptions {
+  minFileCoveragePct?: number;
+  requiredCoveragePct?: number;
+  enforceSecurityFloor?: boolean;
+  securityFloorRequired?: boolean;
+  activeFindings?: (LeanFindingSummary | ReviewFindingDigest)[];
+  bypassLockfiles?: boolean;
+}
+
+export interface FileCoverageValidationResult {
+  satisfied: boolean;
+  coveragePct: number;
+  coveredPaths: string[];
+  uncoveredPaths: string[];
+  securityCoverageSatisfied: boolean;
+  missingSecurityPaths: string[];
+  quorumSatisfied?: boolean;
+  securityFloorSatisfied?: boolean;
+  mode?: 'file_coverage' | 'blocker_fast_path';
+  verdict?: 'SHIP' | 'FIX_FIRST' | 'BLOCK';
+  status?: 'COMPLETE' | 'INCOMPLETE_REVIEW' | 'BLOCKER_EXIT';
+  rationale?: string;
+  blockerFastPath?: boolean;
+  blockerFinding?: LeanFindingSummary;
+}
+
+export interface CompletedTaskOutcomeLike {
+  taskId?: string;
+  task?: string;
+  id?: string;
+  dimension?: TaskDimension;
+  paths?: string[];
+  coveredPaths?: string[];
+  status?: string;
+  findings?: LeanFindingSummary[];
+}
+
+export function validateFileCoverageQuorum(
+  planOrOptions: ReviewTaskPlan | {
+    plan?: ReviewTaskPlan;
+    changedFiles: (string | { path: string })[];
+    completedTasks: (ReviewTaskResultV2 | CompletedTaskOutcomeLike)[];
+    activeFindings?: (LeanFindingSummary | ReviewFindingDigest)[];
+    minFileCoveragePct?: number;
+    requiredCoveragePct?: number;
+    enforceSecurityFloor?: boolean;
+    securityFloorRequired?: boolean;
+  },
+  maybeCompletedTasks?: (ReviewTaskResultV2 | CompletedTaskOutcomeLike)[],
+  maybeChangedFiles?: (string | { path: string })[],
+  maybeOptions?: FileCoverageOptions,
+): FileCoverageValidationResult {
+  let plan: ReviewTaskPlan | undefined;
+  let completedTasks: (ReviewTaskResultV2 | CompletedTaskOutcomeLike)[];
+  let rawChangedFiles: (string | { path: string })[];
+  let options: FileCoverageOptions;
+
+  if (typeof planOrOptions === 'object' && planOrOptions !== null && 'changedFiles' in planOrOptions) {
+    const opts = planOrOptions as {
+      plan?: ReviewTaskPlan;
+      changedFiles: (string | { path: string })[];
+      completedTasks: (ReviewTaskResultV2 | CompletedTaskOutcomeLike)[];
+      activeFindings?: (LeanFindingSummary | ReviewFindingDigest)[];
+      minFileCoveragePct?: number;
+      requiredCoveragePct?: number;
+      enforceSecurityFloor?: boolean;
+      securityFloorRequired?: boolean;
+    };
+    plan = opts.plan;
+    completedTasks = Array.isArray(opts.completedTasks) ? opts.completedTasks : [];
+    rawChangedFiles = Array.isArray(opts.changedFiles) ? opts.changedFiles : [];
+    options = {
+      activeFindings: opts.activeFindings,
+      minFileCoveragePct: opts.minFileCoveragePct,
+      requiredCoveragePct: opts.requiredCoveragePct,
+      enforceSecurityFloor: opts.enforceSecurityFloor ?? opts.securityFloorRequired,
+      securityFloorRequired: opts.securityFloorRequired ?? opts.enforceSecurityFloor,
+    };
+  } else {
+    plan = planOrOptions as ReviewTaskPlan;
+    completedTasks = Array.isArray(maybeCompletedTasks) ? maybeCompletedTasks : [];
+    rawChangedFiles = Array.isArray(maybeChangedFiles) ? maybeChangedFiles : [];
+    options = maybeOptions || {};
+  }
+
+  const changedFiles: string[] = rawChangedFiles.map((file) =>
+    typeof file === 'string' ? file : file.path
+  );
+
+  const activeFindings: LeanFindingSummary[] = [
+    ...(options.activeFindings || []),
+    ...completedTasks.flatMap((t) => (Array.isArray(t.findings) ? t.findings : [])),
+  ];
+
+  // 1. Blocker Fast-Path Quorum Check (Verified P0 Finding Immediately Halts Review)
+  const p0 = activeFindings.find((f) => f.severity === 'P0');
+  if (p0) {
+    return {
+      satisfied: true,
+      quorumSatisfied: true,
+      mode: 'blocker_fast_path',
+      verdict: 'BLOCK',
+      status: 'BLOCKER_EXIT',
+      rationale: `P0 Blocker detected on ${p0.file}:${p0.line}. Fast-path early-exit triggered.`,
+      coveragePct: 0,
+      coveredPaths: [],
+      uncoveredPaths: [],
+      securityCoverageSatisfied: true,
+      securityFloorSatisfied: true,
+      missingSecurityPaths: [],
+      blockerFastPath: true,
+      blockerFinding: p0,
+    };
+  }
+
+  // 2. Classify reviewable files (exempt pure docs, assets, and lockfiles)
+  const domainMap = classifyDomainLanesByHeuristic(changedFiles.map((p) => ({ path: p })));
+  const reviewableCodePaths = changedFiles.filter(
+    (p) => domainMap[p] !== 'docs_assets' && !isBypassDiffOnlyPath(p)
+  );
+
+  // If all files are documentation, assets, or bypass lockfiles, coverage is automatically satisfied
+  if (reviewableCodePaths.length === 0) {
+    const hasP1 = activeFindings.some((f) => f.severity === 'P1');
+    return {
+      satisfied: true,
+      quorumSatisfied: true,
+      mode: 'file_coverage',
+      verdict: hasP1 ? 'FIX_FIRST' : 'SHIP',
+      status: 'COMPLETE',
+      rationale: 'All changed files are documentation, assets, or bypass lockfiles. Coverage satisfied automatically.',
+      coveragePct: 100,
+      coveredPaths: [],
+      uncoveredPaths: [],
+      securityCoverageSatisfied: true,
+      securityFloorSatisfied: true,
+      missingSecurityPaths: [],
+      blockerFastPath: false,
+    };
+  }
+
+  // 3. Collect covered paths from completed tasks only
+  const coveredSet = new Set<string>();
+  const securityCoveredSet = new Set<string>();
+
+  for (const t of completedTasks) {
+    const item = t as Record<string, any>;
+    const status = (item.status || '').toLowerCase();
+    if (status === 'blocked' || status === 'error' || status === 'failed' || status === 'stalled') {
+      continue;
+    }
+
+    let taskPaths: string[] = [];
+    if (Array.isArray(item.coveredPaths) && item.coveredPaths.length > 0) {
+      taskPaths = item.coveredPaths;
+    } else if (Array.isArray(item.paths) && item.paths.length > 0) {
+      taskPaths = item.paths;
+    } else if (plan && Array.isArray(plan.tasks)) {
+      const taskId = item.task || item.taskId || item.id;
+      const matched = plan.tasks.find((pTask) => pTask.id === taskId);
+      if (matched && Array.isArray(matched.paths)) {
+        taskPaths = matched.paths;
+      }
+    }
+
+    let dimension: TaskDimension | undefined = item.dimension;
+    if (!dimension && plan && Array.isArray(plan.tasks)) {
+      const taskId = item.task || item.taskId || item.id;
+      const matched = plan.tasks.find((pTask) => pTask.id === taskId);
+      if (matched) {
+        dimension = matched.dimension;
+      }
+    }
+
+    for (const p of taskPaths) {
+      coveredSet.add(p);
+      if (dimension === 'security') {
+        securityCoveredSet.add(p);
+      }
+    }
+  }
+
+  const uncoveredPaths = reviewableCodePaths.filter((p) => !coveredSet.has(p));
+  const coveredPaths = reviewableCodePaths.filter((p) => coveredSet.has(p));
+  const coveragePct = reviewableCodePaths.length === 0
+    ? 100
+    : Math.round(((reviewableCodePaths.length - uncoveredPaths.length) / reviewableCodePaths.length) * 100);
+
+  // 4. Security Floor Check
+  const securityAuthPaths = changedFiles.filter((p) => domainMap[p] === 'security_auth');
+  const missingSecurityPaths = securityAuthPaths.filter((p) => !securityCoveredSet.has(p));
+  const enforceFloor = options.enforceSecurityFloor ?? options.securityFloorRequired ?? true;
+  const securityCoverageSatisfied = enforceFloor ? missingSecurityPaths.length === 0 : true;
+
+  const minPct = options.minFileCoveragePct ?? options.requiredCoveragePct ?? 100;
+  const isCoverageSatisfied = coveragePct >= minPct;
+  const satisfied = isCoverageSatisfied && securityCoverageSatisfied;
+
+  const hasP1 = activeFindings.some((f) => f.severity === 'P1');
+  const verdict: 'SHIP' | 'FIX_FIRST' | 'BLOCK' = !satisfied
+    ? 'BLOCK'
+    : hasP1
+      ? 'FIX_FIRST'
+      : 'SHIP';
+  const status: 'COMPLETE' | 'INCOMPLETE_REVIEW' | 'BLOCKER_EXIT' = satisfied
+    ? 'COMPLETE'
+    : 'INCOMPLETE_REVIEW';
+
+  let rationale: string;
+  if (!securityCoverageSatisfied) {
+    rationale = `Security floor unsatisfied: [${missingSecurityPaths.join(', ')}] not inspected by security task.`;
+  } else if (!isCoverageSatisfied) {
+    rationale = `File coverage incomplete (${coveragePct}% < ${minPct}%). Uncovered: [${uncoveredPaths.join(', ')}].`;
+  } else {
+    rationale = `${coveragePct}% of reviewable files inspected across completed domains. Quorum satisfied.`;
+  }
+
+  return {
+    satisfied,
+    quorumSatisfied: satisfied,
+    coveragePct,
+    coveredPaths,
+    uncoveredPaths,
+    securityCoverageSatisfied,
+    securityFloorSatisfied: securityCoverageSatisfied,
+    missingSecurityPaths,
+    mode: 'file_coverage',
+    verdict,
+    status,
+    rationale,
+    blockerFastPath: false,
+  };
+}
+
+export function isFileCoverageSatisfied(
+  completedTasks: Array<{
+    dimension?: TaskDimension;
+    paths?: string[];
+    coveredPaths?: string[];
+    status?: string;
+    task?: string;
+    taskId?: string;
+  }>,
+  changedFiles: (string | { path: string })[],
+  options?: {
+    enforceSecurityFloor?: boolean;
+    minFileCoveragePct?: number;
+    plan?: ReviewTaskPlan;
+  },
+): {
+  satisfied: boolean;
+  uncoveredPaths: string[];
+  coveragePct: number;
+  missingSecurityPaths: string[];
+  securityCoverageSatisfied: boolean;
+} {
+  const result = validateFileCoverageQuorum(
+    options?.plan ?? { tasks: [] },
+    completedTasks as any,
+    changedFiles,
+    options,
+  );
+  return {
+    satisfied: result.satisfied,
+    uncoveredPaths: result.uncoveredPaths,
+    coveragePct: result.coveragePct,
+    missingSecurityPaths: result.missingSecurityPaths,
+    securityCoverageSatisfied: result.securityCoverageSatisfied,
+  };
+}
+
+

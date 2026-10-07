@@ -161,3 +161,9 @@ function gateFailureMetadata(gate: StoredReviewGate): { title?: string; summary?
     summary: `Review Yeti Gate failed: ${reason}. This is not an approval.`,
   };
 }
+
+export {
+  hydrateLeanFindingToCheckAnnotation,
+  hydrateFindingToCheckAnnotation,
+} from '../cli/publishingReview';
+

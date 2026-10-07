@@ -606,11 +606,39 @@ export type ReviewEngineName = z.infer<typeof reviewEngineSchema>;
  * turn. Exposing it as a boolean would offer exactly one meaningful value, `false`, and would
  * invite a future wiring pass to turn a non-negotiable control into an operator toggle.
  */
+export const diffCompactionConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  max_active_hunks: z.number().int().positive().default(1),
+  evict_raw_diffs: z.boolean().optional(),
+  synopsis_retention_bytes: z.number().int().positive().optional().default(16384),
+}).strict();
+export type DiffCompactionConfig = z.infer<typeof diffCompactionConfigSchema>;
+
+export const findingsDecompositionConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  max_summary_length: z.number().int().positive().default(300),
+  on_demand_remediation: z.boolean().optional().default(true),
+}).strict();
+export type FindingsDecompositionConfig = z.infer<typeof findingsDecompositionConfigSchema>;
+
+export const quorumPolicyConfigSchema = z.object({
+  mode: z.enum(['file_coverage', 'all_tasks', 'blocker_fast_path']).default('file_coverage'),
+  min_file_coverage_pct: z.number().min(0).max(100).default(100),
+  enforce_security_floor: z.boolean().default(true),
+  blocker_fast_path_enabled: z.boolean().optional().default(true),
+}).strict();
+export type QuorumPolicyConfig = z.infer<typeof quorumPolicyConfigSchema>;
+
 export const composedEngineConfigSchema = z.object({
   max_tasks: z.number().int().positive().max(64).optional(),
   max_turns_total: z.number().int().positive().max(200).optional(),
   max_turns_per_task: z.number().int().positive().max(50).optional(),
   max_findings_total: z.number().int().positive().max(500).optional(),
+  task_dimensions: z.array(z.string().min(1)).min(1).optional(),
+  swarm_context_isolation: z.boolean().optional(),
+  diff_compaction: diffCompactionConfigSchema.optional(),
+  findings_decomposition: findingsDecompositionConfigSchema.optional(),
+  quorum_policy: quorumPolicyConfigSchema.optional(),
 }).strict();
 export type ComposedEngineConfig = z.infer<typeof composedEngineConfigSchema>;
 
@@ -745,6 +773,10 @@ const ctReviewConfigV3ObjectSchema = z.object({
   severity_policy: z.literal('review-yeti-severity.v2').optional(),
   disputed_blocker_adjudicator: disputedBlockerAdjudicatorSchema.optional(),
   composed: composedEngineConfigSchema.optional(),
+  swarm_context_isolation: z.boolean().optional(),
+  diff_compaction: diffCompactionConfigSchema.optional(),
+  findings_decomposition: findingsDecompositionConfigSchema.optional(),
+  quorum_policy: quorumPolicyConfigSchema.optional(),
   review_configuration_receipt: effectiveReviewConfigReceiptSchema.optional(),
 
   reviewers: z.object({
