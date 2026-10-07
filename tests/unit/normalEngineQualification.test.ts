@@ -111,6 +111,8 @@ function validQualificationReceipt() {
       canonicalEvidenceSha256: '2'.repeat(64),
       gateDecisionSha256: '3'.repeat(64),
     },
+    composedLimits: { configuredTotalTurns: 200, investigationTurns: 188, verificationReserveTurns: 12,
+      maxFindings: 25, maxConcurrentTasks: 3, ambientOverrides: 'absent' },
     composedResourcesStatus: 'captured',
     composedResourcesPath: normalEngineQualificationComposedResourcesRelativePath(
       'nq_0123456789abcdef0123456789abcdef', 'single', 'lc_0d8f4a7c2b9e41f8'),
@@ -120,7 +122,7 @@ function validQualificationReceipt() {
       coverageComplete: true, routeReceipts: [] },
     qualificationControl: 'none',
     testBudget: { profile: 'prepared-policy-default', panelBudgetSeconds: null,
-      maxPhysicalModelRequests: null, terminalDeadlineAt: null },
+      maxPhysicalModelRequests: null, terminalDeadlineAt: null, resourceExhaustion: null },
     provider: {
       identityStatus: 'unknown',
       upstreamProviderIdentity: 'unknown',

@@ -387,6 +387,8 @@ function receiptForPlanCase(input: {
       canonicalEvidenceSha256: null,
       gateDecisionSha256: null,
     },
+    composedLimits: { configuredTotalTurns: 200, investigationTurns: 188, verificationReserveTurns: 12,
+      maxFindings: 25, maxConcurrentTasks: 3, ambientOverrides: 'absent' },
     composedResourcesStatus: 'captured',
     composedResourcesPath: input.resources.path,
     composedResourcesSha256: input.resources.sha256,
@@ -400,6 +402,8 @@ function receiptForPlanCase(input: {
       panelBudgetSeconds,
       maxPhysicalModelRequests: panelBudgetSeconds === 30 || panelBudgetSeconds === 60 ? 1 : null,
       terminalDeadlineAt: panelBudgetSeconds === null ? null : '2026-10-06T00:07:00.000Z',
+      resourceExhaustion: request.arm === 'resource-exhaustion' ? { status: 'observed', physicalRequestCap: 1,
+        logicalCompletionAttempts: 2, physicalRequests: 1, blockedPhysicalRequestAttempts: 1, firstResponseHttpStatus: 200 } : null,
     },
     provider: {
       identityStatus: 'unknown',

@@ -168,8 +168,10 @@ function receiptForPlanCase(env: NodeJS.ProcessEnv, profile: string) {
       : diagnosticIncomplete
         ? { workerOutcomeClass: 'incomplete', gateOutcomeClass: 'incomplete', agreement: 'incomplete',
           workerCompletionSha256: '1'.repeat(64), canonicalEvidenceSha256: null, gateDecisionSha256: '3'.repeat(64) }
-        : { workerOutcomeClass: 'completed_ineligible', gateOutcomeClass: 'completed_ineligible', agreement: 'agreement',
+      : { workerOutcomeClass: 'completed_ineligible', gateOutcomeClass: 'completed_ineligible', agreement: 'agreement',
       workerCompletionSha256: '1'.repeat(64), canonicalEvidenceSha256: '2'.repeat(64), gateDecisionSha256: '3'.repeat(64) },
+    composedLimits: { configuredTotalTurns: 200, investigationTurns: 188, verificationReserveTurns: 12,
+      maxFindings: 25, maxConcurrentTasks: 3, ambientOverrides: 'absent' },
     composedResourcesStatus: 'captured',
     composedResourcesPath: normalEngineQualificationComposedResourcesRelativePath(request.runId, request.phase, request.fixture.caseId),
     composedResourcesSha256: '9'.repeat(64),
@@ -189,7 +191,9 @@ function receiptForPlanCase(env: NodeJS.ProcessEnv, profile: string) {
         phase: request.phase, caseId: request.fixture.caseId }), captureSha256: '8'.repeat(64),
       captureUnavailableReason: null, calls: [] },
     testBudget: { profile, panelBudgetSeconds, maxPhysicalModelRequests: panelBudgetSeconds === 60 || panelBudgetSeconds === 30 ? 1 : null,
-      terminalDeadlineAt: panelBudgetSeconds === null ? null : '2026-10-06T00:07:00.000Z' },
+      terminalDeadlineAt: panelBudgetSeconds === null ? null : '2026-10-06T00:07:00.000Z',
+      resourceExhaustion: request.arm === 'resource-exhaustion' ? { status: 'observed', physicalRequestCap: 1,
+        logicalCompletionAttempts: 2, physicalRequests: 1, blockedPhysicalRequestAttempts: 1, firstResponseHttpStatus: 200 } : null },
     publication: { mode: 'disabled', githubWrites: 0, appChecks: 0, reviews: 0, comments: 0,
       ordinaryGateTouched: false, promptsPersisted: false, responsesPersisted: false, providerCredentialsPersisted: false },
     terminal: { status: diagnosticIncomplete ? 'incomplete' : 'completed',
@@ -786,6 +790,116 @@ describe('normal engine qualification source and capture', () => {
     expect(result).toMatchObject({ arm: 'provider-failure', terminal: { status: 'incomplete' },
       provider: { calls: [{ httpStatus: 401, fetchFailureClass: 'http_error', contentPersisted: false }] } });
     expect(JSON.stringify(result)).not.toContain('qualification-invalid-bifrost-inference-key');
+  });
+
+  it.each(['COMPOSED_ENGINE_MAX_TURNS', 'COMPOSED_ENGINE_MAX_FINDINGS', 'REVIEW_YETI_MAX_FINDINGS',
+    'REVIEW_YETI_MAX_CONCURRENT_LANES'])('refuses qualification when ambient %s can change composed limits', async (key) => {
+    const { env } = providerFailureEnvironment();
+    const previous = process.env[key];
+    process.env[key] = '1';
+    const runPublishingWorker = vi.fn();
+    try {
+      await expect(runNormalEngineQualificationCase(env, {
+        verifyRuntimeManifest: async () => VALID_ENV.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256!,
+        runPublishingWorker: runPublishingWorker as never,
+      })).rejects.toThrow('normal_engine_qualification_ambient_composed_override_disallowed');
+      expect(runPublishingWorker).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  });
+
+  it('requires observed one-request exhaustion and incomplete worker and Gate outcomes for the resource control', async () => {
+    const { env, model } = providerFailureEnvironment();
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'resource-exhaustion';
+    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+      value: 'qualification-test-key' });
+    const authorizationHeaders: string[] = [];
+    let physicalRequests = 0;
+    const fetchImplementation: FetchImplementation = async (_input, init) => {
+      physicalRequests += 1;
+      authorizationHeaders.push(new Headers(init?.headers).get('authorization') || '');
+      return new Response(JSON.stringify({ id: 'synthetic-resource-arm', model,
+        choices: [{ message: { role: 'assistant', content: '{}' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    };
+    const persistedCapture = providerCapturePersistenceStub();
+    const result = await runNormalEngineQualificationCase(env, {
+      verifyRuntimeManifest: async () => VALID_ENV.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256!,
+      providerFetchImplementation: fetchImplementation,
+      runPublishingWorker: async (_workerEnv, workerDeps) => {
+        const request = { model, messages: [{ role: 'user' as const, content: 'synthetic resource budget probe' }],
+          timeoutMs: 1_000, maxRetries: 0 };
+        await workerDeps.client!.complete(request);
+        await expect(workerDeps.client!.complete(request)).rejects.toThrow(/resource.*budget|resource.*cap/iu);
+        return { conclusion: 'failure', verdict: 'INCOMPLETE', coverage: {
+          fullPanelComplete: false, groundedReviewComplete: false,
+        } } as never;
+      },
+      persistProviderIdentifiers: async () => ({ identifiersPath: 'private/provider-identifiers.json',
+        sha256Path: 'private/provider-identifiers.sha256', privateIdentifiersSha256: 'f'.repeat(64), idempotent: false }),
+      persistProviderCapture: persistedCapture,
+      persistCaseReceipt: async () => ({ receiptPath: 'private/receipt.json', sha256Path: 'private/receipt.sha256',
+        receiptSha256: 'e'.repeat(64), idempotent: false }),
+    } as NormalEngineQualificationWorkerDependencies);
+
+    expect(physicalRequests).toBe(1);
+    expect(authorizationHeaders).toEqual(['Bearer qualification-test-key']);
+    expect(persistedCapture).toHaveBeenCalledOnce();
+    const resourceCapture = persistedCapture.mock.calls[0]?.[0] as { requests: Array<Record<string, any>> };
+    expect(resourceCapture.requests).toHaveLength(2);
+    expect(resourceCapture.requests.some((row) => row.status === 'response_received'
+      && row.httpStatus.value === 200)).toBe(true);
+    expect(resourceCapture.requests.some((row) => row.status === 'fetch_failed'
+      && row.fetchFailureClass.value !== null)).toBe(true);
+    expect(result).toMatchObject({ arm: 'resource-exhaustion', terminal: { status: 'incomplete' },
+      outcome: { workerOutcomeClass: 'incomplete', gateOutcomeClass: 'incomplete' },
+      testBudget: { resourceExhaustion: { status: 'observed', physicalRequestCap: 1,
+        physicalRequests: 1, blockedPhysicalRequestAttempts: 1, firstResponseHttpStatus: 200 } } });
+    expect(result.composedLimits).toMatchObject({ maxFindings: 25, maxConcurrentTasks: 3, ambientOverrides: 'absent' });
+    expect(result.composedLimits.configuredTotalTurns).toBe(result.composedLimits.investigationTurns
+      + result.composedLimits.verificationReserveTurns);
+    expect(result).not.toHaveProperty('verdict');
+    expect(result).not.toHaveProperty('eligible');
+  });
+
+  it('fails the resource control when no physical request reaches the declared cap', async () => {
+    const { env } = providerFailureEnvironment();
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'resource-exhaustion';
+    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+      value: 'qualification-test-key' });
+    const result = await runNormalEngineQualificationCase(env, {
+      verifyRuntimeManifest: async () => VALID_ENV.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256!,
+      runPublishingWorker: async () => ({ conclusion: 'failure', verdict: 'INCOMPLETE', coverage: {
+        fullPanelComplete: false, groundedReviewComplete: false,
+      } } as never),
+      persistProviderCapture: providerCapturePersistenceStub(),
+      persistCaseReceipt: async () => ({ receiptPath: 'private/receipt.json', sha256Path: 'private/receipt.sha256',
+        receiptSha256: 'e'.repeat(64), idempotent: false }),
+    });
+
+    expect(result.testBudget.resourceExhaustion).toMatchObject({ status: 'not_observed',
+      physicalRequestCap: 1, physicalRequests: 0, blockedPhysicalRequestAttempts: 0 });
+    expect(result.terminal.status).toBe('failed');
+  });
+
+  it('does not admit a resource label without the observed fault or with completed outcomes', () => {
+    const { env } = providerFailureEnvironment();
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'resource-exhaustion';
+    const valid = receiptForPlanCase(env, 'resource-exhaustion-60s-one-request');
+
+    expect(valid.terminal.status).toBe('incomplete');
+    expect(() => assertNormalEngineQualificationReceipt({ ...valid,
+      testBudget: { ...valid.testBudget, resourceExhaustion: { ...valid.testBudget.resourceExhaustion!,
+        status: 'not_observed', physicalRequests: 0, blockedPhysicalRequestAttempts: 0,
+        firstResponseHttpStatus: null } },
+    })).toThrow(/resource-exhaustion control evidence is invalid/u);
+    expect(() => assertNormalEngineQualificationReceipt({ ...valid,
+      outcome: { ...valid.outcome, workerOutcomeClass: 'completed_eligible', gateOutcomeClass: 'completed_eligible' },
+    })).toThrow(/resource-exhaustion control evidence is invalid/u);
   });
 
   it('fails the provider-failure arm when the sentinel is unexpectedly accepted', async () => {

@@ -12,7 +12,9 @@ import { openaiTransport } from '../review/openaiTransport';
 import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
 import { parseChangedFiles } from '../review/changedFiles';
 import { buildEffectiveReviewFiles } from '../review/personaApplicability';
-import { buildDeterministicCoverageManifest } from '../review/groundedReviewEngine';
+import { buildDeterministicCoverageManifest, GROUNDED_DEFAULT_BUDGET } from '../review/groundedReviewEngine';
+import { resolveComposedEngineMaxFindings, resolveComposedEngineWorkBudget,
+  resolveComposedTaskConcurrency } from '../panel/composedEngine';
 import { canonicalJson } from '../review/reviewCore';
 import { composedRuntimeResourcesSchema } from '../panel/composedResourceReceipt';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, GROUNDED_REVIEW_RECEIPT_V2_VERSION } from '../review/groundedEvidenceV2';
@@ -700,6 +702,12 @@ export interface NormalEngineQualificationWorkerDependencies {
 }
 
 const PROVIDER_FAILURE_INVALID_KEY = 'qualification-invalid-bifrost-inference-key';
+const COMPOSED_ENGINE_AMBIENT_OVERRIDE_KEYS = [
+  'COMPOSED_ENGINE_MAX_TURNS',
+  'COMPOSED_ENGINE_MAX_FINDINGS',
+  'REVIEW_YETI_MAX_FINDINGS',
+  'REVIEW_YETI_MAX_CONCURRENT_LANES',
+] as const;
 const QUALIFICATION_CHILD_ENVIRONMENT_KEYS = [
   'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'REVIEW_MODEL',
   'REVIEW_NORMAL_ENGINE_QUALIFICATION_ONLY', 'REVIEW_NORMAL_ENGINE_QUALIFICATION_RUN_ID',
@@ -715,6 +723,14 @@ const QUALIFICATION_CHILD_ENVIRONMENT_KEYS = [
   'REVIEW_PUBLICATION_MODE', 'REVIEW_RECEIPT_PATH', 'REVIEW_REPOSITORY_VISIBILITY',
   'REVIEW_RUNTIME_MANIFEST_PATH', 'REVIEW_YETI_PASSTHROUGH',
 ] as const;
+
+/** The composed engine reads these process-level operator overrides; a qualification receipt cannot bind them. */
+function assertNoAmbientComposedEngineOverrides(): void {
+  if (COMPOSED_ENGINE_AMBIENT_OVERRIDE_KEYS.some((key) => typeof process.env[key] === 'string'
+    && process.env[key]!.trim().length > 0)) {
+    throw new Error('normal_engine_qualification_ambient_composed_override_disallowed');
+  }
+}
 
 /** Only the fixed qualification runtime inputs cross into a case worker; publisher credentials/adapters are absent. */
 function qualificationChildEnvironment(env: NodeJS.ProcessEnv, arm: NormalEngineQualificationArm): NodeJS.ProcessEnv {
@@ -774,6 +790,7 @@ export async function runNormalEngineQualificationCase(
   dependencies: NormalEngineQualificationWorkerDependencies = {},
 ): Promise<NormalEngineQualificationReceipt> {
   const request = parseNormalEngineQualificationRequest(env);
+  assertNoAmbientComposedEngineOverrides();
   const caseEnv = qualificationChildEnvironment(env, request.arm);
   const manifestPath = String(caseEnv.REVIEW_RUNTIME_MANIFEST_PATH || '/app/runtime-manifest.json').trim();
   const manifestDigest = await (dependencies.verifyRuntimeManifest || verifyWorkerRuntimeManifest)(manifestPath);
@@ -796,6 +813,17 @@ export async function runNormalEngineQualificationCase(
   if (!preparedEffectiveConfiguration || !primaryVerifierModel) {
     throw new Error('normal_engine_qualification_prepared_composed_configuration_missing');
   }
+  const cleanBudgetEnvironment: NodeJS.ProcessEnv = { NODE_ENV: 'test' };
+  const effectiveWorkBudget = resolveComposedEngineWorkBudget(cleanBudgetEnvironment, prepared.config.composed?.max_turns_total,
+    GROUNDED_DEFAULT_BUDGET.callsPerTask);
+  const effectiveComposedLimits: NormalEngineQualificationReceipt['composedLimits'] = {
+    configuredTotalTurns: effectiveWorkBudget.totalTurns + effectiveWorkBudget.verificationReserveTurns,
+    investigationTurns: effectiveWorkBudget.totalTurns,
+    verificationReserveTurns: effectiveWorkBudget.verificationReserveTurns,
+    maxFindings: resolveComposedEngineMaxFindings(cleanBudgetEnvironment, prepared.config.composed?.max_findings_total),
+    maxConcurrentTasks: resolveComposedTaskConcurrency(cleanBudgetEnvironment, false),
+    ambientOverrides: 'absent',
+  };
   const configuredAdjudicatorModel = preparedEffectiveConfiguration.effective.disputed_blocker_adjudicator?.state === 'available'
     ? preparedEffectiveConfiguration.effective.disputed_blocker_adjudicator.model_alias : undefined;
   const preparedAdjudicatorReceipt = preparedEffectiveConfiguration.effective.disputed_blocker_adjudicator;
@@ -818,6 +846,9 @@ export async function runNormalEngineQualificationCase(
   const now = dependencies.now || Date.now;
   const startedAt = new Date(now()).toISOString();
   const testBudgetProfile = dependencies.testBudgetProfile ?? budgetProfileForArm(request.arm);
+  if (testBudgetProfile !== budgetProfileForArm(request.arm)) {
+    throw new Error('normal_engine_qualification_test_budget_profile_mismatch');
+  }
   const panelBudgetSeconds = panelSecondsForBudget(testBudgetProfile);
   const providerFailureController = request.arm === 'provider-failure' ? new AbortController() : undefined;
   const executionSignal = providerFailureController
@@ -825,6 +856,10 @@ export async function runNormalEngineQualificationCase(
     : dependencies.signal;
   let providerFailureLogicalCalls = 0;
   let providerFailurePhysicalRequests = 0;
+  let resourceExhaustionLogicalCalls = 0;
+  let resourceExhaustionPhysicalRequests = 0;
+  let resourceExhaustionBlockedPhysicalAttempts = 0;
+  let resourceExhaustionFirstResponseHttpStatus: number | null = null;
   const fetchImplementation = request.arm === 'provider-failure'
     ? dependencies.providerFetchImplementation || ((input, init) => globalThis.fetch(input, init))
     : dependencies.providerFetchImplementation;
@@ -836,8 +871,19 @@ export async function runNormalEngineQualificationCase(
     providerFailurePhysicalRequests += 1;
     return fetchImplementation!(input, init);
   } : undefined;
+  const boundedResourceExhaustionFetch: FetchImplementation | undefined = request.arm === 'resource-exhaustion' ? async (input, init) => {
+    if (resourceExhaustionPhysicalRequests >= 1) {
+      resourceExhaustionBlockedPhysicalAttempts += 1;
+      throw new OpenRouterTimeoutError('Qualification resource-exhaustion physical request budget exhausted', 'request');
+    }
+    resourceExhaustionPhysicalRequests += 1;
+    const response = await (dependencies.providerFetchImplementation || ((requestInput, requestInit) =>
+      globalThis.fetch(requestInput, requestInit)))(input, init);
+    if (resourceExhaustionPhysicalRequests === 1) resourceExhaustionFirstResponseHttpStatus = response.status;
+    return response;
+  } : undefined;
   const attestor = new NormalEngineQualificationProviderAttestor(
-    boundedProviderFailureFetch || dependencies.providerFetchImplementation);
+    boundedProviderFailureFetch || boundedResourceExhaustionFetch || dependencies.providerFetchImplementation);
   const providerCaptureBinding: NormalEngineProviderCaptureBinding = {
     runId: request.runId,
     phase: request.phase,
@@ -890,9 +936,8 @@ export async function runNormalEngineQualificationCase(
   let resourceArmCallCount = 0;
   const boundedClient: ReviewModelClient = request.arm === 'resource-exhaustion' ? {
     complete: async (modelRequest, context) => {
-      resourceArmCallCount += 1;
-      if (resourceArmCallCount > 1) throw new OpenRouterTimeoutError('Qualification completion request cap reached', 'request');
-      return client.complete(modelRequest, context);
+      resourceExhaustionLogicalCalls += 1;
+      return client.complete({ ...modelRequest, signal: modelRequest.signal ?? executionSignal }, context);
     },
   } : request.arm === 'provider-failure' ? {
     complete: async (modelRequest, context) => {
@@ -921,7 +966,7 @@ export async function runNormalEngineQualificationCase(
     REVIEW_PUBLICATION_MODE: 'disabled',
   };
   const terminalDeadlineAt = panelBudgetSeconds === null ? null
-    : new Date(now() + (panelBudgetSeconds + 300) * 1_000).toISOString();
+    : new Date(now() + (request.arm === 'resource-exhaustion' ? panelBudgetSeconds : panelBudgetSeconds + 300) * 1_000).toISOString();
   if (terminalDeadlineAt) workerEnv.REVIEW_TERMINAL_DEADLINE = terminalDeadlineAt;
   let completion: WorkerReviewCompletion | undefined;
   let workerReceipt: PublishingReviewReceipt | undefined;
@@ -964,6 +1009,7 @@ export async function runNormalEngineQualificationCase(
   }
   const fixtureProvider = createNormalEngineQualificationRepoFileProvider(request);
   try {
+    assertNoAmbientComposedEngineOverrides();
     workerReceipt = await (dependencies.runPublishingWorker || runPublishingReviewWorker)(workerEnv, {
       checkClient: createNormalEngineQualificationCheckClient(),
       ...(executionSignal ? { signal: executionSignal } : {}),
@@ -1019,6 +1065,7 @@ export async function runNormalEngineQualificationCase(
   } catch (error) {
     workerError = error;
   }
+  assertNoAmbientComposedEngineOverrides();
 
   if (request.phase === 'repair-head' || request.phase === 'same-head-recheck') {
     const mode = request.arm === 'repair-head-empty-history' ? 'empty-context' as const
@@ -1110,8 +1157,12 @@ export async function runNormalEngineQualificationCase(
         workerError ||= error;
       }
       const expectedConfiguration = prepared.config.review_configuration_receipt;
+      const resourceBudget = parsedResources.data.budget;
       composedResourcesComplete = parsedResources.data.engineExecutionState === 'complete'
         && parsedResources.data.coverage.remainingPaths.count === 0
+        && resourceBudget.configuredTotalTurns === effectiveComposedLimits.configuredTotalTurns
+        && resourceBudget.investigationTurns === effectiveComposedLimits.investigationTurns
+        && resourceBudget.verificationReserveTurns === effectiveComposedLimits.verificationReserveTurns
         && parsedResources.data.configDigest.value === request.policy.configDigest
         && expectedConfiguration !== undefined && parsedResources.data.configuration.value !== null
         && canonicalJson(parsedResources.data.configuration.value) === canonicalJson(expectedConfiguration);
@@ -1195,6 +1246,26 @@ export async function runNormalEngineQualificationCase(
   if (request.arm === 'provider-failure' && !providerFailureControlSatisfied) {
     workerError ||= new Error('qualification provider-failure control did not observe exactly one Bifrost 401 with incomplete worker and Gate outcomes');
   }
+  const resourceExhaustion = request.arm === 'resource-exhaustion' ? {
+    status: resourceExhaustionBlockedPhysicalAttempts > 0 ? 'observed' as const : 'not_observed' as const,
+    physicalRequestCap: 1 as const,
+    logicalCompletionAttempts: resourceExhaustionLogicalCalls,
+    physicalRequests: resourceExhaustionPhysicalRequests,
+    blockedPhysicalRequestAttempts: resourceExhaustionBlockedPhysicalAttempts,
+    firstResponseHttpStatus: resourceExhaustionFirstResponseHttpStatus,
+  } : null;
+  const resourceExhaustionControlSatisfied = request.arm !== 'resource-exhaustion' || (
+    resourceExhaustionPhysicalRequests === 1 && resourceExhaustionBlockedPhysicalAttempts > 0
+      && resourceExhaustionFirstResponseHttpStatus === 200
+      && providerCaptureStatus === 'captured'
+      && providerCapture?.requests.some((row) => row.httpStatus.availability === 'available' && row.httpStatus.value === 200) === true
+      && providerCapture.requests.some((row) => row.status === 'fetch_failed'
+        && row.fetchFailureClass.availability === 'available' && row.fetchFailureClass.value !== null
+        && row.fetchFailureClass.value !== 'http_error') === true
+      && workerOutcome.workerOutcomeClass === 'incomplete' && workerOutcome.gateOutcomeClass === 'incomplete');
+  if (request.arm === 'resource-exhaustion' && !resourceExhaustionControlSatisfied) {
+    workerError ||= new Error('qualification resource-exhaustion control did not observe one successful request, a blocked second physical request, and incomplete worker and Gate outcomes');
+  }
   const privateIdentifiers = attestor.privateIdentifiers();
   const sidecar = privateIdentifiers.length > 0
     ? await (dependencies.persistProviderIdentifiers || persistNormalEngineQualificationProviderIdentifiers)(privateIdentifiers, request.runId, request.phase,
@@ -1262,6 +1333,7 @@ export async function runNormalEngineQualificationCase(
       canonicalEvidenceSha256,
       gateDecisionSha256,
     },
+    composedLimits: effectiveComposedLimits,
     composedResourcesStatus,
     composedResourcesPath,
     composedResourcesSha256,
@@ -1288,12 +1360,14 @@ export async function runNormalEngineQualificationCase(
       profile: testBudgetProfile,
       panelBudgetSeconds,
       maxPhysicalModelRequests: testBudgetProfile === 'bifrost-auth-rejection-30s-one-request'
-        || testBudgetProfile === 'resource-exhaustion-60s-one-request' ? 1 : null,
+        || request.arm === 'resource-exhaustion' ? 1 : null,
       terminalDeadlineAt,
+      resourceExhaustion,
     },
     publication: emptyPublication(),
     terminal: {
       status: (request.arm === 'provider-failure' && !providerFailureControlSatisfied)
+        || (request.arm === 'resource-exhaustion' && !resourceExhaustionControlSatisfied)
         || (request.arm === 'adjudicator-recheck' && !adjudicatorRecheckControlSatisfied) ? 'failed' : workerError
         ? ['repair-head-verifier-unavailable', 'provider-failure', 'resource-exhaustion'].includes(request.arm) ? 'incomplete' : 'failed'
         : workerOutcome.gateOutcomeClass === 'incomplete' || workerOutcome.workerOutcomeClass === 'incomplete' ? 'incomplete'

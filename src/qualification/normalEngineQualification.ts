@@ -395,6 +395,14 @@ export interface NormalEngineQualificationReceipt {
     canonicalEvidenceSha256: string | null;
     gateDecisionSha256: string | null;
   };
+  composedLimits: {
+    configuredTotalTurns: number;
+    investigationTurns: number;
+    verificationReserveTurns: number;
+    maxFindings: number;
+    maxConcurrentTasks: number;
+    ambientOverrides: 'absent';
+  };
   composedResourcesStatus: 'captured' | 'unavailable';
   composedResourcesPath: string | null;
   composedResourcesSha256: string | null;
@@ -416,7 +424,9 @@ export interface NormalEngineQualificationReceipt {
     | 'bifrost-auth-rejection-invalid-inference-key' | 'worker-deadline-test-60s-one-physical-request'
     | 'authenticated-adjudicator-recheck';
   testBudget: { profile: NormalEngineQualificationBudgetProfile; panelBudgetSeconds: number | null;
-    maxPhysicalModelRequests: number | null; terminalDeadlineAt: string | null };
+    maxPhysicalModelRequests: number | null; terminalDeadlineAt: string | null;
+    resourceExhaustion: { status: 'observed' | 'not_observed'; physicalRequestCap: 1; logicalCompletionAttempts: number;
+      physicalRequests: number; blockedPhysicalRequestAttempts: number; firstResponseHttpStatus: number | null } | null };
   provider: {
     identityStatus: 'unknown' | 'response_reported_unverified';
     upstreamProviderIdentity: 'unknown';
@@ -696,6 +706,19 @@ const qualificationReceiptSchema = z.object({
     workerCompletionSha256: digestSchema.nullable(), canonicalEvidenceSha256: digestSchema.nullable(),
     gateDecisionSha256: digestSchema.nullable(),
   }).strict(),
+  composedLimits: z.object({
+    configuredTotalTurns: z.number().int().positive().safe(),
+    investigationTurns: z.number().int().positive().safe(),
+    verificationReserveTurns: z.number().int().nonnegative().safe(),
+    maxFindings: z.number().int().positive().safe(),
+    maxConcurrentTasks: z.number().int().positive().safe(),
+    ambientOverrides: z.literal('absent'),
+  }).strict().superRefine((limits, context) => {
+    if (limits.configuredTotalTurns !== limits.investigationTurns + limits.verificationReserveTurns) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['configuredTotalTurns'],
+        message: 'qualification composed limits must account for the verification reserve' });
+    }
+  }),
   composedResourcesStatus: z.enum(['captured', 'unavailable']),
   composedResourcesPath: z.string().regex(/^normal-engine-qualification-store\/nq_[a-f0-9]{32}\/(?:single|repair-introduction|repair-head|same-head-recheck)\/[a-z0-9][a-z0-9_-]{0,99}\/composed-resources\.record\/composed-runtime-resources\.json$/u).nullable(),
   composedResourcesSha256: digestSchema.nullable(),
@@ -728,6 +751,14 @@ const qualificationReceiptSchema = z.object({
     panelBudgetSeconds: z.number().int().positive().safe().nullable(),
     maxPhysicalModelRequests: z.number().int().positive().safe().nullable(),
     terminalDeadlineAt: z.string().datetime().nullable(),
+    resourceExhaustion: z.object({
+      status: z.enum(['observed', 'not_observed']),
+      physicalRequestCap: z.literal(1),
+      logicalCompletionAttempts: z.number().int().nonnegative().safe(),
+      physicalRequests: z.number().int().nonnegative().safe(),
+      blockedPhysicalRequestAttempts: z.number().int().nonnegative().safe(),
+      firstResponseHttpStatus: z.number().int().min(100).max(599).nullable(),
+    }).strict().nullable(),
   }).strict(),
   provider: z.object({
     identityStatus: z.enum(['unknown', 'response_reported_unverified']),
@@ -821,6 +852,29 @@ export function assertNormalEngineQualificationReceipt(input: unknown): NormalEn
       || parsed.data.outcome.gateDecisionSha256 === null || parsed.data.outcome.agreement !== 'agreement'
       || parsed.data.outcome.workerOutcomeClass === 'incomplete' || parsed.data.outcome.gateOutcomeClass === 'incomplete')) {
     throw new Error('normal-engine qualification completed receipt lacks agreed complete grounded v2 evidence');
+  }
+  const exhaustion = parsed.data.testBudget.resourceExhaustion;
+  if (parsed.data.arm === 'resource-exhaustion') {
+    const observed = exhaustion?.status === 'observed'
+      && exhaustion.physicalRequestCap === 1
+      && exhaustion.physicalRequests === 1
+      && exhaustion.blockedPhysicalRequestAttempts > 0
+      && exhaustion.firstResponseHttpStatus === 200;
+    const incompleteWorkerAndGate = parsed.data.outcome.workerOutcomeClass === 'incomplete'
+      && parsed.data.outcome.gateOutcomeClass === 'incomplete';
+    if (parsed.data.testBudget.profile !== 'resource-exhaustion-60s-one-request'
+      || parsed.data.testBudget.panelBudgetSeconds !== 60 || parsed.data.testBudget.maxPhysicalModelRequests !== 1
+      || !exhaustion || exhaustion.physicalRequests > 1
+      || exhaustion.logicalCompletionAttempts < exhaustion.physicalRequests
+      || (exhaustion.status === 'observed' && (exhaustion.blockedPhysicalRequestAttempts === 0
+        || exhaustion.physicalRequests !== 1 || exhaustion.firstResponseHttpStatus !== 200))
+      || (exhaustion.status === 'not_observed' && exhaustion.blockedPhysicalRequestAttempts !== 0)
+      || (parsed.data.terminal.status === 'completed')
+      || (parsed.data.terminal.status === 'incomplete' && (!observed || !incompleteWorkerAndGate))) {
+      throw new Error('normal-engine qualification resource-exhaustion control evidence is invalid');
+    }
+  } else if (exhaustion !== null) {
+    throw new Error('normal-engine qualification resource-exhaustion evidence is not allowed for this arm');
   }
   if (parsed.data.arm === 'adjudicator-recheck') {
     const selected = parsed.data.history.authenticatedDisputeSelection;
