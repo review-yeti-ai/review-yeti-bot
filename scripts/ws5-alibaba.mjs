@@ -13,12 +13,13 @@ import { fileURLToPath } from 'node:url';
 
 import { loadPinnedAcceptancePlan } from './ws5-acceptance.mjs';
 import { preflightPinnedGitSnapshot } from './competitive-review-benchmark.mjs';
+import { WS5_ALIBABA_BUILD_ARTIFACT_PIN, verifyWs5AlibabaDerivedBuildBinding } from './ws5-alibaba-build-provenance.mjs';
 
 export const ALIBABA_OPEN_CODE_REVIEW_PIN = Object.freeze({
   repository: 'https://github.com/alibaba/open-code-review',
   sourceCommit: '182898cf522da3d04157b422752d028417974e19',
   version: 'v1.12.12',
-  binarySha256: 'dca5f00262ec9b050ce0fc10ed13eefb4fa2255e3c9c4aebb19723e55cae2779',
+  binarySha256: WS5_ALIBABA_BUILD_ARTIFACT_PIN.binarySha256,
   platform: 'darwin/arm64',
 });
 
@@ -299,9 +300,14 @@ export function createAlibabaChildEnvironment(options) {
 
 export function assertPinnedAlibabaBinary(binaryPath) {
   const resolved = path.resolve(binaryPath);
-  if (!fs.statSync(resolved).isFile()) throw new Error('alibaba_binary_missing');
+  let binaryStat;
+  try { binaryStat = fs.lstatSync(resolved); } catch { throw new Error('alibaba_binary_missing'); }
+  if (!binaryStat.isFile() || binaryStat.isSymbolicLink()) throw new Error('alibaba_binary_missing');
   const binarySha256 = sha256(fs.readFileSync(resolved));
   if (binarySha256 !== ALIBABA_OPEN_CODE_REVIEW_PIN.binarySha256) throw new Error('alibaba_binary_digest_mismatch');
+  if ((binaryStat.mode & 0o777) !== 0o700 || binaryStat.size !== WS5_ALIBABA_BUILD_ARTIFACT_PIN.sizeBytes) {
+    throw new Error('alibaba_binary_metadata_mismatch');
+  }
   const versionOutput = execFileSync(resolved, ['--version'], { encoding: 'utf8', timeout: 10_000, maxBuffer: 16_384 }).trim();
   const versionLines = versionOutput.split(/\r?\n/u);
   const expected = `open-code-review ${ALIBABA_OPEN_CODE_REVIEW_PIN.version} (${ALIBABA_OPEN_CODE_REVIEW_PIN.sourceCommit}) ${ALIBABA_OPEN_CODE_REVIEW_PIN.platform}`;
@@ -312,7 +318,19 @@ export function assertPinnedAlibabaBinary(binaryPath) {
   for (const flag of ['--from', '--to', '--repo', '--format', '--output', '--model', '--effort', '--concurrency', '--timeout']) {
     if (!help.includes(flag)) throw new Error('alibaba_cli_contract_missing_flag');
   }
-  return { path: resolved, sha256: binarySha256, version: versionLines[0], sourceCommit: ALIBABA_OPEN_CODE_REVIEW_PIN.sourceCommit };
+  return { path: resolved, sha256: binarySha256, version: versionLines[0], sourceCommit: ALIBABA_OPEN_CODE_REVIEW_PIN.sourceCommit,
+    mode: '0o700', sizeBytes: binaryStat.size, buildArtifactPinSchema: WS5_ALIBABA_BUILD_ARTIFACT_PIN.schemaVersion };
+}
+
+function verifyPrivateAlibabaBuildBinding({ bundle, binaryPath, buildBindingPath, buildBindingSha256 }) {
+  return verifyWs5AlibabaDerivedBuildBinding({
+    bindingPath: buildBindingPath,
+    bindingSha256: buildBindingSha256,
+    binaryPath,
+    sourceRoot: ROOT,
+    dataRoot: bundle?.dataRootPath,
+    bundle,
+  });
 }
 
 function runPreview(binaryPath, sourceCase, cliSource, tempRoot, rulePath = null) {
@@ -390,6 +408,8 @@ export function prepareAlibabaSourceScope(binaryPath, sourceCase, cliSource, tem
 /** Verify the exact pinned public panel, local repo cache, and OCR preview before any model request. */
 export function preflightAlibabaPanel({
   binaryPath,
+  buildBindingPath,
+  buildBindingSha256,
   cacheRoot = DEFAULT_CACHE_ROOT,
   root = ROOT,
   dataRoot,
@@ -400,10 +420,14 @@ export function preflightAlibabaPanel({
 } = {}) {
   const bundle = loadPinnedAcceptancePlan({ repoRoot: root, dataRoot, planPath,
     externalDataContractPath, externalDataContractSha256 });
+  const buildArtifactBinding = verifyPrivateAlibabaBuildBinding({
+    bundle, binaryPath, buildBindingPath, buildBindingSha256,
+  });
   const binary = assertPinnedAlibabaBinary(binaryPath);
   const planArm = bundle.plan.publicRunMatrix.arms.find((entry) => entry.id === 'alibaba-open-code-review');
   if (!planArm || planArm.sourceCommit !== ALIBABA_OPEN_CODE_REVIEW_PIN.sourceCommit
     || planArm.sourceVersion !== ALIBABA_OPEN_CODE_REVIEW_PIN.version
+    || planArm.build?.binarySha256 !== WS5_ALIBABA_BUILD_ARTIFACT_PIN.originalDeclaredBinarySha256
     || bundle.preparedDiscovery.cases.length !== MAX_CASES) throw new Error('alibaba_frozen_arm_mismatch');
 
   const caseReceipts = [];
@@ -476,6 +500,17 @@ export function preflightAlibabaPanel({
     datasetSha256: bundle.manifestSha256,
     preparedInputSha256: bundle.plan.publicPanel.preparedInputs.discovery.sha256,
     binary,
+    buildArtifactBinding: {
+      status: buildArtifactBinding.status,
+      bindingSha256: buildArtifactBinding.bindingSha256,
+      selectedBinarySha256: buildArtifactBinding.binarySha256,
+      supersededPlanBinarySha256: buildArtifactBinding.supersededBinarySha256,
+      sourceCommit: buildArtifactBinding.sourceCommit,
+      sourceTree: buildArtifactBinding.sourceTree,
+      sourceVersion: buildArtifactBinding.sourceVersion,
+      toolchain: buildArtifactBinding.toolchain,
+      buildReceiptCount: buildArtifactBinding.buildReceiptCount,
+    },
     panelCaseIds: planArm.caseIds,
     caseCount: caseReceipts.length,
     sourceCompleteCaseCount: caseReceipts.filter((entry) => entry.sourceCachePreflight.status === 'verified').length,
@@ -1270,6 +1305,8 @@ export async function runAlibabaCase({
   bundle,
   caseId,
   binaryPath,
+  buildBindingPath,
+  buildBindingSha256,
   cacheRoot = DEFAULT_CACHE_ROOT,
   outputDirectory,
   modelAlias,
@@ -1283,6 +1320,9 @@ export async function runAlibabaCase({
 } = {}) {
   if (rootAuthorization !== '1') throw new Error('root_public_model_run_authorization_required');
   if (!bundle || !bundle.plan || !bundle.preparedDiscovery) throw new Error('ws5_panel_bundle_missing');
+  const buildArtifactBinding = verifyPrivateAlibabaBuildBinding({
+    bundle, binaryPath, buildBindingPath, buildBindingSha256,
+  });
   const gatewayCredential = mode === 'provider_failure'
     ? 'ws5-invalid-qualification-inference-credential'
     : bifrostApiKey ?? process.env.WS5_BIFROST_API_KEY;
@@ -1391,6 +1431,13 @@ export async function runAlibabaCase({
       normalized.qualityScore = null;
     }
     normalized.proxy = proxyReceipt;
+    normalized.buildArtifactBinding = {
+      schemaVersion: WS5_ALIBABA_BUILD_ARTIFACT_PIN.schemaVersion,
+      status: buildArtifactBinding.status,
+      bindingSha256: buildArtifactBinding.bindingSha256,
+      selectedBinarySha256: buildArtifactBinding.binarySha256,
+      supersededDeclaredBinarySha256: buildArtifactBinding.supersededBinarySha256,
+    };
     normalized.responseReportedModelIsUntrusted = true;
     const targetOutputPath = path.resolve(outputDirectory || os.tmpdir(), `ws5-alibaba-${caseId}-${Date.now()}.json`);
     normalized.outputSha256 = writeJsonPrivate(targetOutputPath, normalized);
@@ -1436,6 +1483,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       planPath: args.plan,
       externalDataContractPath: args.contract,
       externalDataContractSha256: args['contract-sha256'],
+      buildBindingPath: args['build-binding'],
+      buildBindingSha256: args['build-binding-sha256'],
     };
     if (args.preflight) {
       const receipt = preflightAlibabaPanel({ ...privateBundle,
@@ -1449,6 +1498,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         bundle,
         caseId: args['case-id'],
         binaryPath,
+        buildBindingPath: args['build-binding'],
+        buildBindingSha256: args['build-binding-sha256'],
         cacheRoot: args['cache-root'] || DEFAULT_CACHE_ROOT,
         outputDirectory: path.dirname(path.resolve(args.out)),
         modelAlias: process.env.WS5_MODEL_ALIAS,

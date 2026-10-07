@@ -23,6 +23,7 @@ import {
   runPublicRunCells,
 } from './ws5-acceptance.mjs';
 import { createWs5PublicInputStage } from './ws5-external-data-contract.mjs';
+import { WS5_ALIBABA_BUILD_ARTIFACT_PIN } from './ws5-alibaba-build-provenance.mjs';
 import {
   buildAlibabaSourceScopeAbstention,
   createBifrostMeterProxy,
@@ -189,11 +190,13 @@ export function verifyPublicSourceFreeze(repoRoot, freezePath, expectedFreezeSha
     'scripts/competitive-review-benchmark.mjs',
     'scripts/ws5-acceptance.mjs',
     'scripts/ws5-alibaba.mjs',
+    'scripts/ws5-alibaba-build-provenance.mjs',
     'scripts/ws5-external-data-contract.mjs',
     'scripts/ws5-matrix-runner.mjs',
     'scripts/ws5-verification-runner.mjs',
     'tests/unit/competitiveReviewBenchmark.test.ts',
     'tests/unit/ws5Acceptance.test.ts',
+    'tests/unit/ws5AlibabaBuildProvenance.test.ts',
     'tests/unit/ws5ExternalDataContract.test.ts',
     'tests/unit/ws5MatrixRunner.test.ts',
     'tests/unit/ws5VerificationRunner.test.ts',
@@ -666,7 +669,8 @@ function cacheRepositoryPath(cacheRoot, repository) {
   return path.resolve(cacheRoot, repository.replace(/[^A-Za-z0-9._-]+/gu, '__'));
 }
 
-function performPublicNoCallPreflight({ root, dataRoot, planPath, contractPath, contractSha256, cacheRoot, binaryPath }) {
+function performPublicNoCallPreflight({ root, dataRoot, planPath, contractPath, contractSha256,
+  buildBindingPath, buildBindingSha256, cacheRoot, binaryPath }) {
   const bundle = loadPinnedAcceptancePlan({
     repoRoot: root,
     dataRoot,
@@ -682,8 +686,9 @@ function performPublicNoCallPreflight({ root, dataRoot, planPath, contractPath, 
     return { caseId: sourceCase.caseId, status: 'verified', sourceOmissions: [],
       changedFileCount: proof.changedFileCount, patchSetSha256: proof.patchSetSha256 };
   });
-  const alibaba = preflightAlibabaPanel({ binaryPath, cacheRoot, root, dataRoot, planPath,
-    externalDataContractPath: contractPath, externalDataContractSha256: contractSha256 });
+  const alibaba = preflightAlibabaPanel({ binaryPath, buildBindingPath, buildBindingSha256,
+    cacheRoot, root, dataRoot, planPath, externalDataContractPath: contractPath,
+    externalDataContractSha256: contractSha256 });
   return { sourceCases, alibaba };
 }
 
@@ -691,7 +696,8 @@ function parsePreflightArgs(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 1) {
     const key = argv[index];
-    if (!['--root', '--data-root', '--plan', '--contract', '--contract-sha256', '--cache-root', '--binary'].includes(key)) {
+    if (!['--root', '--data-root', '--plan', '--contract', '--contract-sha256', '--cache-root', '--binary',
+      '--build-binding', '--build-binding-sha256'].includes(key)) {
       throw new Error('ws5_preflight_argument_invalid');
     }
     const value = argv[index + 1];
@@ -700,12 +706,14 @@ function parsePreflightArgs(argv) {
     index += 1;
   }
   if (!values['--root'] || !values['--data-root'] || !values['--plan'] || !values['--contract']
-    || !values['--contract-sha256'] || !values['--cache-root'] || !values['--binary']) {
+    || !values['--contract-sha256'] || !values['--cache-root'] || !values['--binary']
+    || !values['--build-binding'] || !values['--build-binding-sha256']) {
     throw new Error('ws5_preflight_argument_missing');
   }
   return {
     root: values['--root'], dataRoot: values['--data-root'], planPath: values['--plan'],
     contractPath: values['--contract'], contractSha256: values['--contract-sha256'],
+    buildBindingPath: values['--build-binding'], buildBindingSha256: values['--build-binding-sha256'],
     cacheRoot: values['--cache-root'], binaryPath: values['--binary'],
   };
 }
@@ -889,6 +897,8 @@ export async function runWs5Matrix({
   planPath,
   externalDataContractPath,
   externalDataContractSha256,
+  alibabaBuildBindingPath,
+  alibabaBuildBindingSha256,
   outputDirectory,
   sourceCacheRoot,
   alibabaBinaryPath,
@@ -898,7 +908,8 @@ export async function runWs5Matrix({
 } = {}) {
   if (authorizeModelDispatch !== true) throw new Error('ws5_model_dispatch_not_authorized_by_root');
   const root = fs.realpathSync(path.resolve(repoRoot));
-  if (!dataRoot || !planPath || !externalDataContractPath || !externalDataContractSha256) {
+  if (!dataRoot || !planPath || !externalDataContractPath || !externalDataContractSha256
+    || !alibabaBuildBindingPath || !alibabaBuildBindingSha256) {
     throw new Error('ws5_external_data_bundle_required');
   }
   const bundle = loadPinnedAcceptancePlan({ repoRoot: root, dataRoot, planPath,
@@ -1005,6 +1016,7 @@ export async function runWs5Matrix({
         args: [path.join(root, 'scripts/ws5-matrix-runner.mjs'), '--ws5-public-preflight',
           '--root', root, '--data-root', bundle.dataRootPath, '--plan', planPath,
           '--contract', externalDataContractPath, '--contract-sha256', externalDataContractSha256,
+          '--build-binding', alibabaBuildBindingPath, '--build-binding-sha256', alibabaBuildBindingSha256,
           '--cache-root', path.resolve(sourceCacheRoot), '--binary', path.resolve(alibabaBinaryPath)],
         cwd: root,
         env: createSanitizedPreflightEnvironment({ home: preflightHome, temporaryDirectory: preflightTemp }),
@@ -1035,6 +1047,14 @@ export async function runWs5Matrix({
         patchSetSha256: entry.patchSetSha256 });
     }
     const alibaba = publicPreflight.alibaba;
+    if (alibaba?.binary?.sha256 !== WS5_ALIBABA_BUILD_ARTIFACT_PIN.binarySha256
+      || alibaba?.buildArtifactBinding?.status !== 'verified_fixed_alibaba_build_binding'
+      || alibaba?.buildArtifactBinding?.bindingSha256 !== alibabaBuildBindingSha256
+      || alibaba?.buildArtifactBinding?.selectedBinarySha256 !== WS5_ALIBABA_BUILD_ARTIFACT_PIN.binarySha256
+      || alibaba?.buildArtifactBinding?.supersededPlanBinarySha256
+        !== WS5_ALIBABA_BUILD_ARTIFACT_PIN.originalDeclaredBinarySha256) {
+      throw new Error('ws5_alibaba_build_pin_preflight_mismatch');
+    }
     if (Date.now() > preflightDeadline) throw new Error('ws5_preflight_wall_time_cap_exceeded');
     const route = await awaitParentOperation(
       (abortSignal) => parentBroker.preflightAlias({ modelAlias: MODEL_ALIAS, noModelCalls: true, signal: abortSignal }),
@@ -1107,6 +1127,8 @@ export async function runWs5Matrix({
           bundle,
           caseId: cell.caseId,
           binaryPath: alibabaBinaryPath,
+          buildBindingPath: alibabaBuildBindingPath,
+          buildBindingSha256: alibabaBuildBindingSha256,
           cacheRoot: sourceCacheRoot,
           outputDirectory: scratch,
           modelAlias: MODEL_ALIAS,

@@ -165,11 +165,13 @@ describe('WS5 finite matrix runner', () => {
       'scripts/competitive-review-benchmark.mjs',
       'scripts/ws5-acceptance.mjs',
       'scripts/ws5-alibaba.mjs',
+      'scripts/ws5-alibaba-build-provenance.mjs',
       'scripts/ws5-external-data-contract.mjs',
       'scripts/ws5-matrix-runner.mjs',
       'scripts/ws5-verification-runner.mjs',
       'tests/unit/competitiveReviewBenchmark.test.ts',
       'tests/unit/ws5Acceptance.test.ts',
+      'tests/unit/ws5AlibabaBuildProvenance.test.ts',
       'tests/unit/ws5ExternalDataContract.test.ts',
       'tests/unit/ws5MatrixRunner.test.ts',
       'tests/unit/ws5VerificationRunner.test.ts',
@@ -202,9 +204,11 @@ describe('WS5 finite matrix runner', () => {
       const bytes = Buffer.from(JSON.stringify(freeze));
       fs.writeFileSync(freezePath, bytes, { mode: 0o600 });
       expect(runner.verifyPublicSourceFreeze(root, freezePath, sha256(bytes))).toMatchObject({
-        headCommitSha, gitTreeOid, allowlistedFileCount: 11,
+        headCommitSha, gitTreeOid, allowlistedFileCount: 13,
       });
       for (const required of [
+        'scripts/ws5-alibaba-build-provenance.mjs',
+        'tests/unit/ws5AlibabaBuildProvenance.test.ts',
         'scripts/ws5-external-data-contract.mjs',
         'tests/unit/ws5ExternalDataContract.test.ts',
       ]) {
@@ -290,6 +294,8 @@ describe('WS5 finite matrix runner', () => {
         planPath: 'eval-baselines/competitive-review-benchmark/ws5-acceptance-v1.json',
         externalDataContractPath: path.join(os.tmpdir(), 'ws5-unit-external-data-contract.json'),
         externalDataContractSha256: 'a'.repeat(64),
+        alibabaBuildBindingPath: path.join(os.tmpdir(), 'ws5-unit-alibaba-build-binding.json'),
+        alibabaBuildBindingSha256: 'b'.repeat(64),
         outputDirectory,
         sourceCacheRoot: os.tmpdir(),
         alibabaBinaryPath: process.execPath,

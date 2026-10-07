@@ -457,6 +457,7 @@ export function loadPinnedAcceptancePlan({
       schemaVersion: 'ReviewYetiWS5ExternalDataContract.v1',
       sha256: externalBinding.contractSha256,
       preservedInputCount: externalBinding.preservedInputCount,
+      privateInputReceiptSha256: externalBinding.contract.privateInputReceipt.sha256,
       scorerOracleCount: externalBinding.scorerOracleCount,
       childVisibleInputCount: externalBinding.childVisibleInputCount,
       sourceRootGit: externalBinding.sourceRootGit,

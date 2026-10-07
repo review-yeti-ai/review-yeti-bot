@@ -33,6 +33,7 @@ import {
   verifyPublicSourceFreeze,
 } from './ws5-matrix-runner.mjs';
 import { createWs5PublicInputStage } from './ws5-external-data-contract.mjs';
+import { WS5_ALIBABA_BUILD_ARTIFACT_PIN } from './ws5-alibaba-build-provenance.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MODEL_ALIAS = 'pr-reviewer';
@@ -273,7 +274,8 @@ function sourcePreflightEnv(home, temporaryDirectory) {
 }
 
 async function runBoundedPublicPreflight({ root, dataRoot, planPath, externalDataContractPath,
-  externalDataContractSha256, sourceCacheRoot, alibabaBinaryPath, deadline, signal }) {
+  externalDataContractSha256, alibabaBuildBindingPath, alibabaBuildBindingSha256,
+  sourceCacheRoot, alibabaBinaryPath, deadline, signal }) {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ws5-verification-preflight-'));
   const home = path.join(scratch, 'home');
   const temporaryDirectory = path.join(scratch, 'tmp');
@@ -285,6 +287,7 @@ async function runBoundedPublicPreflight({ root, dataRoot, planPath, externalDat
       args: [path.join(root, 'scripts/ws5-matrix-runner.mjs'), '--ws5-public-preflight',
         '--root', root, '--data-root', dataRoot, '--plan', planPath,
         '--contract', externalDataContractPath, '--contract-sha256', externalDataContractSha256,
+        '--build-binding', alibabaBuildBindingPath, '--build-binding-sha256', alibabaBuildBindingSha256,
         '--cache-root', sourceCacheRoot, '--binary', alibabaBinaryPath],
       cwd: root,
       env: sourcePreflightEnv(home, temporaryDirectory),
@@ -303,7 +306,7 @@ async function runBoundedPublicPreflight({ root, dataRoot, planPath, externalDat
   }
 }
 
-function validatePreflight(bundle, input) {
+function validatePreflight(bundle, input, expectedBuildBindingSha256) {
   const caseIds = bundle.plan.publicPanel.caseIds;
   if (!Array.isArray(input?.sourceCases)
     || JSON.stringify(input.sourceCases.map((entry) => entry.caseId)) !== JSON.stringify(caseIds)
@@ -314,7 +317,13 @@ function validatePreflight(bundle, input) {
   const alibaba = input.alibaba;
   if (alibaba?.providerCalls !== 0 || alibaba?.sourceCompleteCaseCount !== 7
     || alibaba?.comparatorScopeUnsupportedCaseCount !== 1
-    || alibaba.cases?.find((entry) => entry.caseId === 'aacr-cpp-85873')?.status !== 'source_scope_unsupported') {
+    || alibaba.cases?.find((entry) => entry.caseId === 'aacr-cpp-85873')?.status !== 'source_scope_unsupported'
+    || alibaba?.binary?.sha256 !== WS5_ALIBABA_BUILD_ARTIFACT_PIN.binarySha256
+    || alibaba?.buildArtifactBinding?.status !== 'verified_fixed_alibaba_build_binding'
+    || alibaba?.buildArtifactBinding?.bindingSha256 !== expectedBuildBindingSha256
+    || alibaba?.buildArtifactBinding?.selectedBinarySha256 !== WS5_ALIBABA_BUILD_ARTIFACT_PIN.binarySha256
+    || alibaba?.buildArtifactBinding?.supersededPlanBinarySha256
+      !== WS5_ALIBABA_BUILD_ARTIFACT_PIN.originalDeclaredBinarySha256) {
     throw new Error('ws5_verification_shared_preflight_failed');
   }
   return input.sourceCases;
@@ -381,6 +390,8 @@ export async function runWs5VerificationPanel({
   planPath,
   externalDataContractPath,
   externalDataContractSha256,
+  alibabaBuildBindingPath,
+  alibabaBuildBindingSha256,
   outputDirectory,
   sourceCacheRoot,
   alibabaBinaryPath,
@@ -391,7 +402,8 @@ export async function runWs5VerificationPanel({
 } = {}) {
   if (authorizeModelDispatch !== true) throw new Error('ws5_verification_dispatch_not_authorized_by_root');
   const root = fs.realpathSync(path.resolve(repoRoot));
-  if (!dataRoot || !planPath || !externalDataContractPath || !externalDataContractSha256) {
+  if (!dataRoot || !planPath || !externalDataContractPath || !externalDataContractSha256
+    || !alibabaBuildBindingPath || !alibabaBuildBindingSha256) {
     throw new Error('ws5_external_data_bundle_required');
   }
   const bundle = loadPinnedAcceptancePlan({ repoRoot: root, dataRoot, planPath,
@@ -468,12 +480,14 @@ export async function runWs5VerificationPanel({
           planPath,
           externalDataContractPath,
           externalDataContractSha256,
+          alibabaBuildBindingPath,
+          alibabaBuildBindingSha256,
           sourceCacheRoot: cacheRoot,
           alibabaBinaryPath: binaryPath,
           deadline: preflightDeadline,
           signal,
         });
-        sourceEvidence = validatePreflight(bundle, publicPreflight);
+        sourceEvidence = validatePreflight(bundle, publicPreflight, alibabaBuildBindingSha256);
         if (Date.now() > preflightDeadline) throw new Error('ws5_preflight_wall_time_cap_exceeded');
         const route = await awaitParentOperation(
           (abortSignal) => parentBroker.preflightAlias({ modelAlias: MODEL_ALIAS, noModelCalls: true, signal: abortSignal }),
