@@ -1,0 +1,225 @@
+{
+  "schemaVersion": "ReviewYetiNormalCanaryPlan.v1",
+  "purpose": "qualification_only_source_contract",
+  "execution": {
+    "providerCallsAuthorizedByThisFile": false,
+    "maxCaseRuns": 11,
+    "maxConcurrentCases": 1,
+    "maxLogicalCompletionAttemptsPerCase": 100,
+    "automaticRetries": 0,
+    "ordinaryPrComments": false,
+    "productionDatabaseWrites": false,
+    "isolatedQualificationStoreOnly": true,
+    "maxLogicalCompletionAttemptsPerOrdinaryCanary": 100,
+    "faultControlBudget": {
+      "maxLogicalCompletionAttempts": 1,
+      "maxWallMs": 60000,
+      "productionResourceEnvelopeMutation": false
+    },
+    "providerFailureUses": "one Bifrost request with a fixed invalid sentinel credential allocated in process memory; never read, print, store, or mutate the existing provisioned credential",
+    "providerFailureControl": {
+      "mode": "single-bounded-bifrost-auth-rejection",
+      "physicalModelRequestsMax": 1,
+      "credential": "invalid qualification sentinel constructed in process memory only",
+      "existingProvisionedKeyReadOrMutated": false,
+      "expectedBoundary": "Bifrost authentication 401; zero upstream provider completions",
+      "normalGateMustBeIncompleteOrAbstain": true
+    },
+    "resourceExhaustionControl": {
+      "testDeadlineSeconds": 60,
+      "physicalModelRequestsMax": 1,
+      "production100RequestEnvelopeMutation": false,
+      "normalGateMustBeIncompleteOrAbstain": true
+    },
+    "maxPlanActiveSeconds": 1650,
+    "captureHoldMaxSeconds": 900,
+    "normalArmPanelBudgetSeconds": 120,
+    "largeCrossfilePanelBudgetSeconds": 300,
+    "providerFailurePanelBudgetSeconds": 30,
+    "resourceExhaustionPanelBudgetSeconds": 60,
+    "totalPlannedPanelBudgetSeconds": 1350,
+    "qualificationOnlyDeadlineEnvironment": "REVIEW_TERMINAL_DEADLINE",
+    "preparedProductionPolicyAndConfigDigestsMutated": false,
+    "configurationVariant": "configured-disputed-blocker-adjudicator-v1"
+  },
+  "repairBundle": {
+    "descriptorPath": "eval-baselines/competitive-review-benchmark/ws5-repair-sequence-v1/descriptor.json",
+    "descriptorSha256": "e6b6e359d6c6676c8ab3461b7e576b2d14a77ed92fb7178b0ba0b6cc69d14329",
+    "inputIds": [
+      "ws5-sequence-a-v1",
+      "ws5-sequence-b-v1"
+    ],
+    "phaseAInputSha256": "31feff802596e9e8b52aa45b64a1a00fc2af5e221158815c007188b3b11877a5",
+    "phaseBInputSha256": "4023515cfc0daef0b1c00089924ca12d5071080da4e97d6e964c03c8596bbceb",
+    "baseSha": "1fd9256afcf0250975c69410a766629c4d4225ad",
+    "introductionHeadSha": "1035dc8db9a222447aa774fd9660c224e5d37655",
+    "repairHeadSha": "1b183caf5f8c518a3acda3fb2d8eea38133eed98"
+  },
+  "largeCrossfileBundle": {
+    "descriptorPath": "eval-baselines/competitive-review-benchmark/ws5-large-crossfile-v1/descriptor.json",
+    "descriptorSha256": "1e929cc12ef523e523dc67e1ee7c3d7ef83268f1e2c4734615c219523e4813c9",
+    "inputSha256": "ad360475a095d194b933f2323b7226f057cc617f8cbb605d5473bd00f00b62f5",
+    "baseSha": "f83c7fbab1909ebc8e3b1a905c4d93a6ffdf8448",
+    "headSha": "cef2d6d195ad1ec19ec6a745363a804fd679b369",
+    "changedFiles": 24,
+    "patchBytes": 93428
+  },
+  "arms": [
+    {
+      "runId": "ws5-sequence-a-v1",
+      "caseId": "ws5-sequence-a-v1",
+      "phase": "introduction",
+      "inputId": "ws5-sequence-a-v1",
+      "historyAdapter": "disabled_for_initial_run",
+      "persistCompletionTo": "isolated_qualification_store",
+      "verifierMode": "production"
+    },
+    {
+      "runId": "ws5-p2-display-sort-v1",
+      "caseId": "ws5-p2-display-sort-v1",
+      "phase": "p2_display_sort_normal_gate",
+      "inputId": "ws5-p2-display-sort-v1",
+      "historyAdapter": "explicit_empty_complete_adapter",
+      "verifierMode": "production"
+    },
+    {
+      "runId": "ws5-sequence-b-v1",
+      "caseId": "ws5-sequence-b-v1",
+      "phase": "repair",
+      "inputId": "ws5-sequence-b-v1",
+      "requiresPriorRunId": "ws5-sequence-a-v1",
+      "historyAdapter": "load_phase_a_completion_from_isolated_qualification_store",
+      "verifierMode": "production"
+    },
+    {
+      "runId": "ws5-sequence-b-repeat-v1",
+      "caseId": "ws5-sequence-b-v1",
+      "phase": "repair_repeat",
+      "inputId": "ws5-sequence-b-v1",
+      "repeatOfRunId": "ws5-sequence-b-v1",
+      "requiresPriorRunId": "ws5-sequence-a-v1",
+      "historyAdapter": "same_phase_a_completion_from_isolated_qualification_store_idempotent_read",
+      "verifierMode": "production"
+    },
+    {
+      "runId": "ws5-sequence-b-no-history-v1",
+      "caseId": "ws5-sequence-b-v1",
+      "phase": "repair_no_history_control",
+      "inputId": "ws5-sequence-b-v1",
+      "historyAdapter": "explicit_empty_complete_context_disabled",
+      "storeReads": false,
+      "storeWrites": false,
+      "verifierMode": "production",
+      "pairedWithRunId": "ws5-sequence-b-v1"
+    },
+    {
+      "runId": "ws5-sequence-b-history-unavailable-v1",
+      "caseId": "ws5-sequence-b-v1",
+      "phase": "repair_history_unavailable_fresh_fallback",
+      "inputId": "ws5-sequence-b-v1",
+      "requiresPriorRunId": "ws5-sequence-a-v1",
+      "historyAdapter": "controlled_unavailable_in_isolated_qualification_store",
+      "fallback": "fresh_source_review",
+      "verifierMode": "production"
+    },
+    {
+      "runId": "ws5-sequence-b-verifier-unavailable-v1",
+      "caseId": "ws5-sequence-b-v1",
+      "phase": "repair_verifier_unavailable_control",
+      "inputId": "ws5-sequence-b-v1",
+      "requiresPriorRunId": "ws5-sequence-a-v1",
+      "historyAdapter": "load_phase_a_completion_from_isolated_qualification_store",
+      "verifierMode": "qualification_fault_injected_unavailable",
+      "capturePreVerifierCandidates": true,
+      "gateMustBeIncompleteOrAbstain": true,
+      "qualityScoring": false
+    },
+    {
+      "runId": "ws5-large-crossfile-v1",
+      "caseId": "ws5-large-crossfile-v1",
+      "phase": "large_crossfile_canary",
+      "inputId": "ws5-large-crossfile-v1",
+      "historyAdapter": "explicit_empty_complete_adapter",
+      "verifierMode": "production",
+      "maxProviderRuns": 1,
+      "maxInvestigationTurns": 100,
+      "maxCoverageAssignments": 24,
+      "retainIncompleteOutcomeAsMeasuredCoverageGap": true
+    },
+    {
+      "runId": "ws5-provider-failure-v1",
+      "caseId": "ws5-p2-display-sort-v1",
+      "phase": "provider_failure_fail_closed_control",
+      "inputId": "ws5-p2-display-sort-v1",
+      "historyAdapter": "explicit_empty_complete_adapter",
+      "verifierMode": "qualification_fault_injected_provider_failure",
+      "fault": {
+        "type": "invalid_inference_credential_sent_through_bifrost_once",
+        "physicalModelRequestsMax": 1,
+        "expectedBoundary": "Bifrost_401_authentication_rejection",
+        "upstreamProviderCompletionsExpected": 0,
+        "existingProvisionedKey": "not_read_or_mutated",
+        "normalGateMustBeIncompleteOrAbstain": true
+      },
+      "normalGateMustBeIncompleteOrAbstain": true,
+      "maxPhysicalModelRequests": 1
+    },
+    {
+      "runId": "ws5-resource-exhaustion-v1",
+      "caseId": "ws5-p2-display-sort-v1",
+      "phase": "resource_exhaustion_fail_closed_control",
+      "inputId": "ws5-p2-display-sort-v1",
+      "historyAdapter": "explicit_empty_complete_adapter",
+      "verifierMode": "qualification_fault_injected_completion_budget",
+      "normalGateMustBeIncompleteOrAbstain": true,
+      "normalResourceEnvelopeMutation": false,
+      "maxPhysicalModelRequests": 1,
+      "testDeadlineSeconds": 60
+    },
+    {
+      "runId": "ws5-sequence-a-adjudicator-v1",
+      "caseId": "ws5-sequence-a-v1",
+      "phase": "same_head_adjudicator_recheck",
+      "inputId": "ws5-sequence-a-v1",
+      "requiresPriorRunId": "ws5-sequence-a-v1",
+      "historyAdapter": "load_completed_phase_a_v2_history_and_authenticated_recheck_projection",
+      "verifierMode": "configured_adjudicator_recheck",
+      "configurationVariant": "configured-disputed-blocker-adjudicator-v1",
+      "freshProviderExecution": true,
+      "cachedReceiptReuse": false,
+      "publication": "disabled"
+    }
+  ],
+  "blindness": {
+    "inputProjectionOnly": true,
+    "expectedLabelsAndOracleBytesExcludedFromWorkerImage": true,
+    "expectedLabelsAndOracleBytesExcludedFromModelContext": true,
+    "oracleJoin": "external_scorer_after_all_runs_by_case_and_finding_id"
+  },
+  "p2DisplaySortBundle": {
+    "descriptorPath": "eval-baselines/competitive-review-benchmark/ws5-p2-display-sort-v1/descriptor.json",
+    "descriptorSha256": "ff43921f3c8188d6a0efd8a257c310f1ac1d8cefcc32fd1f8fba242c1ecb26af",
+    "inputSha256": "c71cd3b3cdf2efd6d83705be5aef8eaa8fe3bb8418e24dfbc0b0a565bf660b2e",
+    "baseSha": "740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7",
+    "headSha": "e4edc4bd9f74fd9ec3e8f8f7d9a83bd821832497",
+    "baseTreeSha": "69b3deddf471ae8e4a8fe9e5dfaf3fccaf863a66",
+    "headTreeSha": "26b0f2d5ee97785df5de9871024eb84bee6572ca",
+    "changedFiles": 1,
+    "patchBytes": 529
+  },
+  "planId": "ws6-normal-canary-v1",
+  "configurationVariant": "configured-disputed-blocker-adjudicator-v1",
+  "adjudicatorRecheckControl": {
+    "mode": "same-phase-a-source-and-head-fresh-run",
+    "requiresPriorRunId": "ws5-sequence-a-v1",
+    "historySource": "completed_phase_a_v2_history_in_isolated_qualification_store",
+    "sourceSelection": "deterministic_unique_authenticated_confirmed_blocking_p1_tuple",
+    "currentHeadBound": true,
+    "policyAndConfigurationDigestsMustMatchPriorRun": true,
+    "modelOrOracleMayAuthorizeTuple": false,
+    "configuredSelectorMustBeAvailableAndUnchanged": true,
+    "freshProviderExecutionRequired": true,
+    "cachedReceiptReuse": false,
+    "ordinaryPublication": false
+  }
+}

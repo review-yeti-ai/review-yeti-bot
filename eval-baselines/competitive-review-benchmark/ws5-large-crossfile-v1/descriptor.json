@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "WS5LargeCrossfileBundle.v1",
+  "caseId": "ws5-large-crossfile-v1",
+  "repository": {
+    "repositoryId": 73003,
+    "owner": "synthetic",
+    "repo": "fixture-large-crossfile"
+  },
+  "prNumber": 42,
+  "baseSha": "f83c7fbab1909ebc8e3b1a905c4d93a6ffdf8448",
+  "headSha": "cef2d6d195ad1ec19ec6a745363a804fd679b369",
+  "changedFileCount": 24,
+  "patchBytes": 93428,
+  "inputPath": "eval-baselines/competitive-review-benchmark/ws5-large-crossfile-v1/inputs/ws5-large-crossfile-v1.json",
+  "inputSha256": "ad360475a095d194b933f2323b7226f057cc617f8cbb605d5473bd00f00b62f5",
+  "commitChain": [
+    {
+      "commitSha": "f83c7fbab1909ebc8e3b1a905c4d93a6ffdf8448",
+      "treeSha": "7c0c745827a14263fec1532f94e479652021732d",
+      "parentSha": null,
+      "commitTimestamp": "2026-10-06T13:10:00+00:00",
+      "commitMessage": "Synthetic fixture revision"
+    },
+    {
+      "commitSha": "cef2d6d195ad1ec19ec6a745363a804fd679b369",
+      "treeSha": "13ea65356dd658bb3c540b8753a065012c9dd931",
+      "parentSha": "f83c7fbab1909ebc8e3b1a905c4d93a6ffdf8448",
+      "commitTimestamp": "2026-10-06T13:11:00+00:00",
+      "commitMessage": "Synthetic fixture revision"
+    }
+  ]
+}

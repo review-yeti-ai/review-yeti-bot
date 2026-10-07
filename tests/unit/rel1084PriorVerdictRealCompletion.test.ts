@@ -255,7 +255,7 @@ describe('a prior built by the real completion builder and the real gate', () =>
     const forged = { ...rows, run: { ...rows.run, status: 'succeeded' } };
     expect(priorReviewRecordFromRows(forged)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-not-clean' });
     // The reason reaches the check-summary disclosure.
-    expect(renderIncrementalSummary(null, { scope: null, decision: decideNext(completion, forged) })).toEqual([
+    expect(renderIncrementalSummary(null, { scope: null, decision: decideNext(completion, forged), ancestryVerified: false })).toEqual([
       '**Incremental re-review** (`REVIEW_YETI_INCREMENTAL`): full review, because no file could be carried forward.',
     ]);
     // And a surviving P1 over a gate record forged to clean SHIP is refused at published severity.

@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { canonicalJson, sha256 } from '../review/reviewCore';
+import { durableFindingIdFor, findingDispositionEventSchema, findingDispositionEventType } from '../review/findingDisposition';
 import {
   createPrLifecycleHistorySnapshot,
   recordCurrentPrFindingVerification,
@@ -41,17 +42,46 @@ function jsonObject(value: unknown): Record<string, unknown> {
 }
 
 /** Source and author prose are intentionally omitted from the bridge projection. */
-function eventProjection(row: Record<string, unknown>) {
+export function projectPrLifecycleHistoryEvent(row: Record<string, unknown>) {
   const payload = jsonObject(row.payload);
   const verification = row.event_type === 'finding.independent_verification';
+  const eventType = String(row.event_type);
+  let disposition: ReturnType<typeof findingDispositionEventSchema.parse> | undefined;
+  if (eventType.startsWith('finding.disposition.')) {
+    const parsed = findingDispositionEventSchema.safeParse(payload);
+    if (!parsed.success || eventType !== findingDispositionEventType(parsed.data.kind)
+      || row.actor_digest !== parsed.data.provenance.actorDigest
+      || row.run_id !== parsed.data.runId || Number(row.execution_attempt) !== parsed.data.executionAttempt
+      || row.head_sha !== parsed.data.headSha || row.base_sha !== parsed.data.baseSha
+      || row.policy_digest !== parsed.data.policyDigest || row.config_digest !== parsed.data.configDigest
+      || row.context_digest !== parsed.data.contextDigest
+      || row.evidence_digest !== sha256(canonicalJson(payload))) {
+      throw new Error('Typed finding disposition provenance did not match its immutable service event');
+    }
+    disposition = parsed.data;
+  }
   const currentDigest = typeof payload.currentAffectedContextDigest === 'string'
     && digest.safeParse(payload.currentAffectedContextDigest).success ? payload.currentAffectedContextDigest : undefined;
   const sourceDigest = typeof payload.sourceAffectedContextDigest === 'string'
     && digest.safeParse(payload.sourceAffectedContextDigest).success ? payload.sourceAffectedContextDigest : undefined;
+  const decisionReceipt = jsonObject(payload.decisionReceipt);
+  const evidenceSemanticsVersion = eventType === 'review.completion_recorded'
+    && typeof decisionReceipt.evidenceSemanticsVersion === 'string'
+    && decisionReceipt.evidenceSemanticsVersion.length <= 120 ? decisionReceipt.evidenceSemanticsVersion : undefined;
+  const serviceCoverage = jsonObject(decisionReceipt.serviceCoverage);
+  const completionStatus = eventType === 'review.completion_recorded'
+    && (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled')
+    ? payload.status : undefined;
   return {
-    eventId: String(row.event_id), eventType: String(row.event_type),
+    eventId: String(row.event_id), eventType,
     ...(typeof row.run_id === 'string' ? { runId: row.run_id } : {}),
     ...(Number.isSafeInteger(Number(row.execution_attempt)) ? { executionAttempt: Number(row.execution_attempt) } : {}),
+    ...(evidenceSemanticsVersion ? { evidenceSemanticsVersion } : {}),
+    ...(completionStatus ? { completionStatus } : {}),
+    ...(eventType === 'review.completion_recorded' && typeof serviceCoverage.coverageComplete === 'boolean'
+      ? { coverageComplete: serviceCoverage.coverageComplete } : {}),
+    ...(eventType === 'review.completion_recorded' && typeof serviceCoverage.quorumSatisfied === 'boolean'
+      ? { quorumSatisfied: serviceCoverage.quorumSatisfied } : {}),
     ...(typeof row.head_sha === 'string' ? { headSha: row.head_sha } : {}),
     ...(typeof row.base_sha === 'string' ? { baseSha: row.base_sha } : {}),
     ...(typeof row.policy_digest === 'string' ? { policyDigest: row.policy_digest } : {}),
@@ -70,12 +100,49 @@ function eventProjection(row: Record<string, unknown>) {
         ...(sourceDigest ? { sourceAffectedContextDigest: sourceDigest } : {}),
       },
     } : {}),
+    ...(disposition ? { disposition } : {}),
   };
 }
 
-function findingProjection(row: Record<string, unknown>) {
+export function projectPrLifecycleHistoryFinding(row: Record<string, unknown>) {
+  const fingerprint = String(row.fingerprint);
+  const durableFindingId = typeof row.durable_finding_id === 'string'
+    ? row.durable_finding_id : durableFindingIdFor(String(row.lifecycle_id), fingerprint);
+  if (!/^lf1_[a-f0-9]{32}$/u.test(durableFindingId)) throw new Error('Durable finding history identity is malformed');
+  const sourceEvidence = jsonObject(row.source_evidence);
+  if (Object.keys(sourceEvidence).length > 0 && row.evidence_digest !== sha256(canonicalJson(sourceEvidence))) {
+    throw new Error('Finding source evidence digest does not match its immutable event');
+  }
+  const sourceClaim = jsonObject(sourceEvidence.finding ?? sourceEvidence.claim);
+  const title = typeof sourceClaim.title === 'string' ? sourceClaim.title.slice(0, 1_000) : undefined;
+  const body = typeof sourceClaim.body === 'string' ? sourceClaim.body.slice(0, 4_000) : '';
+  const groundedEvidence = jsonObject(sourceEvidence.groundedEvidenceV2);
+  const groundedEvidenceSemanticsVersion = typeof groundedEvidence.semanticsVersion === 'string'
+    && groundedEvidence.semanticsVersion.length <= 120 ? groundedEvidence.semanticsVersion : undefined;
+  const cause = jsonObject(groundedEvidence.rootCause);
+  const rootCause = ['componentId', 'behaviorId', 'contractId', 'failureModeId'].every((key) =>
+    typeof cause[key] === 'string' && String(cause[key]).length > 0 && String(cause[key]).length <= 300)
+    ? { componentId: String(cause.componentId), behaviorId: String(cause.behaviorId),
+      contractId: String(cause.contractId), failureModeId: String(cause.failureModeId) } : undefined;
+  const anchor = jsonObject(groundedEvidence.causeAnchor);
+  const causeAnchor = typeof anchor.componentPath === 'string' && anchor.componentPath.length > 0
+    && anchor.componentPath.length <= 4_096 && (anchor.side === 'head' || anchor.side === 'base')
+    && Number.isSafeInteger(anchor.startLine) && Number(anchor.startLine) > 0
+    && Number.isSafeInteger(anchor.endLine) && Number(anchor.endLine) >= Number(anchor.startLine)
+    && Array.isArray(anchor.citationIds) && anchor.citationIds.length > 0 && anchor.citationIds.length <= 64
+    && anchor.citationIds.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 256)
+    && typeof anchor.contentDigest === 'string' && digest.safeParse(anchor.contentDigest).success
+    ? { componentPath: anchor.componentPath, side: anchor.side, startLine: Number(anchor.startLine),
+      endLine: Number(anchor.endLine), citationIds: anchor.citationIds as string[], contentDigest: anchor.contentDigest } : undefined;
+  const sourceWindowManifestDigest = typeof groundedEvidence.sourceWindowManifestDigest === 'string'
+    && digest.safeParse(groundedEvidence.sourceWindowManifestDigest).success
+    ? groundedEvidence.sourceWindowManifestDigest : undefined;
   return {
-    findingEventId: String(row.finding_event_id), fingerprint: String(row.fingerprint), path: String(row.path),
+    findingEventId: String(row.finding_event_id), durableFindingId, fingerprint, path: String(row.path),
+    ...(title ? { claim: { title, body, trust: 'untrusted' as const } } : {}),
+    ...(groundedEvidenceSemanticsVersion ? { groundedEvidenceSemanticsVersion } : {}),
+    ...(rootCause ? { rootCause } : {}), ...(causeAnchor ? { causeAnchor } : {}),
+    ...(sourceWindowManifestDigest ? { sourceWindowManifestDigest } : {}),
     ...(Number.isSafeInteger(Number(row.region_start)) && row.region_start !== null ? { regionStart: Number(row.region_start) } : {}),
     ...(Number.isSafeInteger(Number(row.region_end)) && row.region_end !== null ? { regionEnd: Number(row.region_end) } : {}),
     firstSeenHead: String(row.first_seen_head), lastSeenHead: String(row.last_seen_head),
@@ -133,8 +200,8 @@ export function createPrLifecycleHistoryHandler(db: ReviewLifecycleQueryable) {
       if (result.status === 'unauthorized') return response.status(403).json({ error: 'Worker is not authorized for this run' });
       if (result.status === 'not_found') return response.status(404).json({ error: 'PR lifecycle history snapshot was not found' });
       const rows = result.collection === 'events'
-        ? result.rows.map((row) => eventProjection(row))
-        : result.rows.map((row) => findingProjection(row));
+        ? result.rows.map((row) => projectPrLifecycleHistoryEvent(row))
+        : result.rows.map((row) => projectPrLifecycleHistoryFinding(row));
       return response.status(200).json({ version: PR_LIFECYCLE_HISTORY_PAGE_RESPONSE_VERSION,
         snapshotId: result.snapshotId, collection: result.collection, offset: result.offset, limit: result.limit,
         totalCount: result.totalCount, capturedCount: result.capturedCount, rows,

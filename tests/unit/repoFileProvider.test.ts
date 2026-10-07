@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import { createRepoFileProvider } from '../../src/panel/repoFileProvider';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 
@@ -57,6 +58,31 @@ describe('createRepoFileProvider', () => {
     expect(args[3]).toBe('deadbeef');
     expect(args[4]).toEqual({ notFoundIsEmpty: true });
   });
+
+  it('returns revision-pinned reverse-reference candidates but keeps a truncated scan non-exhaustive', async () => {
+    const headSha = 'a'.repeat(40), baseSha = 'b'.repeat(40);
+    const sources = new Map([
+      ['src/caller.ts', "import { authorize } from './security';\nauthorize(request);\n"],
+      ['src/other.ts', 'export const authorizeLater = true;\n'],
+    ]);
+    const github = {
+      getFileTree: vi.fn(async (_owner: string, _repo: string, sha: string) => ({
+        paths: sha === headSha ? ['src/caller.ts', 'src/other.ts'] : ['src/caller.ts'], truncated: sha === headSha,
+      })),
+      getFileContentEvidence: vi.fn(async (_owner: string, _repo: string, path: string) => ({
+        presence: 'present' as const, content: sources.get(path) ?? null,
+      })),
+    } as unknown as GitHubInstallationClient;
+    const provider = createRepoFileProvider(github, 'o', 'r', headSha, { baseSha, changedFiles: [] });
+
+    const head = await provider.findReferences!('authorize', 'src/security.ts', 'head');
+    expect(head).toMatchObject({ version: 'PinnedSourceReferenceSearch.v1', repository: 'o/r',
+      sourcePath: 'src/security.ts', symbol: 'authorize', side: 'head', revisionSha: headSha,
+      candidatePaths: ['src/caller.ts'], searchComplete: false, scannedFileCount: 2, reason: 'tree_truncated' });
+    const base = await provider.findReferences!('authorize', 'src/security.ts', 'base');
+    expect(base).toMatchObject({ revisionSha: baseSha, candidatePaths: ['src/caller.ts'], searchComplete: true,
+      scannedFileCount: 1, scannedBytes: Buffer.byteLength(sources.get('src/caller.ts')!, 'utf8'), reason: null });
+  });
 });
 
 describe('GitHubInstallationClient.getFileTree', () => {
@@ -108,6 +134,18 @@ describe('GitHubInstallationClient.getFileContentEvidence', () => {
 
 
 describe('pinned source identities', () => {
+  it('returns a digest for the complete revision-pinned UTF-8 bytes without normalizing line endings', async () => {
+    const content = 'one 🧪\r\nold café\r\n';
+    const github = { getFileContentEvidence: vi.fn(async () => ({ presence: 'present' as const, content })) } as unknown as GitHubInstallationClient;
+    const provider = createRepoFileProvider(github, 'o', 'r', 'a'.repeat(40), { baseSha: 'b'.repeat(40), changedFiles: [] });
+
+    expect(await provider.readFileAt!('src/utf8.ts', 'head')).toEqual({
+      sha: 'a'.repeat(40), content, presence: 'present',
+      contentSha256: createHash('sha256').update(Buffer.from(content, 'utf8')).digest('hex'),
+      source: { repository: 'o/r', path: 'src/utf8.ts', side: 'head' },
+    });
+  });
+
   it('preserves pinned absent versus unavailable outcomes and path-side identity', async () => {
     const baseSha = 'b'.repeat(40), headSha = 'a'.repeat(40);
     const github = { getFileContentEvidence: vi.fn(async (_owner: string, _repo: string, path: string) => path === 'missing.ts'
@@ -127,6 +165,7 @@ describe('pinned source identities', () => {
       'o', 'r', 'a'.repeat(40), { baseSha, changedFiles: [] });
 
     expect(await provider.readFileAt!('src/a.ts', 'base')).toEqual({ sha: baseSha, content: 'admitted base source', presence: 'present',
+      contentSha256: createHash('sha256').update('admitted base source').digest('hex'),
       source: { repository: 'o/r', path: 'src/a.ts', side: 'base' } });
     expect(getFileContent).toHaveBeenCalledExactlyOnceWith('o', 'r', 'src/a.ts', baseSha, { notFoundIsEmpty: true });
     expect(getMergeBase).not.toHaveBeenCalled();
@@ -139,12 +178,14 @@ describe('pinned source identities', () => {
       'o', 'r', 'a'.repeat(40), { baseSha: 'c'.repeat(40), changedFiles: [] });
     await expect(provider.readFileAt!('x', 'merge-base')).rejects.toThrow('compare 503');
     expect(await provider.readFileAt!('x', 'merge-base')).toEqual({ sha: 'b'.repeat(40), content: 'verified old source', presence: 'present',
+      contentSha256: createHash('sha256').update('verified old source').digest('hex'),
       source: { repository: 'o/r', path: 'x', side: 'merge-base' } });
     expect(getMergeBase).toHaveBeenCalledTimes(2); expect(getFileContent).toHaveBeenCalledTimes(1);
     const getHead = vi.fn().mockRejectedValueOnce(new Error('contents 503')).mockResolvedValue('verified head');
     const headProvider = createRepoFileProvider({ getFileContent: getHead } as unknown as GitHubInstallationClient, 'o', 'r', 'a'.repeat(40));
     await expect(headProvider.readFileAt!('x', 'head')).rejects.toThrow('contents 503');
     expect(await headProvider.readFileAt!('x', 'head')).toEqual({ sha: 'a'.repeat(40), content: 'verified head', presence: 'present',
+      contentSha256: createHash('sha256').update('verified head').digest('hex'),
       source: { repository: 'o/r', path: 'x', side: 'head' } });
     expect(getHead).toHaveBeenCalledTimes(2);
   });

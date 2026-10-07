@@ -186,16 +186,6 @@ function isOfficialReviewCheck(run: any): boolean {
     && run?.app?.slug === AUTHORITATIVE_REVIEW_APP_SLUG;
 }
 
-type DurableOperatorReceipt = Pick<OperatorPassthroughAdmissionReceipt,
-  'publicationId' | 'auditDigest' | 'mergeEligible'> & { publicationId: string; auditDigest: string };
-
-function isDurableOperatorReceipt(receipt: Pick<OperatorPassthroughAdmissionReceipt,
-  'publicationId' | 'auditDigest' | 'mergeEligible'>): receipt is DurableOperatorReceipt {
-  return receipt.mergeEligible && typeof receipt.publicationId === 'string'
-    && /^[a-f0-9]{64}$/u.test(receipt.publicationId)
-    && typeof receipt.auditDigest === 'string' && /^[a-f0-9]{64}$/u.test(receipt.auditDigest);
-}
-
 function exactReviewFailure(checks: any, expectedHead: string,
   operatorReceipt?: Pick<OperatorPassthroughAdmissionReceipt, 'publicationId' | 'auditDigest' | 'mergeEligible'>): string | undefined {
   if (!Number.isSafeInteger(checks?.total_count) || !Array.isArray(checks?.check_runs)
@@ -214,11 +204,16 @@ function exactReviewFailure(checks: any, expectedHead: string,
   }
   const latestIsOperatorPassthrough = isOperatorPassthroughReviewExternalId(latest.external_id);
   const allowOperatorPassthrough = operatorReceipt !== undefined;
-  if (operatorReceipt && !isDurableOperatorReceipt(operatorReceipt)) {
+  const durableOperatorReceipt = operatorReceipt && operatorReceipt.mergeEligible
+    && typeof operatorReceipt.publicationId === 'string' && /^[a-f0-9]{64}$/u.test(operatorReceipt.publicationId)
+    && typeof operatorReceipt.auditDigest === 'string' && /^[a-f0-9]{64}$/u.test(operatorReceipt.auditDigest)
+    ? { publicationId: operatorReceipt.publicationId, auditDigest: operatorReceipt.auditDigest } : undefined;
+  if (allowOperatorPassthrough && !durableOperatorReceipt) {
     return 'current operator SHIP publication is not durably ready';
   }
-  const expectedReviewExternalId = operatorReceipt
-    ? deriveOperatorPassthroughExternalId(operatorReceipt.publicationId, operatorReceipt.auditDigest, REVIEW_WORKER_CHECK_NAME)
+  const expectedReviewExternalId = durableOperatorReceipt
+    ? deriveOperatorPassthroughExternalId(durableOperatorReceipt.publicationId,
+      durableOperatorReceipt.auditDigest, REVIEW_WORKER_CHECK_NAME)
     : undefined;
   if (allowOperatorPassthrough && (!latestIsOperatorPassthrough || latest.external_id !== expectedReviewExternalId)) {
     return 'latest exact-head Review Yeti check does not match the current durable operator SHIP publication';
@@ -228,7 +223,7 @@ function exactReviewFailure(checks: any, expectedHead: string,
   }
   if (latestIsOperatorPassthrough) {
     const output = latest.output && typeof latest.output === 'object' ? latest.output : {};
-    if (!allowOperatorPassthrough || latest.external_id !== expectedReviewExternalId
+    if (!durableOperatorReceipt || latest.external_id !== expectedReviewExternalId
       || !isOperatorPassthroughCheckOutput(output, 'review')) {
       return 'latest Review Yeti check is not an active, exact operator-passthrough SHIP';
     }
@@ -238,8 +233,8 @@ function exactReviewFailure(checks: any, expectedHead: string,
     const gate = [...gates].sort((left: any, right: any) => Number(left.id) - Number(right.id)).at(-1);
     const gateOutput = gate?.output && typeof gate.output === 'object' ? gate.output : {};
     return gate?.status === 'completed' && gate?.conclusion === 'success'
-      && gate?.external_id === deriveOperatorPassthroughExternalId(operatorReceipt.publicationId,
-        operatorReceipt.auditDigest, REVIEW_GATE_CHECK_NAME)
+      && gate?.external_id === deriveOperatorPassthroughExternalId(durableOperatorReceipt.publicationId,
+        durableOperatorReceipt.auditDigest, REVIEW_GATE_CHECK_NAME)
       && isOperatorPassthroughCheckOutput(gateOutput, 'gate')
       ? undefined : 'paired exact-head Review Yeti Gate passthrough check is not successful';
   }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
+import { sha256 } from '../../src/review/reviewCore';
 import { gateRecordFor, resolvedThreadsFor } from '../support/priorGateRecord';
 import { logger } from '../../src/utils/logger';
 import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
@@ -266,6 +267,27 @@ describe('lane keys and routing', () => {
       { ...input, viewFlags: { diffShrink: true, incremental: false } },
     ];
     for (const variant of variants) expect(verdictCacheLaneKeys(variant)['sec-lane']).not.toBe(keys['sec-lane']);
+  });
+
+  it('versions only grounded V2 cache lanes for the candidate-manifest capability', () => {
+    const v2Flags = { ...input.viewFlags, groundedEvidenceSemantics: 'GroundedReviewEvidenceSemantics.v2' };
+    const priorV2Key = sha256({
+      version: 'VerdictCacheLane.v1', persona: 'sec-lane',
+      promptDigest: sha256({ prompt: input.promptOf({ id: 'sec-lane' }) }),
+      models: [{ id: 'bifrost', model: 'bifrost/pr-reviewer' }],
+      policyDigest: input.policyDigest, configDigest: input.configDigest, engine: input.engine,
+      workerVersion: input.workerVersion, viewFlags: v2Flags,
+    });
+    expect(verdictCacheLaneKeys({ ...input, viewFlags: v2Flags })['sec-lane']).not.toBe(priorV2Key);
+
+    const legacyPriorKey = sha256({
+      version: 'VerdictCacheLane.v1', persona: 'sec-lane',
+      promptDigest: sha256({ prompt: input.promptOf({ id: 'sec-lane' }) }),
+      models: [{ id: 'bifrost', model: 'bifrost/pr-reviewer' }],
+      policyDigest: input.policyDigest, configDigest: input.configDigest, engine: input.engine,
+      workerVersion: input.workerVersion, viewFlags: input.viewFlags,
+    });
+    expect(verdictCacheLaneKeys(input)['sec-lane']).toBe(legacyPriorKey);
   });
 
   it('permits a file only when every routed lane reviewed it under an unchanged key', () => {

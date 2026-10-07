@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "WS5RepairReviewInput.v1",
+  "caseId": "ws5-sequence-a-v1",
+  "source": {
+    "repository": {
+      "repositoryId": 73002,
+      "owner": "synthetic",
+      "repo": "fixture-sequence"
+    },
+    "prNumber": 41,
+    "baseSha": "1fd9256afcf0250975c69410a766629c4d4225ad",
+    "headSha": "1035dc8db9a222447aa774fd9660c224e5d37655",
+    "changedPaths": [
+      "audience-policy.ts"
+    ],
+    "revisions": [
+      {
+        "commitSha": "1fd9256afcf0250975c69410a766629c4d4225ad",
+        "treeSha": "69fc13337c02bf12a0abeae9b159a536bafc665f",
+        "parentSha": null,
+        "commitTimestamp": "2026-10-06T12:00:00+00:00",
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "audience-policy.ts",
+            "mode": "100644",
+            "gitBlobSha": "5e574e965a4fb61c1bf7f00f7442ee81e6688a74",
+            "sha256": "a67ab0ebe13f069a11f215180ea5b2c29147bf338c42a425ab96df58c168e2a2",
+            "content": "export type Audience = \"public\" | \"private\";\nexport type Request = { audience: Audience };\nexport type Route = { audience: Audience };\n\nexport function permits(request: Request, route: Route): boolean {\n  return request.audience === route.audience;\n}\n"
+          },
+          {
+            "path": "router.ts",
+            "mode": "100644",
+            "gitBlobSha": "5f01033f37ea447a75236b6de5f89127400c1342",
+            "sha256": "3fcd279a89de8c32eec0ce87f888f5148fbf28cb4408f7417927538de7fa9758",
+            "content": "import { permits, Request, Route } from \"./audience-policy\";\n\nexport function dispatch(request: Request, route: Route): \"allow\" | \"deny\" {\n  return permits(request, route) ? \"allow\" : \"deny\";\n}\n"
+          }
+        ]
+      },
+      {
+        "commitSha": "1035dc8db9a222447aa774fd9660c224e5d37655",
+        "treeSha": "776024c34f4845dbe4af86603fcddcfe5451a183",
+        "parentSha": "1fd9256afcf0250975c69410a766629c4d4225ad",
+        "commitTimestamp": "2026-10-06T12:01:00+00:00",
+        "commitMessage": "Synthetic fixture revision",
+        "files": [
+          {
+            "path": "audience-policy.ts",
+            "mode": "100644",
+            "gitBlobSha": "e3850a3b650156171c72ae36f97c349d1111b424",
+            "sha256": "f768e123226eaaf274a06dd01e678a7bbd264064ad48f52e2cb004e3b8f4df2d",
+            "content": "export type Audience = \"public\" | \"private\";\nexport type Request = { audience?: Audience };\nexport type Route = { audience: Audience };\n\nexport function permits(request: Request, route: Route): boolean {\n  const requestedAudience = request.audience ?? route.audience;\n  return requestedAudience === route.audience;\n}\n"
+          },
+          {
+            "path": "router.ts",
+            "mode": "100644",
+            "gitBlobSha": "5f01033f37ea447a75236b6de5f89127400c1342",
+            "sha256": "3fcd279a89de8c32eec0ce87f888f5148fbf28cb4408f7417927538de7fa9758",
+            "content": "import { permits, Request, Route } from \"./audience-policy\";\n\nexport function dispatch(request: Request, route: Route): \"allow\" | \"deny\" {\n  return permits(request, route) ? \"allow\" : \"deny\";\n}\n"
+          }
+        ]
+      }
+    ],
+    "patches": [
+      {
+        "path": "audience-policy.ts",
+        "patch": "diff --git a/audience-policy.ts b/audience-policy.ts\nindex 5e574e9..e3850a3 100644\n--- a/audience-policy.ts\n+++ b/audience-policy.ts\n@@ -1,7 +1,8 @@\n export type Audience = \"public\" | \"private\";\n-export type Request = { audience: Audience };\n+export type Request = { audience?: Audience };\n export type Route = { audience: Audience };\n \n export function permits(request: Request, route: Route): boolean {\n-  return request.audience === route.audience;\n+  const requestedAudience = request.audience ?? route.audience;\n+  return requestedAudience === route.audience;\n }\n",
+        "sha256": "10b68285770fbe6d9c8736d3551c78ebd2eed26cbbad900f10cf6a517041cc3d"
+      }
+    ]
+  },
+  "candidates": []
+}

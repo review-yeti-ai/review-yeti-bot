@@ -187,9 +187,16 @@ export function parseFindingThreadNode(node: any, botLogin?: string): PriorFindi
 }
 
 /** Reads the bot's finding threads on a pull request (bounded pagination). */
-export async function readFindingThreads(transport: FindingThreadTransport, pr: PullRequestRef): Promise<PriorFindingThread[]> {
+export interface FindingThreadsReadSnapshot {
+  threads: PriorFindingThread[];
+  complete: boolean;
+  omittedCount: number;
+}
+
+export async function readFindingThreadsSnapshot(transport: FindingThreadTransport, pr: PullRequestRef): Promise<FindingThreadsReadSnapshot> {
   const threads: PriorFindingThread[] = [];
   let after: string | null = null;
+  let complete = true;
   for (let page = 0; page < MAX_FINDING_THREAD_PAGES; page += 1) {
     const data = await graphql(transport, THREADS_QUERY, { owner: pr.owner, repo: pr.repo, pr: pr.prNumber, after });
     const connection = data?.repository?.pullRequest?.reviewThreads;
@@ -198,10 +205,23 @@ export async function readFindingThreads(transport: FindingThreadTransport, pr: 
       const parsed = parseFindingThreadNode(node, transport.botLogin);
       if (parsed) threads.push(parsed);
     }
-    if (connection.pageInfo?.hasNextPage !== true || typeof connection.pageInfo?.endCursor !== 'string') break;
+    if (connection.pageInfo?.hasNextPage !== true) break;
+    if (typeof connection.pageInfo?.endCursor !== 'string') {
+      complete = false;
+      break;
+    }
+    if (page === MAX_FINDING_THREAD_PAGES - 1) {
+      complete = false;
+      break;
+    }
     after = connection.pageInfo.endCursor;
   }
-  return threads;
+  const omittedCount = Math.max(0, threads.length - 500) + (complete ? 0 : 1);
+  return { threads: threads.slice(0, 500), complete, omittedCount };
+}
+
+export async function readFindingThreads(transport: FindingThreadTransport, pr: PullRequestRef): Promise<PriorFindingThread[]> {
+  return (await readFindingThreadsSnapshot(transport, pr)).threads;
 }
 
 /** The thread body a required finding is published with. */

@@ -20,6 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 const require = createRequire(import.meta.url);
 
@@ -32,6 +33,7 @@ export const AACR_BENCHMARK = Object.freeze({
   license: 'Apache-2.0',
 });
 export const AACR_HELDOUT_MANIFEST_SHA256 = 'bf3a09a1d8a10097480ed7cafd35f4ef2309312d23f3dface79ac55f765e2aab';
+export const WS5_AACR_MANIFEST_SHA256 = '762370e1c595bd5a39d93f670287fca059258fa16b6854d885f4a1e4ed7589df';
 
 export const HELDOUT_LANGUAGES = Object.freeze([
   'C', 'C#', 'C++', 'Go', 'Java', 'JavaScript', 'PHP', 'Python', 'Rust', 'TypeScript',
@@ -43,6 +45,7 @@ const CONTEXT_ORDER = Object.freeze(['Diff Level', 'File Level', 'Repo Level']);
 const HASH_RE = /^[a-f0-9]{40}$/iu;
 const SHA256_RE = /^[a-f0-9]{64}$/iu;
 const SOURCE_SNAPSHOT_VERIFICATION = 'preparation_stage_only_not_reverified_at_run';
+const completionDispatchScope = new AsyncLocalStorage();
 let composedEngineTurnLimitScopeActive = false;
 export const V1_BASELINE_RUNTIME_SHA = 'e70749fd4b14cb284b1497974306975cbce2d47a';
 export const V1_POLICY_PROVENANCE = Object.freeze({
@@ -797,9 +800,22 @@ export function assertDiscoveryRunEligible(run) {
 }
 
 function manifestCaseIds(manifest) {
-  if (!manifest || manifest.schemaVersion !== 'review-yeti-competitive-benchmark-manifest-v1'
+  const supportedSchemas = new Set([
+    'review-yeti-competitive-benchmark-manifest-v1',
+    'review-yeti-ws5-heldout-manifest-v1',
+  ]);
+  if (!manifest || !supportedSchemas.has(manifest.schemaVersion)
     || manifest.datasetSha256 !== AACR_BENCHMARK.sha256 || !Array.isArray(manifest.cases)) {
     throw new Error('benchmark manifest is incompatible with the pinned AACR dataset');
+  }
+  if (manifest.schemaVersion === 'review-yeti-ws5-heldout-manifest-v1'
+    && manifest.cases.some((entry) => !HASH_RE.test(String(entry.datasetBaseSha || ''))
+      || !HASH_RE.test(String(entry.diffBaseSha || ''))
+      || !HASH_RE.test(String(entry.mergeBaseSha || ''))
+      || !HASH_RE.test(String(entry.headSha || ''))
+      || entry.baseSha !== entry.diffBaseSha
+      || entry.diffBaseSha !== entry.mergeBaseSha)) {
+    throw new Error('ws5_manifest_dataset_and_diff_identities_must_be_bound_separately');
   }
   return new Set(manifest.cases.map((entry) => `${entry.repository}#${entry.prNumber}`));
 }
@@ -818,7 +834,9 @@ function parseHeldoutManifestBytes(bytes) {
 
 export function assertCanonicalHeldoutManifestBytes(bytes) {
   const binding = parseHeldoutManifestBytes(bytes);
-  if (binding.sha256 !== AACR_HELDOUT_MANIFEST_SHA256) {
+  const expectedSha = binding.manifest.schemaVersion === 'review-yeti-ws5-heldout-manifest-v1'
+    ? WS5_AACR_MANIFEST_SHA256 : AACR_HELDOUT_MANIFEST_SHA256;
+  if (binding.sha256 !== expectedSha) {
     throw new Error('heldout_manifest_digest_mismatch');
   }
   return binding;
@@ -1129,7 +1147,7 @@ export function preflightPinnedGitSnapshot(prCase, repoDir) {
   for (const file of changedFiles) {
     let exactPatch;
     try {
-      exactPatch = runGit(['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--unified=5',
+      exactPatch = runGit(['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--full-index', '--unified=5',
         baseSha, headSha, '--', file.path], repoDir);
     } catch {
       throw new Error('pinned_source_diff_unavailable');
@@ -1326,8 +1344,8 @@ function writeJson(filePath, payload) {
   fs.writeFileSync(resolved, `${JSON.stringify(payload, null, 2)}\n`, { mode: 0o600 });
 }
 
-export function assertActualModelConfig(pipeline, { transportName = '' } = {}) {
-  const config = pipeline.resolveModelConfig();
+export function assertActualModelConfig(pipeline, { transportName = '', transportEnv = process.env } = {}) {
+  const config = pipeline.resolveModelConfig(transportEnv);
   const transports = Array.isArray(config.transports) ? config.transports : [];
   if (!config.enabled || transports.length === 0) {
     throw new Error('actual_model_credentials_unavailable');
@@ -1342,10 +1360,30 @@ export function assertActualModelConfig(pipeline, { transportName = '' } = {}) {
   if (String(selected.name || selected.provider).toLowerCase() === 'synthetic') {
     throw new Error('synthetic_provider_forbidden_for_qualification');
   }
+  let selectedTransport = { ...selected };
+  let safeConfig = { ...config, apiKey: '' };
+  if (transportEnv.WS5_LOOPBACK_BROKER === '1') {
+    let loopbackUrl;
+    try { loopbackUrl = new URL(transportEnv.OPENROUTER_BASE_URL || ''); }
+    catch { throw new Error('ws5_loopback_route_required'); }
+    const localToken = transportEnv.OPENROUTER_API_KEY || '';
+    if (loopbackUrl.protocol !== 'https:' || loopbackUrl.hostname !== '127.0.0.1' || !loopbackUrl.port
+      || loopbackUrl.username || loopbackUrl.password || loopbackUrl.search || loopbackUrl.hash
+      || localToken.length < 32) throw new Error('ws5_loopback_route_required');
+    for (const key of ['apiKey', 'api_key', 'token', 'accessToken', 'access_token', 'authorization',
+      'headers', 'extraHeaders', 'defaultHeaders', 'customHeaders', 'auth', 'credentials', 'providerCredentials',
+      'baseURL', 'url', 'endpoint', 'gatewayBaseUrl', 'serverURL', 'apiBaseUrl']) delete selectedTransport[key];
+    selectedTransport.baseUrl = loopbackUrl.toString().replace(/\/+$/u, '');
+    selectedTransport.apiKey = localToken;
+    for (const key of ['token', 'accessToken', 'access_token', 'authorization',
+      'headers', 'extraHeaders', 'defaultHeaders', 'customHeaders', 'auth', 'credentials', 'providerCredentials',
+      'baseURL', 'url', 'endpoint', 'gatewayBaseUrl', 'serverURL', 'apiBaseUrl']) delete safeConfig[key];
+    safeConfig.apiKey = '';
+    safeConfig.baseUrl = selectedTransport.baseUrl;
+  }
   return {
-    ...config,
-    apiKey: '',
-    transports: [{ ...selected }],
+    ...safeConfig,
+    transports: [selectedTransport],
     selectedTransport: {
       name: safeRuntimeId(selected.name || selected.provider || 'unknown', 120),
       requestedModel: safeRuntimeId(selected.model || config.model || 'unknown'),
@@ -1353,8 +1391,85 @@ export function assertActualModelConfig(pipeline, { transportName = '' } = {}) {
   };
 }
 
+/** Resolve and attest the real pinned transport config without making a model call. */
+export function preflightActualLoopbackTransport(pipeline, { expectedModel = 'pr-reviewer', transportEnv = process.env } = {}) {
+  const localUrl = transportEnv.OPENROUTER_BASE_URL || '';
+  const localToken = transportEnv.OPENROUTER_API_KEY || '';
+  const gatewayUrl = transportEnv.REVIEW_YETI_GATEWAY_BASE_URL || '';
+  const gatewayToken = transportEnv.REVIEW_YETI_BIFROST_API_KEY || '';
+  const caPath = transportEnv.NODE_EXTRA_CA_CERTS || '';
+  const forbiddenPlan = transportEnv.REVIEW_YETI_TRANSPORTS || transportEnv.REVIEW_YETI_TRANSPORT_PLAN_B64;
+  const allowedCredentialNames = new Set(['OPENROUTER_API_KEY', 'REVIEW_YETI_BIFROST_API_KEY']);
+  const inactiveProviderCredentialCount = Object.keys(transportEnv).filter((name) =>
+    /(?:API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/iu.test(name) && !allowedCredentialNames.has(name)).length;
+  let caBytes;
+  try {
+    if (!path.isAbsolute(caPath) || !fs.statSync(caPath).isFile()) throw new Error('invalid_ca_path');
+    caBytes = fs.readFileSync(caPath);
+  } catch { throw new Error('ws5_transport_preflight_ca_certificate_invalid'); }
+  const caText = caBytes.toString('ascii');
+  if (!caText.includes('-----BEGIN CERTIFICATE-----') || !caText.includes('-----END CERTIFICATE-----')
+    || caText.includes('PRIVATE KEY')) throw new Error('ws5_transport_preflight_ca_certificate_invalid');
+  let endpoint;
+  try { endpoint = new URL(localUrl); } catch { throw new Error('ws5_transport_preflight_loopback_invalid'); }
+  if (transportEnv.WS5_LOOPBACK_BROKER !== '1' || endpoint.protocol !== 'https:'
+    || endpoint.hostname !== '127.0.0.1' || !endpoint.port || endpoint.username || endpoint.password
+    || endpoint.search || endpoint.hash || gatewayUrl !== localUrl || !localToken || gatewayToken !== localToken
+    || localToken.length < 32 || forbiddenPlan || inactiveProviderCredentialCount > 0
+    || transportEnv.OPENROUTER_MODEL !== expectedModel || transportEnv.REVIEW_TRANSPORT_DESTINATION !== 'gateway') {
+    throw new Error('ws5_transport_preflight_loopback_invalid');
+  }
+  const modelConfig = assertActualModelConfig(pipeline, { transportEnv });
+  const selected = modelConfig.transports[0];
+  const selectedUrl = new URL(selected.baseUrl);
+  if (modelConfig.transports.length !== 1 || selectedUrl.protocol !== 'https:'
+    || selectedUrl.hostname !== '127.0.0.1' || selectedUrl.port !== endpoint.port
+    || selected.apiKey !== localToken || selected.model !== expectedModel
+    || modelConfig.selectedTransport.requestedModel !== expectedModel
+    || selected.compat !== 'openrouter' || selected.stream !== true) {
+    throw new Error('ws5_transport_preflight_profile_mismatch');
+  }
+  return {
+    schemaVersion: 'ReviewYetiWS5TransportPreflight.v2',
+    status: 'ready_without_model_call',
+    modelCalls: 0,
+    transportName: modelConfig.selectedTransport.name,
+    requestedModel: modelConfig.selectedTransport.requestedModel,
+    modelConfigDefaults: {
+      source: 'pipeline.resolveModelConfig',
+      transportName: modelConfig.selectedTransport.name,
+      requestedModel: modelConfig.selectedTransport.requestedModel,
+      provider: typeof selected.provider === 'string' ? safeRuntimeId(selected.provider, 80) : null,
+      compat: selected.compat,
+      stream: selected.stream,
+      maxTokens: Number.isSafeInteger(selected.maxTokens) ? selected.maxTokens : null,
+      timeoutMs: Number.isSafeInteger(selected.timeoutMs) ? selected.timeoutMs : null,
+      reasoningEffort: typeof selected.reasoningEffort === 'string'
+        ? safeRuntimeId(selected.reasoningEffort, 32) : null,
+    },
+    loopbackOnly: true,
+    childTrust: 'NODE_EXTRA_CA_CERTS_public_certificate_only',
+    inactiveProviderCredentialCount,
+  };
+}
+
+/** @param {any} pipeline @param {{expectedModel?: string, transportEnv?: NodeJS.ProcessEnv}} options */
+export function inspectActualLoopbackTransport(pipeline, { expectedModel = 'pr-reviewer', transportEnv = process.env } = {}) {
+  const credentialNames = Object.keys(transportEnv).filter((name) =>
+    /(?:API_?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/iu.test(name));
+  if (credentialNames.some((name) => !['OPENROUTER_API_KEY', 'REVIEW_YETI_BIFROST_API_KEY'].includes(name))) {
+    throw new Error('ws5_transport_preflight_inactive_provider_credential');
+  }
+  const transportProfile = preflightActualLoopbackTransport(pipeline, { expectedModel, transportEnv });
+  return transportProfile;
+}
+
 export function trackCompletion(fetchImplementation, identity) {
   return async (url, init) => {
+    identity.localHttpRequestAttempts = (Number(identity.localHttpRequestAttempts) || 0) + 1;
+    const localAttemptOrdinal = identity.localHttpRequestAttempts;
+    const dispatchScope = completionDispatchScope.getStore();
+    if (dispatchScope) dispatchScope.localAttemptOrdinals.push(localAttemptOrdinal);
     let request = {};
     try { request = JSON.parse(init?.body || '{}'); } catch {}
     if (typeof request.model === 'string') identity.requestedModels.add(safeRuntimeId(request.model));
@@ -1369,30 +1484,79 @@ export function trackCompletion(fetchImplementation, identity) {
     const previousProfile = identity.requestProfiles.get(profileKey);
     identity.requestProfiles.set(profileKey, { ...profile, count: (previousProfile?.count || 0) + 1 });
     const startedAt = Date.now();
+    const attemptRecord = {
+      localAttemptOrdinal,
+      logicalDispatchOrdinal: dispatchScope?.logicalDispatchOrdinal ?? null,
+      requestedModel: profile.model,
+      reasoningEffort: profile.reasoningEffort,
+      maxOutputTokens: profile.maxOutputTokens,
+      stream: profile.stream,
+      providerPreferencePresent: profile.providerPreferencePresent,
+      gatewayRequestIdDigests: [],
+      status: 'in_flight',
+      httpStatus: null,
+      failureClass: null,
+      durationMs: null,
+      responseReportedProviderHeader: null,
+      responseReportedModelHeader: null,
+      responseReportedModelBody: null,
+    };
+    if (!Array.isArray(identity.httpAttempts)) identity.httpAttempts = [];
+    identity.httpAttempts.push(attemptRecord);
     let response;
     try {
-      response = await fetchImplementation(url, init);
+      let requestInit = init;
+      if (process.env.WS5_LOOPBACK_BROKER === '1') {
+        const headers = new Headers(init?.headers || {});
+        headers.set('x-ws5-local-attempt-ordinal', String(localAttemptOrdinal));
+        if (dispatchScope) headers.set('x-ws5-logical-dispatch-ordinal', String(dispatchScope.logicalDispatchOrdinal));
+        requestInit = { ...init, headers };
+      }
+      response = await fetchImplementation(url, requestInit);
     } catch (error) {
-      identity.fetchToHeadersMs.push(Date.now() - startedAt);
+      const durationMs = Date.now() - startedAt;
       const code = String(error?.cause?.code || '').toUpperCase();
-      identity.fetchFailureClasses.add(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET'].includes(code)
-        ? code : error?.name === 'AbortError' ? 'ABORTED' : 'TRANSPORT_ERROR');
+      const failureClass = ['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET', 'EPIPE'].includes(code)
+        ? code : error?.name === 'AbortError' ? 'ABORTED' : error?.name === 'TimeoutError' ? 'TIMEOUT' : 'TRANSPORT_ERROR';
+      attemptRecord.status = 'transport_error';
+      attemptRecord.failureClass = failureClass;
+      attemptRecord.durationMs = durationMs;
+      identity.fetchToHeadersMs.push(durationMs);
+      identity.fetchFailureClasses.add(failureClass);
       throw error;
     }
-    identity.fetchToHeadersMs.push(Date.now() - startedAt);
-    for (const name of ['x-request-id', 'x-bifrost-request-id', 'x-gateway-request-id']) {
+    const durationMs = Date.now() - startedAt;
+    identity.fetchToHeadersMs.push(durationMs);
+    attemptRecord.status = 'http_response';
+    attemptRecord.httpStatus = response.status;
+    attemptRecord.durationMs = durationMs;
+    for (const name of ['x-bifrost-request-id', 'x-gateway-request-id', 'x-request-id']) {
       const requestId = response.headers.get(name);
-      if (requestId) identity.requestIdDigests.add(sha256(requestId).slice(0, 16));
+      if (requestId) {
+        const requestIdDigest = sha256(requestId).slice(0, 16);
+        attemptRecord.gatewayRequestIdDigests.push(requestIdDigest);
+        identity.requestIdDigests.add(requestIdDigest);
+      }
     }
-    for (const name of ['x-provider', 'x-provider-name', 'x-bifrost-provider', 'x-model', 'x-bifrost-model']) {
+    for (const [name, destination] of [
+      ['x-bifrost-provider', 'responseReportedProviderHeader'], ['x-provider', 'responseReportedProviderHeader'],
+      ['x-provider-name', 'responseReportedProviderHeader'], ['x-bifrost-model', 'responseReportedModelHeader'],
+      ['x-model', 'responseReportedModelHeader'],
+    ]) {
       const routeHint = response.headers.get(name);
-      if (routeHint) identity.responseRouteHints.add(safeRuntimeId(routeHint, 120));
+      if (routeHint) {
+        attemptRecord[destination] ||= safeRuntimeId(routeHint, 120);
+        identity.responseRouteHints.add(safeRuntimeId(routeHint, 120));
+      }
     }
     if (!profile.stream) {
       // Capture buffered response metadata in the background. Never read or tee a live SSE body:
       // that would change backpressure, first-token timing, or the production client's stream.
       const metadataRead = response.clone().json().then((payload) => {
-        if (typeof payload?.model === 'string' && payload.model.trim()) identity.responseModels.add(safeRuntimeId(payload.model));
+        if (typeof payload?.model === 'string' && payload.model.trim()) {
+          attemptRecord.responseReportedModelBody = safeRuntimeId(payload.model);
+          identity.responseModels.add(safeRuntimeId(payload.model));
+        }
         const provider = payload?.provider || payload?.openrouter_metadata?.provider_name;
         if (typeof provider === 'string' && provider.trim()) identity.responseProviders.add(safeRuntimeId(provider));
       }).catch(() => {
@@ -1405,17 +1569,60 @@ export function trackCompletion(fetchImplementation, identity) {
   };
 }
 
+function safeCompletionFailureClass(error) {
+  const code = String(error?.cause?.code || error?.code || '').toUpperCase();
+  if (['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ETIMEDOUT', 'ECONNRESET', 'EPIPE'].includes(code)) return code;
+  if (error?.name === 'AbortError') return 'ABORTED';
+  if (error?.name === 'TimeoutError') return 'TIMEOUT';
+  return 'COMPLETION_ERROR';
+}
+
+/** Attribute intercepted HTTP attempts to each logical model-client completion, including local failures. */
+export async function trackLogicalCompletion(stage, dispatches, operation) {
+  if (!['review', 'verifier', 'verification', 'alibaba'].includes(stage) || !Array.isArray(dispatches)
+    || typeof operation !== 'function') throw new Error('logical_completion_instrumentation_invalid');
+  const logicalDispatchOrdinal = dispatches.length + 1;
+  const dispatch = { logicalDispatchOrdinal, stage, localAttemptOrdinals: [], outcome: 'in_progress', failureClass: null };
+  dispatches.push(null);
+  try {
+    return await completionDispatchScope.run(dispatch, async () => {
+      try {
+        const value = await operation();
+        dispatch.outcome = 'returned';
+        return value;
+      } catch (error) {
+        dispatch.outcome = 'error';
+        dispatch.failureClass = safeCompletionFailureClass(error);
+        throw error;
+      }
+    });
+  } finally {
+    const localHttpRequestAttempts = dispatch.localAttemptOrdinals.length;
+    dispatches[logicalDispatchOrdinal - 1] = { ...dispatch, localHttpRequestAttempts,
+      ...(dispatch.outcome === 'error' && localHttpRequestAttempts === 0
+      ? { classification: 'pre_http_dispatch_error' }
+      : localHttpRequestAttempts === 0 ? { classification: 'returned_without_http_attempt' }
+        : { classification: 'http_attempted' }) };
+  }
+}
+
 export function identitySummary(identity) {
   const values = (set) => [...set].sort();
   const requestedModels = values(identity.requestedModels);
   const responseModels = values(identity.responseModels);
+  const requestProfileAttemptCount = [...identity.requestProfiles.values()]
+    .reduce((sum, profile) => sum + (Number(profile.count) || 0), 0);
   return {
     requestedModels,
     responseReportedModels: responseModels,
     responseReportedProviders: values(identity.responseProviders),
     responseRouteHints: values(identity.responseRouteHints),
     requestIdDigests: values(identity.requestIdDigests),
+    httpAttempts: Array.isArray(identity.httpAttempts) ? identity.httpAttempts.map((entry) => ({ ...entry })) : [],
     fetchToHeadersMs: identity.fetchToHeadersMs,
+    localHttpRequestAttempts: Number(identity.localHttpRequestAttempts) || 0,
+    requestProfileAttemptCount,
+    requestAttemptAccountingMatches: (Number(identity.localHttpRequestAttempts) || 0) === requestProfileAttemptCount,
     modelIdentity: responseModels.length === 0 ? 'unknown' : 'response_reported_unverified',
     fetchFailureClasses: values(identity.fetchFailureClasses),
     httpStatuses: identity.httpStatuses,
@@ -1453,17 +1660,23 @@ export async function runActualVerificationCase(testCase, snapshot, pipeline, {
   const identity = { requestedModels: new Set(), responseModels: new Set(), responseProviders: new Set(),
     responseRouteHints: new Set(), requestIdDigests: new Set(), fetchFailureClasses: new Set(),
     fetchToHeadersMs: [], httpStatuses: [], requestProfiles: new Map(), pendingResponseMetadataReads: [] };
+  let logicalCompletionDispatches = 0;
+  const dispatches = [];
   const result = await falsify.runFindingFalsification({
     findings: [finding],
     changedFiles,
     limits: { maxCandidates: 1, maxCalls: 1, concurrency: 1 },
-    falsifyTurn: ({ messages, timeoutMs, signal }) => pipeline.callFalsificationModelTurn(
-      { messages, timeoutMs, signal },
-      { ...modelConfig, maxOutputTokens, fetchImplementation: trackCompletion(globalThis.fetch, identity) },
-    ),
+    falsifyTurn: ({ messages, timeoutMs, signal }) => {
+      logicalCompletionDispatches += 1;
+      return trackLogicalCompletion('verification', dispatches, () => pipeline.callFalsificationModelTurn(
+        { messages, timeoutMs, signal },
+        { ...modelConfig, maxOutputTokens, fetchImplementation: trackCompletion(globalThis.fetch, identity) },
+      ));
+    },
   });
   const outcome = result.outcomes[0] || { verdict: 'ABSTAIN', reason: 'missing_outcome' };
   await Promise.allSettled(identity.pendingResponseMetadataReads);
+  const requestIdentity = identitySummary(identity);
   return {
     caseId,
     context: testCase.context || 'unknown',
@@ -1479,8 +1692,21 @@ export async function runActualVerificationCase(testCase, snapshot, pipeline, {
     ],
     usage: result.receipt.usage,
     selectedTransport: modelConfig.selectedTransport,
+    callAccounting: {
+      logicalCompletionDispatches,
+      localHttpRequestAttempts: requestIdentity.localHttpRequestAttempts,
+      requestProfileAttemptCount: requestIdentity.requestProfileAttemptCount,
+      requestAttemptAccountingMatches: requestIdentity.requestAttemptAccountingMatches,
+      dispatches,
+      dispatchAttemptAccountingMatches: dispatches.reduce((sum, dispatch) => sum + dispatch.localHttpRequestAttempts, 0)
+        === requestIdentity.localHttpRequestAttempts,
+      gatewayRelayCount: null,
+      providerCompletionCount: null,
+      billedRequestCount: null,
+      costUsd: null,
+    },
     requestProfiles: [...identity.requestProfiles.values()],
-    ...identitySummary(identity),
+    ...requestIdentity,
   };
 }
 
@@ -1489,15 +1715,63 @@ function arg(name, fallback = undefined, argv = process.argv) {
   return index >= 0 && argv[index + 1] ? argv[index + 1] : fallback;
 }
 
-function runtimeGitIdentity(runtimeRoot) {
+function hostExecutionIdentity(runtimeRoot) {
+  const runnerRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const runtimeRequire = createRequire(path.join(runtimeRoot, 'package.json'));
+  const runnerFiles = [
+    'scripts/competitive-review-benchmark.mjs',
+    'scripts/ws5-acceptance.mjs',
+    'scripts/ws5-alibaba.mjs',
+    'scripts/ws5-matrix-runner.mjs',
+    'scripts/ws5-verification-runner.mjs',
+  ];
+  const runtimeFiles = [
+    '.github/workflows/pipelines/review-pipeline.js',
+    'src/review/findingFalsification.js',
+    'src/cli/publishingReview.ts',
+    'src/gateway/openRouterClient.ts',
+    'src/panel/pathMatch.ts',
+    'src/panel/composedEngine.ts',
+  ];
+  const hashFile = (root, relativePath) => sha256(fs.readFileSync(path.join(root, relativePath)));
+  const runnerSourceCommit = String(runGit(['rev-parse', 'HEAD'], runnerRoot)).trim();
+  const runnerSourceTree = String(runGit(['rev-parse', 'HEAD^{tree}'], runnerRoot)).trim();
+  const runnerWorktreeClean = String(runGit(['status', '--porcelain=v1', '--untracked-files=normal'], runnerRoot)).trim().length === 0;
+  const runnerEntryDigests = runnerFiles.map((relativePath) => ({ path: relativePath, sha256: hashFile(runnerRoot, relativePath) }));
+  const runtimeEntryDigests = runtimeFiles.map((relativePath) => ({ path: relativePath, sha256: hashFile(runtimeRoot, relativePath) }));
+  const tsNodeLoaderPath = runtimeRequire.resolve('ts-node/register/transpile-only');
+  const typescriptEntryPath = runtimeRequire.resolve('typescript');
+  return {
+    executionMode: 'host_node',
+    nodeVersion: process.version,
+    platform: process.platform,
+    architecture: process.arch,
+    nodeExecutableSha256: sha256(fs.readFileSync(process.execPath)),
+    runnerSourceCommit,
+    runnerSourceTree,
+    runnerSourceClean: runnerWorktreeClean,
+    runnerSourceSha256: sha256(JSON.stringify(runnerEntryDigests)),
+    runnerPackageLockSha256: hashFile(runnerRoot, 'package-lock.json'),
+    runtimePackageLockSha256: hashFile(runtimeRoot, 'package-lock.json'),
+    tsNodeVersion: runtimeRequire('ts-node/package.json').version,
+    tsNodeLoaderSha256: sha256(fs.readFileSync(tsNodeLoaderPath)),
+    typescriptVersion: runtimeRequire('typescript').version,
+    typescriptEntrySha256: sha256(fs.readFileSync(typescriptEntryPath)),
+    runtimeEntryFilesSha256: sha256(JSON.stringify(runtimeEntryDigests)),
+    workerImageExecution: 'provenance_reference_only_not_executed_by_ws5_host_runner',
+  };
+}
+
+export function runtimeGitIdentity(runtimeRoot) {
   try {
     const commit = String(runGit(['rev-parse', 'HEAD'], runtimeRoot)).trim();
     const tree = String(runGit(['rev-parse', 'HEAD^{tree}'], runtimeRoot)).trim();
     const worktreeClean = String(runGit(['status', '--porcelain'], runtimeRoot)).trim().length === 0;
     const version = readJson(path.join(runtimeRoot, 'package.json')).version || null;
-    return { commit, tree, version, worktreeClean };
+    const hostExecution = hostExecutionIdentity(path.resolve(runtimeRoot));
+    return { commit, tree, version, worktreeClean, hostExecution };
   } catch {
-    return { commit: 'unknown', tree: 'unknown', version: null, worktreeClean: false };
+    return { commit: 'unknown', tree: 'unknown', version: null, worktreeClean: false, hostExecution: null };
   }
 }
 
@@ -1633,13 +1907,21 @@ function createApiSnapshotFileProvider(snapshot, prCase, createPathMatcher) {
 
 export function sanitizePanelResult(panelResult) {
   if (!panelResult || typeof panelResult !== 'object') return null;
+  const boundedText = (value, maxLength) => typeof value === 'string'
+    ? value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/gu, '').slice(0, maxLength) : null;
   const findings = (Array.isArray(panelResult.personas) ? panelResult.personas : []).flatMap((persona, laneIndex) =>
     (Array.isArray(persona?.findings) ? persona.findings : []).map((finding, findingIndex) => ({
-      id: `finding-${laneIndex + 1}-${findingIndex + 1}-${sha256(`${finding?.path || ''}:${finding?.line || ''}:${finding?.title || ''}`).slice(0, 12)}`,
+      id: `finding-${laneIndex + 1}-${findingIndex + 1}-${sha256(`${finding?.path || finding?.filePath || ''}:${finding?.line || finding?.lineNumber || ''}:${finding?.title || finding?.comment || ''}`).slice(0, 12)}`,
       severity: safeRuntimeId(finding?.severity || 'unknown', 12),
-      path: String(finding?.path || ''),
-      line: Number.isSafeInteger(Number(finding?.line)) ? Number(finding.line) : null,
-      lane: safeRuntimeId(persona?.id || 'unknown', 80),
+      path: String(finding?.path || finding?.filePath || ''),
+      line: Number.isSafeInteger(Number(finding?.line ?? finding?.lineNumber))
+        ? Number(finding?.line ?? finding?.lineNumber) : null,
+      lane: safeRuntimeId(persona?.id || persona?.persona || 'unknown', 80),
+      ...(boundedText(finding?.title, 300) ? { title: boundedText(finding?.title, 300) } : {}),
+      ...(boundedText(finding?.comment ?? finding?.description ?? finding?.body, 2_000)
+        ? { comment: boundedText(finding?.comment ?? finding?.description ?? finding?.body, 2_000) } : {}),
+      ...(boundedText(finding?.recommendation, 1_000)
+        ? { recommendation: boundedText(finding?.recommendation, 1_000) } : {}),
     })));
   const grounded = panelResult.groundedReview || null;
   const history = grounded?.history || panelResult.history || null;
@@ -1670,8 +1952,8 @@ export function sanitizePanelResult(panelResult) {
     })) : [],
     coverageComplete: panelResult.coverageComplete ?? grounded?.coverageComplete ?? null,
     quorumSatisfied: panelResult.quorumSatisfied ?? grounded?.quorumSatisfied ?? null,
-    // Free-form decision/verifier reason strings can contain model or source text. Keep only
-    // structured receipt fields in the public proof artifact.
+    // Bounded finding title/comment/recommendation are needed for private post-run adjudication.
+    // Other decision/verifier reason text is omitted because it can carry hidden reasoning.
     reviewDecision: summaryObject(panelResult.reviewDecision || grounded?.reviewDecision, ['schemaVersion', 'classification', 'blockingFindingCount', 'advisoryFindingCount', 'eligible']),
     history: historySummary,
     verification: verificationSummary,
@@ -1806,19 +2088,25 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
     fetchImplementation: trackCompletion(globalThis.fetch, modelIdentity),
   });
   let callCount = 0;
-  const client = {
+  const logicalCallsByStage = { review: 0, verifier: 0 };
+  const logicalDispatches = [];
+  const clientForStage = (stage) => ({
     async complete(request) {
       callCount += 1;
+      logicalCallsByStage[stage] += 1;
       const outboundRequest = effortInjection
         ? { ...request, reasoningEffort: effortInjection }
         : request;
-      const response = await realClient.complete(outboundRequest);
+      const response = await trackLogicalCompletion(stage, logicalDispatches,
+        () => realClient.complete(outboundRequest));
       if (typeof response?.model === 'string' && response.model.trim()) {
         modelIdentity.responseModels.add(safeRuntimeId(response.model));
       }
       return response;
     },
-  };
+  });
+  const client = clientForStage('review');
+  const groundedVerifierClient = clientForStage('verifier');
   const diff = snapshot.changedFiles.map((file) => file.patch).join('');
   let activeFileProvider = null;
   const deps = {
@@ -1850,6 +2138,7 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
       return activeFileProvider;
     },
     ...(historySource ? { prLifecycleHistory: historySource } : {}),
+    groundedVerifierClient,
     zoektGrounding: async () => ({ reason: 'disabled_in_public_snapshot_adapter' }),
     composedReviewRunner: async (input) => {
       selection.engineRunnerInvoked = true;
@@ -1876,6 +2165,7 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
   const sourceReadOmissions = activeFileProvider?.sourceReadOmissions?.() || [];
   const panel = sanitizePanelResult(selection.result);
   const groundedReview = sanitizeGroundedReviewReceipt(receipt.groundedReview);
+  const requestIdentity = identitySummary(modelIdentity);
   const binaryOnlySourceOmissions = sourceOmissions.length > 0 && sourceOmissions.every((entry) => entry === 'binary_patch');
   const caseQualityComplete = assertDiscoveryCaseQualification({
     purpose,
@@ -1963,6 +2253,9 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
     source: {
       repository: prCase.repository,
       prNumber: prCase.prNumber,
+      datasetBaseSha: prCase.datasetBaseSha || prCase.baseSha,
+      diffBaseSha: prCase.diffBaseSha || prCase.baseSha,
+      mergeBaseSha: prCase.mergeBaseSha || prCase.baseSha,
       baseSha: prCase.baseSha,
       headSha: prCase.headSha,
       changedFiles: snapshot.changedFiles.length,
@@ -2002,7 +2295,29 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
     model: {
       transport: 'Bifrost',
       requestedAlias: model,
-      ...identitySummary(modelIdentity),
+      ...requestIdentity,
+      calls: callCount,
+      callsMeaning: 'logical_completion_dispatches',
+      callAccounting: {
+        logicalCompletionDispatches: callCount,
+        reviewCompletionDispatches: logicalCallsByStage.review,
+        verifierCompletionDispatches: logicalCallsByStage.verifier,
+        localHttpRequestAttempts: requestIdentity.localHttpRequestAttempts,
+        requestProfileAttemptCount: requestIdentity.requestProfileAttemptCount,
+        requestAttemptAccountingMatches: requestIdentity.requestAttemptAccountingMatches,
+        dispatches: logicalDispatches,
+        dispatchAttemptAccountingMatches: logicalDispatches.reduce((sum, dispatch) => sum + dispatch.localHttpRequestAttempts, 0)
+          === requestIdentity.localHttpRequestAttempts,
+        preHttpDispatchErrorCount: logicalDispatches.filter((dispatch) => dispatch.classification === 'pre_http_dispatch_error').length,
+        returnedWithoutHttpAttemptCount: logicalDispatches.filter((dispatch) => dispatch.classification === 'returned_without_http_attempt').length,
+        panelTurns: Number.isSafeInteger(receipt.metrics?.totalTurns) ? receipt.metrics.totalTurns : null,
+        groundedVerifierReceiptCalls: Number.isSafeInteger(receipt.groundedReview?.verification?.calls)
+          ? receipt.groundedReview.verification.calls : null,
+        gatewayRelayCount: null,
+        providerCompletionCount: null,
+        billedRequestCount: null,
+        costUsd: null,
+      },
       requestedEfforts: [...modelIdentity.requestProfiles.values()].map((entry) => entry.reasoningEffort),
       effortInjection: effortInjection ? 'benchmark_adapter_explicit_request_profile' : 'runtime_native',
       requestProfiles: [...modelIdentity.requestProfiles.values()],
@@ -2010,7 +2325,6 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
         && [...modelIdentity.responseModels].some((responseModel) => !modelIdentity.requestedModels.has(responseModel))
         ? 'response_reported_unverified' : 'unknown',
       upstreamProviderIdentity: 'unknown',
-      calls: callCount,
     },
     runtimeReceipt: panel,
     githubWrites: 0,
@@ -2021,6 +2335,47 @@ export async function runActualDiscoveryCase(prCase, snapshot, runtime, {
 export async function main(argv = process.argv) {
   const command = argv[2];
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  if (command === 'preflight-transport') {
+    const runtimeRoot = path.resolve(arg('--runtime-root', repoRoot, argv));
+    const runtime = loadRuntime(runtimeRoot);
+    const transport = inspectActualLoopbackTransport(runtime.pipeline, {
+      expectedModel: arg('--expected-model', 'pr-reviewer', argv),
+      transportEnv: process.env,
+    });
+    const expectedModel = arg('--expected-model', 'pr-reviewer', argv);
+    const gatewayUrl = process.env.REVIEW_YETI_GATEWAY_BASE_URL || '';
+    const gatewayToken = process.env.REVIEW_YETI_BIFROST_API_KEY || '';
+    const discoveryRuntimeEnv = {
+      NODE_ENV: 'production',
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      REVIEW_MODEL: process.env.REVIEW_MODEL,
+      REVIEW_YETI_GATEWAY_BASE_URL: gatewayUrl,
+      REVIEW_YETI_BIFROST_API_KEY: gatewayToken,
+    };
+    const discoveryTransport = runtime.publishing.openaiTransport(discoveryRuntimeEnv);
+    let discoveryUrl;
+    try { discoveryUrl = new URL(discoveryTransport.baseUrl); }
+    catch { throw new Error('ws5_discovery_transport_preflight_mismatch'); }
+    if (discoveryUrl.protocol !== 'https:' || discoveryUrl.hostname !== '127.0.0.1'
+      || discoveryUrl.port !== new URL(gatewayUrl).port
+      || discoveryTransport.apiKey !== process.env.OPENROUTER_API_KEY
+      || discoveryTransport.model !== expectedModel) {
+      throw new Error('ws5_discovery_transport_preflight_mismatch');
+    }
+    process.stdout.write(JSON.stringify({
+      ...transport,
+      productionPublishingTransport: {
+        resolver: 'runtime.publishing.openaiTransport',
+        protocol: discoveryUrl.protocol,
+        endpointHost: discoveryUrl.hostname,
+        requestedModel: safeRuntimeId(discoveryTransport.model),
+        resourceLimits: 'not_exposed_by_publishing_transport_resolver',
+      },
+      runtime: runtimeGitIdentity(runtimeRoot),
+    }) + '\n');
+    return 0;
+  }
   if (command === 'manifest') {
     const rows = loadPinnedAacrDataset(arg('--dataset', ''));
     const manifest = buildAacrManifest(rows);
@@ -2030,7 +2385,9 @@ export async function main(argv = process.argv) {
   }
   if (command === 'prepare-verification') {
     const rows = loadPinnedAacrDataset(arg('--dataset', ''));
-    const manifest = readJson(arg('--manifest', path.join(repoRoot, 'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json')));
+    const manifestBytes = fs.readFileSync(path.resolve(arg('--manifest',
+      path.join(repoRoot, 'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json'))));
+    const { manifest, sha256: heldoutManifestSha256 } = assertCanonicalHeldoutManifestBytes(manifestBytes);
     const cases = buildVerificationCases(rows, manifest, { perLabelPerPr: Number(arg('--per-label-per-pr-context', '1')) });
     const cacheRoot = path.resolve(arg('--cache', path.join(os.tmpdir(), 'review-yeti-aacr-public-repos')));
     const outputCases = [];
@@ -2047,7 +2404,13 @@ export async function main(argv = process.argv) {
         language: testCase.language,
         context: testCase.context,
         changedFiles: snapshot.changedFiles,
-        sourceIdentity: { repository: snapshot.repository, baseSha: snapshot.baseSha, headSha: snapshot.headSha },
+        sourceIdentity: {
+          repository: snapshot.repository,
+          datasetBaseSha: prCase.datasetBaseSha || prCase.baseSha,
+          diffBaseSha: prCase.diffBaseSha || prCase.baseSha,
+          baseSha: snapshot.baseSha,
+          headSha: snapshot.headSha,
+        },
         referencePathChanged: Boolean(matchedFile),
         sourceOmissions: snapshot.omissions,
       };
@@ -2056,6 +2419,7 @@ export async function main(argv = process.argv) {
     writeJson(arg('--out', path.join(os.tmpdir(), 'review-yeti-aacr-verification-input.json')), {
       schemaVersion: 'review-yeti-verification-cases-v1',
       datasetSha256: AACR_BENCHMARK.sha256,
+      heldoutManifestSha256,
       cases: outputCases,
     });
     const strata = Object.fromEntries(CONTEXT_ORDER.map((context) => [context, outputCases.filter((entry) => entry.context === context).length]));
@@ -2075,6 +2439,9 @@ export async function main(argv = process.argv) {
         repository: prCase.repository,
         prNumber: prCase.prNumber,
         language: prCase.language,
+        datasetBaseSha: prCase.datasetBaseSha || prCase.baseSha,
+        diffBaseSha: prCase.diffBaseSha || prCase.baseSha,
+        mergeBaseSha: prCase.mergeBaseSha || prCase.baseSha,
         baseSha: prCase.baseSha,
         headSha: prCase.headSha,
         changedFiles: snapshot.changedFiles,
@@ -2206,7 +2573,10 @@ export async function main(argv = process.argv) {
     for (const inputCase of selectedCases) {
       const prCase = expectedCases.get(inputCase.caseId);
       if (inputCase.repository !== prCase.repository || inputCase.prNumber !== prCase.prNumber
-        || inputCase.baseSha !== prCase.baseSha || inputCase.headSha !== prCase.headSha) {
+        || inputCase.baseSha !== prCase.baseSha || inputCase.headSha !== prCase.headSha
+        || (prCase.datasetBaseSha && inputCase.datasetBaseSha !== prCase.datasetBaseSha)
+        || (prCase.diffBaseSha && inputCase.diffBaseSha !== prCase.diffBaseSha)
+        || (prCase.mergeBaseSha && inputCase.mergeBaseSha !== prCase.mergeBaseSha)) {
         throw new Error('discovery input source identity differs from the pinned manifest');
       }
       const snapshot = {
@@ -2214,6 +2584,9 @@ export async function main(argv = process.argv) {
         repository: inputCase.repository,
         baseSha: inputCase.baseSha,
         headSha: inputCase.headSha,
+        datasetBaseSha: inputCase.datasetBaseSha || prCase.datasetBaseSha || prCase.baseSha,
+        diffBaseSha: inputCase.diffBaseSha || prCase.diffBaseSha || prCase.baseSha,
+        mergeBaseSha: inputCase.mergeBaseSha || prCase.mergeBaseSha || prCase.baseSha,
         sourceRepoDir: publicRepoCacheDirectory(inputCase.repository, cacheRoot),
         omissions: inputCase.sourceOmissions || [],
         preparedCaseSha256: sha256(JSON.stringify(inputCase)),
@@ -2349,6 +2722,10 @@ export async function main(argv = process.argv) {
     const preparedInput = readPreparedInput(arg('--cases', path.join(os.tmpdir(), 'review-yeti-aacr-verification-input.json')));
     const input = preparedInput.value;
     if (input.datasetSha256 !== AACR_BENCHMARK.sha256 || !Array.isArray(input.cases)) throw new Error('verification case bundle is not pinned');
+    const manifestBytes = fs.readFileSync(path.resolve(arg('--manifest',
+      path.join(repoRoot, 'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json'))));
+    const { sha256: heldoutManifestSha256 } = assertCanonicalHeldoutManifestBytes(manifestBytes);
+    if (input.heldoutManifestSha256 !== heldoutManifestSha256) throw new Error('verification_input_manifest_digest_mismatch');
     const runtimeRoot = path.resolve(arg('--runtime-root', repoRoot));
     const runtime = loadRuntime(runtimeRoot);
     const transportName = arg('--transport', '');
@@ -2359,7 +2736,20 @@ export async function main(argv = process.argv) {
     const maxCases = Math.min(requestedLimit, input.cases.length);
     const selectedCases = [];
     const exactCaseId = arg('--case-id', '', argv);
-    if (exactCaseId) {
+    const exactCaseIdsText = arg('--case-ids', '', argv);
+    if (exactCaseId && exactCaseIdsText) throw new Error('choose_one_verification_case_selector');
+    if (exactCaseIdsText) {
+      if (argv.includes('--max-cases')) throw new Error('exact_verification_case_set_rejects_max_cases');
+      const requestedIds = exactCaseIdsText.split(',').filter(Boolean);
+      if (requestedIds.length === 0 || new Set(requestedIds).size !== requestedIds.length) {
+        throw new Error('verification_case_ids_must_be_nonempty_and_unique');
+      }
+      for (const caseId of requestedIds) {
+        const candidate = input.cases.find((entry) => entry.caseId === caseId);
+        if (!candidate) throw new Error('requested_verification_case_id_not_in_fixed_panel');
+        selectedCases.push(candidate);
+      }
+    } else if (exactCaseId) {
       const candidate = input.cases.find((entry) => entry.caseId === exactCaseId);
       if (!candidate) throw new Error('requested_case_id_not_in_fixed_panel');
       selectedCases.push(candidate);
@@ -2388,11 +2778,13 @@ export async function main(argv = process.argv) {
       lane: 'production_finding_falsification_only',
       benchmark: AACR_BENCHMARK.name,
       datasetSha256: input.datasetSha256,
+      heldoutManifestSha256,
       preparedInputSha256: preparedInput.sha256,
       sourceSnapshotVerification: SOURCE_SNAPSHOT_VERIFICATION,
       panelCaseIds: input.cases.map((entry) => entry.caseId),
       selectedCaseIds: selectedCases.map((entry) => entry.caseId),
       panelSize: input.cases.length,
+      selectedCaseCount: selectedCases.length,
       requestedActualCallCeiling: Math.min(maxCases, selectedCases.length),
       runtime: runtimeGitIdentity(runtimeRoot),
       requestedConfiguration: {
@@ -2407,12 +2799,37 @@ export async function main(argv = process.argv) {
   }
   if (command === 'score-verification') {
     const rows = loadPinnedAacrDataset(arg('--dataset', ''));
-    const manifest = readJson(arg('--manifest', path.join(repoRoot, 'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json')));
+    const manifestBytes = fs.readFileSync(path.resolve(arg('--manifest',
+      path.join(repoRoot, 'eval-baselines/competitive-review-benchmark/aacr-heldout-v1.json'))));
+    const { manifest, sha256: heldoutManifestSha256 } = assertCanonicalHeldoutManifestBytes(manifestBytes);
     const testCases = buildVerificationCases(rows, manifest, { perLabelPerPr: Number(arg('--per-label-per-pr-context', '1')) });
     const run = readJson(arg('--run', path.join(os.tmpdir(), 'review-yeti-aacr-verification-run.json')));
     if (run.datasetSha256 !== AACR_BENCHMARK.sha256 || !Array.isArray(run.cases)) throw new Error('verification run is not pinned to AACR data');
+    if (run.heldoutManifestSha256 !== heldoutManifestSha256) throw new Error('verification_run_manifest_digest_mismatch');
+    const requestedCaseIdsText = arg('--case-ids', '', argv);
+    let selectedTestCases = testCases;
+    if (manifest.schemaVersion === 'review-yeti-ws5-heldout-manifest-v1') {
+      if (!requestedCaseIdsText) throw new Error('ws5_verification_score_requires_exact_case_ids');
+      const requestedIds = requestedCaseIdsText.split(',').filter(Boolean);
+      assertExactCaseIdSet(run.selectedCaseIds, requestedIds);
+      const casesById = new Map(testCases.map((entry) => [entry.id, entry]));
+      selectedTestCases = requestedIds.map((caseId) => {
+        const entry = casesById.get(caseId);
+        if (!entry) throw new Error('verification_score_case_id_not_in_fixed_panel');
+        return entry;
+      });
+    } else if (requestedCaseIdsText) {
+      const requestedIds = requestedCaseIdsText.split(',').filter(Boolean);
+      assertExactCaseIdSet(run.selectedCaseIds, requestedIds);
+      const casesById = new Map(testCases.map((entry) => [entry.id, entry]));
+      selectedTestCases = requestedIds.map((caseId) => {
+        const entry = casesById.get(caseId);
+        if (!entry) throw new Error('verification_score_case_id_not_in_fixed_panel');
+        return entry;
+      });
+    }
     const preparedInputSha256 = requirePreparedInputReceipt(run);
-    const scored = scoreVerificationCases(testCases, run.cases || []);
+    const scored = scoreVerificationCases(selectedTestCases, run.cases || []);
     process.stdout.write(`${JSON.stringify({
       ...scored,
       preparedInputSha256,

@@ -71,6 +71,7 @@ export const REVIEW_PR_LIFECYCLE_SCHEMA_SQL = `
     event_key TEXT NOT NULL UNIQUE,
     run_id TEXT NOT NULL,
     execution_attempt INTEGER NOT NULL CHECK (execution_attempt > 0),
+    durable_finding_id TEXT,
     fingerprint TEXT NOT NULL,
     path TEXT NOT NULL,
     region_start INTEGER CHECK (region_start IS NULL OR region_start > 0),
@@ -93,6 +94,12 @@ export const REVIEW_PR_LIFECYCLE_SCHEMA_SQL = `
     ON review_semantic_finding_events (lifecycle_id, fingerprint, created_at, finding_event_id);
   CREATE INDEX IF NOT EXISTS review_semantic_finding_run_idx
     ON review_semantic_finding_events (run_id, execution_attempt);
+  -- Durable finding identity is independent of a review's source/window key. Existing rows are
+  -- assigned a deterministic legacy ID by the read/write helpers before they are reused.
+  ALTER TABLE review_semantic_finding_events
+    ADD COLUMN IF NOT EXISTS durable_finding_id TEXT;
+  CREATE INDEX IF NOT EXISTS review_semantic_finding_durable_idx
+    ON review_semantic_finding_events (lifecycle_id, durable_finding_id, created_at, finding_event_id);
 `;
 
 /** Fixed, service-owned view of a PR history captured for one admitted worker execution. */

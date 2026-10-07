@@ -4,6 +4,7 @@ import {
   resolveCachedTokens,
   type OpenRouterRequest,
   type OpenRouterResponse,
+  type GroundedVerifierRequestContextV1,
   type ReviewModelClient,
 } from '../gateway/openRouterClient';
 import type { WorkerFailureClass } from '../types/workerFailure';
@@ -378,7 +379,7 @@ export function createPublishingProgress(
     emit,
     instrument(client: ReviewModelClient): ReviewModelClient {
       return {
-        complete(request: OpenRouterRequest): Promise<OpenRouterResponse> {
+        complete(request: OpenRouterRequest, context?: GroundedVerifierRequestContextV1): Promise<OpenRouterResponse> {
           const internal = request.internalProgress;
           // This private field is stripped before the wrapped client sees the request, so it cannot
           // alter an HTTP body or a caller's provider behavior.
@@ -426,7 +427,7 @@ export function createPublishingProgress(
 
           let pending: Promise<OpenRouterResponse>;
           try {
-            pending = client.complete(forwardedRequest);
+            pending = client.complete(forwardedRequest, context);
           } catch (error) {
             finish(diagnosticSignal?.aborted ? 'aborted' : 'failed', {
               ...providerFailureProgressFields(error, diagnosticSignal),

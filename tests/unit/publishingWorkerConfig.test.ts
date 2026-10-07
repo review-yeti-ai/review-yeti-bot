@@ -260,9 +260,15 @@ describe('publishingWorkerConfig', () => {
       requested: {
         profile: 'balanced', review_engine: 'dsh', severity_policy: 'review-yeti-severity.v2',
         bifrost_reasoning_effort: 'medium', mcp_servers: ['ct-impact', 'honcho-memory'],
+        confidence_threshold: null,
       },
       effective: {
         review_engine: 'composed', severity_policy: 'review-yeti-severity.v2',
+        confidence_threshold: {
+          value: 70,
+          applied: false,
+          reason: expect.stringContaining('does not consume confidence_threshold'),
+        },
         profile: {
           value: 'balanced', applied: true,
           reason: 'The composed engine applies this profile to advisory breadth under severity v2; blocker evidence and coverage remain profile-independent.',
@@ -297,6 +303,122 @@ describe('publishingWorkerConfig', () => {
     expect(resolveTaskTurnCeiling(composed.max_turns_per_task, 18, 4)).toBe(18);
     expect(config.composed).toEqual({});
     expect(JSON.stringify(config)).not.toContain('apiKey');
+  });
+
+  it('labels confidence_threshold as inactive while preserving its requested value', () => {
+    const resolveWithThreshold = (confidence_threshold: number) => resolveWorkerConfig({
+      REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+        personas: 'security',
+        review_engine: 'composed',
+        severity_policy: 'review-yeti-severity.v2',
+        confidence_threshold,
+      } }),
+    }, { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' });
+
+    const lower = resolveWithThreshold(10);
+    const higher = resolveWithThreshold(95);
+    const lowerReceipt = lower.review_configuration_receipt!;
+    const higherReceipt = higher.review_configuration_receipt!;
+
+    expect(lowerReceipt.requested.confidence_threshold).toBe(10);
+    expect(lowerReceipt.effective.confidence_threshold).toMatchObject({
+      value: 10,
+      applied: false,
+      reason: expect.stringContaining('does not consume confidence_threshold'),
+    });
+    expect(higherReceipt.requested.confidence_threshold).toBe(95);
+    expect(higherReceipt.effective.confidence_threshold).toMatchObject({
+      value: 95,
+      applied: false,
+      reason: expect.stringContaining('does not consume confidence_threshold'),
+    });
+    expect(lower.review_engine).toBe(higher.review_engine);
+    expect(lower.severity_policy).toBe(higher.severity_policy);
+    expect(lower.personas).toEqual(higher.personas);
+    expect(lower.composed).toEqual(higher.composed);
+  });
+
+  it.each([
+    ['legacy reviews section', { reviews: { confidence_threshold: 82 } }],
+    ['legacy dials section', { dials: { confidence_threshold: 82 } }],
+  ])('discloses confidence_threshold from the %s without applying it', (_label, extra) => {
+    const config = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'security', review_engine: 'composed', ...extra,
+    } }) }, { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' });
+
+    expect(config.review_configuration_receipt?.requested.confidence_threshold).toBe(82);
+    expect(config.review_configuration_receipt?.effective.confidence_threshold).toMatchObject({
+      value: 82, applied: false,
+    });
+  });
+
+  it('rejects invalid confidence_threshold values while describing the accepted range', () => {
+    expect(() => resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'security', review_engine: 'composed', confidence_threshold: 101,
+    } }) }, { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' }))
+      .toThrow(/review policy could not be parsed/u);
+  });
+
+  it('projects an optional disputed-blocker adjudicator without switching the primary route or WS4 receipt', () => {
+    const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'not-persisted', model: 'primary-review-alias' };
+    const selector = { version: 'DisputedBlockerAdjudicator.v1', model: 'qualified-adjudicator-alias', reasoning_effort: 'high' };
+    const policy = (extra: Record<string, unknown> = {}) => ({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'security', review_engine: 'composed', severity_policy: 'review-yeti-severity.v2',
+      transports: [{ name: 'bifrost', enabled: true, reasoning_effort: 'medium' }], ...extra,
+    } }) });
+    const configured = resolveWorkerConfig(policy({ disputed_blocker_adjudicator: selector }), transport);
+    const absent = resolveWorkerConfig(policy(), transport);
+
+    expect(configured.disputed_blocker_adjudicator).toEqual(selector);
+    expect(configured.review_configuration_receipt?.requested.disputed_blocker_adjudicator).toEqual(selector);
+    expect(configured.review_configuration_receipt?.effective.disputed_blocker_adjudicator).toMatchObject({
+      state: 'available', model_alias: selector.model, reasoning_effort: selector.reasoning_effort, applied: false,
+    });
+    expect(configured.reviewers.providers).toEqual([expect.objectContaining({
+      id: 'bifrost', model: 'primary-review-alias', effort: 'medium',
+    })]);
+    expect(configured.reviewer_effort).toBe('medium');
+    expect(absent.disputed_blocker_adjudicator).toBeUndefined();
+    expect(absent.review_configuration_receipt?.effective.disputed_blocker_adjudicator).toBeUndefined();
+    expect(JSON.stringify(absent)).not.toContain('disputed_blocker_adjudicator');
+    expect(absent.reviewers.providers).toEqual(configured.reviewers.providers);
+    expect(configured.review_configuration_receipt?.effective.confidence_threshold)
+      .toEqual(absent.review_configuration_receipt?.effective.confidence_threshold);
+    expect(configured.review_configuration_receipt?.effective.composed_budget)
+      .toEqual(absent.review_configuration_receipt?.effective.composed_budget);
+    expect(configured.review_configuration_receipt?.effective.worker_limits)
+      .toEqual(absent.review_configuration_receipt?.effective.worker_limits);
+  });
+
+  it.each([
+    ['legacy severity', { review_engine: 'composed' }],
+    ['panel engine', { review_engine: 'panel', severity_policy: 'review-yeti-severity.v2' }],
+  ])('marks configured adjudication inactive for %s', (_label, selection) => {
+    const selector = { version: 'DisputedBlockerAdjudicator.v1', model: 'qualified-adjudicator-alias', reasoning_effort: 'high' };
+    const config = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'security', ...selection, disputed_blocker_adjudicator: selector,
+      transports: [{ name: 'bifrost', enabled: true, reasoning_effort: 'medium' }],
+    } }) }, { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'not-persisted', model: 'primary-review-alias' });
+    expect(config.review_configuration_receipt?.effective.disputed_blocker_adjudicator).toMatchObject({
+      state: 'inactive', model_alias: selector.model, reasoning_effort: selector.reasoning_effort, applied: false,
+    });
+    expect(config.reviewers.providers[0]).toMatchObject({ model: 'primary-review-alias', effort: 'medium' });
+  });
+
+  it.each([
+    ['unknown version', { version: 'DisputedBlockerAdjudicator.v99', model: 'qualified-adjudicator-alias', reasoning_effort: 'high' }],
+    ['unsupported effort', { version: 'DisputedBlockerAdjudicator.v1', model: 'qualified-adjudicator-alias', reasoning_effort: 'none' }],
+    ['same primary alias', { version: 'DisputedBlockerAdjudicator.v1', model: 'primary-review-alias', reasoning_effort: 'high' }],
+    ['case-folded same primary alias', { version: 'DisputedBlockerAdjudicator.v1', model: 'PRIMARY-REVIEW-ALIAS', reasoning_effort: 'high' }],
+    ['transport URL as model', { version: 'DisputedBlockerAdjudicator.v1', model: 'https://direct.example.invalid/v1', reasoning_effort: 'high' }],
+    ['unsupported transport switch', { version: 'DisputedBlockerAdjudicator.v1', model: 'qualified-adjudicator-alias', reasoning_effort: 'high', base_url: 'https://direct.example.invalid/v1' }],
+  ])('rejects %s in the adjudicator selector', (_label, selector) => {
+    expect(() => resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'security', review_engine: 'composed', severity_policy: 'review-yeti-severity.v2',
+      disputed_blocker_adjudicator: selector,
+      transports: [{ name: 'bifrost', enabled: true, reasoning_effort: 'medium' }],
+    } }) }, { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'not-persisted', model: 'primary-review-alias' }))
+      .toThrow(/review policy could not be parsed/u);
   });
 
   it('rejects unrecognized review engines and unsupported Bifrost reasoning effort instead of substituting defaults', () => {

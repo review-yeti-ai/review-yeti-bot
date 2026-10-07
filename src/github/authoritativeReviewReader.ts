@@ -14,6 +14,8 @@ import {
 import { mergeBaseFromComparison, verifyGitDerivedDiff, type GitDiffSource } from './gitDiffSource';
 import { readFindingThreads } from './findingThreads';
 import type { PriorFindingThread } from '../review/findingConvergence';
+import { readTrustedConventionAdjudications, type TrustedConventionAdjudicationReadResult,
+  type TrustedConventionCurrentFinding } from './trustedConventionAdjudicationReader';
 export type { ImmutableReviewPolicyFile } from '../review/authoritativeReviewIdentity';
 
 const positive = z.number().int().positive().safe();
@@ -36,6 +38,7 @@ const MAX_COMPARISON_RESPONSE_BYTES = 8_000_000;
 const MAX_RECONSTRUCTED_FILE_BYTES = 512_000;
 const MAX_RECONSTRUCTED_CONTENT_BYTES = 4_000_000;
 const MAX_PINNED_CONTENT_RESPONSE_BYTES = 800_000;
+export const MAX_GROUNDED_IMPORT_SOURCE_PROBES = 100;
 // Bound diff search deterministically. At the 64-file reconstruction cap, the
 // synchronous wall-clock budget is at most 640 ms; files that exceed their
 // slice fall back to the already byte-bounded full-replacement patch.
@@ -99,6 +102,24 @@ export interface ExactCurrentReviewDiff {
   changedFiles?: ChangedFile[];
   /** Present only when GitHub reports the same file count on both PR reads. */
   expectedFileCount?: number;
+}
+
+export interface PinnedSourceProbeRequest {
+  revisionSha: string;
+  path: string;
+}
+
+export interface PinnedSourceProbeResult {
+  repository: string;
+  revisionSha: string;
+  path: string;
+  presence: 'present' | 'absent' | 'unavailable';
+  sourceDigest: string | null;
+}
+
+export interface PinnedSourceFileProbeResult extends PinnedSourceProbeResult {
+  /** Exact bytes decoded as UTF-8 for service-side syntax/source validation only. */
+  content?: string;
 }
 
 /** Read-only, bounded GitHub truth for authoritative admission. Event payloads
@@ -320,12 +341,78 @@ export class AuthoritativeReviewReader {
     }, { owner: target.owner, repo: target.repo, prNumber });
   }
 
+  /** Reads exact-head accepted-convention commands for current service-bound findings. */
+  async trustedConventionAdjudications(input: ReviewRepositoryIdentity & { prNumber: number; headSha: string;
+    currentFindings: readonly TrustedConventionCurrentFinding[]; consumedCommentSourceIdDigests?: readonly string[] }):
+    Promise<TrustedConventionAdjudicationReadResult> {
+    const { prNumber, headSha, currentFindings, consumedCommentSourceIdDigests, ...identity } = input;
+    const { target } = this.route(identity);
+    return readTrustedConventionAdjudications({ repository: `${target.owner}/${target.repo}`, prNumber,
+      expectedHeadSha: headSha, currentFindings,
+      ...(consumedCommentSourceIdDigests ? { consumedCommentSourceIdDigests } : {}),
+    }, { token: this.options.token, fetchImplementation: this.fetcher });
+  }
+
   async currentCandidate(input: ReviewRepositoryIdentity & { prNumber: number }, signal?: AbortSignal): Promise<CurrentReviewCandidate> {
     return (await this.pullCandidate(input, signal)).current;
   }
 
+  /**
+   * Reads a bounded set of exact-revision source paths for service-side dependency resolution.
+   * The caller supplies only revision/path requests; presence and content digests are derived from
+   * authenticated pinned GitHub objects. Over-budget and per-path read failures return unavailable
+   * entries so a caller can fail material dependency proof closed without inferring absence.
+   */
+  async readPinnedSourceFiles(input: ReviewRepositoryIdentity & { baseSha: string; headSha: string;
+    probes: readonly PinnedSourceProbeRequest[] }, signal?: AbortSignal): Promise<PinnedSourceFileProbeResult[]> {
+    const { baseSha, headSha, probes, ...identityInput } = input;
+    const { target, path: repositoryPath } = this.route(identityInput);
+    parse(sha, baseSha); parse(sha, headSha);
+    if (!Array.isArray(probes) || probes.some((probe) => !probe || typeof probe !== 'object'
+      || ![baseSha, headSha].includes(probe.revisionSha)
+      || !comparisonFilePathSchema.safeParse(probe.path).success)
+      || new Set(probes.map((probe) => JSON.stringify([probe.revisionSha, probe.path]))).size !== probes.length) {
+      throw new Error('Review reader pinned source probe request invalid');
+    }
+    const lexical = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
+    const ordered = [...probes].sort((left, right) => lexical(left.revisionSha, right.revisionSha)
+      || lexical(left.path, right.path));
+    const identity = `${target.owner}/${target.repo}`;
+    const unavailable = (probe: PinnedSourceProbeRequest): PinnedSourceFileProbeResult => ({ repository: identity,
+      revisionSha: probe.revisionSha, path: probe.path, presence: 'unavailable', sourceDigest: null });
+    if (ordered.length > MAX_GROUNDED_IMPORT_SOURCE_PROBES) return ordered.map(unavailable);
+    this.assertRepository(parse(repositoryResponse, await this.json(repositoryPath, signal)), target);
+    const results: PinnedSourceFileProbeResult[] = [];
+    let aggregateBytes = 0;
+    for (let start = 0; start < ordered.length; start += RECONSTRUCTION_CONCURRENCY) {
+      if (signal?.aborted) throw new Error('Review reader request unavailable');
+      const batch = ordered.slice(start, start + RECONSTRUCTION_CONCURRENCY);
+      const reads = await Promise.all(batch.map(async (probe) => {
+        try { return { probe, file: await this.pinnedFile(repositoryPath, probe.path, probe.revisionSha, signal) }; }
+        catch { return { probe, file: undefined }; }
+      }));
+      const batchBytes = reads.reduce((sum, row) => sum + (row.file ? row.file.bytes : 0), 0);
+      if (aggregateBytes + batchBytes > MAX_RECONSTRUCTED_CONTENT_BYTES) {
+        results.push(...ordered.slice(start).map(unavailable));
+        break;
+      }
+      aggregateBytes += batchBytes;
+      results.push(...reads.map(({ probe, file }) => file === undefined ? unavailable(probe)
+        : file === null ? { repository: identity, revisionSha: probe.revisionSha, path: probe.path,
+          presence: 'absent' as const, sourceDigest: null }
+        : { repository: identity, revisionSha: probe.revisionSha, path: probe.path,
+          presence: 'present' as const, sourceDigest: file.contentDigest, content: file.content }));
+    }
+    return results.sort((left, right) => lexical(left.revisionSha, right.revisionSha) || lexical(left.path, right.path));
+  }
+
+  async readPinnedSourceProbes(input: ReviewRepositoryIdentity & { baseSha: string; headSha: string;
+    probes: readonly PinnedSourceProbeRequest[] }, signal?: AbortSignal): Promise<PinnedSourceProbeResult[]> {
+    return (await this.readPinnedSourceFiles(input, signal)).map(({ content: _content, ...probe }) => probe);
+  }
+
   private async pinnedFile(repositoryPath: string, filePath: string, revision: string,
-    signal?: AbortSignal): Promise<{ content: string; sha: string; bytes: number } | null> {
+    signal?: AbortSignal): Promise<{ content: string; sha: string; bytes: number; contentDigest: string } | null> {
     const encoded = filePath.split('/').map(encodeURIComponent).join('/');
     let raw: string;
     try {
@@ -349,7 +436,7 @@ export class AuthoritativeReviewReader {
     try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes); }
     catch { throw new Error('Review reader pinned object is not text'); }
     if (content.includes('\0')) throw new Error('Review reader pinned object is not text');
-    return { content, sha: file.sha, bytes: bytes.length };
+    return { content, sha: file.sha, bytes: bytes.length, contentDigest: createHash('sha256').update(bytes).digest('hex') };
   }
 
   private async reconstructFile(repositoryPath: string, file: ComparisonFileEvidence,
@@ -530,6 +617,7 @@ export class AuthoritativeReviewReader {
       })),
     };
   }
+
 
   /**
    * REL-1085: the same immutable comparison with each file's head blob SHA, status

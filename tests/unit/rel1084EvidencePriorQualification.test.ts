@@ -143,10 +143,13 @@ async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
     verdictCacheBase: { read: vi.fn(async () => ({ source: null, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS })) },
     verdictCacheCompareReader: contentReader(),
     // ADR 0002: a P2 the author resolved with a stated reason no longer blocks the check.
-    ...(override?.resolvedThreads ? { findingThreadReader: vi.fn(async () => override.resolvedThreads!.map((thread) => ({
-      ...thread, fingerprint: findingFingerprint(thread), severity: 'P2' as const, resolved: true, outdated: false,
-      resolution: { author: 'author1', reason: 'Naming follows the existing public API; renaming would break callers.' },
-    }))) } : {}),
+    ...(override?.resolvedThreads ? { findingThreadReader: vi.fn(async (_pr, headSha: string) => ({
+      source: 'service' as const, headSha, complete: true, omittedCount: 0,
+      threads: override.resolvedThreads!.map((thread) => ({ ...thread,
+        fingerprint: findingFingerprint(thread), severity: 'P2' as const, resolved: true, outdated: false,
+        resolution: { author: 'author1', reason: 'Naming follows the existing public API; renaming would break callers.' },
+      })),
+    })) } : {}),
   });
   expect(reportReviewEvidence).toHaveBeenCalledTimes(1);
   return parseWorkerReviewEvidence((reportReviewEvidence.mock.calls as unknown[][])[0][0]);

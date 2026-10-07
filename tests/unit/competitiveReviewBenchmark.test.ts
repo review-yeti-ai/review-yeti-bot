@@ -58,7 +58,7 @@ function createPinnedGitFixture() {
   const headSha = git(['rev-parse', 'HEAD']).trim();
   const changedPaths = git(['diff', '--name-only', '-z', baseSha, headSha]).split('\0').filter(Boolean);
   const changedFiles = changedPaths.map((filePath) => {
-    const patch = git(['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--unified=5', baseSha, headSha, '--', filePath]);
+    const patch = git(['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', '--full-index', '--unified=5', baseSha, headSha, '--', filePath]);
     return { path: filePath, patch, originalPatchLength: Buffer.byteLength(patch, 'utf8') };
   });
   return { directory, git, snapshot: { repository: 'example/repo', baseSha, headSha, changedFiles } };
@@ -562,6 +562,98 @@ describe('competitive review benchmark input boundaries', () => {
     expect(config.apiKey).toBe('');
   });
 
+  it('forces loopback-only transport and replaces inherited secrets for WS5 child mode', () => {
+    const caRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ws5-loopback-ca-test-'));
+    const caPath = path.join(caRoot, 'public-ca.pem');
+    fs.writeFileSync(caPath, '-----BEGIN CERTIFICATE-----\nZHVtbXk=\n-----END CERTIFICATE-----\n', { mode: 0o600 });
+    const saved = {
+      loopback: process.env.WS5_LOOPBACK_BROKER,
+      baseUrl: process.env.OPENROUTER_BASE_URL,
+      apiKey: process.env.OPENROUTER_API_KEY,
+      model: process.env.OPENROUTER_MODEL,
+      destination: process.env.REVIEW_TRANSPORT_DESTINATION,
+      gatewayUrl: process.env.REVIEW_YETI_GATEWAY_BASE_URL,
+      gatewayKey: process.env.REVIEW_YETI_BIFROST_API_KEY,
+    };
+    process.env.WS5_LOOPBACK_BROKER = '1';
+    process.env.OPENROUTER_BASE_URL = 'https://127.0.0.1:45678/v1';
+    process.env.OPENROUTER_API_KEY = 'dummy-local-proxy-token-1234567890';
+    process.env.OPENROUTER_MODEL = 'pr-reviewer';
+    process.env.REVIEW_TRANSPORT_DESTINATION = 'gateway';
+    process.env.REVIEW_YETI_GATEWAY_BASE_URL = 'https://127.0.0.1:45678/v1';
+    process.env.REVIEW_YETI_BIFROST_API_KEY = 'dummy-local-proxy-token-1234567890';
+    try {
+      const config = benchmark.assertActualModelConfig({
+        resolveModelConfig: () => ({
+          enabled: true,
+          model: 'pr-reviewer',
+          apiKey: 'provider-secret-sentinel',
+          transports: [{ name: 'bifrost', model: 'pr-reviewer', apiKey: 'provider-secret-sentinel',
+            baseUrl: 'https://private.gateway.invalid/v1',
+            headers: { authorization: 'provider-secret-sentinel' } }],
+        }),
+      }, { transportName: 'bifrost' });
+
+      expect(config.transports[0].baseUrl).toBe('https://127.0.0.1:45678/v1');
+      expect(config.transports[0].apiKey).toBe('dummy-local-proxy-token-1234567890');
+      expect(config.apiKey).toBe('');
+      expect(JSON.stringify(config)).not.toContain('provider-secret-sentinel');
+      expect(JSON.stringify(config)).not.toContain('private.gateway.invalid');
+      expect(benchmark.inspectActualLoopbackTransport({
+        resolveModelConfig: () => ({ enabled: true, apiKey: 'provider-secret-sentinel', transports: [{
+          name: 'openrouter', provider: 'openrouter', compat: 'openrouter', model: 'pr-reviewer',
+          apiKey: 'provider-secret-sentinel', baseUrl: 'https://private.gateway.invalid/v1',
+          stream: true, maxTokens: 24_576, timeoutMs: 240_000,
+        }] }),
+      }, { expectedModel: 'pr-reviewer', transportEnv: {
+        NODE_ENV: 'production',
+        WS5_LOOPBACK_BROKER: '1',
+        OPENROUTER_BASE_URL: 'https://127.0.0.1:45678/v1',
+        OPENROUTER_API_KEY: 'dummy-local-proxy-token-1234567890',
+        OPENROUTER_MODEL: 'pr-reviewer',
+        REVIEW_TRANSPORT_DESTINATION: 'gateway',
+        REVIEW_YETI_GATEWAY_BASE_URL: 'https://127.0.0.1:45678/v1',
+        REVIEW_YETI_BIFROST_API_KEY: 'dummy-local-proxy-token-1234567890',
+        NODE_EXTRA_CA_CERTS: caPath,
+      } })).toMatchObject({
+        status: 'ready_without_model_call',
+        transportName: 'openrouter',
+        requestedModel: 'pr-reviewer',
+        modelConfigDefaults: {
+          source: 'pipeline.resolveModelConfig',
+          transportName: 'openrouter',
+          requestedModel: 'pr-reviewer',
+          compat: 'openrouter',
+          stream: true,
+          maxTokens: 24_576,
+          timeoutMs: 240_000,
+        },
+        loopbackOnly: true,
+        inactiveProviderCredentialCount: 0,
+      });
+      process.env.OPENROUTER_BASE_URL = 'https://outside.gateway.invalid/v1';
+      expect(() => benchmark.assertActualModelConfig({
+        resolveModelConfig: () => ({ enabled: true, transports: [{ name: 'bifrost', apiKey: 'secret', model: 'pr-reviewer' }] }),
+      }, { transportName: 'bifrost' })).toThrow('ws5_loopback_route_required');
+    } finally {
+      if (saved.loopback === undefined) delete process.env.WS5_LOOPBACK_BROKER;
+      else process.env.WS5_LOOPBACK_BROKER = saved.loopback;
+      if (saved.baseUrl === undefined) delete process.env.OPENROUTER_BASE_URL;
+      else process.env.OPENROUTER_BASE_URL = saved.baseUrl;
+      if (saved.apiKey === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = saved.apiKey;
+      if (saved.model === undefined) delete process.env.OPENROUTER_MODEL;
+      else process.env.OPENROUTER_MODEL = saved.model;
+      if (saved.destination === undefined) delete process.env.REVIEW_TRANSPORT_DESTINATION;
+      else process.env.REVIEW_TRANSPORT_DESTINATION = saved.destination;
+      if (saved.gatewayUrl === undefined) delete process.env.REVIEW_YETI_GATEWAY_BASE_URL;
+      else process.env.REVIEW_YETI_GATEWAY_BASE_URL = saved.gatewayUrl;
+      if (saved.gatewayKey === undefined) delete process.env.REVIEW_YETI_BIFROST_API_KEY;
+      else process.env.REVIEW_YETI_BIFROST_API_KEY = saved.gatewayKey;
+      fs.rmSync(caRoot, { recursive: true, force: true });
+    }
+  });
+
   it('scores only exact opaque panel IDs and reports task/context counts separately', () => {
     const testCases = benchmark.buildVerificationCases(referenceRows(), manifest);
     const results = testCases.map((entry: any) => ({
@@ -610,6 +702,37 @@ describe('competitive review benchmark input boundaries', () => {
     expect(serialized).not.toContain('private.gateway.example');
   });
 
+  it('attaches parent-only logical and physical ordinals for the loopback broker', async () => {
+    const identity = {
+      requestedModels: new Set(), responseModels: new Set(), responseProviders: new Set(),
+      responseRouteHints: new Set(), requestIdDigests: new Set(), fetchFailureClasses: new Set(),
+      fetchToHeadersMs: [], httpStatuses: [], requestProfiles: new Map(), pendingResponseMetadataReads: [],
+    };
+    const previous = process.env.WS5_LOOPBACK_BROKER;
+    process.env.WS5_LOOPBACK_BROKER = '1';
+    const observedHeaders: { value: Headers | null } = { value: null };
+    try {
+      const wrappedFetch = benchmark.trackCompletion(async (_url: string, init: RequestInit) => {
+        observedHeaders.value = new Headers(init.headers);
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }, identity);
+      const dispatches: any[] = [];
+      await benchmark.trackLogicalCompletion('review', dispatches, () => wrappedFetch(
+        'http://127.0.0.1/v1/chat/completions', {
+          method: 'POST',
+          body: JSON.stringify({ model: 'pr-reviewer', max_tokens: 128 }),
+        },
+      ));
+
+      expect(observedHeaders.value?.get('x-ws5-local-attempt-ordinal')).toBe('1');
+      expect(observedHeaders.value?.get('x-ws5-logical-dispatch-ordinal')).toBe('1');
+      expect(dispatches[0].localAttemptOrdinals).toEqual([1]);
+    } finally {
+      if (previous === undefined) delete process.env.WS5_LOOPBACK_BROKER;
+      else process.env.WS5_LOOPBACK_BROKER = previous;
+    }
+  });
+
   it('does not read or clone a streamed completion body for telemetry', async () => {
     let cloneCount = 0;
     const identity = {
@@ -634,8 +757,13 @@ describe('competitive review benchmark input boundaries', () => {
     }))).toMatchObject({ count: 1 });
   });
 
-  it('drops free-form decision and verifier text from public runtime receipts', () => {
+  it('retains bounded finding details while dropping free-form decision and verifier text from private receipts', () => {
     const summary = benchmark.sanitizePanelResult({
+      personas: [{ id: 'review-lane', findings: [{
+        path: 'src/queue.ts', line: 24, severity: 'P1', title: 'Rejected event is retried',
+        comment: 'The retry loop can re-submit a rejected event.',
+        recommendation: 'Stop retrying after the terminal response.', hiddenReasoning: 'do not preserve this reasoning',
+      }] }],
       reviewDecision: {
         schemaVersion: 'review-yeti-severity.v2',
         classification: 'APPROVE',
@@ -651,8 +779,14 @@ describe('competitive review benchmark input boundaries', () => {
     expect(serialized).not.toContain('raw completion text');
     expect(serialized).not.toContain('raw verifier response');
     expect(serialized).not.toContain('arbitrary private text');
+    expect(serialized).not.toContain('do not preserve this reasoning');
     expect(summary.reviewDecision).toEqual({ schemaVersion: 'review-yeti-severity.v2', classification: 'APPROVE' });
     expect(summary.verifierOutcomes).toEqual([{ verdict: 'ABSTAIN' }]);
+    expect(summary.findings[0]).toMatchObject({
+      path: 'src/queue.ts', line: 24, severity: 'P1', lane: 'review-lane',
+      title: 'Rejected event is retried', comment: 'The retry loop can re-submit a rejected event.',
+      recommendation: 'Stop retrying after the terminal response.',
+    });
   });
 
   it('refuses to score a production-entrypoint smoke as a discovery evaluation', () => {

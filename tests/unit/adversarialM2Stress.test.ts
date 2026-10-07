@@ -43,7 +43,7 @@ function testEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
 const VALID_DIFF = `diff --git a/src/index.ts b/src/index.ts
 --- a/src/index.ts
 +++ b/src/index.ts
-@@ -1,3 +1,4 @@
+@@ -1 +1,2 @@
 +// safe comment
  export const foo = 1;
 `;
@@ -51,7 +51,7 @@ const VALID_DIFF = `diff --git a/src/index.ts b/src/index.ts
 const DIFF_WITH_UNREADABLE = `diff --git a/src/index.ts b/src/index.ts
 --- a/src/index.ts
 +++ b/src/index.ts
-@@ -1,3 +1,4 @@
+@@ -1 +1,2 @@
 +// safe comment
  export const foo = 1;
 diff --git a/path with unquoted space/a.ts b/path with unquoted space/b.ts
@@ -297,6 +297,11 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
 `;
     const run = async (findings: ReturnType<typeof finding>[], verdict: 'SHIP' | 'FIX_FIRST' = 'SHIP',
       extra: Record<string, unknown> = {}) => {
+      const sourceReader = extra.findingThreadReader as ((pr: unknown, headSha?: string, signal?: AbortSignal) => Promise<unknown>) | undefined;
+      const exactHeadExtra = sourceReader ? { ...extra, findingThreadReader: async (pr: unknown, headSha: string, signal?: AbortSignal) => {
+        const result = await sourceReader(pr, headSha, signal);
+        return Array.isArray(result) ? { source: 'service' as const, headSha, complete: true, omittedCount: 0, threads: result } : result;
+      } } : extra;
       const { deps, completeCheck } = mockDeps({
         sourceLoader: vi.fn(async () => ({ diff: THREE_LINE_DIFF, githubReads: 1 })),
         panelRunner: vi.fn(async () => ({
@@ -305,7 +310,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
           quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
           arbiter: { verdict },
         })),
-        ...extra,
+        ...exactHeadExtra,
       });
       const result = await runPublishingReviewWorker(testEnv(), deps as any);
       const completed = (completeCheck.mock.calls as unknown as Array<[Record<string, any>]>).at(-1)![0];
@@ -365,7 +370,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
       const reader = vi.fn(async () => [thread(title, { resolved: true,
         resolution: { author: 'author1', reason: 'The fallback is intentional; covered by the retry contract test.' } })]);
       const { result, completed, summary } = await run([finding('P2', 1, title)], 'SHIP', { findingThreadReader: reader });
-      expect(reader).toHaveBeenCalledWith({ owner: 'exampleorg', repo: 'example-meta', prNumber: 2795 });
+      expect(reader).toHaveBeenCalledWith({ owner: 'exampleorg', repo: 'example-meta', prNumber: 2795 }, HEAD, undefined);
       expect(result.conclusion).toBe('success');
       expect(result.blockingFindingCount).toBe(0);
       expect(completed.title).toBe('Review Yeti: SHIP');
@@ -423,7 +428,8 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
           quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
           arbiter: { verdict: 'FIX_FIRST' },
         })),
-        findingThreadReader: vi.fn(async () => []),
+        findingThreadReader: vi.fn(async (_pr: unknown, headSha: string) => ({ source: 'service' as const,
+          headSha, complete: true, omittedCount: 0, threads: [] })),
         findingThreads: { publish },
       });
       completeCheck.mockImplementation(async () => { order.push('complete'); });

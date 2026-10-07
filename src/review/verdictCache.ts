@@ -77,6 +77,8 @@ import {
 import { isRegularFileMode } from './lockfileChangeVerification';
 import { isSubmoduleEntry, personaCoversFile, type EffectiveReviewFile, type ReviewApplicabilityInputFile } from './personaApplicability';
 import { sha256 } from './reviewCore';
+import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from './groundedEvidenceV2';
+import { GROUNDED_CANDIDATE_MANIFEST_CAPABILITY } from './groundedCandidateManifestCapability';
 import type { StoredPriorRefusal } from './workerReviewCompletion';
 import {
   MAX_VERDICT_CACHE_ENTRIES,
@@ -193,6 +195,9 @@ export interface VerdictCacheLaneKeyInput {
 /** One key per enabled persona. Any change to any input is a different key. */
 export function verdictCacheLaneKeys(input: VerdictCacheLaneKeyInput): Record<string, string> {
   const models = new Map(input.providers.map((provider) => [provider.id, provider.model ?? null]));
+  const viewFlags = input.viewFlags.groundedEvidenceSemantics === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
+    ? { ...input.viewFlags, groundedCandidateManifestCapability: GROUNDED_CANDIDATE_MANIFEST_CAPABILITY }
+    : input.viewFlags;
   const keys: Record<string, string> = {};
   for (const persona of input.personas) {
     if (persona.enabled === false || !/^[a-z][a-z0-9_-]{0,127}$/u.test(persona.id)) continue;
@@ -205,7 +210,7 @@ export function verdictCacheLaneKeys(input: VerdictCacheLaneKeyInput): Record<st
       configDigest: input.configDigest,
       engine: input.engine,
       workerVersion: input.workerVersion,
-      viewFlags: input.viewFlags,
+      viewFlags,
     });
   }
   return keys;

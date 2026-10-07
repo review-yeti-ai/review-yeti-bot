@@ -46,6 +46,18 @@ export const disputedFindingRecheckSchema = z.object({
 export type DisputedFindingRecheck = z.infer<typeof disputedFindingRecheckSchema>;
 export type DisputedFindingRecheckUnsigned = Omit<DisputedFindingRecheck, 'requestDigest'>;
 
+export interface AuthenticatedDisputeTuple {
+  findingFingerprint: string;
+  priorFindingEventId: string;
+  priorEvidenceDigest: string;
+}
+
+/** Service-derived and bound by the containing exact-run lifecycle history load. */
+export type AuthenticatedDisputesProjection =
+  | { status: 'complete'; disputes: readonly AuthenticatedDisputeTuple[]; paths: readonly string[] }
+  | { status: 'unavailable'; disputes: readonly AuthenticatedDisputeTuple[]; paths: readonly string[];
+      reason: 'source-unavailable' | 'ambiguous-linkage' | 'history-incomplete' };
+
 export function disputedFindingRecheckDigest(value: DisputedFindingRecheckUnsigned): string {
   return sha256(canonicalJson(value));
 }
@@ -421,4 +433,20 @@ export function remainingCheckpointTasksAfterRechecks(
   }
   const requestedTaskIds = new Set(rechecks.map((recheck) => recheck.taskId));
   return completedTasks.filter((task) => !requestedTaskIds.has(task.id));
+}
+
+/** Invalidate checkpoint lanes touching prior blocker paths, while preserving unrelated lanes. */
+export function remainingCheckpointTasksForPaths(
+  completedTasks: ReviewExecutionCheckpoint['completedTasks'],
+  plan: ReviewExecutionCheckpoint['plan'],
+  affectedPaths: readonly string[],
+): ReviewExecutionCheckpoint['completedTasks'] {
+  const normalize = (path: string) => path.replaceAll('\\', '/').replace(/^\.\//u, '');
+  const affected = new Set(affectedPaths.map(normalize));
+  if (affected.size === 0) return [...completedTasks];
+  const pathsByTask = new Map(plan.map((task) => [task.id, new Set(task.paths.map(normalize))] as const));
+  return completedTasks.filter((task) => {
+    const taskPaths = pathsByTask.get(task.id);
+    return Boolean(taskPaths) && ![...taskPaths!].some((path) => affected.has(path));
+  });
 }

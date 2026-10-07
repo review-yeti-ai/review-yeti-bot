@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import {
   MAX_AUTHORITATIVE_CHANGED_FILES_BYTES, MAX_AUTHORITATIVE_DIFF_BYTES,
-  type AuthoritativeReviewReader, type ReviewRepositoryIdentity,
+  MAX_GROUNDED_IMPORT_SOURCE_PROBES, type AuthoritativeReviewReader, type ReviewRepositoryIdentity,
 } from '../github/authoritativeReviewReader';
 import type { StoredReviewGate, TrustedGateCompletionContext } from './reviewGateContracts';
 import type { AuthoritativePublishingResolver } from './authoritativePublishingResolver';
@@ -9,13 +9,18 @@ import { buildAuthoritativeReviewIdentity, reviewPolicySourceSchema, type Curren
 import { bindChangedFileSourcePresence, parseChangedFiles } from './changedFiles';
 import { verifyPreparedPublishingConfig, type PreparedPublishingPolicy } from './preparedPublishingPolicy';
 import { resolveReviewApplicability } from './personaApplicability';
-import { verifyIncrementalClaim, type IncrementalVerificationInput } from './incrementalReview';
+import { verifyIncrementalClaim, type IncrementalVerificationInput, type PriorReviewRecord,
+  type ReviewHeadAncestryReceipt } from './incrementalReview';
 import type { IncrementalDeltaFile } from '../types/incrementalReview';
 import { routedLanesOf, verifyVerdictCacheClaim, type VerdictCacheVerificationInput } from './verdictCache';
-import { canonicalJson } from './reviewCore';
+import { canonicalJson, sha256 } from './reviewCore';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import { resolveComposedMaxTasks } from '../reviewTaskContract';
+import { resolveComposedProviderId } from '../panel/composedEngine';
 import { REVIEW_SEVERITY_POLICY_V2 } from './reviewDecision';
+import { groundedRelativeImportCandidates, parseGroundedRelativeImports } from './groundedContractResolver';
+import type { GroundedImportResolutionSourceV1 } from './groundedEvidenceV2';
+import type { TrustedGroundedImportResolutionSourceV1 } from './workerReviewCompletion';
 import {
   TrustedCompletionResolutionError,
   isDeterministicCompletionFailure,
@@ -43,11 +48,107 @@ export interface AuthoritativeCompletionContextOptions {
   /** Mint only a repository-scoped read token. Neither credentials nor readers are cached. */
   readerFactory: (repository: ReviewRepositoryIdentity, signal: AbortSignal) =>
     Promise<Pick<AuthoritativeReviewReader, 'currentCandidate' | 'exactCurrentDiff'>
-      & Partial<Pick<AuthoritativeReviewReader, 'commitComparison' | 'commitComparisonDetailed' | 'comparisonContent' | 'findingThreads'>>>;
+      & Partial<Pick<AuthoritativeReviewReader, 'commitComparison' | 'commitComparisonDetailed' | 'comparisonContent'
+        | 'findingThreads' | 'trustedConventionAdjudications' | 'readPinnedSourceFiles'>>>;
   /** Already configured with the service's trusted central policy/ref/transport. */
   publishingResolver: Pick<AuthoritativePublishingResolver, 'resolve'>;
   /** Whole operation, including storage, token mint, policy refresh and body reads. */
   timeoutMs?: number;
+}
+
+export interface TrustedHistoryAncestryInput {
+  prior?: PriorReviewRecord;
+  /** Worker hint is comparison input only; service re-reads and verifies the exact comparison. */
+  hint?: ReviewHeadAncestryReceipt;
+  /** Untrusted names only; importer bytes and candidate states are re-read at exact pins. */
+  sourceResolutionProbeManifest?: readonly GroundedImportResolutionSourceV1[];
+}
+
+function sourceProbeKey(repository: string, revisionSha: string, path: string): string {
+  return `${repository}\u0000${revisionSha}\u0000${path}`;
+}
+
+/**
+ * Rebuilds the worker's bounded import-resolution observations from the exact pinned importer
+ * source. Manifest state/digests are never used as authority: they only identify claimed refs,
+ * which this function parses, resolves and reads through the authenticated repository reader.
+ */
+async function readTrustedImportResolutionSources(input: {
+  reader: Pick<AuthoritativeReviewReader, 'readPinnedSourceFiles'>;
+  repository: ReviewRepositoryIdentity;
+  baseSha: string;
+  headSha: string;
+  manifest: readonly GroundedImportResolutionSourceV1[];
+  signal: AbortSignal;
+}): Promise<TrustedGroundedImportResolutionSourceV1[]> {
+  if (input.manifest.length === 0) return [];
+  const repository = `${input.repository.owner}/${input.repository.repo}`;
+  const baseByHead = { base: input.baseSha, head: input.headSha } as const;
+  const lexical = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
+  const referenceByKey = new Map<string, GroundedImportResolutionSourceV1['resolutionRefs'][number]>();
+  const importerQueries = new Map<string, { revisionSha: string; path: string }>();
+  for (const source of input.manifest) {
+    if (source.repository !== repository || source.revisionSha !== input.baseSha && source.revisionSha !== input.headSha) return [];
+    for (const reference of source.resolutionRefs) {
+      const candidates = groundedRelativeImportCandidates(reference.importerPath, reference.importSpecifier);
+      if (baseByHead[reference.importerSide] !== source.revisionSha || !candidates.includes(source.path)) return [];
+      const key = JSON.stringify(reference);
+      referenceByKey.set(key, reference);
+      const importerKey = sourceProbeKey(repository, source.revisionSha, reference.importerPath);
+      importerQueries.set(importerKey, { revisionSha: source.revisionSha, path: reference.importerPath });
+    }
+  }
+  if (referenceByKey.size === 0 || importerQueries.size > MAX_GROUNDED_IMPORT_SOURCE_PROBES) return [];
+  let importers;
+  try {
+    importers = await input.reader.readPinnedSourceFiles({ ...input.repository, baseSha: input.baseSha,
+      headSha: input.headSha, probes: [...importerQueries.values()] }, input.signal);
+  } catch { return []; }
+  const importerByKey = new Map(importers.map((row) => [sourceProbeKey(row.repository, row.revisionSha, row.path), row] as const));
+  const validReferences = new Map<string, { reference: GroundedImportResolutionSourceV1['resolutionRefs'][number];
+    revisionSha: string }>();
+  let everyReferenceValidated = true;
+  for (const [key, reference] of referenceByKey) {
+    const revisionSha = baseByHead[reference.importerSide];
+    const importer = importerByKey.get(sourceProbeKey(repository, revisionSha, reference.importerPath));
+    if (!importer || importer.presence !== 'present' || typeof importer.content !== 'string'
+      || importer.sourceDigest !== reference.importerFullContentSha256
+      || sha256(importer.content) !== reference.importerFullContentSha256) {
+      everyReferenceValidated = false;
+      continue;
+    }
+    const parsed = parseGroundedRelativeImports(importer.content, reference.importerPath);
+    if (!parsed.complete || !parsed.declarations.some((declaration) => declaration.specifier === reference.importSpecifier
+      && declaration.startLine === reference.importerStatementStartLine
+      && declaration.endLine === reference.importerStatementEndLine
+      && declaration.statementDigest === reference.importStatementDigest)) {
+      everyReferenceValidated = false;
+      continue;
+    }
+    if (groundedRelativeImportCandidates(reference.importerPath, reference.importSpecifier).length === 0) {
+      everyReferenceValidated = false;
+      continue;
+    }
+    validReferences.set(key, { reference, revisionSha });
+  }
+  if (!everyReferenceValidated || validReferences.size === 0) return [];
+  const candidateQueries = new Map<string, { revisionSha: string; path: string }>();
+  for (const { reference, revisionSha } of validReferences.values()) {
+    for (const path of groundedRelativeImportCandidates(reference.importerPath, reference.importSpecifier)) {
+      const key = sourceProbeKey(repository, revisionSha, path);
+      candidateQueries.set(key, { revisionSha, path });
+    }
+  }
+  if (importerQueries.size + candidateQueries.size > MAX_GROUNDED_IMPORT_SOURCE_PROBES) return [];
+  let candidates;
+  try {
+    candidates = await input.reader.readPinnedSourceFiles({ ...input.repository, baseSha: input.baseSha,
+      headSha: input.headSha, probes: [...candidateQueries.values()] }, input.signal);
+  } catch { return []; }
+  return candidates.map(({ repository: sourceRepository, revisionSha, path, presence, sourceDigest }) => ({
+    repository: sourceRepository, revisionSha, path, presence, sourceDigest,
+  })).sort((left, right) => lexical(left.repository, right.repository)
+    || lexical(left.revisionSha, right.revisionSha) || lexical(left.path, right.path));
 }
 
 function unavailable(): Error { return new Error('Authoritative completion context unavailable'); }
@@ -99,7 +200,7 @@ function checkedPrepared(input: PreparedPublishingPolicy | null): PreparedPublis
  * require every expected persona, validate findings, and determine the verdict. */
 export function createAuthoritativeCompletionContext(options: AuthoritativeCompletionContextOptions):
   (gate: StoredReviewGate, incremental?: IncrementalVerificationInput,
-    verdictCache?: VerdictCacheVerificationInput) => Promise<TrustedGateCompletionContext> {
+    verdictCache?: VerdictCacheVerificationInput, historyAncestry?: TrustedHistoryAncestryInput) => Promise<TrustedGateCompletionContext> {
   let timeoutMs: number;
   try {
     // Large exact-head diffs can require bounded pinned-file reconstruction
@@ -112,7 +213,7 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
   const { getStoredPrepared, readerFactory } = options;
   const resolvePublishing = options.publishingResolver.resolve.bind(options.publishingResolver);
 
-  return async (gate, incremental, verdictCache): Promise<TrustedGateCompletionContext> => {
+  return async (gate, incremental, verdictCache, historyAncestry): Promise<TrustedGateCompletionContext> => {
     let substage: TrustedCompletionResolutionSubstage = 'stored-policy';
     const abort = new AbortController();
     const deadline = performance.now() + timeoutMs;
@@ -292,16 +393,58 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
         try { findingThreads = await step(() => reader.findingThreads!({ ...target }, abort.signal)); }
         catch { checkDeadline(); findingThreads = undefined; }
       }
+      let historyAncestryVerified = false;
+      let trustedHistoryAncestry: ReviewHeadAncestryReceipt | undefined;
+      const compare = reader.commitComparison?.bind(reader);
+      const priorLineage = historyAncestry?.prior;
+      if (compare && priorLineage && priorLineage.runId !== gate.coordinates.runId
+        && priorLineage.repositoryId === requested.repositoryId && priorLineage.prNumber === requested.prNumber
+        && /^[a-f0-9]{40}$/u.test(priorLineage.headSha)) {
+        try {
+          substage = 'exact-diff';
+          const comparison = await step(() => compare({ ...repository }, priorLineage.headSha, requested.headSha, abort.signal));
+          const comparisonDigest = sha256(canonicalJson({ priorHeadSha: priorLineage.headSha,
+            currentHeadSha: requested.headSha, comparison }));
+          const ancestryResult = comparison.files.length < 300
+            ? comparison.status === 'ahead' || comparison.status === 'identical' ? 'ancestor' as const : 'not-ancestor' as const
+            : 'unavailable' as const;
+          trustedHistoryAncestry = { version: 'ReviewHeadAncestry.v1', result: ancestryResult,
+            priorRunId: priorLineage.runId, priorHeadSha: priorLineage.headSha,
+            currentHeadSha: requested.headSha, comparisonDigest };
+          const hint = historyAncestry.hint;
+          historyAncestryVerified = ancestryResult === 'ancestor'
+            && (!hint || (hint.version === 'ReviewHeadAncestry.v1' && hint.result === 'ancestor'
+              && hint.priorRunId === priorLineage.runId && hint.priorHeadSha === priorLineage.headSha
+              && hint.currentHeadSha === requested.headSha && hint.comparisonDigest === comparisonDigest));
+        } catch {
+          checkDeadline();
+          historyAncestryVerified = false;
+        }
+      }
+      const resolutionManifest = historyAncestry?.sourceResolutionProbeManifest;
+      const expectedImportResolutionSources = resolutionManifest === undefined ? undefined
+        : reader.readPinnedSourceFiles ? await step(() => readTrustedImportResolutionSources({
+          reader: { readPinnedSourceFiles: reader.readPinnedSourceFiles!.bind(reader) }, repository,
+          baseSha: requested.baseSha, headSha: requested.headSha, manifest: resolutionManifest, signal: abort.signal,
+        })) : [];
       checkDeadline();
       // `severity_policy` is projected and digest-bound by the prepared-config path. Read it only
       // after `checkedPrepared` verified that source; a worker payload or environment field cannot
       // opt itself into the new convergence semantics.
       const reviewDecisionPolicy = (stored.config as unknown as { severity_policy?: unknown }).severity_policy
         === REVIEW_SEVERITY_POLICY_V2 ? REVIEW_SEVERITY_POLICY_V2 : undefined;
-      return { current: { ...final, policyDigest }, coverage: {
+      const primaryGroundedVerifierModel = stored.config.review_engine === 'composed'
+        ? stored.config.reviewers.providers.find((provider) => provider.id === resolveComposedProviderId(stored.config)
+          && provider.enabled)?.model
+        : stored.transport.model;
+      if (!primaryGroundedVerifierModel) throw unavailable();
+      return { current: { ...final, policyDigest }, historyAncestryVerified,
+        ...(trustedHistoryAncestry ? { historyAncestry: trustedHistoryAncestry } : {}), coverage: {
         expectedPersonaIds, changedFiles: files,
         ...(reviewDecisionPolicy ? { reviewDecisionPolicy } : {}),
+        groundedVerifierRouting: { primaryModel: primaryGroundedVerifierModel },
         ...(findingThreads ? { findingThreads } : {}),
+        ...(expectedImportResolutionSources === undefined ? {} : { expectedImportResolutionSources }),
         ...(stored.config.review_engine === 'composed' ? {
           reviewEngine: 'composed' as const,
           composedChangedPaths: applicability.effectiveFiles.map((file) => file.path),
@@ -325,7 +468,11 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
           routedFiles: applicability.routedFiles.length,
           uncoveredPaths: applicability.unmatchedPaths.length,
         },
-      } };
+      },
+      ...(reader.trustedConventionAdjudications ? { readTrustedConventionAdjudications: (input) =>
+        reader.trustedConventionAdjudications!({ repositoryId: requested.repositoryId,
+          owner: requested.owner, repo: requested.repo, prNumber: requested.prNumber,
+          headSha: requested.headSha, ...input }) } : {}) };
     };
     try { return await Promise.race([resolve(), expired]); }
     catch (error) {

@@ -511,6 +511,7 @@ describe('POST /finding-threads (service)', () => {
         coverageComplete: true,
         quorumSatisfied: true,
         reviewDecisionPolicy: REVIEW_SEVERITY_POLICY_V2,
+        groundedVerifierRouting: { primaryModel: 'grounded-fixture-model' },
       });
       if (!derived.valid) throw new Error(derived.message);
       return derived.evidence;
@@ -568,6 +569,7 @@ describe('POST /finding-threads (service)', () => {
       .send({ version: 'FindingThreadsRead.v1', runId: RUN, executionAttempt: 1, headSha: HEAD });
     expect(response.status).toBe(200);
     expect(response.body.version).toBe('FindingThreadsReadResult.v1');
+    expect(response.body).toMatchObject({ headSha: HEAD, complete: true, omittedCount: 0 });
     expect(response.body.threads.map((thread: any) => thread.threadId)).toEqual(['T_1']);
     expect(response.body.threads[0].resolution).toMatchObject({ author: 'author1' });
     expect(fixture.calls.filter((call) => call.url.endsWith('/pulls/7/comments'))).toHaveLength(0);
@@ -583,6 +585,18 @@ describe('POST /finding-threads (service)', () => {
     const client = new HttpFindingThreadsPublisher({ token: TOKEN, completionEndpoint: 'https://svc.example.invalid/api/dispatch/completion',
       runId: RUN, executionAttempt: 2, fetchImplementation });
     await expect(client.publish({ headSha: HEAD, publish: [], reported: [] })).resolves.toEqual({ created: 1, skipped: 0, resolved: 0 });
+  });
+
+  it('accepts thread history only when the service receipt binds it to the requested head', async () => {
+    const fetchImplementation = vi.fn(async () => new Response(JSON.stringify({
+      version: 'FindingThreadsReadResult.v1', runId: RUN, headSha: HEAD, complete: true, omittedCount: 0, threads: [],
+    })));
+    const client = new HttpFindingThreadsPublisher({ token: TOKEN,
+      completionEndpoint: 'https://svc.example.invalid/api/dispatch/completion', runId: RUN,
+      executionAttempt: 2, fetchImplementation });
+
+    await expect(client.readSnapshot(HEAD)).resolves.toMatchObject({ headSha: HEAD, complete: true, threads: [] });
+    await expect(client.readSnapshot('f'.repeat(40))).rejects.toThrow();
   });
 
   it('retries the exact v2 post-completion request once after a transient service failure', async () => {

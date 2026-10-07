@@ -1,8 +1,11 @@
 import { createDefaultV3Config, isTriggerActionAllowed, type TriggerActionOptions } from './configLoader';
-import type { ComposedEngineConfig, CtReviewConfigV3, ProviderId, ReviewEngineName } from './schema';
+import { disputedBlockerAdjudicatorSchema, type ComposedEngineConfig, type CtReviewConfigV3,
+  type DisputedBlockerAdjudicator, type ProviderId, type ReviewEngineName } from './schema';
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, type CompiledDomainIndex } from '../pipeline/domainIndex';
 import { resolveMaxReviewedLockfilePatchChars } from '../pipeline/hunkFilter';
+import { GROUNDED_VERIFICATION_VERSION } from '../review/groundedReviewEngine';
+import { groundedVerificationCapabilityForRuntime } from '../review/groundedCandidateManifestCapability';
 import {
   COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS,
   COMPOSED_ENGINE_DEFAULT_MAX_TASKS,
@@ -25,6 +28,7 @@ export const PUBLISHING_MAX_TURNS = 15;
 export const PUBLISHING_IDLE_TIMEOUT_SECONDS = 180;
 /** Evidence phase only. The admitted lifecycle reserves another five minutes for closeout. */
 export const PUBLISHING_OVERALL_TIMEOUT_SECONDS = 1200;
+const INACTIVE_CONFIDENCE_THRESHOLD_REASON = 'The publishing worker does not consume confidence_threshold; a self-reported score cannot reduce evidence requirements or change blocker eligibility.';
 
 let cachedCompiledIndex: CompiledDomainIndex | null = null;
 
@@ -314,6 +318,19 @@ function resolveBifrostEffort(policy: Record<string, any> | undefined): { effort
   return { effort: requested as 'low' | 'medium' | 'high' | 'xhigh' | 'max', requested };
 }
 
+function resolveInactiveConfidenceThreshold(
+  policy: Record<string, any> | undefined,
+  fallback: number,
+): { requested: number | null; effective: number } {
+  const configured = [policy?.dials?.confidence_threshold, policy?.reviews?.confidence_threshold,
+    policy?.confidence_threshold].find(value => value !== undefined);
+  if (configured === undefined) return { requested: null, effective: fallback };
+  if (typeof configured !== 'number' || !Number.isFinite(configured) || configured < 0 || configured > 100) {
+    throw new Error('unsupported confidence_threshold');
+  }
+  return { requested: configured, effective: configured };
+}
+
 function enabledMcpServerIds(policy: Record<string, any> | undefined): string[] {
   if (policy?.mcp_servers === undefined) return [];
   if (!Array.isArray(policy.mcp_servers)) throw new Error('central mcp_servers must be an array');
@@ -337,8 +354,12 @@ export function resolveWorkerConfig(
   let requestedProfile: 'chill' | 'balanced' | 'assertive' = baseConfig.profile;
   let requestedBifrostEffort: string | undefined;
   let bifrostEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' = 'medium';
+  let requestedConfidenceThreshold: number | null = null;
+  let effectiveConfidenceThreshold = baseConfig.confidence_threshold
+    ?? baseConfig.reviews?.confidence_threshold ?? baseConfig.dials?.confidence_threshold ?? 70;
   let configuredMcpServers: string[] = [];
   let composed: ComposedEngineConfig = {};
+  let disputedBlockerAdjudicator: DisputedBlockerAdjudicator | undefined;
 
   if (env.REVIEW_YETI_POLICY_JSON) {
     try {
@@ -368,6 +389,15 @@ export function resolveWorkerConfig(
         if (policy.severity_policy !== 'review-yeti-severity.v2') throw new Error('unsupported severity_policy');
         severityPolicy = policy.severity_policy;
       }
+      if (policy.disputed_blocker_adjudicator !== undefined) {
+        disputedBlockerAdjudicator = disputedBlockerAdjudicatorSchema.parse(policy.disputed_blocker_adjudicator);
+        if (disputedBlockerAdjudicator.model.toLowerCase() === transport.model.toLowerCase()) {
+          throw new Error('disputed blocker adjudicator must use a model alias distinct from the primary review model');
+        }
+      }
+      const confidenceThreshold = resolveInactiveConfidenceThreshold(policy, effectiveConfidenceThreshold);
+      requestedConfidenceThreshold = confidenceThreshold.requested;
+      effectiveConfidenceThreshold = confidenceThreshold.effective;
       const bifrost = resolveBifrostEffort(policy);
       bifrostEffort = bifrost.effort;
       requestedBifrostEffort = bifrost.requested;
@@ -402,6 +432,7 @@ export function resolveWorkerConfig(
 
   const default6 = ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'];
   const effectivePersonaNames = personasList.length > 0 ? personasList : default6;
+  const groundedVerificationCapability = groundedVerificationCapabilityForRuntime(GROUNDED_VERIFICATION_VERSION);
 
   const personaMap: Record<string, { id: string; required: boolean; charter: string }> = {
     'security': { id: 'sec-lane', required: true, charter: 'builtin:security' },
@@ -446,15 +477,31 @@ export function resolveWorkerConfig(
       profile: requestedProfile,
       review_engine: typeof requestedReviewEngine === 'string' ? requestedReviewEngine : String(requestedReviewEngine),
       ...(severityPolicy === undefined ? {} : { severity_policy: severityPolicy }),
+      ...(disputedBlockerAdjudicator === undefined ? {} : { disputed_blocker_adjudicator: disputedBlockerAdjudicator }),
       personas: effectivePersonaNames,
       ...(requestedBifrostEffort === undefined ? {} : { bifrost_reasoning_effort: requestedBifrostEffort }),
       mcp_servers: configuredMcpServers,
+      confidence_threshold: requestedConfidenceThreshold,
       max_investigation_turns: Number(policy?.budget?.max_investigation_turns ?? PUBLISHING_MAX_TURNS),
       max_reviewed_lockfile_patch_chars: maxReviewedLockfilePatchChars ?? null,
     },
     effective: {
       review_engine: reviewEngine,
       ...(severityPolicy === undefined ? {} : { severity_policy: severityPolicy }),
+      ...(disputedBlockerAdjudicator === undefined ? {} : {
+        disputed_blocker_adjudicator: reviewEngine === 'composed' && severityPolicy === 'review-yeti-severity.v2'
+          ? { state: 'available' as const, model_alias: disputedBlockerAdjudicator.model,
+            reasoning_effort: disputedBlockerAdjudicator.reasoning_effort, applied: false as const,
+            reason: 'Configured for authenticated disputed P0/P1 rechecks only; runtime application is recorded per verifier outcome.' }
+          : { state: 'inactive' as const, model_alias: disputedBlockerAdjudicator.model,
+            reasoning_effort: disputedBlockerAdjudicator.reasoning_effort, applied: false as const,
+            reason: 'Requires effective composed review with effective severity v2; the primary verifier route remains active.' },
+      }),
+      confidence_threshold: {
+        value: effectiveConfidenceThreshold,
+        applied: false as const,
+        reason: INACTIVE_CONFIDENCE_THRESHOLD_REASON,
+      },
       profile: {
         value: requestedProfile,
         applied: reviewEngine !== 'composed' || severityPolicy === 'review-yeti-severity.v2',
@@ -464,6 +511,7 @@ export function resolveWorkerConfig(
             : 'The composed advisory profile is inactive under legacy severity because P2 findings remain blocking.'
           : 'The selected panel engine applies profile during effort and token-budget resolution.',
       },
+      ...(groundedVerificationCapability ? { grounded_verification: groundedVerificationCapability } : {}),
       provider: {
         id: 'bifrost' as const,
         model: transport.model,
@@ -512,6 +560,7 @@ export function resolveWorkerConfig(
       ? {} : { max_reviewed_lockfile_patch_chars: maxReviewedLockfilePatchChars }),
     review_engine: reviewEngine,
     ...(severityPolicy === undefined ? {} : { severity_policy: severityPolicy }),
+    ...(disputedBlockerAdjudicator === undefined ? {} : { disputed_blocker_adjudicator: disputedBlockerAdjudicator }),
     review_configuration_receipt: reviewConfigurationReceipt,
     composed,
     default_max_turns: Math.min(PUBLISHING_MAX_TURNS, Math.max(1, maxInvestigationTurns || PUBLISHING_MAX_TURNS)),

@@ -1,17 +1,25 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { findingClaimType, findingFingerprint, findingFingerprintForClaimType } from '../../src/review/findingConvergence';
 import { createReviewDecisionV2, REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
-import { buildDeterministicCoverageManifest, groundedAffectedContextDigest, GROUNDED_VERIFICATION_VERSION,
-  GROUNDED_DEFAULT_BUDGET } from '../../src/review/groundedReviewEngine';
+import { applyGroundedVerificationToPersonas, buildDeterministicCoverageManifest, groundedAffectedContextDigest, GROUNDED_VERIFICATION_LEGACY_VERSION,
+  GROUNDED_DEFAULT_BUDGET, GROUNDED_VERIFICATION_VERSION, runIndependentGroundedVerification } from '../../src/review/groundedReviewEngine';
+import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, GROUNDED_REVIEW_RECEIPT_V2_VERSION,
+  GROUNDED_VERIFICATION_V2_VERSION, isValidGroundedCitationV2, sha256Bytes } from '../../src/review/groundedEvidenceV2';
 import { canonicalJson, computeArbitration, sha256, type ReviewChangedFile } from '../../src/review/reviewCore';
 import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import { MAX_CHANGED_FILE_PATCH_BYTES } from '../../src/review/reviewEvidenceLimits';
 import { parseChangedFiles } from '../../src/review/changedFiles';
+import { groundedRelativeImportCandidates } from '../../src/review/groundedContractResolver';
+import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
+import { completeComposedRuntimeResources, ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
+import type { ReviewModelClient } from '../../src/gateway/openRouterClient';
+import type { RepoFileProvider } from '../../src/panel/panelEngine';
 import {
   MAX_COMPLETION_BYTES,
   MAX_TURN_USAGES,
   deriveCanonicalWorkerReviewEvidence,
   deriveStoredCompletionVerdict,
+  groundedFindingContinuityDigest,
   storedCompletionShipCompleteReason,
   parseWorkerReviewCompletion,
   type TrustedReviewCoverageContract,
@@ -95,7 +103,8 @@ function thrownComposedFailure(): WorkerReviewCompletion {
 const composedContract: TrustedReviewCoverageContract = {
   ...contract, reviewEngine: 'composed', composedChangedPaths: ['src/example.ts'], composedMaxTasks: 8,
 };
-const v2Contract: TrustedReviewCoverageContract = { ...contract, reviewDecisionPolicy: REVIEW_SEVERITY_POLICY_V2 };
+const v2Contract: TrustedReviewCoverageContract = { ...contract, reviewDecisionPolicy: REVIEW_SEVERITY_POLICY_V2,
+  groundedVerifierRouting: { primaryModel: 'test-model' } };
 
 function withDecision(input: WorkerReviewCompletion, overrides: Record<string, unknown> = {},
   trustedChangedFiles: readonly ReviewChangedFile[] = changedFiles): WorkerReviewCompletion {
@@ -163,7 +172,7 @@ function withDecision(input: WorkerReviewCompletion, overrides: Record<string, u
       eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0, omissions: ['unit fixture has no history'],
       memorySources: { honcho: 'unavailable' as const, mcp: 'unavailable' as const },
       verificationWrites: { attempted: 0, recorded: 0, failed: 0 } },
-    verification: { version: GROUNDED_VERIFICATION_VERSION, candidates: outcomes.length, confirmed: outcomes.length,
+    verification: { version: GROUNDED_VERIFICATION_LEGACY_VERSION, candidates: outcomes.length, confirmed: outcomes.length,
       contradicted: 0, insufficient: 0, unverifiedBlockerCount: 0, coverageComplete: coverage.complete, calls: 0,
       budget: GROUNDED_DEFAULT_BUDGET, outcomes },
   };
@@ -274,6 +283,61 @@ describe('WorkerReviewCompletion.v1', () => {
     expectInvalid(derive({ ...composed, result: { ...composed.result,
       personas: [{ id: 'not-in-plan', decision: 'APPROVE', findings: [] }],
     } }, trusted), /unknown persona lane/u);
+  });
+
+  it('requires and rebinds current composed resource receipt to prepared config and delivered paths', () => {
+    const task = { id: 'task-a', dimension: 'architecture' as const, paths: ['src/example.ts'],
+      question: 'Could this change regress behavior?', rationale: 'The source changed.' };
+    const patchText = changedFiles[0]!.patch!;
+    const sourceDelivery = { version: 'TaskSourceDelivery.v1' as const, taskId: task.id,
+      headSha: expectedCoordinates.headSha, baseSha: expectedCoordinates.baseSha,
+      contextDigests: [sha256('task-context')], complete: true,
+      files: [{ path: 'src/example.ts', patchDigest: sha256(patchText), totalChars: patchText.length,
+        ranges: [[0, patchText.length] as [number, number]], inline: true }] };
+    const prepared = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({
+      review_engine: 'composed', severity_policy: REVIEW_SEVERITY_POLICY_V2, personas: ['security'],
+    }) }, { baseUrl: 'https://gateway.example.invalid', apiKey: 'test', model: 'test-model' });
+    const configuration = prepared.review_configuration_receipt;
+    if (!configuration) throw new Error('test effective configuration receipt was not produced');
+    const observer = new ComposedRuntimeResourceObserver({ configDigest: expectedCoordinates.configDigest, configuration });
+    observer.configureBudget({ configuredTotalTurns: 100, investigationTurns: 88, verificationReserveTurns: 12 });
+    observer.setPlan([task]);
+    observer.markTaskStarted(task.id);
+    observer.markTaskOutcome(task.id, 'completed', sourceDelivery);
+    const observation = observer.snapshot('terminal');
+    if (!observation) throw new Error('test composed resource observation was not produced');
+    const resources = completeComposedRuntimeResources({ observation, configDigest: expectedCoordinates.configDigest, verifierCalls: 0 });
+    if (!resources) throw new Error('test worker resource receipt was not produced');
+
+    const input = completion({ result: { ...completion().result, personas: [lane(task.id, { sourceDelivery })], taskPlan: [task] } });
+    const v2 = withDecision(input, { expectedLanes: 1, completedLanes: 1 });
+    const legacyReceipt = v2.result.groundedReview!;
+    v2.result.groundedReview = {
+      version: GROUNDED_REVIEW_RECEIPT_V2_VERSION,
+      semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+      coverage: legacyReceipt.coverage,
+      history: legacyReceipt.history,
+      verification: { version: GROUNDED_VERIFICATION_V2_VERSION,
+        semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+        candidates: 0, confirmed: 0, contradicted: 0, insufficient: 0, unverifiedBlockerCount: 0,
+        coverageComplete: legacyReceipt.coverage.complete, calls: 0, budget: GROUNDED_DEFAULT_BUDGET, outcomes: [] },
+    } as any;
+    v2.result.composedResources = resources;
+    const trusted: TrustedReviewCoverageContract = { ...v2Contract, reviewEngine: 'composed',
+      composedChangedPaths: ['src/example.ts'], composedMaxTasks: 8, composedEffectiveConfiguration: configuration };
+    expect(derive(v2, trusted)).toMatchObject({ valid: true, evidence: { reviewEngine: 'composed',
+      coverageComplete: true, verdict: 'SHIP' } });
+
+    const missing = structuredClone(v2);
+    delete missing.result.composedResources;
+    expectInvalid(derive(missing, trusted), /missing its worker-stage runtime resource receipt/u);
+    const unbound = structuredClone(v2);
+    unbound.result.composedResources!.configDigest = { value: null,
+      unavailableReason: 'prepared digest was not available' } as any;
+    expectInvalid(derive(unbound, trusted), /not bound to the service-prepared effective configuration/u);
+    const forgedCoverage = structuredClone(v2);
+    forgedCoverage.result.composedResources!.coverage.investigatedPaths.sha256 = 'f'.repeat(64);
+    expectInvalid(derive(forgedCoverage, trusted), /path coverage disagrees with the trusted plan/u);
   });
 
   it('treats a composed task list as one reviewer for blocking thresholds', () => {
@@ -829,6 +893,485 @@ describe('ADR 0002: the Gate derives required P2s with the same convergence as t
 });
 
 describe('versioned v2 worker/Gate decision agreement', () => {
+  it('accepts truthful side-less insufficient P2 outcomes after the verifier budget is exhausted', async () => {
+    const path = 'src/budget.ts';
+    const lineSources = Array.from({ length: 25 }, (_, index) => `export const advisory${index + 1} = ${index + 1};`);
+    const baseLineSources = Array.from({ length: 25 }, (_, index) => `export const previous${index + 1} = ${index + 1};`);
+    const headSource = `${lineSources.join('\n')}\n`;
+    const baseSource = `${baseLineSources.join('\n')}\n`;
+    const patch = `@@ -1,25 +1,25 @@\n${baseLineSources.map((line) => `-${line}`).join('\n')}\n${lineSources.map((line) => `+${line}`).join('\n')}\n`;
+    const admittedFiles = [{ path, patch }];
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (_requestedPath, side) => ({ content: side === 'head' ? headSource : baseSource,
+        sha: side === 'head' ? expectedCoordinates.headSha : expectedCoordinates.baseSha, presence: 'present',
+        source: { repository: `${expectedCoordinates.owner}/${expectedCoordinates.repo}`, path, side } }),
+      readDiff: () => ({ patch, identity: { repository: `${expectedCoordinates.owner}/${expectedCoordinates.repo}`,
+        headSha: expectedCoordinates.headSha, baseSha: expectedCoordinates.baseSha } }),
+    };
+    const findings = lineSources.map((_, index) => ({ severity: 'P2' as const, path, line: index + 1,
+      title: `Budget advisory ${index + 1}`, body: `Advisory claim ${index + 1} is not fully verified.` }));
+    const verifier = vi.fn(async () => ({ model: 'test-verifier',
+      content: JSON.stringify({ status: 'insufficient', reason: 'The source does not establish this advisory.' }),
+      usage: null, costUSD: null }));
+    const verification = await runIndependentGroundedVerification({ findings, changedFiles: admittedFiles, provider,
+      repository: `${expectedCoordinates.owner}/${expectedCoordinates.repo}`, headSha: expectedCoordinates.headSha,
+      baseSha: expectedCoordinates.baseSha, model: 'test-model', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+      budget: { totalCalls: 12, callsPerTask: 12, concurrency: 1 },
+      client: { complete: verifier } as unknown as ReviewModelClient });
+
+    expect(verifier).toHaveBeenCalledTimes(12);
+    expect(verification).toMatchObject({ candidates: 25, calls: 12, insufficient: 25, coverageComplete: true });
+    expect(verification.outcomes.filter((row) => row.reason?.includes('budget was exhausted'))).toHaveLength(13);
+    expect(verification.outcomes.filter((row) => row.candidateSide === undefined)).toHaveLength(13);
+
+    const applied = applyGroundedVerificationToPersonas([{ id: 'security', findings }], verification,
+      admittedFiles, REVIEW_SEVERITY_POLICY_V2);
+    expect(applied).toMatchObject({ coverageComplete: true, unverifiedBlockerCount: 0, unverifiedAdvisoryCount: 25,
+      personas: [{ findings: [] }] });
+    const input = completion({ result: { ...completion().result, personas: [lane('security', { findings: applied.personas[0]!.findings }),
+      lane('architecture')], coverageComplete: applied.coverageComplete } });
+    const legacy = withDecision(input, {}, admittedFiles);
+    const manifest = buildDeterministicCoverageManifest(admittedFiles);
+    legacy.result.verdict = 'SHIP';
+    legacy.result.findingCount = 0;
+    legacy.result.blockingFindingCount = 0;
+    legacy.result.groundedReview = {
+      version: GROUNDED_REVIEW_RECEIPT_V2_VERSION,
+      semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+      coverage: { digest: manifest.digest, regionCount: manifest.regions.length,
+        assignmentCount: manifest.assignments.length, coveredRegionCount: manifest.coveredRegionIds.length,
+        complete: manifest.complete, omissions: manifest.omissions },
+      history: legacy.result.groundedReview!.history,
+      verification: { ...verification, outcomes: verification.outcomes.map(({ reason: _reason, scopeDecision: _scope,
+        ...outcome }) => outcome) },
+    } as any;
+    const result = derive(legacy, { ...v2Contract, changedFiles: admittedFiles });
+    expect(result, JSON.stringify(result)).toMatchObject({ valid: true,
+      evidence: { verdict: 'SHIP', p2Count: 0, coverageComplete: true } });
+
+    const p1Finding = { ...findings[0]!, severity: 'P1' as const, title: 'Unverified blocking candidate',
+      blockerEvidence: { trigger: 'The changed line is reached by a request.', impact: 'The request may expose protected data.',
+        violatedContract: 'Protected data requires an authenticated owner.' } };
+    const mixedVerification = await runIndependentGroundedVerification({ findings: [p1Finding, ...findings.slice(1)],
+      changedFiles: admittedFiles, provider, repository: `${expectedCoordinates.owner}/${expectedCoordinates.repo}`,
+      headSha: expectedCoordinates.headSha, baseSha: expectedCoordinates.baseSha, model: 'test-model',
+      verificationVersion: GROUNDED_VERIFICATION_VERSION, severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+      budget: { totalCalls: 12, callsPerTask: 12, concurrency: 1 },
+      client: { complete: verifier } as unknown as ReviewModelClient });
+    expect(mixedVerification).toMatchObject({ candidates: 25, calls: 12, insufficient: 25,
+      unverifiedBlockerCount: 1, coverageComplete: false });
+    const mixedApplied = applyGroundedVerificationToPersonas([{ id: 'security', findings: [p1Finding, ...findings.slice(1)] }],
+      mixedVerification, admittedFiles, REVIEW_SEVERITY_POLICY_V2);
+    expect(mixedApplied).toMatchObject({ coverageComplete: false, unverifiedBlockerCount: 1, personas: [{ findings: [] }] });
+    const mixedInput = completion({ result: { ...completion().result,
+      personas: [lane('security', { findings: mixedApplied.personas[0]!.findings }), lane('architecture')],
+      coverageComplete: mixedApplied.coverageComplete, quorumSatisfied: false } });
+    const mixedLegacy = withDecision(mixedInput, {}, admittedFiles);
+    const mixedReceipt = structuredClone(mixedLegacy.result.groundedReview!);
+    mixedLegacy.result.verdict = undefined;
+    mixedLegacy.result.findingCount = undefined;
+    mixedLegacy.result.blockingFindingCount = undefined;
+    mixedLegacy.result.groundedReview = {
+      version: GROUNDED_REVIEW_RECEIPT_V2_VERSION,
+      semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+      coverage: mixedReceipt.coverage,
+      history: mixedReceipt.history,
+      verification: { ...mixedVerification, outcomes: mixedVerification.outcomes.map(({ reason: _reason, scopeDecision: _scope,
+        ...outcome }) => outcome) },
+    } as any;
+    const genuineIncompleteP1 = derive(mixedLegacy, { ...v2Contract, changedFiles: admittedFiles });
+    expect(genuineIncompleteP1, JSON.stringify(genuineIncompleteP1)).toMatchObject({ valid: true,
+      evidence: { coverageComplete: false, verdict: 'BLOCK', reviewDecision: { eligible: false } } });
+
+    const downgradedInsufficientP1 = structuredClone(mixedLegacy);
+    const downgradedReceipt = downgradedInsufficientP1.result.groundedReview!;
+    const p1Outcome = downgradedReceipt.version === GROUNDED_REVIEW_RECEIPT_V2_VERSION
+      ? downgradedReceipt.verification.outcomes.find((outcome) => outcome.fingerprint === findingFingerprint(p1Finding)) as any
+      : undefined;
+    if (!p1Outcome) throw new Error('expected the v2 P1 candidate outcome');
+    p1Outcome.severity = 'P2';
+    downgradedReceipt.version === GROUNDED_REVIEW_RECEIPT_V2_VERSION && (downgradedReceipt.verification.unverifiedBlockerCount = 0);
+    downgradedReceipt.version === GROUNDED_REVIEW_RECEIPT_V2_VERSION && (downgradedReceipt.verification.coverageComplete = true);
+    downgradedInsufficientP1.result.coverageComplete = true;
+    downgradedInsufficientP1.result.quorumSatisfied = true;
+    const cleanP2Decision = withDecision(downgradedInsufficientP1, {}, admittedFiles).result.reviewDecision;
+    downgradedInsufficientP1.result.reviewDecision = cleanP2Decision;
+    downgradedInsufficientP1.result.groundedReview = downgradedReceipt;
+    expectInvalid(derive(downgradedInsufficientP1, { ...v2Contract, changedFiles: admittedFiles }),
+      /outcome severity disagrees with its original engine candidate/u);
+
+    const missingCandidateManifest = structuredClone(legacy);
+    delete (missingCandidateManifest.result.groundedReview as any).verification.candidateManifest;
+    expectInvalid(derive(missingCandidateManifest, { ...v2Contract, changedFiles: admittedFiles }),
+      /lacks the original pre-filter candidate severity manifest/u);
+    const partialCandidateManifest = structuredClone(legacy);
+    (partialCandidateManifest.result.groundedReview as any).verification.candidateManifest.pop();
+    expect(() => derive(partialCandidateManifest, { ...v2Contract, changedFiles: admittedFiles }))
+      .toThrow(/pre-filter candidate severity manifest must be complete/u);
+    const wrongCandidateCount = structuredClone(legacy);
+    (wrongCandidateCount.result.groundedReview as any).verification.candidates -= 1;
+    expect(() => derive(wrongCandidateCount, { ...v2Contract, changedFiles: admittedFiles }))
+      .toThrow(/candidate severity manifest must be complete|counts must account for every outcome/u);
+  });
+
+  it('revalidates deleted-contract evidence with an unchanged head caller at the Gate boundary', async () => {
+    const path = 'src/security.ts';
+    const callerPath = 'src/handler.ts';
+    const diff = `diff --git a/${path} b/${path}\ndeleted file mode 100644\n--- a/${path}\n+++ /dev/null\n@@ -1,3 +0,0 @@\n-export function authorize(request: Request) {\n-  return request.session !== null;\n-}\n`;
+    const admittedFiles = parseChangedFiles(diff, { repository: `${expectedCoordinates.owner}/${expectedCoordinates.repo}`,
+      headSha: expectedCoordinates.headSha, baseSha: expectedCoordinates.baseSha }).files;
+    const oldDefinition = 'export function authorize(request: Request) {\n  return request.session !== null;\n}\n';
+    const caller = "import { authorize } from './security';\nexport function handle(request: Request) { return authorize(request); }\n";
+    const resolutionCandidates = groundedRelativeImportCandidates(callerPath, './security');
+    const finding = { severity: 'P1' as const, path, line: 1,
+      title: 'Deleted authorization export remains reachable from the handler', body: 'The handler still imports the removed export.',
+      blockerEvidence: { trigger: 'The handler imports and calls authorize.', impact: 'Authorization checks cannot resolve.',
+        violatedContract: 'The authorization helper export remains available to current callers.' } };
+    const input = completion({ result: { ...completion().result, personas: [
+      lane('security', { decision: 'FINDINGS', findings: [finding] }), lane('architecture')], verdict: 'FIX_FIRST',
+      findingCount: 1, blockingFindingCount: 1 } });
+    const built = withDecision(input, {}, admittedFiles);
+    const primary = vi.fn(async (request: any) => {
+      const body = request.messages[1].content;
+      const files = JSON.parse(body.match(/<retrieved_repository_evidence>(.*?)<\/retrieved_repository_evidence>/su)[1]);
+      const target = files.find((file: any) => file.path === path);
+      const callerEvidence = files.find((file: any) => file.path === callerPath);
+      const candidateId = target.base.windows.find((window: any) => window.role === 'candidate').id;
+      const contractId = target.base.windows.find((window: any) => window.role === 'dependency-contract').id;
+      const absenceId = target.head.absence.id;
+      const diffId = target.diffs[0].id;
+      const baseCallerId = callerEvidence.base.windows.find((window: any) => window.role === 'dependency-caller').id;
+      const headCallerId = callerEvidence.head.windows.find((window: any) => window.role === 'dependency-caller').id;
+      const citations = [candidateId, contractId, absenceId, baseCallerId, headCallerId, diffId];
+      return { model: 'test-model', content: JSON.stringify({ status: 'confirmed',
+        violatedInvariant: 'Every public authorization contract must remain resolvable by active callers.',
+        failurePath: 'The unchanged handler imports the removed export and calls it for every request.',
+        benignCheck: 'The deleted definition was the only exact named export satisfying this import.',
+        changeConnection: 'The admitted deletion removes the export while the current handler still imports it.',
+        rootCause: { componentId: 'security.authorize', behaviorId: 'preserve-auth-export',
+          contractId: 'named-import-resolves', failureModeId: 'reachable-missing-export' },
+        causeAnchor: { componentPath: path, side: 'base', startLine: 1, endLine: 3, citationIds: [candidateId] },
+        causalPath: { relation: 'same-component', candidatePath: path, componentPath: path,
+          citationIds: [candidateId, contractId, absenceId, baseCallerId, headCallerId, diffId] },
+        baseState: { trigger: 'present', contract: 'not-violated', citationIds: [candidateId, contractId, baseCallerId] },
+        headState: { trigger: 'present', contract: 'violated', citationIds: [absenceId, headCallerId] },
+        causalDelta: { kind: 'introduced', materiality: 'reachability', citationIds: [diffId] }, citations }),
+        usage: null, costUSD: null };
+    });
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      findReferences: async (symbol, sourcePath, side) => ({ version: 'PinnedSourceReferenceSearch.v1',
+        repository: `${expectedCoordinates.owner}/${expectedCoordinates.repo}`, sourcePath, symbol, side,
+        revisionSha: side === 'head' ? expectedCoordinates.headSha : expectedCoordinates.baseSha,
+        candidatePaths: [callerPath], searchComplete: false, scannedFileCount: 12, scannedBytes: 20_000, reason: 'scan_file_limit' }),
+      readFileAt: async (requestedPath, side) => {
+        const absent = requestedPath === path && side === 'head';
+        const content = requestedPath === path ? (side === 'head' ? null : oldDefinition)
+          : requestedPath === callerPath ? caller : null;
+        if (requestedPath === path || requestedPath === callerPath) return {
+          content, sha: side === 'head' ? expectedCoordinates.headSha : expectedCoordinates.baseSha,
+          presence: absent ? 'absent' as const : 'present' as const,
+          source: { repository: `${expectedCoordinates.owner}/${expectedCoordinates.repo}`, path: requestedPath, side },
+        };
+        if (resolutionCandidates.includes(requestedPath)) return { content: null,
+          sha: side === 'head' ? expectedCoordinates.headSha : expectedCoordinates.baseSha,
+          presence: 'absent' as const,
+          source: { repository: `${expectedCoordinates.owner}/${expectedCoordinates.repo}`, path: requestedPath, side } };
+        return { content: null, sha: side === 'head' ? expectedCoordinates.headSha : expectedCoordinates.baseSha,
+          presence: 'unavailable' as const,
+          source: { repository: `${expectedCoordinates.owner}/${expectedCoordinates.repo}`, path: requestedPath, side } };
+      },
+      readDiff: (requestedPath) => requestedPath === path ? { patch: admittedFiles[0]!.patch!,
+        identity: { repository: `${expectedCoordinates.owner}/${expectedCoordinates.repo}`,
+          headSha: expectedCoordinates.headSha, baseSha: expectedCoordinates.baseSha } } : null,
+    };
+    const verification = await runIndependentGroundedVerification({ findings: [finding], changedFiles: admittedFiles,
+      provider, repository: `${expectedCoordinates.owner}/${expectedCoordinates.repo}`, headSha: expectedCoordinates.headSha,
+      baseSha: expectedCoordinates.baseSha, model: 'test-model', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2, client: { complete: primary } as unknown as ReviewModelClient });
+    expect(verification.outcomes[0], JSON.stringify(verification.outcomes[0])).toMatchObject({ status: 'confirmed',
+      candidateSide: 'base', scopeDecision: { causalScope: 'introduced' } });
+    const manifest = buildDeterministicCoverageManifest(admittedFiles);
+    const receipt = { version: GROUNDED_REVIEW_RECEIPT_V2_VERSION,
+      semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+      coverage: { digest: manifest.digest, regionCount: manifest.regions.length, assignmentCount: manifest.assignments.length,
+        coveredRegionCount: manifest.coveredRegionIds.length, complete: manifest.complete, omissions: manifest.omissions },
+      history: { status: 'unavailable' as const, eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
+        eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0, omissions: ['history unavailable in this test'],
+        memorySources: { honcho: 'unavailable' as const, mcp: 'unavailable' as const },
+        verificationWrites: { attempted: 0, recorded: 0, failed: 0 } },
+      verification: { ...verification, outcomes: verification.outcomes.map(({ reason: _reason, scopeDecision: _scope,
+        ...outcome }) => outcome) } };
+    built.result.groundedReview = receipt as any;
+    const expectedImportResolutionSources = verification.sourceResolutionProbeManifest.map(({ resolutionRefs: _refs, ...source }) => source);
+    const trusted = { ...v2Contract, changedFiles: admittedFiles, expectedImportResolutionSources };
+    const result = derive(built, trusted);
+    expect(result, JSON.stringify(result)).toMatchObject({ valid: true, evidence: { p1Count: 1, verdict: 'FIX_FIRST' } });
+
+    const fallbackPath = resolutionCandidates.find((candidate) => candidate.endsWith('/index.ts'))!;
+    const fallbackContent = 'export function authorize(request: Request) { return true; }\n';
+    const forgedWorkerAbsenceContext = expectedImportResolutionSources.map((source) => source.path === fallbackPath
+      && source.revisionSha === expectedCoordinates.headSha
+      ? { ...source, presence: 'present' as const, sourceDigest: sha256Bytes(Buffer.from(fallbackContent, 'utf8')) }
+      : source);
+    expectInvalid(derive(built, { ...trusted, expectedImportResolutionSources: forgedWorkerAbsenceContext }),
+      /does not prove absence of every current import target/u);
+  });
+
+  it('revalidates a v2 large-source scope proof at the trusted completion boundary', async () => {
+    const admittedFiles: ReviewChangedFile[] = [{ path: 'src/example.ts',
+      patch: '@@ -1 +1 @@\n-oldOperation();\n+newOperation();\n' }];
+    const finding = { severity: 'P1' as const, path: 'src/example.ts', line: 1,
+      title: 'Unsafe changed operation', body: 'The new operation bypasses the contract.', blockerEvidence: {
+        trigger: 'A caller reaches the changed operation.', impact: 'The operation runs without its required guard.',
+        violatedContract: 'The operation must be guarded before execution.',
+      } };
+    const baseSource = 'oldOperation();\n';
+    const headSource = 'newOperation();\n';
+    const patch = admittedFiles[0].patch!;
+    const repository = `${expectedCoordinates.owner}/${expectedCoordinates.repo}`;
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (path, side) => ({ content: side === 'head' ? headSource : baseSource,
+        sha: side === 'head' ? expectedCoordinates.headSha : expectedCoordinates.baseSha,
+        presence: 'present', source: { repository, path, side } }),
+      readDiff: () => ({ patch, identity: { repository, headSha: expectedCoordinates.headSha, baseSha: expectedCoordinates.baseSha } }),
+    };
+    const completeVerifier = vi.fn(async (request: any) => {
+      const body = request.messages[1].content;
+      const files = JSON.parse(body.match(/<retrieved_repository_evidence>(.*?)<\/retrieved_repository_evidence>/su)[1]);
+      const row = files[0];
+      const headId = row.head.windows[0].id;
+      const baseId = row.base.windows[0].id;
+      const diffId = row.diffs[0].id;
+      return { model: 'test-verifier', content: JSON.stringify({ status: 'confirmed',
+        violatedInvariant: 'The changed operation must be guarded.', failurePath: 'The caller reaches it unguarded.',
+        benignCheck: 'No guard exists in the new implementation.', changeConnection: 'The patch replaces the guarded call.',
+        rootCause: { componentId: 'example-operation', behaviorId: 'unguarded-call',
+          contractId: 'guard-required', failureModeId: 'guard-skipped' },
+        causeAnchor: { componentPath: 'src/example.ts', side: 'head', startLine: 1, endLine: 1, citationIds: [headId] },
+        causalPath: { relation: 'same-component', candidatePath: 'src/example.ts', componentPath: 'src/example.ts',
+          citationIds: [headId, baseId, diffId] },
+        baseState: { trigger: 'absent', contract: 'not-violated', citationIds: [baseId] },
+        headState: { trigger: 'present', contract: 'violated', citationIds: [headId] },
+        causalDelta: { kind: 'introduced', materiality: 'reachability', citationIds: [diffId] },
+        citations: [headId, baseId, diffId] }), usage: null, costUSD: null };
+    });
+    const verification = await runIndependentGroundedVerification({ findings: [finding], changedFiles: admittedFiles,
+      provider, repository, headSha: expectedCoordinates.headSha, baseSha: expectedCoordinates.baseSha,
+      model: 'test-model', verificationVersion: GROUNDED_VERIFICATION_VERSION, severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+      client: { complete: completeVerifier } as unknown as ReviewModelClient });
+    expect(verification.outcomes[0]?.scopeDecision, JSON.stringify(verification.outcomes[0])).toMatchObject({ causalScope: 'introduced' });
+    expect((verification.outcomes[0]?.evidence as any).citations.every(isValidGroundedCitationV2),
+      JSON.stringify((verification.outcomes[0]?.evidence as any).citations)).toBe(true);
+
+    const prior = completion({ result: { ...completion().result,
+      personas: [lane('security', { decision: 'FINDINGS', findings: [finding] }), lane('architecture')] } });
+    const v1Built = withDecision(prior, {}, admittedFiles);
+    const manifest = buildDeterministicCoverageManifest(admittedFiles);
+    const receipt = {
+      version: GROUNDED_REVIEW_RECEIPT_V2_VERSION,
+      semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+      coverage: { digest: manifest.digest, regionCount: manifest.regions.length, assignmentCount: manifest.assignments.length,
+        coveredRegionCount: manifest.coveredRegionIds.length, complete: manifest.complete, omissions: manifest.omissions },
+      history: { status: 'unavailable' as const, eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
+        eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0, omissions: ['history unavailable in this test'],
+        memorySources: { honcho: 'unavailable' as const, mcp: 'unavailable' as const },
+        verificationWrites: { attempted: 0, recorded: 0, failed: 0 } },
+      verification: { ...verification,
+        outcomes: verification.outcomes.map(({ reason: _reason, scopeDecision: _scopeDecision, ...outcome }) => outcome) },
+    };
+    const v2Completion = structuredClone(v1Built);
+    v2Completion.result.groundedReview = receipt as any;
+    v2Completion.result.verdict = 'FIX_FIRST';
+    v2Completion.result.findingCount = 1;
+    v2Completion.result.blockingFindingCount = 1;
+    const trusted = { ...v2Contract, changedFiles: admittedFiles };
+    const accepted = derive(v2Completion, trusted);
+    expect(accepted, JSON.stringify(accepted)).toMatchObject({ valid: true, evidence: { p1Count: 1, verdict: 'FIX_FIRST' } });
+
+    const p2LaneWithP1Proof = structuredClone(v2Completion);
+    p2LaneWithP1Proof.result.personas[0]!.findings[0]!.severity = 'P2';
+    const p2LaneReceipt = withDecision(p2LaneWithP1Proof, {}, admittedFiles);
+    p2LaneWithP1Proof.result.reviewDecision = p2LaneReceipt.result.reviewDecision;
+    p2LaneWithP1Proof.result.groundedReview = structuredClone(v2Completion.result.groundedReview);
+    p2LaneWithP1Proof.result.verdict = undefined;
+    p2LaneWithP1Proof.result.findingCount = undefined;
+    p2LaneWithP1Proof.result.blockingFindingCount = undefined;
+    expectInvalid(derive(p2LaneWithP1Proof, trusted), /severity does not match its normalized current lane finding/u);
+
+    const missingMaterialOutcome = structuredClone(v2Completion);
+    const missingVerification = missingMaterialOutcome.result.groundedReview!.verification;
+    missingVerification.outcomes = [];
+    missingVerification.candidates = 0;
+    missingVerification.confirmed = 0;
+    missingVerification.contradicted = 0;
+    missingVerification.insufficient = 0;
+    missingVerification.unverifiedBlockerCount = 0;
+    (missingVerification as any).candidateManifest = [];
+    expectInvalid(derive(missingMaterialOutcome, trusted), /current blocking finding lacks an exact normalized v2 verification outcome/u);
+
+    const duplicateOutcomes = structuredClone(v2Completion);
+    const duplicateVerification = duplicateOutcomes.result.groundedReview!.verification;
+    const duplicateRows = duplicateVerification.outcomes as any[];
+    duplicateRows.push(structuredClone(duplicateRows[0]!));
+    duplicateVerification.candidates = 2;
+    duplicateVerification.confirmed = 2;
+    expect(() => derive(duplicateOutcomes, trusted)).toThrow(/uniquely bind one normalized finding identity|candidate severity manifest/u);
+
+    const trustedDispute = { ...trusted, groundedVerifierRouting: { primaryModel: 'test-model',
+      disputedBlockerAdjudicatorModel: 'adjudicator-alias' }, authenticatedDisputePaths: ['src/example.ts'],
+      authenticatedDisputes: [{ findingFingerprint: v2Completion.result.groundedReview!.verification.outcomes[0]!.fingerprint,
+        priorFindingEventId: 'event-disputed-p1', priorEvidenceDigest: '8'.repeat(64) }] };
+    const adjudicated = structuredClone(v2Completion);
+    (adjudicated.result.groundedReview!.verification.outcomes[0]! as any).verifierRoute = {
+      version: 'GroundedVerifierRoute.v1', purpose: 'disputed-blocker-recheck',
+      requestedRole: 'disputed-blocker-adjudicator', appliedRole: 'disputed-blocker-adjudicator',
+      configuredAlternateModel: 'adjudicator-alias', selectedModel: 'adjudicator-alias',
+      responseReportedModel: 'reported-model', responseModelUnavailableReason: null,
+      upstreamIdentity: { providerId: null, model: null, unavailableReason: 'No signed provider attestation.' },
+    };
+    expect(derive(adjudicated, trustedDispute)).toMatchObject({ valid: true, evidence: { p1Count: 1 } });
+    const forgedRoute = structuredClone(adjudicated);
+    (forgedRoute.result.groundedReview!.verification.outcomes[0]! as any).verifierRoute.appliedRole = 'primary';
+    (forgedRoute.result.groundedReview!.verification.outcomes[0]! as any).verifierRoute.selectedModel = 'test-model';
+    expectInvalid(derive(forgedRoute, trustedDispute), /did not use the selected adjudicator route/u);
+    expectInvalid(derive(adjudicated, { ...trusted, groundedVerifierRouting: trustedDispute.groundedVerifierRouting,
+      authenticatedDisputePaths: [], authenticatedDisputes: [] }), /lacks an exact authenticated disputed P0\/P1 context/u);
+
+    const snapshotId = '11111111-1111-4111-8111-111111111111';
+    const contextDigest = '2'.repeat(64);
+    const priorRunId = `run_${'3'.repeat(32)}`;
+    const ancestry = { version: 'ReviewHeadAncestry.v1', result: 'ancestor', priorRunId,
+      priorHeadSha: '4'.repeat(40), currentHeadSha: expectedCoordinates.headSha, comparisonDigest: '5'.repeat(64) };
+    const continuityCompletion = structuredClone(v2Completion);
+    const continuityOutcome: any = continuityCompletion.result.groundedReview!.verification.outcomes[0]!;
+    const continuityEvidence = continuityOutcome.evidence as any;
+    const continuityMaterial = {
+      version: 'GroundedFindingContinuity.v1', status: 'continuous', durableFindingId: 'finding-123',
+      historySnapshotId: snapshotId, historyContextDigest: contextDigest, sourceEventIds: ['event-a'],
+      currentFingerprint: continuityOutcome.fingerprint, candidateSide: continuityOutcome.candidateSide,
+      rootCause: continuityEvidence.rootCause, causeAnchor: continuityEvidence.causeAnchor,
+      sourceWindowManifestDigest: continuityEvidence.sourceWindowManifestDigest,
+      currentOutcomeEvidenceDigest: continuityOutcome.evidenceDigest,
+    };
+    const continuity = { ...continuityMaterial,
+      evidenceDigest: groundedFindingContinuityDigest(continuityMaterial as any) };
+    continuityOutcome.verifiedContinuity = continuity;
+    continuityCompletion.result.groundedReview!.history = {
+      status: 'complete', snapshotId, contextDigest, eventCount: 1, findingCount: 1, loadedEventCount: 1,
+      loadedFindingCount: 1, eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+      eventsDigest: '6'.repeat(64), findingsDigest: '7'.repeat(64), omissions: [],
+      memorySources: { honcho: 'unavailable', mcp: 'unavailable' },
+      verificationWrites: { attempted: 0, recorded: 0, failed: 0 }, verifiedAncestry: ancestry,
+    } as any;
+    const trustedHistory = { snapshotId, contextDigest, eventIds: ['event-a'], currentRunId: expectedCoordinates.runId,
+      currentHeadSha: expectedCoordinates.headSha, expectedContinuityByFingerprint: { [continuity.currentFingerprint]: continuity },
+      verifiedAncestry: ancestry } as any;
+    const continuityAccepted = derive(continuityCompletion, { ...trusted, groundedHistory: trustedHistory });
+    expect(continuityAccepted, JSON.stringify(continuityAccepted)).toMatchObject({ valid: true,
+      groundedContinuity: [continuity] });
+
+    const forgedContinuity = structuredClone(continuityCompletion);
+    (forgedContinuity.result.groundedReview!.verification.outcomes[0]! as any).verifiedContinuity.durableFindingId = 'forged-finding-id';
+    const forgedContinuityResult = derive(forgedContinuity, { ...trusted, groundedHistory: trustedHistory });
+    expect(forgedContinuityResult, JSON.stringify(forgedContinuityResult)).toMatchObject({ valid: true,
+      evidence: { verdict: 'FIX_FIRST' } });
+    if (forgedContinuityResult.valid) expect(forgedContinuityResult.groundedContinuity).toBeUndefined();
+
+    const staleOutcomeBinding = structuredClone(continuityCompletion);
+    const staleHint = (staleOutcomeBinding.result.groundedReview!.verification.outcomes[0]! as any).verifiedContinuity;
+    staleHint.currentOutcomeEvidenceDigest = '9'.repeat(64);
+    const { evidenceDigest: _staleDigest, ...staleMaterial } = staleHint;
+    staleHint.evidenceDigest = groundedFindingContinuityDigest(staleMaterial);
+    const staleOutcomeBindingResult = derive(staleOutcomeBinding, { ...trusted, groundedHistory: trustedHistory });
+    expect(staleOutcomeBindingResult, JSON.stringify(staleOutcomeBindingResult)).toMatchObject({ valid: true,
+      evidence: { verdict: 'FIX_FIRST' } });
+    if (staleOutcomeBindingResult.valid) expect(staleOutcomeBindingResult.groundedContinuity).toBeUndefined();
+
+    const historicalContinuityShape = structuredClone(continuityCompletion);
+    const historicalHint = (historicalContinuityShape.result.groundedReview!.verification.outcomes[0]! as any).verifiedContinuity;
+    delete historicalHint.currentOutcomeEvidenceDigest;
+    historicalHint.evidenceDigest = historicalContinuityShape.result.groundedReview!.verification.outcomes[0]!.evidenceDigest;
+    const historicalContinuityResult = derive(historicalContinuityShape, { ...trusted, groundedHistory: trustedHistory });
+    expect(historicalContinuityResult, JSON.stringify(historicalContinuityResult)).toMatchObject({ valid: true,
+      evidence: { verdict: 'FIX_FIRST' } });
+    if (historicalContinuityResult.valid) expect(historicalContinuityResult.groundedContinuity).toBeUndefined();
+
+    const fixedCompletion = structuredClone(continuityCompletion);
+    const fixedOutcome: any = fixedCompletion.result.groundedReview!.verification.outcomes[0]!;
+    const confirmedEvidence = fixedOutcome.evidence;
+    const baseCitation = confirmedEvidence.citations.find((citation: any) => citation.side === 'base');
+    const fixedAnchor = { componentPath: 'src/example.ts', side: 'base', startLine: 1, endLine: 1,
+      citationIds: [baseCitation.id], contentDigest: sha256('oldOperation();\n') };
+    const contradictedEvidence = { semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+      citations: confirmedEvidence.citations, usedCitationIds: confirmedEvidence.usedCitationIds,
+      sourceWindowManifestDigest: confirmedEvidence.sourceWindowManifestDigest,
+      causalDiffPaths: confirmedEvidence.causalDiffPaths, explanation: 'The new implementation removes the prior unsafe call.' };
+    fixedOutcome.status = 'contradicted';
+    fixedOutcome.evidence = contradictedEvidence;
+    fixedOutcome.verifiedContinuity.causeAnchor = fixedAnchor;
+    fixedOutcome.evidenceDigest = sha256(canonicalJson({ fingerprint: fixedOutcome.fingerprint,
+      currentAffectedContextDigest: fixedOutcome.affectedContextDigest, evidence: contradictedEvidence }));
+    fixedOutcome.verifiedContinuity.currentOutcomeEvidenceDigest = fixedOutcome.evidenceDigest;
+    const { evidenceDigest: _oldContinuityDigest, ...fixedContinuityMaterial } = fixedOutcome.verifiedContinuity;
+    fixedOutcome.verifiedContinuity.evidenceDigest = groundedFindingContinuityDigest(fixedContinuityMaterial);
+    fixedCompletion.result.groundedReview!.verification.confirmed = 0;
+    fixedCompletion.result.groundedReview!.verification.contradicted = 1;
+    fixedCompletion.result.groundedReview!.verification.outcomes[0] = fixedOutcome;
+    fixedCompletion.result.personas = [lane('security'), lane('architecture')] as any;
+    const cleanDecision = withDecision(completion({ result: { ...completion().result,
+      personas: [lane('security'), lane('architecture')] } })).result.reviewDecision;
+    fixedCompletion.result.reviewDecision = cleanDecision;
+    fixedCompletion.result.verdict = 'SHIP';
+    fixedCompletion.result.findingCount = 0;
+    fixedCompletion.result.blockingFindingCount = 0;
+    const fixedTransitionMaterial = {
+      version: 'GroundedLifecycleTransition.v1', kind: 'fixed', durableFindingId: 'finding-123',
+      priorFindingEventId: 'event-a', changedContextDigest: fixedOutcome.affectedContextDigest,
+      historySnapshotId: snapshotId, historyContextDigest: contextDigest,
+      currentFingerprint: fixedOutcome.fingerprint, candidateSide: fixedOutcome.candidateSide,
+      outcomeStatus: 'contradicted', baseSha: expectedCoordinates.baseSha, headSha: expectedCoordinates.headSha,
+      sourceWindowManifestDigest: contradictedEvidence.sourceWindowManifestDigest,
+      currentOutcomeEvidenceDigest: fixedOutcome.evidenceDigest,
+    };
+    const fixedTransition = { ...fixedTransitionMaterial, evidenceDigest: sha256(canonicalJson(fixedTransitionMaterial)) };
+    const fixedTrustedHistory = { ...trustedHistory,
+      expectedContinuityByFingerprint: { [fixedOutcome.fingerprint]: fixedOutcome.verifiedContinuity },
+      expectedTransitionsByFingerprint: { [fixedOutcome.fingerprint]: fixedTransition } };
+    const fixedResult = derive(fixedCompletion, { ...trusted, groundedHistory: fixedTrustedHistory });
+    expect(fixedResult, JSON.stringify(fixedResult)).toMatchObject({ valid: true, evidence: { verdict: 'SHIP' },
+      groundedTransitions: [{ transition: 'fixed', durableFindingId: 'finding-123', outcomeStatus: 'contradicted',
+        sourceCitationIds: expect.arrayContaining([baseCitation.id]) }] });
+
+    const staleTransition = structuredClone(fixedTransition);
+    staleTransition.changedContextDigest = '9'.repeat(64);
+    const { evidenceDigest: _oldTransitionDigest, ...staleTransitionMaterial } = staleTransition;
+    staleTransition.evidenceDigest = sha256(canonicalJson(staleTransitionMaterial));
+    const staleTransitionResult = derive(fixedCompletion, { ...trusted,
+      groundedHistory: { ...fixedTrustedHistory,
+        expectedTransitionsByFingerprint: { [fixedOutcome.fingerprint]: staleTransition } } });
+    expect(staleTransitionResult, JSON.stringify(staleTransitionResult)).toMatchObject({ valid: true,
+      evidence: { verdict: 'SHIP' } });
+    if (staleTransitionResult.valid) expect(staleTransitionResult.groundedTransitions).toBeUndefined();
+
+    const forgedLabel = structuredClone(v2Completion);
+    const forgedOutcome = forgedLabel.result.groundedReview!.verification.outcomes[0]!;
+    const forgedEvidence = forgedOutcome.evidence as any;
+    forgedEvidence.scopeDecision.causalScope = 'preexisting';
+    forgedOutcome.evidenceDigest = sha256(canonicalJson({ fingerprint: forgedOutcome.fingerprint,
+      currentAffectedContextDigest: forgedOutcome.affectedContextDigest, evidence: forgedEvidence }));
+    expectInvalid(derive(forgedLabel, trusted), /causal-scope decision failed trusted proof re-reduction/u);
+
+    const staleWindow = structuredClone(v2Completion);
+    const staleOutcome = staleWindow.result.groundedReview!.verification.outcomes[0]!;
+    const staleCitation = (staleOutcome.evidence as any).citations.find((citation: any) => citation.window);
+    staleCitation.window.windowSha256 = 'f'.repeat(64);
+    expect(() => parseWorkerReviewCompletion(staleWindow)).toThrow(/source window ID|citation ID is not bound/u);
+  });
+
   it.each([
     { kind: 'added', path: 'src/new.ts', line: 1,
       diff: 'diff --git a/src/new.ts b/src/new.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/new.ts\n@@ -0,0 +1 @@\n+export const value = unsafe();\n',
@@ -932,6 +1475,20 @@ describe('versioned v2 worker/Gate decision agreement', () => {
       blockingFindings: [{ fingerprint: findingFingerprint(finding), severity: 'P1', path: finding.path,
         line: finding.line, title: finding.title, body: finding.body, blockerEvidence: finding.blockerEvidence }],
     } });
+
+    const p2LaneWithP1Receipt = structuredClone(input);
+    p2LaneWithP1Receipt.result.personas[0]!.findings[0]!.severity = 'P2';
+    const p2LaneRebuilt = withDecision(p2LaneWithP1Receipt);
+    const legacyReceipt = p2LaneRebuilt.result.groundedReview;
+    if (!legacyReceipt || legacyReceipt.version !== 'GroundedReviewReceipt.v1') {
+      throw new Error('expected a historical grounded v1 receipt fixture');
+    }
+    legacyReceipt.verification.outcomes[0]!.severity = 'P1';
+    p2LaneRebuilt.result.verdict = undefined;
+    p2LaneRebuilt.result.findingCount = undefined;
+    p2LaneRebuilt.result.blockingFindingCount = undefined;
+    expectInvalid(derive(p2LaneRebuilt, v2Contract), /severity does not match its normalized current lane finding/u);
+
     const receipt = input.result.reviewDecision!;
     const forged = { ...input, result: { ...input.result,
       reviewDecision: { ...receipt, eligible: true },

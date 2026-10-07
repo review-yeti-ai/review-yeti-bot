@@ -237,6 +237,22 @@ export function isOversizedFileDiff(
 ): boolean {
   return filePatchChars(file) > maxChars;
 }
+
+/** Bounded path-only reverse-reference candidates from one exact repository tree side. */
+export interface PinnedSourceReferenceSearchV1 {
+  version: 'PinnedSourceReferenceSearch.v1';
+  repository: string;
+  sourcePath: string;
+  symbol: string;
+  side: 'head' | 'base';
+  revisionSha: string;
+  /** Bounded source-text matches only; these are never proof of an active resolver target. */
+  candidatePaths: string[];
+  searchComplete: boolean;
+  scannedFileCount: number;
+  scannedBytes: number;
+  reason: 'unsupported_symbol' | 'tree_truncated' | 'scan_file_limit' | 'scan_byte_limit' | 'source_unavailable' | null;
+}
 export interface RepoFileProvider {
   /**
    * Every file path in the repository at the reviewed head that matches `query`: a case-insensitive
@@ -248,7 +264,10 @@ export interface RepoFileProvider {
   readFile(path: string): Promise<string | null>;
   /** Pinned source sides. Null content is absence only when `presence: 'absent'` and exact path/revision-side identity are returned; otherwise it is unavailable. */
   readFileAt?(path: string, side: 'head' | 'base' | 'merge-base'): Promise<{ content: string | null; sha: string;
-    presence?: 'present' | 'absent' | 'unavailable'; source?: { repository: string; path: string; side: 'head' | 'base' | 'merge-base' } }>;
+    presence?: 'present' | 'absent' | 'unavailable'; contentSha256?: string;
+    source?: { repository: string; path: string; side: 'head' | 'base' | 'merge-base' } }>;
+  /** Bounded reverse-reference path hints. Callers must independently fetch, AST-validate, and uniquely resolve each returned source. */
+  findReferences?(symbol: string, sourcePath: string, side: 'head' | 'base'): Promise<PinnedSourceReferenceSearchV1>;
   /** Original admitted patch, independent of shrinking or prompt packing. */
   readDiff?(path: string): { patch: string; originalPatchLength?: number;
     identity?: { repository: string; baseSha: string; headSha: string } } | null;

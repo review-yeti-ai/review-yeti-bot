@@ -17,7 +17,7 @@
  * Telemetry never changes a review outcome: recording is fail-soft, and the wrapped client returns
  * or throws exactly what the inner client did.
  */
-import type { OpenRouterRequest, OpenRouterResponse, ReviewModelClient } from '../gateway/openRouterClient';
+import type { GroundedVerifierRequestContextV1, OpenRouterRequest, OpenRouterResponse, ReviewModelClient } from '../gateway/openRouterClient';
 import { resolveCachedTokens } from '../gateway/openRouterClient';
 import { MAX_TASKS_HARD_CAP } from '../reviewTaskContract';
 import { getMetrics } from './metrics';
@@ -173,8 +173,8 @@ function bucket(map: Map<string, TokenUsageTotals>, key: string): TokenUsageTota
  */
 export function meterModelClient(client: ReviewModelClient, ledger: TokenLedger, options: { label?: string } = {}): ReviewModelClient {
   return {
-    async complete(request: OpenRouterRequest): Promise<OpenRouterResponse> {
-      const response = await client.complete(request);
+    async complete(request: OpenRouterRequest, context?: GroundedVerifierRequestContextV1): Promise<OpenRouterResponse> {
+      const response = await client.complete(request, context);
       try {
         ledger.record(request, response, options.label);
       } catch {

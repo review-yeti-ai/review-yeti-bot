@@ -204,8 +204,20 @@ export interface OpenRouterResponse {
   raw: unknown;
 }
 
+/** In-process evidence for client wrappers; this context is never part of OpenRouterRequest. */
+export interface GroundedVerifierRequestContextV1 {
+  version: 'GroundedVerifierRequestContext.v1';
+  findingFingerprint: string;
+  severity: 'P0' | 'P1' | 'P2' | 'P3' | 'NIT';
+  purpose: 'primary' | 'disputed-blocker-recheck';
+  requestedRole: 'primary' | 'disputed-blocker-adjudicator';
+  appliedRole: 'primary' | 'disputed-blocker-adjudicator';
+  configuredAlternateModel: string | null;
+  selectedModel: string;
+}
+
 export interface ReviewModelClient {
-  complete(request: OpenRouterRequest): Promise<OpenRouterResponse>;
+  complete(request: OpenRouterRequest, context?: GroundedVerifierRequestContextV1): Promise<OpenRouterResponse>;
 }
 
 export interface OpenRouterClientOptions {

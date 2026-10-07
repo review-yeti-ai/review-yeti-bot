@@ -55,6 +55,8 @@ const findingSchema = z.object({
 const completedTaskSchema = z.object({
   id: z.string().regex(TASK_ID_PATTERN),
   findings: z.array(findingSchema).max(400),
+  /** Exact task charter plus path-local planning evidence used to qualify reuse. */
+  charterDigest: digest.optional(),
   sourceDelivery: taskSourceReceiptSchema.optional(),
 }).strict();
 
@@ -74,8 +76,17 @@ const checkpointSchema = z.object({
   /** Append-only worker receipt ids for completed dispute-triggered task re-reviews. */
   satisfiedFindingRecheckIds: z.array(z.string().uuid()).max(MAX_DISPUTE_RECHECKS_PER_BATCH).optional(),
   plan: z.array(taskSchema).min(1).max(MAX_TASKS_HARD_CAP),
+  /** Raw planner tasks let resumed execution reapply the current deterministic charter exactly once. */
+  plannerPlan: z.array(taskSchema).min(1).max(MAX_TASKS_HARD_CAP).optional(),
   completedTasks: z.array(completedTaskSchema).max(MAX_TASKS_HARD_CAP),
 }).strict().superRefine((value, context) => {
+  if (value.plannerPlan && (value.plannerPlan.length !== value.plan.length
+    || value.plannerPlan.some((task, index) => task.id !== value.plan[index]?.id
+      || task.dimension !== value.plan[index]?.dimension
+      || canonicalJson(task.paths) !== canonicalJson(value.plan[index]?.paths)))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['plannerPlan'],
+      message: 'raw planner tasks must keep the exact execution task IDs, dimensions, and paths' });
+  }
   const planIds = new Set(value.plan.map((task) => task.id));
   const completedIds = new Set<string>();
   const recheckIds = value.satisfiedFindingRecheckIds ?? [];
@@ -94,7 +105,7 @@ const checkpointSchema = z.object({
 
 export type ReviewExecutionCheckpoint = Omit<z.output<typeof checkpointSchema>, 'plan' | 'completedTasks'> & {
   plan: ReviewTask[];
-  completedTasks: Array<{ id: string; findings: PanelFinding[]; sourceDelivery?: TaskSourceReceipt }>;
+  completedTasks: Array<{ id: string; findings: PanelFinding[]; charterDigest?: string; sourceDelivery?: TaskSourceReceipt }>;
 };
 
 export function parseReviewExecutionCheckpoint(input: unknown): ReviewExecutionCheckpoint {

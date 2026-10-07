@@ -67,7 +67,7 @@ import {
   resolveShrunkReviewApplicability,
   type DiffShrinkDisclosure,
 } from './diffShrink';
-import { canonicalJson } from './reviewCore';
+import { canonicalJson, sha256 } from './reviewCore';
 import { MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import {
   parseWorkerReviewCompletion,
@@ -743,9 +743,62 @@ export interface IncrementalBaseSource {
   read(signal?: AbortSignal): Promise<{ prior: PriorReviewRecord | null; maxAgeMs: number }>;
 }
 
+export interface ReviewHeadAncestryReceipt {
+  version: 'ReviewHeadAncestry.v1';
+  result: 'ancestor' | 'not-ancestor' | 'unavailable';
+  priorRunId: string;
+  priorHeadSha: string;
+  currentHeadSha: string;
+  comparisonDigest: string;
+}
+
+function ancestryReceipt(priorRunId: string, priorHeadSha: string, currentHeadSha: string,
+  comparison: CommitComparison | null, unavailableReason?: string): ReviewHeadAncestryReceipt {
+  const result: ReviewHeadAncestryReceipt['result'] = comparison && comparison.files.length < MAX_COMPARISON_LISTED_FILES
+    ? comparison.status === 'ahead' || comparison.status === 'identical' ? 'ancestor' : 'not-ancestor'
+    : 'unavailable';
+  return { version: 'ReviewHeadAncestry.v1', result, priorRunId, priorHeadSha, currentHeadSha,
+    comparisonDigest: sha256(canonicalJson({ priorRunId, priorHeadSha, currentHeadSha,
+      comparison: comparison ?? null, ...(unavailableReason ? { unavailableReason } : {}) })) };
+}
+
+/** Verify ancestry for history identity even when incremental review is disabled. */
+export async function verifyReviewHeadAncestry(input: {
+  priorRunId: string;
+  priorHeadSha: string;
+  currentHeadSha: string;
+  reader?: CommitComparisonReader;
+  timeoutMs?: number;
+}): Promise<ReviewHeadAncestryReceipt> {
+  if (!/^run_[a-f0-9]{32}$/u.test(input.priorRunId) || !sha.safeParse(input.priorHeadSha).success
+    || !sha.safeParse(input.currentHeadSha).success) {
+    return ancestryReceipt(input.priorRunId, input.priorHeadSha, input.currentHeadSha, null, 'invalid-ancestry-input');
+  }
+  if (!input.reader) return ancestryReceipt(input.priorRunId, input.priorHeadSha, input.currentHeadSha, null, 'comparison-reader-unavailable');
+  const abort = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const comparison = await Promise.race([input.reader.compare(input.priorHeadSha, input.currentHeadSha, abort.signal),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => { abort.abort(); reject(new Error('ancestry comparison timed out')); },
+          input.timeoutMs ?? PLAN_TIMEOUT_MS);
+      })]);
+    return ancestryReceipt(input.priorRunId, input.priorHeadSha, input.currentHeadSha, comparison,
+      comparison.files.length >= MAX_COMPARISON_LISTED_FILES ? 'comparison-file-list-incomplete' : undefined);
+  } catch {
+    return ancestryReceipt(input.priorRunId, input.priorHeadSha, input.currentHeadSha, null, 'comparison-unavailable');
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    abort.abort();
+  }
+}
+
 export interface IncrementalPlan {
   scope: IncrementalReviewScope | null;
   decision: IncrementalDecision;
+  /** Exact service-side ancestry result even when no file can safely be carried forward. */
+  ancestryVerified: boolean;
+  historyAncestry?: ReviewHeadAncestryReceipt;
 }
 
 const PLAN_TIMEOUT_MS = 15_000;
@@ -764,7 +817,7 @@ export async function planIncrementalReview(options: {
   timeoutMs?: number;
 }): Promise<IncrementalPlan | null> {
   if (!incrementalReviewEnabledFor(options.env, options.repository)) return null;
-  if (!options.base || !options.reader) return { scope: null, decision: full('error') };
+  if (!options.base || !options.reader) return { scope: null, decision: full('error'), ancestryVerified: false };
   const delta: IncrementalDeltaOptions | undefined = incrementalDeltaEnabledFor(options.env, options.repository)
     ? { maxChain: incrementalMaxChainFrom(options.env) } : undefined;
   const abort = new AbortController();
@@ -772,13 +825,15 @@ export async function planIncrementalReview(options: {
   const plan = async (): Promise<IncrementalPlan> => {
     const { prior, maxAgeMs } = await options.base!.read(abort.signal);
     const early = incrementalPrecheck({ prior, maxAgeMs, current: options.current, ...(delta ? { delta } : {}) });
-    if (early) return { scope: null, decision: early };
+    if (early) return { scope: null, decision: early, ancestryVerified: false };
     const evidence = await gatherIncrementalEvidence(options.reader!, prior!, options.current, abort.signal,
       { detailed: Boolean(delta) });
+    const historyAncestry = ancestryReceipt(prior!.runId, prior!.headSha, options.current.headSha, evidence.heads);
+    const ancestryVerified = historyAncestry.result === 'ancestor';
     const decision = decideIncrementalReview({
       prior, maxAgeMs, current: options.current, currentPaths: options.currentPaths, evidence, ...(delta ? { delta } : {}),
     });
-    if (decision.mode !== 'incremental') return { scope: null, decision };
+    if (decision.mode !== 'incremental') return { scope: null, decision, ancestryVerified, historyAncestry };
     const scope: IncrementalReviewScope = {
       previous: decision.previous, carriedForwardPaths: decision.carriedForwardPaths, openFindingPaths: decision.openFindingPaths,
     };
@@ -790,7 +845,7 @@ export async function planIncrementalReview(options: {
           ? [{ path: file, patch: entry.patch, hunks: deltaHunkRanges(entry.patch).length }] : [];
       });
       if (decision.carriedForwardPaths.length === 0 && deltaFiles.length === 0) {
-        return { scope: null, decision: full('nothing-carried-forward') };
+        return { scope: null, decision: full('nothing-carried-forward'), ancestryVerified, historyAncestry };
       }
       // Every prior finding whose file is re-read whole: untouched open-finding files, and files this
       // push touched. Delta files never carry one (a file with an open finding is never delta-scoped).
@@ -802,14 +857,14 @@ export async function planIncrementalReview(options: {
       scope.chainDepth = decision.chainDepth ?? (prior!.chainDepth ?? 0) + 1;
       if (prior!.taskCount !== undefined) scope.previousTaskCount = prior!.taskCount;
     }
-    return { scope, decision };
+    return { scope, decision, ancestryVerified, historyAncestry };
   };
   try {
     return await Promise.race([plan(), new Promise<never>((_, reject) => {
       timer = setTimeout(() => { abort.abort(); reject(new Error('incremental planning timed out')); }, options.timeoutMs ?? PLAN_TIMEOUT_MS);
     })]);
   } catch {
-    return { scope: null, decision: full('error') };
+    return { scope: null, decision: full('error'), ancestryVerified: false };
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     abort.abort();

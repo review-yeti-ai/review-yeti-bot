@@ -1,0 +1,101 @@
+{
+  "schemaVersion": "GroundedLifecycleFixtureBundle.v1",
+  "cases": [
+    {
+      "caseId": "lc_0d8f4a7c2b9e41f8",
+      "inputPath": "eval-baselines/grounded-lifecycle-corpus-v1/inputs/lc_0d8f4a7c2b9e41f8.json",
+      "inputSha256": "8bd26520e0b3149e0f3b8fdc637f0e5390b737354ee59f53c63e4b32e27b11ef",
+      "repository": {
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project"
+      },
+      "baseSha": "b5bf7b68ece2f674d88356749aa4575edc5e510d",
+      "headSha": "c9b23312180a753ed222814a7ec4380ae0e850a5"
+    },
+    {
+      "caseId": "lc_13b6e2d6a9084f51",
+      "inputPath": "eval-baselines/grounded-lifecycle-corpus-v1/inputs/lc_13b6e2d6a9084f51.json",
+      "inputSha256": "31aa88dba3065ff8dc345e20da1a5376c05f26ee235c666ae046c63a4e123a67",
+      "repository": {
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project"
+      },
+      "baseSha": "2e6836c32f24a7992ebe257cb45c016baa85a25e",
+      "headSha": "e75cb98e36ecc53bccf72faf3e829c8a437e15e2"
+    },
+    {
+      "caseId": "lc_2a904d7c1e5b43f6",
+      "inputPath": "eval-baselines/grounded-lifecycle-corpus-v1/inputs/lc_2a904d7c1e5b43f6.json",
+      "inputSha256": "3b447c585a03ed3bcebaa1ce7df6e4fb4faed39f36bc7268a73f3347be145951",
+      "repository": {
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project"
+      },
+      "baseSha": "db95eda4303656720a9b3b1779a9bc88f634401a",
+      "headSha": "2e0b7855fae1da30490e3cb3924503ad2f5b0382"
+    },
+    {
+      "caseId": "lc_38e1a5d904bf62c7",
+      "inputPath": "eval-baselines/grounded-lifecycle-corpus-v1/inputs/lc_38e1a5d904bf62c7.json",
+      "inputSha256": "5b8ab57432b2d01ac0af0b2c08f92a72b43948db1b407f2b56ba473da2c1f62c",
+      "repository": {
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project"
+      },
+      "baseSha": "6e5d67004a209e98c660f083b78509d374e44384",
+      "headSha": "f1b3054ed9f8dfb90d66747b2f9ddb67ccd63161"
+    },
+    {
+      "caseId": "lc_41c8d2f709ae35b6",
+      "inputPath": "eval-baselines/grounded-lifecycle-corpus-v1/inputs/lc_41c8d2f709ae35b6.json",
+      "inputSha256": "1d59fe948b08209be1cecfd1b108e37fdf66d2d8e681adb9720d9af9b61549f7",
+      "repository": {
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project"
+      },
+      "baseSha": "8667659d4ba0e2181d1b2b473923785eff33b604",
+      "headSha": "ea555cbb2d769228ff8c6a8c8aa491b8f6de55fa"
+    },
+    {
+      "caseId": "lc_5b2f07c913de4a68",
+      "inputPath": "eval-baselines/grounded-lifecycle-corpus-v1/inputs/lc_5b2f07c913de4a68.json",
+      "inputSha256": "523c70aef278cc5f18b304083842b6ac8c20c77fce45b33ff2db51a16f3ee142",
+      "repository": {
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project"
+      },
+      "baseSha": "24505fd6419f54b6a8d9d63ec8db99e10d414a99",
+      "headSha": "223ac9e2a3a810125d381aedd60e7e34c894b86a"
+    },
+    {
+      "caseId": "lc_6d10a4e82f739b05",
+      "inputPath": "eval-baselines/grounded-lifecycle-corpus-v1/inputs/lc_6d10a4e82f739b05.json",
+      "inputSha256": "9a9466ed21208f3787bb4dcb56fd3de7ceb7422356c14aaf370cae27f253e7c2",
+      "repository": {
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project"
+      },
+      "baseSha": "befbc648aa877789bb45f41bb3a157f086198afa",
+      "headSha": "2793109115e7f6044ba13ae59401fa93e0f60eea"
+    },
+    {
+      "caseId": "lc_7a3c5e91d4b8062f",
+      "inputPath": "eval-baselines/grounded-lifecycle-corpus-v1/inputs/lc_7a3c5e91d4b8062f.json",
+      "inputSha256": "c1039f31d8d063de5d72c56229c62863653fa0f03f1a8a0781aeea3e0a2d8d7f",
+      "repository": {
+        "repositoryId": 73001,
+        "owner": "synthetic",
+        "repo": "fixture-project"
+      },
+      "baseSha": "72cb38c139136fdadb2124baa413894d8f88bd3b",
+      "headSha": "d7ad692f8aefe0419cae05cde8b8afa3ad4dd7d1"
+    }
+  ]
+}

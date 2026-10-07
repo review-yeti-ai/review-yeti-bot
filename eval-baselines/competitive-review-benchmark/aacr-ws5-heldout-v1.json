@@ -1,0 +1,114 @@
+{
+  "schemaVersion": "review-yeti-ws5-heldout-manifest-v1",
+  "benchmark": "AACR-Bench",
+  "source": "Alibaba-Aone/aacr-bench",
+  "sourceRevision": "47be1d6df1e7faf222cf531587772d92f79fe6b2",
+  "datasetSha256": "0804505f0a474765ce2840c832cfeaa6c4f0250dd6ccb169fe73c6758b245a86",
+  "split": {
+    "unit": "repository",
+    "algorithm": "sha256-ranked-30-percent-v1",
+    "salt": "review-yeti-ws5-v1|",
+    "exclusionRule": "exclude repositories used by prior calibration reviews before selection"
+  },
+  "sampleUnit": "pull_request",
+  "comparisonSemantics": {
+    "datasetBaseField": "pr_source_commit",
+    "datasetHeadField": "pr_target_commit",
+    "runtimeDiffBaseRule": "GitHub Compare merge_base_commit for the exact dataset base/head pins",
+    "identityRule": "preserve datasetBaseSha separately; never replace or rewrite the dataset head pin"
+  },
+  "heldoutCaseCount": 7,
+  "cases": [
+    {
+      "id": "aacr-cpp-85873",
+      "repository": "ClickHouse/ClickHouse",
+      "prNumber": 85873,
+      "language": "C++",
+      "datasetBaseSha": "80e66f08662739d8eaaccb40ef75c573572bb8ba",
+      "diffBaseSha": "9e13a594de549fd477e1b90be9fbd57068889548",
+      "mergeBaseSha": "9e13a594de549fd477e1b90be9fbd57068889548",
+      "baseSha": "9e13a594de549fd477e1b90be9fbd57068889548",
+      "headSha": "73ecc7d809300ed1c29e1078712c531ebddcb181",
+      "changedLineCount": 575,
+      "referenceContextLevels": ["Diff Level", "File Level"]
+    },
+    {
+      "id": "aacr-go-1355",
+      "repository": "gofr-dev/gofr",
+      "prNumber": 1355,
+      "language": "Go",
+      "datasetBaseSha": "44e3eeb2786ad4d333dc1f528fb104236693d060",
+      "diffBaseSha": "30116f05e9b88763fabc862af0a0f3a8a83a0c5b",
+      "mergeBaseSha": "30116f05e9b88763fabc862af0a0f3a8a83a0c5b",
+      "baseSha": "30116f05e9b88763fabc862af0a0f3a8a83a0c5b",
+      "headSha": "dc0b3e630423b72cb9b2f273fdc18a5c11d12984",
+      "changedLineCount": 309,
+      "referenceContextLevels": ["Diff Level", "File Level", "Repo Level"]
+    },
+    {
+      "id": "aacr-javascript-31402",
+      "repository": "mrdoob/three.js",
+      "prNumber": 31402,
+      "language": "JavaScript",
+      "datasetBaseSha": "de413e2112ff1ae80599f145b101354a1476976c",
+      "diffBaseSha": "de413e2112ff1ae80599f145b101354a1476976c",
+      "mergeBaseSha": "de413e2112ff1ae80599f145b101354a1476976c",
+      "baseSha": "de413e2112ff1ae80599f145b101354a1476976c",
+      "headSha": "b55b9e97f6d0f5829e4d8fc364949e72b0d9e98c",
+      "changedLineCount": 210,
+      "referenceContextLevels": ["Diff Level", "File Level", "Repo Level"]
+    },
+    {
+      "id": "aacr-php-15217",
+      "repository": "filamentphp/filament",
+      "prNumber": 15217,
+      "language": "PHP",
+      "datasetBaseSha": "e4a7ecf0e65574522eb9fbe70b7339f41de0bbe2",
+      "diffBaseSha": "e4a7ecf0e65574522eb9fbe70b7339f41de0bbe2",
+      "mergeBaseSha": "e4a7ecf0e65574522eb9fbe70b7339f41de0bbe2",
+      "baseSha": "e4a7ecf0e65574522eb9fbe70b7339f41de0bbe2",
+      "headSha": "871ec75815e1f92da141e9aef80f287f7779dfe7",
+      "changedLineCount": 11,
+      "referenceContextLevels": ["Diff Level", "File Level"]
+    },
+    {
+      "id": "aacr-php-54226",
+      "repository": "laravel/framework",
+      "prNumber": 54226,
+      "language": "PHP",
+      "datasetBaseSha": "2e5054a19ba55b335bf8df43a8ae7e032244f671",
+      "diffBaseSha": "1472088e7026f8d87d3c38dfc1bc7e023329a039",
+      "mergeBaseSha": "1472088e7026f8d87d3c38dfc1bc7e023329a039",
+      "baseSha": "1472088e7026f8d87d3c38dfc1bc7e023329a039",
+      "headSha": "180c25ff94ae2dff26d2ca5f8bf779af1e8fc8c2",
+      "changedLineCount": 556,
+      "referenceContextLevels": ["File Level", "Repo Level"]
+    },
+    {
+      "id": "aacr-python-6044",
+      "repository": "langflow-ai/langflow",
+      "prNumber": 6044,
+      "language": "Python",
+      "datasetBaseSha": "5bcf4d001f1174ed9e63b7115f10e5dbe1bcca9f",
+      "diffBaseSha": "e15fddd3aaac4b1773ea09f60d63b81591894f7a",
+      "mergeBaseSha": "e15fddd3aaac4b1773ea09f60d63b81591894f7a",
+      "baseSha": "e15fddd3aaac4b1773ea09f60d63b81591894f7a",
+      "headSha": "bcfe6f9ded091cd360b3212b6e9f5a58cbcdac5e",
+      "changedLineCount": 882,
+      "referenceContextLevels": ["Diff Level", "File Level", "Repo Level"]
+    },
+    {
+      "id": "aacr-typescript-13323",
+      "repository": "n8n-io/n8n",
+      "prNumber": 13323,
+      "language": "TypeScript",
+      "datasetBaseSha": "aae55fe7ac77594444c3405161555a517902c68b",
+      "diffBaseSha": "fa488f15619f798a0360c96492f2928ac661d9ee",
+      "mergeBaseSha": "fa488f15619f798a0360c96492f2928ac661d9ee",
+      "baseSha": "fa488f15619f798a0360c96492f2928ac661d9ee",
+      "headSha": "93216919462181f52d6994f8f20a9a478716545f",
+      "changedLineCount": 81,
+      "referenceContextLevels": ["Diff Level", "File Level", "Repo Level"]
+    }
+  ]
+}

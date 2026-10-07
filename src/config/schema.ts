@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { GROUNDED_VERIFICATION_V2_VERSION } from '../review/groundedEvidenceV2';
+import { GROUNDED_CANDIDATE_MANIFEST_CAPABILITY } from '../review/groundedCandidateManifestCapability';
 import {
   DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
   HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
@@ -612,26 +614,57 @@ export const composedEngineConfigSchema = z.object({
 }).strict();
 export type ComposedEngineConfig = z.infer<typeof composedEngineConfigSchema>;
 
-const effectiveReviewConfigReceiptSchema = z.object({
+/** Optional independent model route for authenticated disputed P0/P1 rechecks.
+ * Configuration selects only a Bifrost model alias; it does not prove that the
+ * route is qualified or that the gateway served the selected upstream model. */
+export const disputedBlockerAdjudicatorSchema = z.object({
+  version: z.literal('DisputedBlockerAdjudicator.v1'),
+  model: z.string().min(1).max(256)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/u)
+    .refine((value) => !value.includes('://'), 'model must be a model alias, not a transport URL'),
+  reasoning_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
+}).strict();
+export type DisputedBlockerAdjudicator = z.infer<typeof disputedBlockerAdjudicatorSchema>;
+
+export const effectiveReviewConfigReceiptSchema = z.object({
   schema: z.literal('review-yeti-effective-config.v1'),
   requested: z.object({
     profile: z.enum(['chill', 'balanced', 'assertive']),
     review_engine: z.string().min(1),
     severity_policy: z.string().optional(),
+    disputed_blocker_adjudicator: disputedBlockerAdjudicatorSchema.optional(),
     personas: z.array(z.string().min(1)),
     bifrost_reasoning_effort: z.string().optional(),
     mcp_servers: z.array(z.string().min(1)),
+    confidence_threshold: z.number().min(0).max(100).nullable(),
     max_investigation_turns: z.number().int().positive(),
     max_reviewed_lockfile_patch_chars: z.number().int().positive().nullable(),
   }).strict(),
   effective: z.object({
     review_engine: reviewEngineSchema,
     severity_policy: z.literal('review-yeti-severity.v2').optional(),
+    disputed_blocker_adjudicator: z.object({
+      state: z.enum(['available', 'inactive']),
+      model_alias: z.string().min(1).optional(),
+      reasoning_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+      applied: z.literal(false),
+      reason: z.string().min(1),
+    }).strict().optional(),
+    confidence_threshold: z.object({
+      value: z.number().min(0).max(100),
+      applied: z.literal(false),
+      reason: z.string().min(1),
+    }).strict(),
     profile: z.object({
       value: z.enum(['chill', 'balanced', 'assertive']),
       applied: z.boolean(),
       reason: z.string().min(1),
     }).strict(),
+    /** Optional for stored pre-capability configs; the current V2 worker emits this runtime-owned ABI. */
+    grounded_verification: z.object({
+      version: z.literal(GROUNDED_VERIFICATION_V2_VERSION),
+      candidate_manifest: z.literal(GROUNDED_CANDIDATE_MANIFEST_CAPABILITY),
+    }).strict().optional(),
     provider: z.object({
       id: z.literal('bifrost'),
       model: z.string().min(1),
@@ -668,6 +701,7 @@ const effectiveReviewConfigReceiptSchema = z.object({
     }).strict(),
   }).strict(),
 }).strict();
+export type EffectiveReviewConfigReceipt = z.infer<typeof effectiveReviewConfigReceiptSchema>;
 
 const ctReviewConfigV3ObjectSchema = z.object({
   version: z.union([z.literal(3), z.literal('3')]).transform(() => 3 as const),
@@ -709,6 +743,7 @@ const ctReviewConfigV3ObjectSchema = z.object({
   pre_checks: preChecksSchema.optional(),
   review_engine: reviewEngineSchema.optional(),
   severity_policy: z.literal('review-yeti-severity.v2').optional(),
+  disputed_blocker_adjudicator: disputedBlockerAdjudicatorSchema.optional(),
   composed: composedEngineConfigSchema.optional(),
   review_configuration_receipt: effectiveReviewConfigReceiptSchema.optional(),
 

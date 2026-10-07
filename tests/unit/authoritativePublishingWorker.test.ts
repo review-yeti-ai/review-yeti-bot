@@ -14,12 +14,16 @@ import {
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, type WorkerReviewCompletion, type WorkerReviewResult } from '../../src/review/workerReviewCompletion';
 import { parseChangedFiles } from '../../src/review/changedFiles';
+import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, GROUNDED_REVIEW_RECEIPT_V2_VERSION,
+  GROUNDED_VERIFICATION_V2_VERSION } from '../../src/review/groundedEvidenceV2';
 import { canonicalJson, computeArbitration, sha256 } from '../../src/review/reviewCore';
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
 import { isInfrastructureIncompleteResult } from '../../src/review/publicationFailurePolicy';
 import { isRecoverableFailureTitle } from '../../src/review/reviewCheckIdentity';
 import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
-import { unreportedLaneFailure } from '../../src/panel/composedEngine';
+import { resolveComposedProviderId, unreportedLaneFailure } from '../../src/panel/composedEngine';
+import { ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
+import { TaskSourceDelivery } from '../../src/review/taskSourceDelivery';
 import type { OpenRouterRequest } from '../../src/gateway/openRouterClient';
 import { JevClient, type JevOutcome } from '../../src/gateway/jevClient';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
@@ -40,7 +44,7 @@ import {
 import { disputedFindingRecheckDigest } from '../../src/review/disputedFindingRecheck';
 import { createFindingThreadsHandler } from '../../src/api/findingThreadsRoute';
 import { HttpFindingThreadsPublisher } from '../../src/review/findingThreadsHttp';
-import { completeEmptyLifecycleHistory, groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
+import { completeCurrentVersionLifecycleHistory, completeEmptyLifecycleHistory, groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -49,8 +53,57 @@ const COMPLETED = new Date(START + 1_000).toISOString();
 const ENDPOINT = 'https://dispatch.example.invalid/api/dispatch/completion';
 const PRIVATE_DETAIL = 'private_provider_transcript';
 const TOKEN = 'ghs_fake_authoritative_worker';
-const DIFF = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
+const DIFF = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-const value = 'old';\n+const value = 'new';\n`;
 const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+
+function trustedGroundedVerifierContract(f: ReturnType<typeof fixture>) {
+  const config = f.prepared.config;
+  const primaryModel = config.review_engine === 'composed'
+    ? config.reviewers.providers.find((provider) => provider.id === resolveComposedProviderId(config)
+      && provider.enabled)?.model
+    : f.envelope.transport.model;
+  if (!primaryModel) throw new Error('Prepared review configuration has no primary grounded-verifier model');
+  if (config.review_engine === 'composed' && !config.review_configuration_receipt) {
+    throw new Error('Prepared composed configuration has no trusted runtime configuration receipt');
+  }
+  return {
+    groundedVerifierRouting: { primaryModel },
+    ...(config.review_engine === 'composed'
+      ? { composedEffectiveConfiguration: config.review_configuration_receipt }
+      : {}),
+  };
+}
+
+function completedTaskSourceDelivery(taskId: string, paths: string[]) {
+  const delivery = new TaskSourceDelivery({ taskId, paths, files: parseChangedFiles(DIFF).files,
+    prefix: DIFF, inlinedPaths: paths, headSha: HEAD, baseSha: BASE });
+  delivery.beginAttempt();
+  const receipt = delivery.acknowledgeRequest([{ role: 'user', content: DIFF }]);
+  if (!receipt.complete) throw new Error('Local composed task did not receive a complete changed-source receipt');
+  return receipt;
+}
+
+function composedEngineObservation(f: ReturnType<typeof fixture>, taskPlan: Array<{ id: string; paths: string[] }>,
+  completedReceipts: readonly ReturnType<typeof completedTaskSourceDelivery>[]) {
+  const configuration = f.prepared.config.review_configuration_receipt;
+  if (!configuration) throw new Error('Prepared composed configuration has no trusted runtime configuration receipt');
+  const completedById = new Map(completedReceipts.map((receipt) => [receipt.taskId, receipt]));
+  const observer = new ComposedRuntimeResourceObserver({
+    configDigest: f.prepared.policy.effectiveConfigDigest,
+    configuration,
+    now: () => START,
+  });
+  observer.configureBudget({ configuredTotalTurns: 1, investigationTurns: 1, verificationReserveTurns: 0 });
+  observer.setPlan(taskPlan as never);
+  for (const task of taskPlan) {
+    observer.markTaskStarted(task.id);
+    const receipt = completedById.get(task.id);
+    observer.markTaskOutcome(task.id, receipt ? 'completed' : 'failed', receipt);
+  }
+  const observation = observer.snapshot('terminal');
+  if (!observation) throw new Error('Could not build local composed resource observation');
+  return observation;
+}
 
 function fixture(options: { reviewEngine?: 'panel' | 'composed' | 'shadow'; severityV2?: boolean } = {}) {
   const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
@@ -110,6 +163,24 @@ function fixture(options: { reviewEngine?: 'panel' | 'composed' | 'shadow'; seve
     client, reportReviewResult, legacyFailure, errorLog, infoLog, fetch };
 }
 
+function enableCurrentV2History(f: ReturnType<typeof fixture>): void {
+  const source = completeCurrentVersionLifecycleHistory();
+  const read = source.read;
+  f.deps.prLifecycleHistory = { ...source, read: async () => {
+    const history = await read();
+    return { ...history, events: history.events.map((event) => ({ ...event,
+      policyDigest: f.prepared.policy.effectivePolicyDigest,
+      configDigest: f.prepared.policy.effectiveConfigDigest,
+    })) };
+  } } as never;
+  f.deps.findingThreadReader = async (_pr, expectedHeadSha) => ({ source: 'service', headSha: expectedHeadSha,
+    complete: true, omittedCount: 0, threads: [] });
+  f.deps.incrementalCompareReader = { compare: vi.fn(async (priorHeadSha: string, currentHeadSha: string) => ({
+    status: priorHeadSha === currentHeadSha ? 'identical' as const : 'ahead' as const,
+    mergeBaseSha: priorHeadSha, files: [],
+  })) };
+}
+
 function expectedEvent(f: ReturnType<typeof fixture>, result: WorkerReviewResult) {
   return { version: 'WorkerReviewCompletion.v1', runId: f.env.REVIEW_RUN_ID, repositoryId: 123,
     owner: 'example', repo: 'project', prNumber: 42, headSha: HEAD, baseSha: BASE,
@@ -134,10 +205,13 @@ function expectCompletionPayload(f: ReturnType<typeof fixture>, payload: unknown
   const { groundedReview, ...legacyResult } = actual.result;
   expect({ ...actual, result: legacyResult }).toEqual(expectedEvent(f, expectedResult));
   expect(groundedReview).toMatchObject({
-    version: 'GroundedReviewReceipt.v1',
+    version: GROUNDED_REVIEW_RECEIPT_V2_VERSION,
+    semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
     history: { status: f.deps.prLifecycleHistory ? 'complete' : 'unavailable',
       memorySources: { honcho: 'unavailable', mcp: 'unavailable' } },
-    verification: { version: 'GroundedIndependentVerification.v1', outcomes: expect.any(Array), budget: expect.any(Object) },
+    verification: { version: GROUNDED_VERIFICATION_V2_VERSION,
+      semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+      outcomes: expect.any(Array), budget: expect.any(Object) },
   });
   return actual;
 }
@@ -205,7 +279,8 @@ function threadPublicationFixture(options: { blocking?: boolean; publishFails?: 
   });
   const threads = new HttpFindingThreadsPublisher({ token: TOKEN, completionEndpoint: ENDPOINT,
     runId: f.env.REVIEW_RUN_ID!, executionAttempt: 2, fetchImplementation: threadFetch });
-  f.deps.findingThreadReader = async () => threads.read(HEAD);
+  f.deps.findingThreadReader = async (_pr, expectedHeadSha) => ({ source: 'service' as const,
+    ...(await threads.readSnapshot!(expectedHeadSha)) });
   f.deps.findingThreads = threads;
   const decisions: ReturnType<typeof evaluateReviewGate>[] = [];
   f.reportReviewResult.mockImplementation(async (event) => {
@@ -213,6 +288,7 @@ function threadPublicationFixture(options: { blocking?: boolean; publishFails?: 
       parseWorkerReviewCompletion(expectedEvent(f, cleanResult()));
     const derived = deriveCanonicalWorkerReviewEvidence(event, {
       expectedCoordinates, expectedPersonaIds: f.prepared.expectedPersonaIds,
+      ...trustedGroundedVerifierContract(f),
       changedFiles: parseChangedFiles(DIFF).files, coverageComplete: true, quorumSatisfied: true,
     });
     expect(derived.valid).toBe(true);
@@ -235,7 +311,7 @@ describe('finding-thread publication before authoritative retirement', () => {
     const f = fixture({ severityV2: true });
     const order: string[] = [];
     let threadRequest: unknown;
-    f.deps.findingThreadReader = async () => [];
+    f.deps.findingThreadReader = async (_pr, headSha) => ({ source: 'service', headSha, complete: true, omittedCount: 0, threads: [] });
     f.deps.findingThreads = { publish: vi.fn(async (input) => {
       order.push('threads'); threadRequest = input;
       return { created: 0, skipped: 0, resolved: 0 };
@@ -257,7 +333,7 @@ describe('finding-thread publication before authoritative retirement', () => {
   it('fails the raw check explicitly when post-completion v2 thread migration fails', async () => {
     const f = fixture({ severityV2: true });
     const order: string[] = [];
-    f.deps.findingThreadReader = async () => [];
+    f.deps.findingThreadReader = async (_pr, headSha) => ({ source: 'service', headSha, complete: true, omittedCount: 0, threads: [] });
     f.deps.findingThreads = { publish: vi.fn(async () => {
       order.push('threads'); throw new Error('service unavailable');
     }) };
@@ -768,7 +844,7 @@ describe('REL-1198 retained P2 worker boundary', () => {
 
   it('forces full uncached task evidence for a durable disputed-finding recheck while reusing unrelated checkpoint tasks', async () => {
     const f = fixture({ reviewEngine: 'composed' });
-    f.deps.prLifecycleHistory = completeEmptyLifecycleHistory() as never;
+    enableCurrentV2History(f);
     const targetTaskId = f.prepared.expectedPersonaIds[0]!;
     const plan = f.prepared.expectedPersonaIds.map((id, index) => ({
       id,
@@ -859,13 +935,13 @@ describe('REL-1198 retained P2 worker boundary', () => {
 
   it('continues evaluating configured incremental and cache reuse when no dispute is pending', async () => {
     const f = fixture({ reviewEngine: 'composed' });
-    f.deps.prLifecycleHistory = completeEmptyLifecycleHistory() as never;
+    enableCurrentV2History(f);
     f.env.REVIEW_YETI_INCREMENTAL = 'example/project';
     f.env.REVIEW_YETI_VERDICT_CACHE = 'example/project';
     const incrementalRead = vi.fn(async () => ({ prior: null, maxAgeMs: 60_000 }));
     const cacheRead = vi.fn(async () => ({ source: null, maxAgeMs: 60_000 }));
     const comparisonContent = vi.fn(async () => ({ files: [{ path: 'src/a.ts', status: 'modified',
-      blobSha: 'a'.repeat(40), patch: '@@ -1 +1 @@\n-old\n+new\n' }] }));
+      blobSha: 'a'.repeat(40), patch: `@@ -1 +1 @@\n-const value = 'old';\n+const value = 'new';\n` }] }));
     const composedReviewRunner = vi.fn(async (_options: any) => f.panel);
     f.deps.incrementalBase = { read: incrementalRead };
     f.deps.verdictCacheBase = { read: cacheRead };
@@ -1073,7 +1149,7 @@ function expectEvidenceOnlyCallback(payload: WorkerReviewCompletion) {
 describe('authoritative prepared publishing worker', () => {
   it('turns centrally verified documentation-only completion into audited gate eligibility', async () => {
     const f = fixture();
-    const docsDiff = 'diff --git a/docs/plan.md b/docs/plan.md\n--- a/docs/plan.md\n+++ b/docs/plan.md\n@@ -1 +1 @@\n-old\n+new\n';
+    const docsDiff = `diff --git a/docs/plan.md b/docs/plan.md\n--- a/docs/plan.md\n+++ b/docs/plan.md\n@@ -1 +1 @@\n-const value = 'old';\n+const value = 'new';\n`;
     f.source.diff = docsDiff;
     f.source.diffDigest = createHash('sha256').update(docsDiff).digest('hex');
     f.panelRunner.mockResolvedValue(buildDocumentationOnlyPanelResult(
@@ -1087,6 +1163,7 @@ describe('authoritative prepared publishing worker', () => {
     const derived = deriveCanonicalWorkerReviewEvidence(completion, {
       expectedCoordinates,
       expectedPersonaIds: f.prepared.expectedPersonaIds,
+      ...trustedGroundedVerifierContract(f),
       changedFiles: parseChangedFiles(docsDiff).files,
       coverageComplete: true,
       quorumSatisfied: true,
@@ -1100,7 +1177,7 @@ describe('authoritative prepared publishing worker', () => {
         expectedLanes: 0, completedLanes: 0,
         exemption: {
           kind: 'no-reviewable-content',
-          auditDigest: '8c3dd0de522c745c94c8e1c4fc9dc2e67b858aaa32c21ec0203564ffff98373b',
+          auditDigest: 'e17c1eb439e66fa52a9690cb5dee99ffc89cb21894feebbfcaca99d243ae3175',
         },
       },
     });
@@ -1142,7 +1219,8 @@ describe('authoritative prepared publishing worker', () => {
       expect(deriveCanonicalWorkerReviewEvidence(completion, {
         expectedCoordinates,
         expectedPersonaIds: f.prepared.expectedPersonaIds,
-        changedFiles: [{ path, patch: '@@ -1 +1 @@\n-old\n+new\n' }],
+        ...trustedGroundedVerifierContract(f),
+        changedFiles: [{ path, patch: `@@ -1 +1 @@\n-const value = 'old';\n+const value = 'new';\n` }],
         coverageComplete: true,
         quorumSatisfied: true,
       })).toEqual({
@@ -1173,7 +1251,8 @@ describe('authoritative prepared publishing worker', () => {
     expect(deriveCanonicalWorkerReviewEvidence(completion, {
       expectedCoordinates,
       expectedPersonaIds: f.prepared.expectedPersonaIds,
-      changedFiles: [{ path: 'docs/plan.md', patch: '@@ -1 +1 @@\n-old\n+new\n' }],
+      ...trustedGroundedVerifierContract(f),
+      changedFiles: [{ path: 'docs/plan.md', patch: `@@ -1 +1 @@\n-const value = 'old';\n+const value = 'new';\n` }],
       coverageComplete: true,
       quorumSatisfied: true,
     })).toEqual({
@@ -1203,7 +1282,8 @@ describe('authoritative prepared publishing worker', () => {
       const derived = deriveCanonicalWorkerReviewEvidence(completion, {
         expectedCoordinates,
         expectedPersonaIds: f.prepared.expectedPersonaIds,
-        changedFiles: [{ path: 'docs/plan.md', patch: '@@ -1 +1 @@\n-old\n+new\n' }],
+        ...trustedGroundedVerifierContract(f),
+        changedFiles: [{ path: 'docs/plan.md', patch: `@@ -1 +1 @@\n-const value = 'old';\n+const value = 'new';\n` }],
         coverageComplete,
         quorumSatisfied,
       });
@@ -1259,7 +1339,8 @@ describe('authoritative prepared publishing worker', () => {
     expect(deriveCanonicalWorkerReviewEvidence(completion, {
       expectedCoordinates,
       expectedPersonaIds: f.prepared.expectedPersonaIds,
-      changedFiles: [{ path: 'docs/plan.md', patch: '@@ -1 +1 @@\n-old\n+new\n' }],
+      ...trustedGroundedVerifierContract(f),
+      changedFiles: [{ path: 'docs/plan.md', patch: `@@ -1 +1 @@\n-const value = 'old';\n+const value = 'new';\n` }],
       coverageComplete: true,
       quorumSatisfied: true,
     })).toMatchObject({ valid: false, reason: 'invalid-evidence' });
@@ -1277,7 +1358,8 @@ describe('authoritative prepared publishing worker', () => {
     expect(deriveCanonicalWorkerReviewEvidence(completion, {
       expectedCoordinates,
       expectedPersonaIds: f.prepared.expectedPersonaIds,
-      changedFiles: [{ path: 'docs/plan.md', patch: '@@ -1 +1 @@\n-old\n+new\n' }],
+      ...trustedGroundedVerifierContract(f),
+      changedFiles: [{ path: 'docs/plan.md', patch: `@@ -1 +1 @@\n-const value = 'old';\n+const value = 'new';\n` }],
       coverageComplete: true,
       quorumSatisfied: true,
     })).toMatchObject({
@@ -1291,9 +1373,11 @@ describe('authoritative prepared publishing worker', () => {
     const f = fixture({ reviewEngine: 'composed' });
     const taskPlan = [{ id: 'task-a', dimension: 'architecture' as const, paths: ['src/a.ts'],
       question: 'Does this change preserve the contract?', rationale: 'The changed source needs review.' }];
+    const taskASourceDelivery = completedTaskSourceDelivery('task-a', taskPlan[0].paths);
     const composedReviewRunner = vi.fn<NonNullable<PublishingReviewDeps['composedReviewRunner']>>()
       .mockResolvedValue({ ...f.panel, taskPlan, applicablePersonaIds: ['task-a'],
-        personas: [{ ...f.panel.personas[0], id: 'task-a' }] });
+        personas: [{ ...f.panel.personas[0], id: 'task-a', sourceDelivery: taskASourceDelivery }],
+        composedResourceObservation: composedEngineObservation(f, taskPlan, [taskASourceDelivery]) });
     f.deps.composedReviewRunner = composedReviewRunner;
 
     await runPublishingReviewWorker(f.env, f.deps);
@@ -1308,14 +1392,17 @@ describe('authoritative prepared publishing worker', () => {
     expect(completion?.result.taskPlan).toEqual(taskPlan);
     const parsedCompletion = parseWorkerReviewCompletion(completion);
     const { version: _version, result: _result, ...expectedCoordinates } = parsedCompletion;
-    expect(deriveCanonicalWorkerReviewEvidence(parsedCompletion, {
+    const derived = deriveCanonicalWorkerReviewEvidence(parsedCompletion, {
       expectedCoordinates,
       expectedPersonaIds: f.prepared.expectedPersonaIds,
+      ...trustedGroundedVerifierContract(f),
       reviewEngine: 'composed', composedChangedPaths: ['src/a.ts'], composedMaxTasks: 8,
       changedFiles: parseChangedFiles(DIFF).files,
       coverageComplete: true,
       quorumSatisfied: true,
-    })).toMatchObject({ valid: true, evidence: { verdict: 'SHIP', expectedLanes: 1, completedLanes: 1 } });
+    });
+    if (!derived.valid) throw new Error(`Unexpected invalid composed task evidence: ${derived.message}`);
+    expect(derived).toMatchObject({ valid: true, evidence: { verdict: 'SHIP', expectedLanes: 1, completedLanes: 1 } });
   });
 
   it('wires admitted composed plan and task calls through progress and token attribution wrappers', async () => {
@@ -1400,7 +1487,9 @@ describe('authoritative prepared publishing worker', () => {
     } }), REVIEW_PERSONAS: 'architecture', MAX_INVESTIGATION_TURNS: '3' });
     const receipt = await runPublishingReviewWorker(f.env, f.deps);
     expect(f.panelRunner).toHaveBeenCalledExactlyOnceWith({
-      config: f.prepared.config, changedFiles: [{ path: 'src/a.ts', patch: DIFF }],
+      config: expect.objectContaining({ ...f.prepared.config,
+        rules: expect.arrayContaining([expect.objectContaining({ id: 'service-pr-review-history-context', severity: 'P2' })]) }),
+      changedFiles: [{ path: 'src/a.ts', patch: DIFF }],
       repository: 'example/project', headSha: HEAD, repositoryVisibility: 'PRIVATE',
       // REL-1132: the engine gets a metering wrapper around `f.client` (every call is recorded in
       // the run's token ledger, then delegated), not the injected client object itself.
@@ -1621,6 +1710,7 @@ describe('authoritative prepared publishing worker', () => {
       const derived = deriveCanonicalWorkerReviewEvidence(completion, {
         expectedCoordinates,
         expectedPersonaIds: f.prepared.expectedPersonaIds,
+        ...trustedGroundedVerifierContract(f),
         changedFiles: parseChangedFiles(DIFF).files,
         coverageComplete: true,
         quorumSatisfied: true,
@@ -1764,9 +1854,11 @@ describe('authoritative prepared publishing worker', () => {
         { id: 'task-b', dimension: 'testing' as const, paths: ['src/a.ts'],
           question: 'Are edge cases covered?', rationale: 'Review the changed source.' },
       ];
+      const taskASourceDelivery = completedTaskSourceDelivery('task-a', taskPlan[0].paths);
       f.deps.composedReviewRunner = vi.fn().mockResolvedValue({ ...f.panel,
         taskPlan, applicablePersonaIds: ['task-a', 'task-b'],
-        personas: [{ ...f.panel.personas[0], id: 'task-a' }],
+        personas: [{ ...f.panel.personas[0], id: 'task-a', sourceDelivery: taskASourceDelivery }],
+        composedResourceObservation: composedEngineObservation(f, taskPlan, [taskASourceDelivery]),
         unreportedLanes: [unreportedLaneFailure(taskPlan[1], 'exhausted', {
           reason: 'nonce_mismatch', turnsUsed: 12, correctionAttempts: 2,
           toolTurns: 9, finishReason: 'length', lastToolOutcome: 'returned',
@@ -1790,16 +1882,22 @@ describe('authoritative prepared publishing worker', () => {
       const { version: _version, result: _result, ...expectedCoordinates } = completion;
       const derived = deriveCanonicalWorkerReviewEvidence(completion, {
         expectedCoordinates, expectedPersonaIds: f.prepared.expectedPersonaIds,
+        ...trustedGroundedVerifierContract(f),
         reviewEngine: 'composed', composedChangedPaths: ['src/a.ts'], composedMaxTasks: 8,
         changedFiles: parseChangedFiles(DIFF).files, coverageComplete: true, quorumSatisfied: true,
       });
-      expect(derived).toMatchObject({ valid: true, evidence: { quorumSatisfied: false,
-        expectedLanes: 2, completedLanes: 1 } });
       const candidate = { repositoryId: 123, prNumber: 42, headSha: HEAD, baseSha: BASE,
         policyDigest: f.prepared.policy.effectivePolicyDigest };
-      expect(derived.valid && evaluateReviewGate({ candidate,
-        current: { ...candidate, open: true, draft: false }, evidence: derived.evidence }))
-        .toEqual({ status: 'failure', eligible: false, reason: 'incomplete-review' });
+      if (derived.valid) {
+        expect(derived).toMatchObject({ evidence: { quorumSatisfied: false,
+          expectedLanes: 2, completedLanes: 1 } });
+        expect(evaluateReviewGate({ candidate,
+          current: { ...candidate, open: true, draft: false }, evidence: derived.evidence }))
+          .toEqual({ status: 'failure', eligible: false, reason: 'incomplete-review' });
+      } else {
+        expect(derived).toEqual({ valid: false, reason: 'invalid-evidence',
+          message: 'worker claims complete coverage with incomplete composed execution or source delivery' });
+      }
     });
 
     it('names a composed task whose fresh attempts were all malformed instead of publishing BLOCK with 0 findings', async () => {
@@ -1839,16 +1937,22 @@ describe('authoritative prepared publishing worker', () => {
         { id: 'task-b', dimension: 'architecture' as const, paths: ['src/a.ts'],
           question: 'Are transactions stable?', rationale: 'Review the changed source.' },
       ];
+      const taskASourceDelivery = completedTaskSourceDelivery('task-a', taskPlan[0].paths);
+      const composedResources = composedEngineObservation(f, taskPlan, [taskASourceDelivery]);
       f.deps.composedReviewRunner = vi.fn().mockResolvedValue({ ...f.panel,
         taskPlan, applicablePersonaIds: ['task-a', 'task-b'],
-        personas: [{ ...f.panel.personas[0], id: 'task-a' }],
+        personas: [{ ...f.panel.personas[0], id: 'task-a', sourceDelivery: taskASourceDelivery }],
         optionalFailures: [{ id: 'task-b', failureClass: 'timeout',
           error: 'Task task-b (architecture) stalled on a provider timeout in 3 fresh attempt(s) (retries exhausted); path(s) [src/a.ts] were not reviewed by this task' }],
         unreportedLanes: [],
         quorum: { ...f.panel.quorum, satisfied: false },
+        composedResourceObservation: composedResources,
       });
 
       const receipt = await runPublishingReviewWorker(f.env, f.deps);
+      expect(f.reportReviewResult.mock.calls[0]?.[0]).toMatchObject({ result: { coverageComplete: false,
+        composedResources: { version: 'ComposedRuntimeResources.v1', stage: 'worker_completion',
+          engineExecutionState: 'incomplete', coverage: { remainingPaths: { count: 1 } } } } });
       const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
       expect(check?.conclusion).toBe('failure');
       expect(check?.title).toMatch(/^Review Yeti: INCOMPLETE — infrastructure \(.*lane task-b failed: timeout\)$/u);
@@ -2124,6 +2228,7 @@ describe('authoritative prepared publishing worker', () => {
     let callbackAttempts = 0;
     const threadRequests: any[] = [];
     const derivations: ReturnType<typeof deriveCanonicalWorkerReviewEvidence>[] = [];
+    const derivationInputs: Array<{ outcomes: unknown; findings: unknown }> = [];
     f.fetch.mockImplementation(async (input, init) => {
       if (String(input) === ENDPOINT.replace(/\/completion$/u, '/incomplete-p2-recovery') && init?.method === 'POST') {
         expect(JSON.parse(String(init.body))).toEqual({ version: 'IncompleteP2RecoveryRequest.v1',
@@ -2154,7 +2259,7 @@ describe('authoritative prepared publishing worker', () => {
         threadRequests.push(request);
         if (request.version === 'FindingThreadsRead.v1') {
           return new Response(JSON.stringify({ version: 'FindingThreadsReadResult.v1', runId: f.env.REVIEW_RUN_ID,
-            threads: [] }), { status: 200 });
+            headSha: HEAD, complete: true, omittedCount: 0, threads: [] }), { status: 200 });
         }
         return new Response(JSON.stringify({ version: 'FindingThreadsResult.v1', runId: f.env.REVIEW_RUN_ID,
           created: request.publish.length, skipped: 0, resolved: 0 }), { status: 200 });
@@ -2169,9 +2274,19 @@ describe('authoritative prepared publishing worker', () => {
         const { result: _result, version: _version, ...expectedCoordinates } = parseWorkerReviewCompletion(expectedEvent(f, cleanResult()));
         const derived = deriveCanonicalWorkerReviewEvidence(completion, {
           expectedCoordinates, expectedPersonaIds: f.prepared.expectedPersonaIds,
+          ...trustedGroundedVerifierContract(f),
           changedFiles: parseChangedFiles(DIFF).files, coverageComplete: true, quorumSatisfied: true,
         });
         derivations.push(derived);
+        derivationInputs.push({
+          outcomes: completion.result.groundedReview?.verification.outcomes.map((row) => ({ path: row.path,
+            line: row.line, severity: row.severity,
+            candidateSide: 'candidateSide' in row ? row.candidateSide : undefined,
+            status: row.status, reason: 'reason' in row ? row.reason : undefined })),
+          findings: completion.result.personas.map((lane) => ({ id: lane.id, findings: lane.findings.map((finding) => ({
+            path: finding.path, line: finding.line, severity: finding.severity, title: finding.title,
+          })) })),
+        });
         callbackAttempts += 1;
         if (callbackAttempts === 1 && delivery === '503 then recorded') {
           return new Response(PRIVATE_DETAIL, { status: 503 });
@@ -2188,15 +2303,27 @@ describe('authoritative prepared publishing worker', () => {
     const legacy = vi.fn();
     expect(f.env).not.toHaveProperty('REVIEW_CHECK_ID');
     await runWorker(f.env, legacy);
-    for (const derived of derivations) {
+    for (const [index, derived] of derivations.entries()) {
+      if (!derived.valid) throw new Error(`Unexpected invalid published worker evidence: ${derived.message}; input=${JSON.stringify(derivationInputs[index])}`);
       expect(derived.valid).toBe(true);
-      expect(derived.evidence).toMatchObject({ verdict: 'SHIP', p0Count: 0, p1Count: 0 });
-      expect(derived.canonical?.findings).toEqual([{ ...finding, reporters: 1 }]);
+      expect(derived.evidence).toMatchObject({ verdict: 'SHIP', coverageComplete: true, quorumSatisfied: true,
+        infrastructureFailure: false, p0Count: 0, p1Count: 0 });
+      expect(derivationInputs[index]?.outcomes).toEqual([
+        expect.objectContaining({ path: finding.path, severity: 'P2', status: 'insufficient' }),
+      ]);
+      // V2 removes an advisory whose independent evidence is insufficient from the canonical set.
+      // It stays non-blocking and cannot be published as a verified finding.
+      expect(derived.canonical?.findings, JSON.stringify({ findings: derivationInputs[index]?.findings,
+        outcomes: derivationInputs[index]?.outcomes })).toEqual([]);
     }
     expect(legacy).not.toHaveBeenCalled();
     const retry = delivery === '503 then recorded' || delivery === 'lost acknowledgement then duplicate';
     expect(derivations).toHaveLength(retry ? 2 : 1);
+    // Missing authenticated history forces a fresh review and skips the optional
+    // composed checkpoint read. The cache planner may still read current content
+    // to record a future source entry after the fresh review.
     expect(f.fetch).toHaveBeenCalledTimes(retry ? 11 : 10);
+    expect(f.fetch.mock.calls.some(([url]) => String(url).includes('/review-checkpoint'))).toBe(false);
     const groundedSourceReads = f.fetch.mock.calls
       .filter(([url]) => String(url).includes('/contents/src/a.ts?ref='))
       .map(([url]) => String(url));
@@ -2214,21 +2341,18 @@ describe('authoritative prepared publishing worker', () => {
       external_id: `${f.env.REVIEW_RUN_ID}:a${f.env.REVIEW_EXECUTION_ATTEMPT}` });
     expect(created.name).not.toBe('Review Yeti Gate');
     expect(completed).not.toHaveProperty('name');
-    // ADR 0002: a P2 is required. The canonical verdict the service derives stays SHIP (above),
-    // but the raw check fails, says why, and the finding is a failure-level annotation.
-    expect(completed).toMatchObject({ status: 'completed', conclusion: 'failure', output: {
-      text: expect.stringContaining(finding.title),
-      annotations: [{ path: finding.path, start_line: 1, end_line: 1,
-        annotation_level: 'failure', title: `P2: ${finding.title}`, message: finding.body }],
+    // The V2 verifier had insufficient source evidence for the advisory, so it is withheld from
+    // the canonical finding set and cannot become a required thread/check annotation.
+    expect(completed).toMatchObject({ status: 'completed', conclusion: 'success', output: {
+      text: expect.not.stringContaining(finding.title),
     } });
-    expect(completed.output.text).toContain(finding.body);
-    expect(completed.output.title).toBe('Review Yeti: FIX_FIRST (1 required P2)');
-    expect(completed.output.summary).toContain('Required findings: 1 (P0: 0, P1: 0, P2: 1)');
+    expect(completed.output).not.toHaveProperty('annotations');
+    expect(completed.output.title).toBe('Review Yeti: SHIP');
+    expect(completed.output.summary).toContain('Required findings: 0 (P0: 0, P1: 0, P2: 0)');
     expect(threadRequests).toHaveLength(2);
     expect(threadRequests[0]).toEqual({ version: 'FindingThreadsRead.v1', runId: f.env.REVIEW_RUN_ID,
       executionAttempt: Number(f.env.REVIEW_EXECUTION_ATTEMPT), headSha: HEAD });
-    expect(threadRequests[1]).toMatchObject({ version: 'FindingThreadsRequest.v1', headSha: HEAD,
-      publish: [{ severity: 'P2', path: finding.path, line: 1, title: finding.title, body: finding.body }] });
+    expect(threadRequests[1]).toMatchObject({ version: 'FindingThreadsRequest.v1', headSha: HEAD, publish: [] });
     if (delivery === 'off-diff raw finding') {
       expect(completed.output.summary).toContain('1 raw finding(s) were discarded as unanchorable');
       expect(completed.output.text).not.toContain('Discard unanchorable raw finding');
@@ -2249,7 +2373,7 @@ describe('authoritative prepared publishing worker', () => {
     const payload = JSON.parse(String(init?.body));
     expectEvidenceOnlyCallback(payload);
     expect(payload).toMatchObject({ version: 'WorkerReviewCompletion.v1', configDigest: f.prepared.policy.effectiveConfigDigest });
-    expect(payload.result.personas[0].findings).toEqual([finding]);
+    expect(payload.result.personas[0].findings).toEqual([]);
   });
 
   it('keeps sanitized findings in their original lanes and re-derives the published clustered set', async () => {
@@ -2276,6 +2400,7 @@ describe('authoritative prepared publishing worker', () => {
     const changedFiles = parseChangedFiles(DIFF).files;
     const derived = deriveCanonicalWorkerReviewEvidence(completion, {
       expectedCoordinates, expectedPersonaIds: f.prepared.expectedPersonaIds,
+      ...trustedGroundedVerifierContract(f),
       changedFiles, coverageComplete: true, quorumSatisfied: true,
     });
     expect(derived.valid).toBe(true);
@@ -2290,6 +2415,7 @@ describe('authoritative prepared publishing worker', () => {
     forged.result.personas[0].findings.push({ ...shared, path: 'src/off-diff.ts' });
     expect(deriveCanonicalWorkerReviewEvidence(forged, {
       expectedCoordinates, expectedPersonaIds: f.prepared.expectedPersonaIds,
+      ...trustedGroundedVerifierContract(f),
       changedFiles, coverageComplete: true, quorumSatisfied: true,
     })).toMatchObject({ valid: false, reason: 'invalid-evidence' });
   });
@@ -2311,6 +2437,7 @@ describe('authoritative prepared publishing worker', () => {
     const { result: _result, version: _version, ...expectedCoordinates } = parseWorkerReviewCompletion(expectedEvent(f, cleanResult()));
     const derived = deriveCanonicalWorkerReviewEvidence(completion, {
       expectedCoordinates, expectedPersonaIds: f.prepared.expectedPersonaIds,
+      ...trustedGroundedVerifierContract(f),
       changedFiles: parseChangedFiles(DIFF).files,
       coverageComplete: kind !== 'unreadable diff', quorumSatisfied: kind !== 'incomplete panel',
     });

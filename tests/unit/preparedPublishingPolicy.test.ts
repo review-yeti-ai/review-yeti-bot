@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { parsePreparedReviewExecution, preparePublishingPolicy, verifyPreparedPublishingConfig } from '../../src/review/preparedPublishingPolicy';
 import { fingerprintEffectiveReviewConfig } from '../../src/review/authoritativeReviewIdentity';
+import { ctReviewConfigV3Schema } from '../../src/config/schema';
+import { GROUNDED_VERIFICATION_LEGACY_VERSION } from '../../src/review/groundedReviewEngine';
+import { groundedVerificationCapabilityForRuntime } from '../../src/review/groundedCandidateManifestCapability';
 
 const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' };
 function file(raw: unknown = { schema: 'exampleorg.review-policy.v1', review_yeti: {
@@ -41,6 +44,60 @@ describe('trusted prepared publishing policy', () => {
     expect(activated.policy.effectivePolicyDigest).not.toBe(legacy.policy.effectivePolicyDigest);
     expect(verifyPreparedPublishingConfig(activated.config, activated.policy.effectiveConfigDigest, transport))
       .toEqual(activated.config);
+  });
+  it('binds the current grounded V2 candidate-manifest capability while retaining historical config parsing', () => {
+    const prepared = preparePublishingPolicy(file(), transport);
+    const receipt = prepared.config.review_configuration_receipt!;
+    expect(receipt.effective.grounded_verification).toEqual({
+      version: 'GroundedIndependentVerification.v2',
+      candidate_manifest: 'GroundedCandidateSeverityManifest.v1',
+    });
+
+    const { grounded_verification: _historicalCapability, ...historicalEffective } = receipt.effective;
+    const historicalConfig = { ...structuredClone(prepared.config),
+      review_configuration_receipt: { ...receipt, effective: historicalEffective } };
+    expect(ctReviewConfigV3Schema.safeParse(historicalConfig).success).toBe(true);
+    expect(fingerprintEffectiveReviewConfig({ config: historicalConfig, transport }))
+      .not.toBe(prepared.policy.effectiveConfigDigest);
+    expect(groundedVerificationCapabilityForRuntime(GROUNDED_VERIFICATION_LEGACY_VERSION)).toBeUndefined();
+  });
+  it('binds an optional adjudicator selector while preserving the primary route and WS4 receipts', () => {
+    const base = preparePublishingPolicy(file(), transport);
+    const selector = { version: 'DisputedBlockerAdjudicator.v1', model: 'qualified-adjudicator-alias', reasoning_effort: 'high' };
+    const selected = preparePublishingPolicy(file({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', budget: { max_investigation_turns: 20 }, review_engine: 'dsh',
+      fallback_review_engine: 'composed', severity_policy: 'review-yeti-severity.v2',
+      disputed_blocker_adjudicator: selector,
+    } }), transport);
+
+    expect(selected.config.disputed_blocker_adjudicator).toEqual(selector);
+    expect(selected.config.review_configuration_receipt?.requested.disputed_blocker_adjudicator).toEqual(selector);
+    expect(selected.config.review_configuration_receipt?.effective.disputed_blocker_adjudicator)
+      .toMatchObject({ state: 'available', model_alias: selector.model, reasoning_effort: 'high', applied: false });
+    expect(selected.config.reviewers.providers).toEqual(base.config.reviewers.providers);
+    expect(selected.config.reviewers.providers[0]).toMatchObject({ model: transport.model, effort: 'medium' });
+    expect(selected.config.review_configuration_receipt?.effective.confidence_threshold)
+      .toEqual(base.config.review_configuration_receipt?.effective.confidence_threshold);
+    expect(selected.config.review_configuration_receipt?.effective.composed_budget)
+      .toEqual(base.config.review_configuration_receipt?.effective.composed_budget);
+    expect(selected.config.review_configuration_receipt?.effective.worker_limits)
+      .toEqual(base.config.review_configuration_receipt?.effective.worker_limits);
+    expect(JSON.stringify(selected.config)).not.toContain('PRIVATE_KEY_NAME_ONLY');
+    expect(JSON.stringify(selected.config)).not.toContain('gateway.example.invalid');
+    expect(selected.policy.effectiveConfigDigest).not.toBe(base.policy.effectiveConfigDigest);
+    expect(parsePreparedReviewExecution(JSON.stringify({ version: 'PreparedReviewExecution.v1',
+      config: selected.config, transport }), selected.policy.effectiveConfigDigest, transport).config)
+      .toEqual(selected.config);
+  });
+
+  it.each([
+    ['unknown version', { version: 'DisputedBlockerAdjudicator.v99', model: 'qualified-adjudicator-alias', reasoning_effort: 'high' }],
+    ['unsupported key', { version: 'DisputedBlockerAdjudicator.v1', model: 'qualified-adjudicator-alias', reasoning_effort: 'high', transport: 'direct' }],
+    ['same primary alias', { version: 'DisputedBlockerAdjudicator.v1', model: 'REVIEW-MODEL', reasoning_effort: 'high' }],
+  ])('rejects the adjudicator selector %s during trusted preparation', (_label, selector) => {
+    expect(() => preparePublishingPolicy(file({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security', budget: { max_investigation_turns: 20 }, disputed_blocker_adjudicator: selector,
+    } }), transport)).toThrow(/Trusted publishing policy could not be prepared/u);
   });
   it('selects severity v2 only for the service-trusted repository and keeps unrelated repositories legacy', () => {
     const source = file({ schema: 'exampleorg.review-policy.v1', review_yeti: {

@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
+import { ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
+import { parseChangedFiles } from '../../src/review/changedFiles';
+import { TaskSourceDelivery } from '../../src/review/taskSourceDelivery';
 import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
 
 /**
@@ -15,6 +18,12 @@ import { groundedFixtureClient, groundedFixtureProvider } from '../support/groun
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
+
+const ACCESS_CONTROL_REGRESSIONS = [
+  { path: 'src/billingAccess.ts', line: 1, id: 'billing-read', fn: 'canReadBilling', capability: 'billing records' },
+  { path: 'src/customerExportAccess.ts', line: 1, id: 'data-export', fn: 'canExportData', capability: 'customer data exports' },
+  { path: 'src/userRoleAccess.ts', line: 1, id: 'user-management', fn: 'canManageUsers', capability: 'user role changes' },
+] as const;
 
 /** Base-policy JSON that selects the composed engine (see `resolveWorkerConfig` in
  * `src/config/publishingWorkerConfig.ts`). `review_engine` is only readable from here -- an env
@@ -57,15 +66,26 @@ function checkClient() {
   };
 }
 
-const DIFF = 'diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
+const DIFF = ACCESS_CONTROL_REGRESSIONS.map(({ path, fn }) => [
+  `diff --git a/${path} b/${path}`,
+  `--- a/${path}`,
+  `+++ b/${path}`,
+  '@@ -1 +1 @@',
+  `-export function ${fn}(isAdmin: boolean): boolean { return isAdmin; }`,
+  `+export function ${fn}(isAdmin: boolean): boolean { return true; }`,
+].join('\n')).join('\n') + '\n';
 
 function makeFinding(path: string, line: number, id: string) {
+  const regression = ACCESS_CONTROL_REGRESSIONS[Number(id.slice(1)) - 1];
+  if (!regression || regression.path !== path || regression.line !== line) {
+    throw new Error(`No access-control regression fixture for ${id} at ${path}:${line}`);
+  }
   return {
     severity: 'P1',
     path,
     line,
-    title: `defect ${id}`,
-    body: `a real defect ${id}`,
+    title: `Non-admin caller can access ${regression.capability}`,
+    body: `The changed ${regression.fn} returns true for a non-admin caller.`,
   };
 }
 
@@ -73,15 +93,34 @@ function makeFinding(path: string, line: number, id: string) {
  * `clusterFindings` does not collapse them into one. */
 function sevenTaskComposedResult() {
   const taskIds = ['t1', 't2', 't3', 't4', 't5', 't6', 't7'];
+  const taskPlan = taskIds.map((id) => ({ id, dimension: 'security' as const,
+    paths: ACCESS_CONTROL_REGRESSIONS.map((regression) => regression.path),
+    question: 'Did this change weaken the administrator-only access contract?',
+    rationale: 'Each task owns the exact changed authorization gate source.' }));
+  const changedFiles = parseChangedFiles(DIFF, { repository: 'exampleorg/example-meta', headSha: HEAD, baseSha: BASE }).files;
+  const observer = new ComposedRuntimeResourceObserver({ configDigest: 'd'.repeat(64) });
+  observer.configureBudget({ configuredTotalTurns: 10, investigationTurns: 10, verificationReserveTurns: 0 });
+  observer.setPlan(taskPlan);
+  for (const task of taskPlan) {
+    observer.markTaskStarted(task.id);
+    const delivery = new TaskSourceDelivery({ taskId: task.id, paths: task.paths, files: changedFiles,
+      prefix: DIFF, inlinedPaths: task.paths, headSha: HEAD, baseSha: BASE });
+    delivery.beginAttempt();
+    const receipt = delivery.acknowledgeRequest([{ role: 'user', content: DIFF }]);
+    observer.markTaskOutcome(task.id, 'completed', receipt);
+  }
+  const composedResourceObservation = observer.snapshot('terminal');
+  if (!composedResourceObservation) throw new Error('Expected complete composed resource observation');
   const personas = taskIds.map((id, idx) => ({
     id,
     required: true,
     providerId: 'bifrost',
     model: 'test-model',
     decision: idx < 3 ? 'FINDINGS' : 'APPROVE',
-    findings: idx < 3 ? [makeFinding('src/a.ts', 1, id)] : [],
+    findings: idx < 3 ? [makeFinding(ACCESS_CONTROL_REGRESSIONS[idx]!.path, ACCESS_CONTROL_REGRESSIONS[idx]!.line, id)] : [],
   }));
   return {
+    taskPlan,
     headSha: HEAD,
     applicablePersonaIds: taskIds,
     personas,
@@ -91,6 +130,64 @@ function sevenTaskComposedResult() {
     quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
     moderator: { providerId: 'bifrost', model: 'none', decision: 'RECONCILED', findings: [], usage: null, costUSD: null, durationMs: 0 },
     arbiter: { providerId: 'bifrost', model: 'none', verdict: 'SHIP', rationale: 'stub', usage: null, costUSD: null, durationMs: 0 },
+    composedResourceObservation,
+  };
+}
+
+/** Verifies only the exact changed access-control implementation visible in current source windows. */
+function accessControlVerifier() {
+  return {
+    complete: vi.fn(async (request: { messages?: Array<{ content: unknown }> }) => {
+      const rawContent = request.messages?.[1]?.content;
+      const prompt = typeof rawContent === 'string' ? rawContent
+        : Array.isArray(rawContent) ? rawContent.map((part) => part && typeof part === 'object'
+          && typeof (part as { text?: unknown }).text === 'string' ? (part as { text: string }).text : '').join('\n')
+        : String(rawContent ?? '');
+      const claimMatch = /<claim>(\{[\s\S]*?\})<\/claim>/u.exec(prompt);
+      const evidenceMatch = /<retrieved_repository_evidence>([\s\S]*?)<\/retrieved_repository_evidence>/u.exec(prompt);
+      if (!claimMatch || !evidenceMatch) {
+        return { model: 'grounded-fixture-model', content: JSON.stringify({ status: 'insufficient', citations: [] }) };
+      }
+      const claim = JSON.parse(claimMatch[1]!) as { path: string; line: number };
+      const regression = ACCESS_CONTROL_REGRESSIONS.find((item) => item.path === claim.path && item.line === claim.line);
+      const rows = JSON.parse(evidenceMatch[1]!) as Array<{ path: string;
+        head: { windows: Array<{ id: string; role: string; startLine: number; endLine: number; source: string }> };
+        base: { windows: Array<{ id: string; role: string; startLine: number; endLine: number; source: string }> };
+        diffs: Array<{ id: string; patch: string }> }>;
+      const row = rows.find((item) => item.path === claim.path);
+      const head = row?.head.windows.find((window) => window.role === 'candidate'
+        && claim.line >= window.startLine && claim.line <= window.endLine);
+      const base = row?.base.windows.find((window) => window.role === 'mapped-base'
+        && claim.line >= window.startLine && claim.line <= window.endLine);
+      const diff = row?.diffs.find((item) => item.patch.includes(`@@ -${claim.line} +${claim.line} @@`));
+      const expectedBase = regression
+        ? `export function ${regression.fn}(isAdmin: boolean): boolean { return isAdmin; }` : '';
+      const expectedHead = regression
+        ? `export function ${regression.fn}(isAdmin: boolean): boolean { return true; }` : '';
+      if (!regression || !head || !base || !diff
+        || !head.source.includes(expectedHead) || !base.source.includes(expectedBase)
+        || !diff.patch.includes(`-${expectedBase}`) || !diff.patch.includes(`+${expectedHead}`)) {
+        return { model: 'grounded-fixture-model', content: JSON.stringify({ status: 'insufficient', citations: [] }) };
+      }
+      const citations = [head.id, base.id, diff.id];
+      return { model: 'grounded-fixture-model', content: JSON.stringify({
+        status: 'confirmed',
+        violatedInvariant: `Only administrators may access ${regression.capability}.`,
+        failurePath: `The changed ${regression.fn} returns true when isAdmin is false.`,
+        benignCheck: `The base implementation returned the caller's isAdmin value.`,
+        changeConnection: `The admitted hunk replaces the ${regression.fn} admin predicate with unconditional true.`,
+        rootCause: { componentId: `access-control.${regression.id}`, behaviorId: 'admin-gate',
+          contractId: 'administrator-only', failureModeId: 'unconditional-allow' },
+        causeAnchor: { componentPath: claim.path, side: 'head', startLine: claim.line, endLine: claim.line,
+          citationIds: [head.id] },
+        causalPath: { relation: 'same-component', candidatePath: claim.path, componentPath: claim.path,
+          citationIds: citations },
+        baseState: { trigger: 'present', contract: 'not-violated', citationIds: [base.id] },
+        headState: { trigger: 'present', contract: 'violated', citationIds: [head.id] },
+        causalDelta: { kind: 'introduced', materiality: 'reachability', citationIds: [diff.id] },
+        citations,
+      }) };
+    }),
   };
 }
 
@@ -110,10 +207,39 @@ function deps(over: Record<string, unknown> = {}) {
 
 describe('composed engine panelSize wiring (threshold invariance)', () => {
   it('blocks a 7-task roster with 3 P1 findings under the single-reviewer threshold', async () => {
-    const receipt = await runPublishingReviewWorker(env(), deps());
+    const verifier = accessControlVerifier();
+    const receipt = await runPublishingReviewWorker(env(), deps({ groundedVerifierClient: verifier as never }));
     expect(receipt.verdict).toBe('BLOCK');
     expect(receipt.conclusion).toBe('failure');
     expect(receipt.blockingFindingCount).toBe(3);
+    expect(receipt.coverage).toMatchObject({ mode: 'panel', expectedLaneCount: 7, rosterValid: true,
+      quorumSatisfied: true, fullPanelComplete: true });
+    expect(receipt.groundedReview?.verification).toMatchObject({ version: 'GroundedIndependentVerification.v2',
+      candidates: 3, confirmed: 3, contradicted: 0, insufficient: 0, unverifiedBlockerCount: 0, coverageComplete: true, calls: 3 });
+    const outcomes = receipt.groundedReview?.verification.outcomes ?? [];
+    expect(outcomes).toHaveLength(3);
+    for (const outcome of outcomes) {
+      expect(outcome).toMatchObject({ severity: 'P1', status: 'confirmed', candidateSide: 'head',
+        evidence: {
+          semanticsVersion: 'GroundedReviewEvidenceSemantics.v2',
+          baseState: { trigger: 'present', contract: 'not-violated' },
+          headState: { trigger: 'present', contract: 'violated' },
+          causalDelta: { kind: 'introduced', materiality: 'reachability' },
+          scopeProof: {
+            identity: { repository: 'exampleorg/example-meta', baseSha: BASE, headSha: HEAD, candidateSide: 'head' },
+            independentVerifier: { role: 'independent-grounded-verifier', status: 'confirmed' },
+            causalChange: { relation: 'introduced', materiality: 'reachability' },
+          },
+        } });
+      expect(outcome.evidence?.citations).toEqual(expect.arrayContaining([
+        expect.objectContaining({ side: 'head', revisionSha: HEAD }),
+        expect.objectContaining({ side: 'base', revisionSha: BASE }),
+        expect.objectContaining({ side: 'diff', revisionSha: HEAD }),
+      ]));
+    }
+    expect(outcomes.map((outcome) => [outcome.path, outcome.line]).sort()).toEqual(
+      ACCESS_CONTROL_REGRESSIONS.map((regression) => [regression.path, regression.line]).sort());
+    expect(verifier.complete).toHaveBeenCalledTimes(3);
   });
 
   it('never calls the fan-out panelRunner when base policy selects the composed engine', async () => {

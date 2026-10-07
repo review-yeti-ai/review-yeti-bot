@@ -17,6 +17,10 @@ export interface FindingThreadsPublisher {
   /** The review App's own finding threads, author-verified by the service (the only source whose
    * resolutions may satisfy a P2). Optional so a test double may implement publication only. */
   read?(headSha: string, signal?: AbortSignal): Promise<PriorFindingThread[]>;
+  /** Authenticated, exact-head, bounded history receipt. Incomplete snapshots cannot satisfy findings. */
+  readSnapshot?(headSha: string, signal?: AbortSignal): Promise<{
+    headSha: string; complete: boolean; omittedCount: number; threads: PriorFindingThread[];
+  }>;
 }
 
 class FindingThreadsHttpError extends Error {
@@ -58,11 +62,19 @@ export class HttpFindingThreadsPublisher implements FindingThreadsPublisher {
   }
 
   async read(headSha: string, signal?: AbortSignal): Promise<PriorFindingThread[]> {
+    return (await this.readSnapshot(headSha, signal)).threads;
+  }
+
+  async readSnapshot(headSha: string, signal?: AbortSignal): Promise<{
+    headSha: string; complete: boolean; omittedCount: number; threads: PriorFindingThread[];
+  }> {
+    if (!/^[a-f0-9]{40}$/u.test(headSha)) throw unavailable();
     const body = await this.post({ version: 'FindingThreadsRead.v1', runId: this.options.runId,
       executionAttempt: this.options.executionAttempt, headSha }, signal);
     const parsed = findingThreadsReadResultSchema.parse(body);
-    if (parsed.runId !== this.options.runId) throw unavailable();
-    return parsed.threads as PriorFindingThread[];
+    if (parsed.runId !== this.options.runId || parsed.headSha !== headSha) throw unavailable();
+    return { headSha: parsed.headSha, complete: parsed.complete, omittedCount: parsed.omittedCount,
+      threads: parsed.threads as PriorFindingThread[] };
   }
 
   async publish(request: FindingThreadsPublishRequest, signal?: AbortSignal):

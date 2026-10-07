@@ -7,6 +7,8 @@ const repositoryRoot = resolve(__dirname, '../..');
 const dockerfilePath = resolve(repositoryRoot, 'Dockerfile.worker');
 const baseImageEnvPath = resolve(repositoryRoot, '.github/worker-image.env');
 const stagingScriptPath = resolve(repositoryRoot, 'scripts/stage-worker-runtime.mjs');
+const qualificationFixtureAllowlistPath = resolve(repositoryRoot, 'scripts/normal-engine-qualification-fixtures.mjs');
+const dockerignorePath = resolve(repositoryRoot, '.dockerignore');
 const liveReviewPath = resolve(repositoryRoot, 'src/cli/runLiveReview.ts');
 const selfTestModulesPath = resolve(repositoryRoot, 'src/cli/workerSelfTestModules.json');
 const ciWorkflowPath = resolve(repositoryRoot, '.github/workflows/ci-cd.yaml');
@@ -95,6 +97,27 @@ describe('worker container contract', () => {
     expect(script).toContain('workerSelfTestModules.json');
     expect(script).toMatch(/(?:tests|coverage|\.git)/u);
     expect(script).toContain('path.relative');
+  });
+
+  it('copies only the digest-pinned neutral qualification bundle into the worker image', () => {
+    const output = execFileSync(process.execPath, [qualificationFixtureAllowlistPath, '--check'], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+    });
+    const allowlist = JSON.parse(output.trim()) as Array<{ path: string; sha256: string; actualSha256: string }>;
+    const dockerfile = readRequired(dockerfilePath);
+    const dockerignore = readRequired(dockerignorePath);
+    const stagingScript = readRequired(stagingScriptPath);
+
+    expect(allowlist).toHaveLength(9);
+    expect(allowlist.every((fixture) => fixture.sha256 === fixture.actualSha256)).toBe(true);
+    expect(allowlist.every((fixture) => !fixture.path.toLowerCase().includes('/oracle/'))).toBe(true);
+    for (const fixture of allowlist) {
+      expect(dockerfile).toContain(`COPY ${fixture.path} ./` + fixture.path);
+      expect(dockerignore).toContain(`!${fixture.path}`);
+    }
+    expect(stagingScript).toContain("verifyQualificationFixtureAllowlist(packageRoot)");
+    expect(allowlist.map(({ path }) => path)).not.toContain('eval-baselines/grounded-lifecycle-corpus-v1/inputs/lc_0d8f4a7c2b9e41f8.json');
   });
 
   it('exposes an offline self-test entrypoint and attests published indexes without a cluster deploy', () => {
