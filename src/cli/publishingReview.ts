@@ -114,7 +114,7 @@ import { parseChangedFiles } from '../review/changedFiles';
 import { loadDiffShrinkInput, renderDiffShrinkSummary } from '../review/diffShrink';
 import {
   DEFAULT_INCREMENTAL_MAX_AGE_MS, incrementalClaimFrom, planIncrementalReview, renderIncrementalSummary,
-  verifyReviewHeadAncestry, type CommitComparisonReader, type IncrementalBaseSource,
+  verifyReviewHeadAncestry, type CommitComparison, type CommitComparisonReader, type IncrementalBaseSource,
   type ReviewHeadAncestryReceipt,
 } from '../review/incrementalReview';
 import { createIncrementalCompareReader } from '../github/incrementalCompareReader';
@@ -137,8 +137,10 @@ import {
 } from '../review/groundedReviewEngine';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, GROUNDED_REVIEW_RECEIPT_V2_VERSION,
   GROUNDED_VERIFICATION_V2_VERSION } from '../review/groundedEvidenceV2';
-import { groundedContinuityCandidateFrom, resolveGroundedFindingContinuity,
-  selectNewestEligibleGroundedCompletion } from '../review/findingContinuity';
+import { groundedContinuityCandidateFrom, groundedContinuityOriginRefs, groundedFixedOriginRefs,
+  groundedOriginAncestryFromComparison, MAX_GROUNDED_ORIGIN_ANCESTRY_COMPARISONS,
+  resolveGroundedFindingContinuity, selectNewestEligibleGroundedCompletion,
+  type GroundedContinuityOriginRef, type GroundedOriginAncestryV1 } from '../review/findingContinuity';
 import type { AuthenticatedDisputesProjection, PrLifecycleHistoryLoad, PrLifecycleHistorySource } from '../review/prLifecycleHistoryHttp';
 import { buildReviewPlanningHistoryContext, renderReviewPlanningHistoryContext,
   type FindingThreadsPlanningSnapshot } from '../review/prReviewPlanningContext';
@@ -429,6 +431,39 @@ export interface PublishingReviewReceipt {
 
 function value(env: NodeJS.ProcessEnv, name: string): string {
   return String(env[name] || '').trim();
+}
+
+async function compareGroundedOriginAncestry(input: {
+  refs: readonly GroundedContinuityOriginRef[];
+  currentHeadSha: string;
+  reader?: CommitComparisonReader;
+  signal?: AbortSignal;
+}): Promise<GroundedOriginAncestryV1[]> {
+  const comparisonKey = (ref: GroundedContinuityOriginRef) => `${ref.priorRunId}\u0000${ref.priorHeadSha}`;
+  const keys = [...new Set(input.refs.map(comparisonKey))].sort();
+  const selectedKeys = new Set(keys.slice(0, MAX_GROUNDED_ORIGIN_ANCESTRY_COMPARISONS));
+  const comparisons = new Map<string, CommitComparison | null>();
+  if (input.reader) {
+    const selected = [...selectedKeys];
+    for (let offset = 0; offset < selected.length && !input.signal?.aborted; offset += 18) {
+      const batch = selected.slice(offset, offset + 18);
+      const rows = await Promise.all(batch.map(async (key) => {
+        const priorHeadSha = key.split('\u0000')[1];
+        try {
+          return [key, await input.reader!.compare(priorHeadSha!, input.currentHeadSha, input.signal)] as const;
+        } catch { return [key, null] as const; }
+      }));
+      for (const [key, comparison] of rows) comparisons.set(key, comparison);
+    }
+  }
+  return input.refs.map((ref) => {
+    const key = comparisonKey(ref);
+    const comparison = comparisons.get(key) ?? null;
+    const reason = ref.currentHeadSha !== input.currentHeadSha ? 'origin-current-head-mismatch'
+      : !selectedKeys.has(key) ? 'origin-comparison-budget-exceeded'
+        : !input.reader || !comparisons.has(key) ? 'origin-comparison-unavailable' : undefined;
+    return groundedOriginAncestryFromComparison(ref, comparison, reason);
+  });
 }
 
 export function invalidPublishingReviewContract(): Error {
@@ -2596,15 +2631,39 @@ export async function runPublishingReviewWorker(
           evidenceDigest: outcome.evidenceDigest,
         });
       });
+      const continuityFindings = lifecycleHistory.status === 'complete' ? lifecycleHistory.findings : [];
+      const originRefsByOutcome = independentVerification.outcomes.map((outcome, index) => {
+        const candidate = continuityCandidates[index];
+        if (outcome.status === 'confirmed' && candidate) return groundedContinuityOriginRefs({
+          candidate, history: lifecycleHistory, currentHeadSha: identity.headSha, continuityFindings,
+        });
+        if (outcome.status === 'contradicted') return groundedFixedOriginRefs({ fingerprint: outcome.fingerprint,
+          path: outcome.path, currentHeadSha: identity.headSha, history: lifecycleHistory, continuityFindings });
+        return null;
+      });
+      const originProofs = await compareGroundedOriginAncestry({
+        refs: originRefsByOutcome.flatMap((refs) => refs ?? []), currentHeadSha: identity.headSha,
+        reader: historyCompareReader, signal: panelDeadline.signal,
+      });
+      let nextOriginProof = 0;
+      const originProofsByOutcome = originRefsByOutcome.map((refs) => {
+        if (!refs) return [] as GroundedOriginAncestryV1[];
+        const proofs = originProofs.slice(nextOriginProof, nextOriginProof + refs.length);
+        nextOriginProof += refs.length;
+        return proofs;
+      });
       const continuityOutcomes = independentVerification.outcomes.map((outcome, index) => {
         const candidate = continuityCandidates[index];
-        if (!candidate) return outcome;
+        const verifiedOriginAncestry = originProofsByOutcome[index] ?? [];
+        const withOriginAncestry = verifiedOriginAncestry.length > 0 ? { ...outcome, verifiedOriginAncestry } : outcome;
+        if (!candidate) return withOriginAncestry;
         const verifiedContinuity = resolveGroundedFindingContinuity({ candidate,
           currentCandidates: continuityCandidates.flatMap((row) => row ? [row] : []),
           history: lifecycleHistory, planningHistory: planningHistoryContext,
-          continuityFindings: lifecycleHistory.status === 'complete' ? lifecycleHistory.findings : [],
+          continuityFindings,
+          verifiedOriginAncestry,
           priorAncestryVerified: historyAncestry?.result === 'ancestor' });
-        return { ...outcome, verifiedContinuity };
+        return { ...withOriginAncestry, verifiedContinuity };
       });
       const filteredPanel = applyGroundedVerificationToPersonas<PanelFinding, PanelResult['personas'][number]>(
         panelResult.personas, independentVerification, changedFiles, reviewDecisionPolicy,

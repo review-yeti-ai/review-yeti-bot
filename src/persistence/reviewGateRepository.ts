@@ -36,10 +36,10 @@ import { parseReviewExecutionCheckpoint, reviewCheckpointMatchesCompletion } fro
 import { evaluateFindingConvergence, findingFingerprint } from '../review/findingConvergence';
 import { affectedContextDigest } from '../review/semanticContext';
 import { createTrustedGroundedHistoryContext, recordTrustedPrReviewCompletion, reservePrReview,
-  type ReviewSemanticFindingInput, type TrustedGroundedHistoryContext,
+  deriveGroundedOriginAncestryRequests, type ReviewSemanticFindingInput, type TrustedGroundedHistoryContext,
   type TrustedGroundedHistoryProjection, type TrustedGroundedLifecycleTransitionV1 } from './reviewPrLifecycleRepository';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, GROUNDED_REVIEW_RECEIPT_V2_VERSION } from '../review/groundedEvidenceV2';
-import type { GroundedFindingContinuity } from '../review/findingContinuity';
+import type { GroundedFindingContinuity, GroundedOriginAncestryRequestsByFingerprint } from '../review/findingContinuity';
 import {
   appendLifecycleEventForRun,
   requireLifecycleEventsMode,
@@ -144,6 +144,7 @@ interface TrustedHistoryAncestryInput {
   prior?: PriorReviewRecord;
   hint?: ReviewHeadAncestryReceipt;
   sourceResolutionProbeManifest?: GroundedV2ResolutionManifest;
+  originRequestsByFingerprint?: GroundedOriginAncestryRequestsByFingerprint;
 }
 type TrustedCompletionResolver = (gate: StoredReviewGate, incremental?: IncrementalVerificationInput,
   verdictCache?: VerdictCacheVerificationInput, historyAncestry?: TrustedHistoryAncestryInput)
@@ -378,9 +379,19 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       const needsHistoryAncestry = deadlineValid && v2OutcomeRun.length > 0;
       const priorHistoryRecord = needsHistoryAncestry
         ? await selectPriorReviewRecord(client, event.runId).catch(() => null) : null;
+      const originRequestsByFingerprint = groundedV2Receipt?.history.status === 'complete'
+        && typeof groundedV2Receipt.history.snapshotId === 'string'
+        ? await deriveGroundedOriginAncestryRequests(client, {
+          runId: event.runId, executionAttempt: event.executionAttempt, workerTokenDigest: proof.workerTokenDigest,
+          repositoryId: event.repositoryId, owner: event.owner, repo: event.repo, prNumber: event.prNumber,
+          headSha: event.headSha, baseSha: event.baseSha, policyDigest: event.policyDigest,
+          configDigest: event.configDigest, contextDigest: String(row.snapshot_digest),
+          snapshotId: groundedV2Receipt.history.snapshotId, outcomes: v2OutcomeRun,
+        }) : {};
       const historyAncestry = groundedV2Receipt ? {
         ...(priorHistoryRecord ? { prior: priorHistoryRecord } : {}),
         ...(groundedV2Receipt.history.verifiedAncestry ? { hint: groundedV2Receipt.history.verifiedAncestry } : {}),
+        originRequestsByFingerprint,
         ...(groundedV2Receipt.verification.sourceResolutionProbeManifest
           ? { sourceResolutionProbeManifest: groundedV2Receipt.verification.sourceResolutionProbeManifest } : {}),
       } : undefined;
@@ -411,6 +422,8 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
             contextDigest: historyReceipt.contextDigest, eventOmittedCount: historyReceipt.eventOmittedCount,
             findingOmittedCount: historyReceipt.findingOmittedCount, legacyOmittedCount: historyReceipt.legacyOmittedCount },
           outcomes: v2OutcomeRun, disputedRechecks: acceptedDisputedRechecks ?? [],
+          originRequestsByFingerprint,
+          serviceOriginAncestry: trusted.originAncestry ?? [],
           priorAncestryVerified: trusted.historyAncestryVerified === true,
           ...(trusted.historyAncestry ? { serviceAncestry: trusted.historyAncestry } : {}),
         });

@@ -170,6 +170,58 @@ describe('REL-1056 trusted-completion failure classification', () => {
 });
 
 describe('service-owned authoritative completion context', () => {
+  it('marks a force-pushed-away cause head as not-ancestor after the exact service comparison', async () => {
+    const request = { sourceEventId: '00000000-0000-4000-8000-000000000041', sourceKind: 'cause' as const,
+      priorRunId: `run_${'4'.repeat(32)}`, priorHeadSha: 'd'.repeat(40), currentHeadSha: target.headSha };
+    const comparison = vi.fn(async () => ({ status: 'diverged' as const, mergeBaseSha: 'e'.repeat(40),
+      files: [{ path: 'src/auth/guard.ts' }] }));
+    const f = fixture({ readerFactory: async () => ({ currentCandidate: vi.fn(async () => ({ ...current })),
+      exactCurrentDiff: vi.fn(async () => ({ current: { ...current }, diff, expectedFileCount: 1 })),
+      commitComparison: comparison }) });
+
+    const context = await f.context(f.gate, undefined, undefined, { originRequestsByFingerprint: {
+      [`fp1_${'a'.repeat(24)}`]: [request],
+    } });
+
+    expect(comparison).toHaveBeenCalledTimes(1);
+    expect(comparison.mock.calls[0]?.slice(1, 3)).toEqual([request.priorHeadSha, target.headSha]);
+    expect(context.originAncestry).toMatchObject([{ ...request, version: 'GroundedOriginAncestry.v1', result: 'not-ancestor' }]);
+    expect(context.originAncestry?.[0]?.comparisonDigest).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
+  it('preserves a repair origin as unavailable when the exact comparison read fails', async () => {
+    const request = { sourceEventId: '00000000-0000-4000-8000-000000000042', sourceKind: 'repair' as const,
+      priorRunId: `run_${'5'.repeat(32)}`, priorHeadSha: 'd'.repeat(40), currentHeadSha: target.headSha };
+    const comparison = vi.fn(async () => { throw new Error('comparison unavailable'); });
+    const f = fixture({ readerFactory: async () => ({ currentCandidate: vi.fn(async () => ({ ...current })),
+      exactCurrentDiff: vi.fn(async () => ({ current: { ...current }, diff, expectedFileCount: 1 })),
+      commitComparison: comparison }) });
+
+    const context = await f.context(f.gate, undefined, undefined, { originRequestsByFingerprint: {
+      [`fp1_${'b'.repeat(24)}`]: [request],
+    } });
+
+    expect(comparison).toHaveBeenCalledTimes(1);
+    expect(context.originAncestry).toMatchObject([{ ...request, version: 'GroundedOriginAncestry.v1', result: 'unavailable' }]);
+    expect(context.originAncestry?.[0]?.comparisonDigest).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
+  it('does not compare an origin request bound to a different current head', async () => {
+    const request = { sourceEventId: '00000000-0000-4000-8000-000000000043', sourceKind: 'cause' as const,
+      priorRunId: `run_${'6'.repeat(32)}`, priorHeadSha: 'd'.repeat(40), currentHeadSha: 'f'.repeat(40) };
+    const comparison = vi.fn(async () => ({ status: 'ahead' as const, mergeBaseSha: 'd'.repeat(40), files: [] }));
+    const f = fixture({ readerFactory: async () => ({ currentCandidate: vi.fn(async () => ({ ...current })),
+      exactCurrentDiff: vi.fn(async () => ({ current: { ...current }, diff, expectedFileCount: 1 })),
+      commitComparison: comparison }) });
+
+    const context = await f.context(f.gate, undefined, undefined, { originRequestsByFingerprint: {
+      [`fp1_${'c'.repeat(24)}`]: [request],
+    } });
+
+    expect(comparison).not.toHaveBeenCalled();
+    expect(context.originAncestry).toBeUndefined();
+  });
+
   it('derives dependency probes from authenticated importer source and ignores worker-reported states', async () => {
     const importerPath = 'src/use.ts';
     const importerContent = "import { Api } from './api';\n";

@@ -1,6 +1,7 @@
 import type { ReviewGateCandidate } from './reviewGatePolicy';
 import type { TrustedReviewCoverageContract } from './workerReviewCompletion';
 import type { ReviewHeadAncestryReceipt } from './incrementalReview';
+import type { GroundedOriginAncestryV1 } from './findingContinuity';
 import type { TrustedConventionAdjudicationReadResult, TrustedConventionCurrentFinding } from '../github/trustedConventionAdjudicationReader';
 
 export interface ReviewGateCoordinates {
@@ -86,6 +87,8 @@ export interface TrustedGateCompletionContext {
   historyAncestryVerified?: boolean;
   /** Exact service-recomputed receipt; worker hint is never copied without a matching comparison digest. */
   historyAncestry?: ReviewHeadAncestryReceipt;
+  /** Service-recomputed exact source-origin comparisons; no worker-provided head is authority. */
+  originAncestry?: readonly GroundedOriginAncestryV1[];
   /** Repository-scoped authenticated source capability; only service-derived current findings are queried. */
   readTrustedConventionAdjudications?: (input: {
     currentFindings: readonly TrustedConventionCurrentFinding[];

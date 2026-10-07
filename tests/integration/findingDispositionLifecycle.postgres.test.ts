@@ -11,6 +11,7 @@ import { PostgresReviewGateRepository, type StoredReviewGate } from '../../src/p
 import {
   createPrLifecycleHistorySnapshot,
   createTrustedGroundedHistoryContext,
+  deriveGroundedOriginAncestryRequests,
   readPrLifecycleHistorySnapshotPage,
   recordTrustedPrReviewCompletion,
   recordPrFindingRecheckRequest,
@@ -41,8 +42,12 @@ import { initializeOwnedReviewSchema } from '../support/ownedReviewSchema';
 import {
   groundedFindingContinuityDigest,
   groundedContinuityCandidateFrom,
+  groundedContinuityOriginRefs,
+  groundedFixedOriginRefs,
+  groundedOriginAncestryFromComparison,
   resolveGroundedFindingContinuity,
   type GroundedContinuityCandidate,
+  type GroundedContinuityOriginRef,
   type GroundedFindingContinuity,
 } from '../../src/review/findingContinuity';
 import { evaluateReviewGate, type ReviewGateCandidate, type ReviewGateDecision } from '../../src/review/reviewGatePolicy';
@@ -709,6 +714,20 @@ function continuityCandidate(fingerprint: string, overrides: Partial<GroundedCon
   };
 }
 
+function originAncestryProofs(refs: readonly GroundedContinuityOriginRef[] | null | undefined) {
+  return (refs ?? []).map((ref) => {
+    const comparison = { status: 'ahead' as const, mergeBaseSha: ref.priorHeadSha, files: [] };
+    return groundedOriginAncestryFromComparison(ref, comparison);
+  });
+}
+
+function candidateOriginAncestry(candidate: GroundedContinuityCandidate, history: PrLifecycleHistoryLoad,
+  currentHeadSha: string) {
+  const refs = groundedContinuityOriginRefs({ candidate, history, currentHeadSha,
+    continuityFindings: history.status === 'complete' ? history.findings : [] });
+  return { refs: refs ?? [], proofs: originAncestryProofs(refs) };
+}
+
 async function continuityInput(run: RunFixture, candidate: GroundedContinuityCandidate, receipt: GroundedFindingContinuity,
   priorAncestryVerified = true) {
   return validatePrFindingContinuityReceipt(pool!, {
@@ -727,12 +746,16 @@ async function continuityInput(run: RunFixture, candidate: GroundedContinuityCan
     currentEvidenceSemanticsVersion: SEMANTICS,
     candidate,
     receipt,
+    ...(receipt.verifiedOriginAncestry ? { verifiedOriginAncestry: receipt.verifiedOriginAncestry } : {}),
     priorAncestryVerified,
   });
 }
 
 async function trustedContinuityProjection(run: RunFixture, history: PrLifecycleHistoryLoad,
   candidate: GroundedContinuityCandidate, receipt: GroundedFindingContinuity, prior: RunFixture) {
+  const originRefs = groundedContinuityOriginRefs({ candidate, history, currentHeadSha: run.headSha,
+    continuityFindings: history.status === 'complete' ? history.findings : [] });
+  const serviceOriginAncestry = originAncestryProofs(originRefs);
   const ancestry = await verifyReviewHeadAncestry({
     priorRunId: prior.runId, priorHeadSha: prior.headSha, currentHeadSha: run.headSha,
     reader: { compare: async () => ({ status: 'ahead' as const, mergeBaseSha: prior.headSha, files: [] }) },
@@ -755,7 +778,8 @@ async function trustedContinuityProjection(run: RunFixture, history: PrLifecycle
       eventOmittedCount: history.eventOmittedCount, findingOmittedCount: history.findingOmittedCount,
       legacyOmittedCount: history.legacyOmittedCount },
     outcomes,
-    disputedRechecks: [], priorAncestryVerified: ancestry.result === 'ancestor', serviceAncestry: ancestry,
+    disputedRechecks: [], originRequestsByFingerprint: originRefs ? { [candidate.currentFingerprint]: originRefs } : {},
+    serviceOriginAncestry, priorAncestryVerified: ancestry.result === 'ancestor', serviceAncestry: ancestry,
   });
   return { ancestry, projection };
 }
@@ -959,7 +983,8 @@ describeWithPostgres('typed PR finding disposition lifecycle (real PostgreSQL)',
         history: { status: 'complete', snapshotId: snapshot.snapshotId, contextDigest: snapshot.contextDigest,
           eventOmittedCount: snapshot.eventOmittedCount, findingOmittedCount: snapshot.findingOmittedCount,
           legacyOmittedCount: snapshot.legacyOmittedCount },
-        outcomes: [], disputedRechecks: fixture.validated, priorAncestryVerified: false,
+        outcomes: [], disputedRechecks: fixture.validated, originRequestsByFingerprint: {}, serviceOriginAncestry: [],
+        priorAncestryVerified: false,
       });
     const valid = await seedAuthenticatedP1Recheck(nextPrNumber++);
     expect(valid.validated).toHaveLength(1);
@@ -1250,8 +1275,10 @@ describeWithPostgres('typed PR finding disposition lifecycle (real PostgreSQL)',
     const preFixPlanning = buildReviewPlanningHistoryContext({ history: preFixHistory,
       threadSnapshot: threadSnapshot(fixedRun.headSha), expectedHeadSha: fixedRun.headSha,
       expectedBaseSha: fixedRun.baseSha, changedPaths: ['src/auth/tenantGuard.ts'] });
+    const preFixOrigins = candidateOriginAncestry(candidate, preFixHistory, fixedRun.headSha);
     const preFixReceipt = resolveGroundedFindingContinuity({ candidate, history: preFixHistory,
-      planningHistory: preFixPlanning, continuityFindings: preFixHistory.findings, priorAncestryVerified: true });
+      planningHistory: preFixPlanning, continuityFindings: preFixHistory.findings,
+      verifiedOriginAncestry: preFixOrigins.proofs, priorAncestryVerified: true });
     expect(preFixReceipt.status).toBe('continuous');
     expect(await continuityInput(fixedRun, candidate, preFixReceipt)).toBe(true);
     const preFixTrusted = await trustedContinuityProjection(fixedRun, preFixHistory, candidate, preFixReceipt, original);
@@ -1292,13 +1319,13 @@ describeWithPostgres('typed PR finding disposition lifecycle (real PostgreSQL)',
     expect(history.status).toBe('complete');
     const planning = buildReviewPlanningHistoryContext({ history, threadSnapshot: threadSnapshot(active.headSha),
       expectedHeadSha: active.headSha, expectedBaseSha: active.baseSha, changedPaths: ['src/auth/tenantGuard.ts'] });
+    const activeOrigins = candidateOriginAncestry(candidate, history, active.headSha);
     const receipt = resolveGroundedFindingContinuity({ candidate, history, planningHistory: planning,
-      continuityFindings: history.findings, priorAncestryVerified: true });
+      continuityFindings: history.findings, verifiedOriginAncestry: activeOrigins.proofs, priorAncestryVerified: true });
     expect(receipt).toMatchObject({ status: 'reopened', durableFindingId: oldRow.durable_finding_id,
       historySnapshotId: history.snapshotId, historyContextDigest: history.contextDigest });
-    expect(receipt.sourceEventIds).toEqual(expect.arrayContaining([
-      String(oldRow.finding_event_id), String(fixedFindingRow.finding_event_id), String(fixedRow.event_id),
-    ]));
+    expect(receipt.sourceEventIds).toEqual([String(oldRow.finding_event_id), String(fixedRow.event_id)].sort());
+    expect(receipt.sourceEventIds).not.toContain(String(fixedFindingRow.finding_event_id));
     expect(receipt.sourceEventIds).toContain(String(fixedRow.event_id));
     const durableRows = await pool!.query(`SELECT finding_event_id, durable_finding_id, verification_status, source_evidence
       FROM review_semantic_finding_events WHERE lifecycle_id = (
@@ -1314,7 +1341,7 @@ describeWithPostgres('typed PR finding disposition lifecycle (real PostgreSQL)',
       priorHeadSha: cleanDescendant.headSha, currentHeadSha: active.headSha });
     expect(reopenedTrusted.projection?.groundedHistory.expectedContinuityByFingerprint[oldFinding.fingerprint])
       .toEqual(receipt);
-    expect(await continuityInput(active, candidate, receipt, false)).toBe(false);
+    expect(await continuityInput(active, candidate, receipt, false)).toBe(true);
     expect(await continuityInput(active, { ...candidate,
       rootCause: { ...candidate.rootCause, contractId: 'other-contract' } }, receipt)).toBe(false);
     expect(await validatePrFindingContinuityReceipt(pool!, {
@@ -1429,7 +1456,8 @@ interface GateLifecycleRun {
   at: number;
 }
 
-type ResolverHistoryInput = { prior?: { runId: string; headSha: string } };
+type ResolverHistoryInput = { prior?: { runId: string; headSha: string };
+  originRequestsByFingerprint?: Readonly<Record<string, readonly GroundedContinuityOriginRef[]>> };
 type GateWorkerFinding = WorkerReviewCompletion['result']['personas'][number]['findings'][number];
 
 describeWithPostgres('grounded v2 continuity through the real PostgreSQL Gate transaction', () => {
@@ -1682,21 +1710,30 @@ describeWithPostgres('grounded v2 continuity through the real PostgreSQL Gate tr
       ...(ancestry ? { verifiedAncestry: ancestry } : {}) };
     const outcome = mutable.verification.outcomes[0];
     if (outcome && input.forgedSeverity) outcome.severity = 'P2';
-    if (outcome && outcome.status === 'confirmed') {
-      const candidate = groundedContinuityCandidateFrom(outcome);
-      if (!candidate) throw new Error('The current V2 fixture did not produce a continuity candidate');
-      let continuity = resolveGroundedFindingContinuity({ candidate, currentCandidates: [candidate], history,
-        planningHistory: planning, continuityFindings: history.findings,
-        priorAncestryVerified: ancestry?.result === 'ancestor' });
-      if (input.forgedContinuity) {
-        const forgedMaterial = { ...continuity, status: 'reopened' as const,
-          durableFindingId: `lf1_${'a'.repeat(32)}`, historySnapshotId: randomUUID(),
-          sourceEventIds: continuity.status === 'continuous' || continuity.status === 'reopened'
-            ? continuity.sourceEventIds : [randomUUID()] };
-        const { evidenceDigest: _ignored, ...unsigned } = forgedMaterial as GroundedFindingContinuity;
-        continuity = { ...unsigned, evidenceDigest: groundedFindingContinuityDigest(unsigned) } as GroundedFindingContinuity;
+    for (const currentOutcome of mutable.verification.outcomes) {
+      const candidate = currentOutcome.status === 'confirmed' ? groundedContinuityCandidateFrom(currentOutcome) : null;
+      const originRefs = candidate ? groundedContinuityOriginRefs({ candidate, history,
+        currentHeadSha: run.headSha, continuityFindings: history.findings })
+        : currentOutcome.status === 'contradicted' ? groundedFixedOriginRefs({
+          fingerprint: typeof currentOutcome.fingerprint === 'string' ? currentOutcome.fingerprint : '',
+          path: typeof currentOutcome.path === 'string' ? currentOutcome.path : '',
+          currentHeadSha: run.headSha, history, continuityFindings: history.findings }) : null;
+      const verifiedOriginAncestry = originAncestryProofs(originRefs);
+      if (verifiedOriginAncestry.length > 0) currentOutcome.verifiedOriginAncestry = verifiedOriginAncestry;
+      if (candidate) {
+        let continuity = resolveGroundedFindingContinuity({ candidate, currentCandidates: [candidate], history,
+          planningHistory: planning, continuityFindings: history.findings, verifiedOriginAncestry,
+          priorAncestryVerified: ancestry?.result === 'ancestor' });
+        if (input.forgedContinuity) {
+          const forgedMaterial = { ...continuity, status: 'reopened' as const,
+            durableFindingId: `lf1_${'a'.repeat(32)}`, historySnapshotId: randomUUID(),
+            sourceEventIds: continuity.status === 'continuous' || continuity.status === 'reopened'
+              ? continuity.sourceEventIds : [randomUUID()] };
+          const { evidenceDigest: _ignored, ...unsigned } = forgedMaterial as GroundedFindingContinuity;
+          continuity = { ...unsigned, evidenceDigest: groundedFindingContinuityDigest(unsigned) } as GroundedFindingContinuity;
+        }
+        currentOutcome.verifiedContinuity = continuity;
       }
-      outcome.verifiedContinuity = continuity;
     }
     const verifiedFindings = input.finding && (input.verifierStatus ?? 'confirmed') === 'confirmed'
       ? [input.finding] : [];
@@ -1729,6 +1766,14 @@ describeWithPostgres('grounded v2 continuity through the real PostgreSQL Gate tr
     if (!preHistoryDerivation.valid && !input.allowInvalidDerivation) {
       throw new Error(`V2 fixture did not reach canonical Gate derivation: ${preHistoryDerivation.message}`);
     }
+    const gateOriginRequests = history.snapshotId ? await deriveGroundedOriginAncestryRequests(gatePool, {
+      runId: run.runId, executionAttempt: 1, workerTokenDigest: GATE_TEST_WORKER_TOKEN,
+      repositoryId: run.repositoryId, owner: run.owner, repo: run.repo, prNumber: run.prNumber,
+      headSha: run.headSha, baseSha: run.baseSha, policyDigest: run.policyDigest,
+      configDigest: run.configDigest, contextDigest: run.contextDigest, snapshotId: history.snapshotId,
+      outcomes: mutable.verification.outcomes as unknown as Parameters<typeof deriveGroundedOriginAncestryRequests>[1]['outcomes'],
+    }) : {};
+    const serviceOriginAncestry = Object.values(gateOriginRequests).flatMap(originAncestryProofs);
     const dbRebuiltHistory = await createTrustedGroundedHistoryContext(gatePool, {
       runId: run.runId, executionAttempt: 1, workerTokenDigest: GATE_TEST_WORKER_TOKEN,
       repositoryId: run.repositoryId, owner: run.owner, repo: run.repo, prNumber: run.prNumber,
@@ -1738,7 +1783,8 @@ describeWithPostgres('grounded v2 continuity through the real PostgreSQL Gate tr
         eventOmittedCount: history.eventOmittedCount, findingOmittedCount: history.findingOmittedCount,
         legacyOmittedCount: history.legacyOmittedCount },
       outcomes: mutable.verification.outcomes as unknown as Parameters<typeof createTrustedGroundedHistoryContext>[1]['outcomes'],
-      disputedRechecks: [], priorAncestryVerified: ancestry?.result === 'ancestor',
+      disputedRechecks: [], originRequestsByFingerprint: gateOriginRequests, serviceOriginAncestry,
+      priorAncestryVerified: ancestry?.result === 'ancestor',
       ...(ancestry ? { serviceAncestry: ancestry } : {}),
     });
     const confirmedHint = mutable.verification.outcomes.find((outcome) => outcome.status === 'confirmed')?.verifiedContinuity as GroundedFindingContinuity | undefined;
@@ -1754,11 +1800,14 @@ describeWithPostgres('grounded v2 continuity through the real PostgreSQL Gate tr
         reader: { compare: async (baseSha, headSha) => ({ status: 'ahead', mergeBaseSha: baseSha,
           files: [{ path: GATE_TEST_PATH, status: 'modified', patch: `@@ -1 +1 @@\n-old-${headSha.slice(0, 5)}\n+new-${headSha.slice(0, 5)}` }] }) },
       }) : undefined;
+      const serviceOriginAncestry = Object.values(historyInput?.originRequestsByFingerprint ?? {})
+        .flatMap(originAncestryProofs);
       return { current: { repositoryId: run.repositoryId, prNumber: run.prNumber,
         headSha: run.headSha, baseSha: run.baseSha, policyDigest: run.policyDigest, open: true, draft: false },
         coverage: { expectedPersonaIds: ['security'], reviewDecisionPolicy: REVIEW_SEVERITY_POLICY_V2,
           changedFiles, coverageComplete: true, quorumSatisfied: true, findingThreads: [],
           groundedVerifierRouting: { primaryModel: 'grounded-fixture-model' } },
+        ...(serviceOriginAncestry.length > 0 ? { originAncestry: serviceOriginAncestry } : {}),
         ...(serviceAncestry ? { historyAncestry: serviceAncestry,
           historyAncestryVerified: serviceAncestry.result === 'ancestor' } : {}) };
     };

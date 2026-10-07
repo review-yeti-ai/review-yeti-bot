@@ -21,6 +21,8 @@ import { REVIEW_SEVERITY_POLICY_V2 } from './reviewDecision';
 import { groundedRelativeImportCandidates, parseGroundedRelativeImports } from './groundedContractResolver';
 import type { GroundedImportResolutionSourceV1 } from './groundedEvidenceV2';
 import type { TrustedGroundedImportResolutionSourceV1 } from './workerReviewCompletion';
+import { groundedOriginAncestryFromComparison, MAX_GROUNDED_ORIGIN_ANCESTRY_COMPARISONS,
+  type GroundedContinuityOriginRef, type GroundedOriginAncestryV1 } from './findingContinuity';
 import {
   TrustedCompletionResolutionError,
   isDeterministicCompletionFailure,
@@ -60,8 +62,81 @@ export interface TrustedHistoryAncestryInput {
   prior?: PriorReviewRecord;
   /** Worker hint is comparison input only; service re-reads and verifies the exact comparison. */
   hint?: ReviewHeadAncestryReceipt;
+  /** Source IDs/heads rederived from the authenticated captured history before any provider comparison. */
+  originRequestsByFingerprint?: Readonly<Record<string, readonly GroundedContinuityOriginRef[]>>;
   /** Untrusted names only; importer bytes and candidate states are re-read at exact pins. */
   sourceResolutionProbeManifest?: readonly GroundedImportResolutionSourceV1[];
+}
+
+const originRequestSchema = z.object({ sourceEventId: z.string().uuid(), sourceKind: z.enum(['cause', 'repair']),
+  priorRunId: z.string().regex(/^run_[a-f0-9]{32}$/u), priorHeadSha: reviewPolicySourceSchema.shape.sha,
+  currentHeadSha: reviewPolicySourceSchema.shape.sha }).strict();
+
+async function compareTrustedOriginAncestry(input: {
+  reader: Partial<Pick<AuthoritativeReviewReader, 'commitComparison'>>;
+  repository: ReviewRepositoryIdentity;
+  currentHeadSha: string;
+  requests: Readonly<Record<string, readonly GroundedContinuityOriginRef[]>> | undefined;
+  signal: AbortSignal;
+  deadline: number;
+}): Promise<GroundedOriginAncestryV1[]> {
+  if (!input.requests || !input.reader.commitComparison) return [];
+  const bySourceId = new Map<string, GroundedContinuityOriginRef>();
+  const conflictingSourceIds = new Set<string>();
+  for (const [fingerprint, refs] of Object.entries(input.requests)) {
+    if (!/^fp1_[a-f0-9]{24}$/u.test(fingerprint) || !Array.isArray(refs) || refs.length > 2) continue;
+    for (const raw of refs) {
+      const parsed = originRequestSchema.safeParse(raw);
+      if (!parsed.success || parsed.data.currentHeadSha !== input.currentHeadSha) continue;
+      const existing = bySourceId.get(parsed.data.sourceEventId);
+      if (existing && canonicalJson(existing) !== canonicalJson(parsed.data)) conflictingSourceIds.add(parsed.data.sourceEventId);
+      else bySourceId.set(parsed.data.sourceEventId, parsed.data);
+    }
+  }
+  for (const sourceEventId of conflictingSourceIds) bySourceId.delete(sourceEventId);
+  const requests = [...bySourceId.values()].sort((left, right) => left.sourceKind < right.sourceKind ? -1
+    : left.sourceKind > right.sourceKind ? 1 : left.sourceEventId.localeCompare(right.sourceEventId));
+  const comparisonKeys = [...new Set(requests.map((row) => `${row.priorRunId}\u0000${row.priorHeadSha}`))]
+    .sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+  const selectedComparisonKeys = new Set(comparisonKeys.slice(0, MAX_GROUNDED_ORIGIN_ANCESTRY_COMPARISONS));
+  const comparisons = new Map<string, Awaited<ReturnType<NonNullable<AuthoritativeReviewReader['commitComparison']>>> | null>();
+  const originBudgetMs = Math.min(2_000, Math.max(0, input.deadline - performance.now() - 500));
+  const originAbort = new AbortController();
+  const relayAbort = () => originAbort.abort();
+  if (input.signal.aborted) originAbort.abort();
+  else input.signal.addEventListener('abort', relayAbort, { once: true });
+  let stopTimer: ReturnType<typeof setTimeout> | undefined;
+  let stopResolve: (() => void) | undefined;
+  const stopped = new Promise<void>((resolve) => { stopResolve = resolve; });
+  if (originBudgetMs > 0) stopTimer = setTimeout(() => { originAbort.abort(); stopResolve?.(); }, originBudgetMs);
+  try {
+    const selectedKeys = [...selectedComparisonKeys];
+    for (let offset = 0; offset < selectedKeys.length && !originAbort.signal.aborted; offset += 18) {
+      const batch = selectedKeys.slice(offset, offset + 18);
+      const reads = Promise.all(batch.map(async (key) => {
+        const [, priorHeadSha] = key.split('\u0000');
+        try {
+          const comparison = await input.reader.commitComparison!({ ...input.repository }, priorHeadSha!,
+            input.currentHeadSha, originAbort.signal);
+          return [key, comparison] as const;
+        } catch { return [key, null] as const; }
+      }));
+      const result = await Promise.race([reads, stopped.then(() => null)]);
+      if (!result) break;
+      for (const [key, comparison] of result) comparisons.set(key, comparison);
+    }
+  } finally {
+    if (stopTimer !== undefined) clearTimeout(stopTimer);
+    input.signal.removeEventListener('abort', relayAbort);
+    originAbort.abort();
+  }
+  return requests.map((request) => {
+    const key = `${request.priorRunId}\u0000${request.priorHeadSha}`;
+    const comparison = comparisons.get(key) ?? null;
+    const reason = !selectedComparisonKeys.has(key) ? 'origin-comparison-budget-exceeded'
+      : originBudgetMs <= 0 || !comparisons.has(key) ? 'origin-comparison-unavailable' : undefined;
+    return groundedOriginAncestryFromComparison(request, comparison, reason);
+  });
 }
 
 function sourceProbeKey(repository: string, revisionSha: string, path: string): string {
@@ -438,8 +513,12 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
           && provider.enabled)?.model
         : stored.transport.model;
       if (!primaryGroundedVerifierModel) throw unavailable();
+      const originAncestry = await compareTrustedOriginAncestry({ reader, repository,
+        currentHeadSha: requested.headSha, requests: historyAncestry?.originRequestsByFingerprint,
+        signal: abort.signal, deadline });
       return { current: { ...final, policyDigest }, historyAncestryVerified,
-        ...(trustedHistoryAncestry ? { historyAncestry: trustedHistoryAncestry } : {}), coverage: {
+        ...(trustedHistoryAncestry ? { historyAncestry: trustedHistoryAncestry } : {}),
+        ...(originAncestry.length > 0 ? { originAncestry } : {}), coverage: {
         expectedPersonaIds, changedFiles: files,
         ...(reviewDecisionPolicy ? { reviewDecisionPolicy } : {}),
         groundedVerifierRouting: { primaryModel: primaryGroundedVerifierModel },

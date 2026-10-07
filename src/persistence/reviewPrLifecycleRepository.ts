@@ -3,13 +3,17 @@ import { canonicalJson, sha256 } from '../review/reviewCore';
 import { newDurableFindingId, durableFindingIdFor, findingDispositionEventSchema, findingDispositionEventType,
   type FindingDispositionDraft } from '../review/findingDisposition';
 import { continuityReceiptMatchesCurrent, groundedContinuityCandidateFrom, groundedFindingContinuitySchema,
-  resolveGroundedFindingContinuity, verifiedFixedVerificationFindingIds,
-  type GroundedContinuityCandidate, type GroundedFindingContinuity } from '../review/findingContinuity';
-import type { PrLifecycleHistoryLoad } from '../review/prLifecycleHistoryHttp';
+  groundedContinuityOriginRefs, groundedFixedOriginRefs, groundedOriginAncestryJoin,
+  resolveGroundedFindingContinuity, selectNewestEligibleGroundedCompletion, verifiedRepairVerificationLinks,
+  type GroundedContinuityCandidate, type GroundedContinuityOriginRef,
+  type GroundedFindingContinuity, type GroundedOriginAncestryRequestsByFingerprint, type GroundedOriginAncestryV1 }
+  from '../review/findingContinuity';
+import type { PrLifecycleHistoryEvent, PrLifecycleHistoryFinding, PrLifecycleHistoryLoad } from '../review/prLifecycleHistoryHttp';
 import { constantTimeDigestEqual } from '../utils/constantTimeDigest';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, groundedCitationManifestDigest,
   isValidGroundedCitationV2, type GroundedCitationV2 } from '../review/groundedEvidenceV2';
 import type { ReviewHeadAncestryReceipt } from '../review/incrementalReview';
+import type { ReviewPlanningHistoryContext } from '../review/prReviewPlanningContext';
 import type { WorkerReviewResult } from '../review/workerReviewCompletion';
 import type { TrustedGroundedHistoryContext as WindowTrustedGroundedHistoryContext,
   TrustedGroundedLifecycleTransitionV1 as WindowTrustedGroundedLifecycleTransitionV1 } from '../review/workerReviewCompletion';
@@ -133,6 +137,152 @@ function sameRootCauseIdentity(left: unknown, right: GroundedContinuityCandidate
     && value.contractId === right.contractId && value.failureModeId === right.failureModeId;
 }
 
+type CapturedGroundedFinding = PrLifecycleHistoryFinding & { groundedEvidence: Record<string, unknown> };
+
+function rowsInCapturedOrder(rows: readonly Record<string, unknown>[], ids: readonly string[], key: string): Record<string, unknown>[] {
+  const byId = new Map(rows.map((row) => [String(row[key]), row]));
+  return ids.flatMap((id) => {
+    const row = byId.get(id);
+    return row ? [row] : [];
+  });
+}
+
+function projectCapturedFindings(rows: readonly Record<string, unknown>[]): CapturedGroundedFinding[] {
+  return rows.map((row) => {
+    const sourceEvidence = jsonObject(row.source_evidence);
+    const groundedEvidence = jsonObject(sourceEvidence.groundedEvidenceV2);
+    const cause = jsonObject(groundedEvidence.rootCause);
+    const rootCause = ['componentId', 'behaviorId', 'contractId', 'failureModeId'].every((key) =>
+      typeof cause[key] === 'string')
+      ? { componentId: String(cause.componentId), behaviorId: String(cause.behaviorId),
+        contractId: String(cause.contractId), failureModeId: String(cause.failureModeId) } : undefined;
+    const anchor = jsonObject(groundedEvidence.causeAnchor);
+    const causeAnchor = typeof anchor.componentPath === 'string' && (anchor.side === 'head' || anchor.side === 'base')
+      && Number.isSafeInteger(anchor.startLine) && Number.isSafeInteger(anchor.endLine)
+      && Array.isArray(anchor.citationIds) && anchor.citationIds.length > 0 && anchor.citationIds.length <= 64
+      && anchor.citationIds.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 256)
+      && typeof anchor.contentDigest === 'string'
+      ? { componentPath: anchor.componentPath, side: anchor.side as 'head' | 'base', startLine: Number(anchor.startLine),
+        endLine: Number(anchor.endLine), citationIds: [...anchor.citationIds] as string[], contentDigest: anchor.contentDigest } : undefined;
+    return {
+      findingEventId: String(row.finding_event_id), durableFindingId: String(row.durable_finding_id),
+      fingerprint: String(row.fingerprint), path: String(row.path), firstSeenHead: String(row.first_seen_head),
+      lastSeenHead: String(row.last_seen_head), affectedContextDigest: String(row.affected_context_digest),
+      sourceSeverity: String(row.source_severity), effectiveSeverity: String(row.effective_severity),
+      disposition: String(row.disposition), blocking: row.blocking === true,
+      verificationStatus: String(row.verification_status) as 'confirmed' | 'contradicted' | 'insufficient',
+      evidenceDigest: String(row.evidence_digest), groundedEvidence,
+      ...(rootCause ? { rootCause } : {}), ...(causeAnchor ? { causeAnchor } : {}),
+      ...(typeof groundedEvidence.semanticsVersion === 'string'
+        ? { groundedEvidenceSemanticsVersion: groundedEvidence.semanticsVersion } : {}),
+      ...(typeof groundedEvidence.sourceWindowManifestDigest === 'string'
+        ? { sourceWindowManifestDigest: groundedEvidence.sourceWindowManifestDigest } : {}),
+    };
+  });
+}
+
+function projectCapturedEvents(rows: readonly Record<string, unknown>[]): PrLifecycleHistoryEvent[] {
+  return rows.map((row) => {
+    const payload = jsonObject(row.payload);
+    const disposition = findingDispositionEventSchema.safeParse(payload);
+    const decisionReceipt = jsonObject(payload.decisionReceipt);
+    const evidenceSemanticsVersion = row.event_type === 'review.completion_recorded'
+      && typeof decisionReceipt.evidenceSemanticsVersion === 'string'
+      && decisionReceipt.evidenceSemanticsVersion.length <= 120 ? decisionReceipt.evidenceSemanticsVersion : undefined;
+    const completionStatus: PrLifecycleHistoryLoad['events'][number]['completionStatus'] = row.event_type === 'review.completion_recorded'
+      && (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled')
+      ? payload.status : undefined;
+    const serviceCoverage = jsonObject(decisionReceipt.serviceCoverage);
+    const coverageComplete = row.event_type === 'review.completion_recorded'
+      && typeof serviceCoverage.coverageComplete === 'boolean' ? serviceCoverage.coverageComplete : undefined;
+    const quorumSatisfied = row.event_type === 'review.completion_recorded'
+      && typeof serviceCoverage.quorumSatisfied === 'boolean' ? serviceCoverage.quorumSatisfied : undefined;
+    const verificationStatus = row.verification_status === 'confirmed' || row.verification_status === 'contradicted'
+      ? row.verification_status : 'insufficient';
+    const verificationFindingEventId = typeof payload.findingEventId === 'string' && uuid(payload.findingEventId)
+      ? payload.findingEventId : undefined;
+    const verificationFingerprint = payload.fingerprint;
+    const verificationStatusValue = payload.status === 'confirmed' || payload.status === 'contradicted'
+      || payload.status === 'insufficient' ? payload.status : undefined;
+    const hasCurrentAffectedContextDigest = Object.prototype.hasOwnProperty.call(payload, 'currentAffectedContextDigest');
+    const hasSourceAffectedContextDigest = Object.prototype.hasOwnProperty.call(payload, 'sourceAffectedContextDigest');
+    const currentAffectedContextDigest = typeof payload.currentAffectedContextDigest === 'string'
+      && validDigest(payload.currentAffectedContextDigest) ? payload.currentAffectedContextDigest : undefined;
+    const sourceAffectedContextDigest = typeof payload.sourceAffectedContextDigest === 'string'
+      && validDigest(payload.sourceAffectedContextDigest) ? payload.sourceAffectedContextDigest : undefined;
+    const verificationDigestsValid = (!hasCurrentAffectedContextDigest || currentAffectedContextDigest !== undefined)
+      && (!hasSourceAffectedContextDigest || sourceAffectedContextDigest !== undefined);
+    const verification: PrLifecycleHistoryEvent['verification'] = row.event_type === 'finding.independent_verification'
+      && verificationFindingEventId !== undefined
+      && typeof verificationFingerprint === 'string' && /^fp1_[a-f0-9]{24}$/u.test(verificationFingerprint)
+      && verificationStatusValue !== undefined && verificationDigestsValid
+      ? { findingEventId: verificationFindingEventId, fingerprint: verificationFingerprint,
+        status: verificationStatusValue,
+        ...(currentAffectedContextDigest ? { currentAffectedContextDigest } : {}),
+        ...(sourceAffectedContextDigest ? { sourceAffectedContextDigest } : {}) } : undefined;
+    return { eventId: String(row.event_id), eventType: String(row.event_type),
+      ...(typeof row.run_id === 'string' ? { runId: row.run_id } : {}),
+      ...(Number.isSafeInteger(Number(row.execution_attempt)) && Number(row.execution_attempt) > 0
+        ? { executionAttempt: Number(row.execution_attempt) } : {}),
+      ...(typeof row.head_sha === 'string' ? { headSha: row.head_sha } : {}),
+      ...(typeof row.base_sha === 'string' ? { baseSha: row.base_sha } : {}),
+      ...(typeof row.policy_digest === 'string' ? { policyDigest: row.policy_digest } : {}),
+      ...(typeof row.config_digest === 'string' ? { configDigest: row.config_digest } : {}),
+      ...(typeof row.context_digest === 'string' ? { contextDigest: row.context_digest } : {}),
+      ...(typeof row.evidence_digest === 'string' ? { evidenceDigest: row.evidence_digest } : {}),
+      ...(evidenceSemanticsVersion ? { evidenceSemanticsVersion } : {}),
+      ...(completionStatus ? { completionStatus } : {}),
+      ...(coverageComplete !== undefined ? { coverageComplete } : {}),
+      ...(quorumSatisfied !== undefined ? { quorumSatisfied } : {}),
+      verificationStatus, ...(verification ? { verification } : {}),
+      ...(disposition.success ? { disposition: disposition.data } : {}) };
+  });
+}
+
+function capturedOriginHistory(input: {
+  snapshotId: string; contextDigest: string; findingIds: readonly string[]; eventIds: readonly string[];
+  findingRows: readonly Record<string, unknown>[]; eventRows: readonly Record<string, unknown>[];
+}): { history: PrLifecycleHistoryLoad; findings: CapturedGroundedFinding[]; events: PrLifecycleHistoryEvent[] } {
+  const findingRows = rowsInCapturedOrder(input.findingRows, input.findingIds, 'finding_event_id');
+  const eventRows = rowsInCapturedOrder(input.eventRows, input.eventIds, 'event_id');
+  const findings = projectCapturedFindings(findingRows);
+  const events = projectCapturedEvents(eventRows);
+  const findingsDigest = sha256(canonicalJson(input.findingIds));
+  const eventsDigest = sha256(canonicalJson(input.eventIds));
+  return { history: { status: 'complete', snapshotId: input.snapshotId, contextDigest: input.contextDigest,
+    findings: findings.map(({ groundedEvidence: _groundedEvidence, ...row }) => row), events,
+    eventCount: input.eventIds.length, findingCount: input.findingIds.length,
+    loadedEventCount: input.eventIds.length, loadedFindingCount: input.findingIds.length,
+    eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+    eventsDigest, findingsDigest, omissions: [] }, findings, events };
+}
+
+function planningHistoryForCapturedOrigins(input: {
+  history: PrLifecycleHistoryLoad; headSha: string; baseSha: string; policyDigest: string; configDigest: string;
+}): ReviewPlanningHistoryContext {
+  const completion = selectNewestEligibleGroundedCompletion(input.history.events);
+  const semanticsCompatible = completion?.evidenceSemanticsVersion === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION;
+  const sourcePolicyConfigCompatible = Boolean(completion && completion.policyDigest === input.policyDigest
+    && completion.configDigest === input.configDigest);
+  return { version: 'ReviewPlanningHistoryContext.v1', status: 'complete',
+    snapshotId: input.history.snapshotId!, contextDigest: input.history.contextDigest!,
+    expectedHeadSha: input.headSha, expectedBaseSha: input.baseSha,
+    evidenceSemanticsCompatibility: { expectedVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+      ...(completion?.evidenceSemanticsVersion ? { sourceVersion: completion.evidenceSemanticsVersion } : {}),
+      compatibleForContinuity: semanticsCompatible && sourcePolicyConfigCompatible,
+      compatibleForCheckpointReuse: false, compatibleForCoverageReuse: false,
+      completionCoverageComplete: completion?.coverageComplete === true,
+      completionQuorumSatisfied: completion?.quorumSatisfied === true,
+      sourcePolicyConfigCompatible,
+      ...(completion?.completionStatus ? { completionStatus: completion.completionStatus } : {}),
+      reason: semanticsCompatible && sourcePolicyConfigCompatible ? 'matching current completion semantics and policy/config'
+        : 'latest completion is ineligible for lifecycle continuity' },
+    priorFindings: [...input.history.findings],
+    dispositions: input.history.events.flatMap((event) => event.disposition ? [event.disposition] : []),
+    authenticatedDisputes: { status: 'complete', count: 0, paths: [] },
+    priorThreads: [], omissions: [], canWaiveCurrentBlocker: false };
+}
+
 /**
  * Service-side continuity acceptance. The worker receipt must point into the fixed history ID set
  * captured for its authenticated exact run; source rows must have matching v2 cause evidence, and
@@ -156,9 +306,11 @@ export async function validatePrFindingContinuityReceipt(client: ReviewLifecycle
   candidate: GroundedContinuityCandidate;
   currentCandidates?: readonly GroundedContinuityCandidate[];
   receipt: GroundedFindingContinuity;
+  verifiedOriginAncestry?: readonly GroundedOriginAncestryV1[];
   priorAncestryVerified: boolean;
 }): Promise<boolean> {
-  if (!input.currentEvidenceSemanticsVersion || !uuid(input.receipt.historySnapshotId ?? '')
+  if (input.currentEvidenceSemanticsVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
+    || !uuid(input.receipt.historySnapshotId ?? '')
     || !validDigest(input.receipt.historyContextDigest ?? '')
     || !await historyExecutionAuthorized(client, input)) return false;
   const snapshot = (await client.query(`SELECT snapshot.*, lifecycle.repository_id AS bound_repository_id,
@@ -193,153 +345,52 @@ export async function validatePrFindingContinuityReceipt(client: ReviewLifecycle
       run_id, execution_attempt, head_sha, base_sha, policy_digest, config_digest, context_digest,
       actor_digest, verification_status, evidence_digest, payload, created_at FROM review_pr_lifecycle_events
     WHERE lifecycle_id = $1 AND event_id = ANY($2::uuid[])`, [snapshot.lifecycle_id, capturedEventIds])).rows;
-  const historyFindings = findingRows.map((row) => {
-    const sourceEvidence = jsonObject(row.source_evidence);
-    const groundedEvidence = jsonObject(sourceEvidence.groundedEvidenceV2);
-    const cause = jsonObject(groundedEvidence.rootCause);
-    const rootCause = ['componentId', 'behaviorId', 'contractId', 'failureModeId'].every((key) =>
-      typeof cause[key] === 'string')
-      ? { componentId: String(cause.componentId), behaviorId: String(cause.behaviorId),
-        contractId: String(cause.contractId), failureModeId: String(cause.failureModeId) } : undefined;
-    const anchor = jsonObject(groundedEvidence.causeAnchor);
-    const causeAnchor = typeof anchor.componentPath === 'string' && (anchor.side === 'head' || anchor.side === 'base')
-      && Number.isSafeInteger(anchor.startLine) && Number.isSafeInteger(anchor.endLine)
-      && Array.isArray(anchor.citationIds) && anchor.citationIds.length > 0 && anchor.citationIds.length <= 64
-      && anchor.citationIds.every((id) => typeof id === 'string' && id.length > 0 && id.length <= 256)
-      && typeof anchor.contentDigest === 'string'
-      ? { componentPath: anchor.componentPath, side: anchor.side as 'head' | 'base', startLine: Number(anchor.startLine),
-        endLine: Number(anchor.endLine), citationIds: [...anchor.citationIds] as string[], contentDigest: anchor.contentDigest } : undefined;
-    return {
-      findingEventId: String(row.finding_event_id), durableFindingId: String(row.durable_finding_id),
-      fingerprint: String(row.fingerprint), path: String(row.path), firstSeenHead: String(row.first_seen_head),
-      lastSeenHead: String(row.last_seen_head), affectedContextDigest: String(row.affected_context_digest),
-      sourceSeverity: String(row.source_severity), effectiveSeverity: String(row.effective_severity),
-      disposition: String(row.disposition), blocking: row.blocking === true,
-      verificationStatus: String(row.verification_status) as 'confirmed' | 'contradicted' | 'insufficient',
-      evidenceDigest: String(row.evidence_digest), groundedEvidence,
-      ...(rootCause ? { rootCause } : {}), ...(causeAnchor ? { causeAnchor } : {}),
-      ...(typeof groundedEvidence.semanticsVersion === 'string'
-        ? { groundedEvidenceSemanticsVersion: groundedEvidence.semanticsVersion } : {}),
-      ...(typeof groundedEvidence.sourceWindowManifestDigest === 'string'
-        ? { sourceWindowManifestDigest: groundedEvidence.sourceWindowManifestDigest } : {}),
-    };
-  });
-  const historyEvents = eventRows.map((row) => {
-    const payload = jsonObject(row.payload);
-    const disposition = findingDispositionEventSchema.safeParse(payload);
-    const decisionReceipt = jsonObject(payload.decisionReceipt);
-    const evidenceSemanticsVersion = row.event_type === 'review.completion_recorded'
-      && typeof decisionReceipt.evidenceSemanticsVersion === 'string'
-      && decisionReceipt.evidenceSemanticsVersion.length <= 120 ? decisionReceipt.evidenceSemanticsVersion : undefined;
-    const completionStatus: PrLifecycleHistoryLoad['events'][number]['completionStatus'] = row.event_type === 'review.completion_recorded'
-      && (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled')
-      ? payload.status : undefined;
-    const serviceCoverage = jsonObject(decisionReceipt.serviceCoverage);
-    const coverageComplete = row.event_type === 'review.completion_recorded'
-      && typeof serviceCoverage.coverageComplete === 'boolean' ? serviceCoverage.coverageComplete : undefined;
-    const quorumSatisfied = row.event_type === 'review.completion_recorded'
-      && typeof serviceCoverage.quorumSatisfied === 'boolean' ? serviceCoverage.quorumSatisfied : undefined;
-    const verificationStatus = row.verification_status === 'confirmed' || row.verification_status === 'contradicted'
-      ? row.verification_status : 'insufficient';
-    const verificationFindingEventId = typeof payload.findingEventId === 'string' && uuid(payload.findingEventId)
-      ? payload.findingEventId : undefined;
-    const verificationFingerprint = payload.fingerprint;
-    const verificationStatusValue = payload.status === 'confirmed' || payload.status === 'contradicted'
-      || payload.status === 'insufficient' ? payload.status : undefined;
-    const hasCurrentAffectedContextDigest = Object.prototype.hasOwnProperty.call(payload, 'currentAffectedContextDigest');
-    const hasSourceAffectedContextDigest = Object.prototype.hasOwnProperty.call(payload, 'sourceAffectedContextDigest');
-    const currentAffectedContextDigest = typeof payload.currentAffectedContextDigest === 'string'
-      && validDigest(payload.currentAffectedContextDigest) ? payload.currentAffectedContextDigest : undefined;
-    const sourceAffectedContextDigest = typeof payload.sourceAffectedContextDigest === 'string'
-      && validDigest(payload.sourceAffectedContextDigest) ? payload.sourceAffectedContextDigest : undefined;
-    const verificationDigestsValid = (!hasCurrentAffectedContextDigest || currentAffectedContextDigest !== undefined)
-      && (!hasSourceAffectedContextDigest || sourceAffectedContextDigest !== undefined);
-    const verification: PrLifecycleHistoryLoad['events'][number]['verification'] = row.event_type === 'finding.independent_verification'
-      && verificationFindingEventId !== undefined
-      && typeof verificationFingerprint === 'string' && /^fp1_[a-f0-9]{24}$/u.test(verificationFingerprint)
-      && verificationStatusValue !== undefined
-      && verificationDigestsValid
-      ? { findingEventId: verificationFindingEventId, fingerprint: verificationFingerprint,
-        status: verificationStatusValue,
-        ...(currentAffectedContextDigest ? { currentAffectedContextDigest } : {}),
-        ...(sourceAffectedContextDigest ? { sourceAffectedContextDigest } : {}) } : undefined;
-    return { eventId: String(row.event_id), eventType: String(row.event_type),
-      ...(typeof row.run_id === 'string' ? { runId: row.run_id } : {}),
-      ...(Number.isSafeInteger(Number(row.execution_attempt)) && Number(row.execution_attempt) > 0
-        ? { executionAttempt: Number(row.execution_attempt) } : {}),
-      ...(typeof row.head_sha === 'string' ? { headSha: row.head_sha } : {}),
-      ...(typeof row.base_sha === 'string' ? { baseSha: row.base_sha } : {}),
-      ...(typeof row.policy_digest === 'string' ? { policyDigest: row.policy_digest } : {}),
-      ...(typeof row.config_digest === 'string' ? { configDigest: row.config_digest } : {}),
-      ...(typeof row.context_digest === 'string' ? { contextDigest: row.context_digest } : {}),
-      ...(typeof row.evidence_digest === 'string' ? { evidenceDigest: row.evidence_digest } : {}),
-      ...(evidenceSemanticsVersion ? { evidenceSemanticsVersion } : {}),
-      ...(completionStatus ? { completionStatus } : {}),
-      ...(coverageComplete !== undefined ? { coverageComplete } : {}),
-      ...(quorumSatisfied !== undefined ? { quorumSatisfied } : {}),
-      verificationStatus,
-      ...(verification ? { verification } : {}),
-      ...(disposition.success ? { disposition: disposition.data } : {}) };
-  });
-  const syntheticHistory: PrLifecycleHistoryLoad = {
-    status: 'complete', snapshotId: String(snapshot.snapshot_id), contextDigest: String(snapshot.context_digest),
-    findings: historyFindings.map(({ groundedEvidence: _groundedEvidence, ...row }) => row),
-    events: historyEvents, eventCount: capturedEventIds.length, findingCount: capturedFindingIds.length,
-    loadedEventCount: capturedEventIds.length, loadedFindingCount: capturedFindingIds.length,
-    eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
-    eventsDigest: sha256(canonicalJson(capturedEventIds)), findingsDigest: sha256(canonicalJson(capturedFindingIds)), omissions: [],
-  };
+  const projectedHistory = capturedOriginHistory({ snapshotId: String(snapshot.snapshot_id),
+    contextDigest: String(snapshot.context_digest), findingIds: capturedFindingIds, eventIds: capturedEventIds,
+    findingRows, eventRows });
+  const historyFindings = projectedHistory.findings;
+  const historyEvents = projectedHistory.events;
+  const syntheticHistory = projectedHistory.history;
   if (!groundedFindingContinuitySchema.safeParse(input.receipt).success) return false;
   if (!continuityReceiptMatchesCurrent({ receipt: input.receipt, candidate: input.candidate, history: syntheticHistory })) return false;
 
-  const priorCompletion = eventRows.filter((row) => row.event_type === 'review.completion_recorded')
-    .sort((left, right) => new Date(left.created_at).getTime() - new Date(right.created_at).getTime()).at(-1);
-  const priorCompletionPayload = priorCompletion ? jsonObject(priorCompletion.payload) : {};
-  const priorDecisionReceipt = jsonObject(priorCompletionPayload.decisionReceipt);
-  const sourceSemanticsVersion = typeof priorDecisionReceipt.evidenceSemanticsVersion === 'string'
-    ? priorDecisionReceipt.evidenceSemanticsVersion : undefined;
-  const semanticsCompatible = sourceSemanticsVersion === input.currentEvidenceSemanticsVersion;
-  const planningHistory = {
-    version: 'ReviewPlanningHistoryContext.v1' as const, status: 'complete' as const,
-    snapshotId: String(snapshot.snapshot_id), contextDigest: String(snapshot.context_digest),
-    expectedHeadSha: input.headSha, expectedBaseSha: input.baseSha,
-    evidenceSemanticsCompatibility: { expectedVersion: input.currentEvidenceSemanticsVersion,
-      ...(sourceSemanticsVersion ? { sourceVersion: sourceSemanticsVersion } : {}),
-      compatibleForContinuity: semanticsCompatible, compatibleForCheckpointReuse: false, compatibleForCoverageReuse: false,
-      completionCoverageComplete: false, completionQuorumSatisfied: false, sourcePolicyConfigCompatible: true,
-      reason: semanticsCompatible ? 'matching grounded evidence semantics' : 'prior completion uses incompatible grounded evidence semantics' },
-    priorFindings: historyFindings.map(({ groundedEvidence: _groundedEvidence, ...row }) => row),
-    dispositions: historyEvents.flatMap((event) => event.disposition ? [event.disposition] : []),
-    authenticatedDisputes: { status: 'complete' as const, count: 0, paths: [] },
-    priorThreads: [], omissions: [], canWaiveCurrentBlocker: false as const,
-  };
+  const planningHistory = planningHistoryForCapturedOrigins({ history: syntheticHistory, headSha: input.headSha,
+    baseSha: input.baseSha, policyDigest: input.policyDigest, configDigest: input.configDigest });
   const expectedReceipt = resolveGroundedFindingContinuity({ candidate: input.candidate,
     currentCandidates: input.currentCandidates, history: syntheticHistory, planningHistory,
-    priorAncestryVerified: input.priorAncestryVerified });
+    priorAncestryVerified: input.priorAncestryVerified, verifiedOriginAncestry: input.verifiedOriginAncestry });
   if (canonicalJson(expectedReceipt) !== canonicalJson(input.receipt)) return false;
 
   const matchingRows = historyFindings.filter((row) => row.groundedEvidence.semanticsVersion === input.currentEvidenceSemanticsVersion
     && sameRootCauseIdentity(row.groundedEvidence.rootCause, input.candidate.rootCause));
-  const matchingDurableIds = [...new Set(matchingRows.map((row) => row.durableFindingId).filter((id) => /^lf1_[a-f0-9]{32}$/u.test(id)))];
+  const matchingDurableIds = [...new Set(matchingRows.map((row) => row.durableFindingId)
+    .filter((id): id is string => typeof id === 'string' && /^lf1_[a-f0-9]{32}$/u.test(id)))];
   if (input.receipt.status === 'new') return matchingDurableIds.length === 0;
-  if (!input.priorAncestryVerified || matchingDurableIds.length !== 1
-    || matchingDurableIds[0] !== input.receipt.durableFindingId) return false;
+  if (matchingDurableIds.length !== 1 || matchingDurableIds[0] !== input.receipt.durableFindingId) return false;
+  const origins = input.receipt.verifiedOriginAncestry ?? [];
+  const causeOrigins = origins.filter((origin) => origin.sourceKind === 'cause');
+  const repairOrigins = origins.filter((origin) => origin.sourceKind === 'repair');
+  if (causeOrigins.length !== 1 || (input.receipt.status === 'continuous' ? repairOrigins.length !== 0
+    : repairOrigins.length !== 1) || origins.some((origin) => origin.result !== 'ancestor'
+      || origin.currentHeadSha !== input.headSha)) return false;
+  const expectedSourceIds = [causeOrigins[0]!.sourceEventId, ...repairOrigins.map((origin) => origin.sourceEventId)].sort();
+  if (canonicalJson(expectedSourceIds) !== canonicalJson(input.receipt.sourceEventIds)) return false;
   const referencedFindings = historyFindings.filter((row) => input.receipt.sourceEventIds.includes(row.findingEventId));
   const referencedEvents = historyEvents.filter((row) => input.receipt.sourceEventIds.includes(row.eventId));
-  const verifiedFixedRows = new Set(verifiedFixedVerificationFindingIds(syntheticHistory,
-    input.receipt.durableFindingId!, input.candidate.rootCause));
   if (referencedFindings.some((row) => {
     if (row.durableFindingId !== input.receipt.durableFindingId) return true;
-    if (verifiedFixedRows.has(row.findingEventId)) return row.verificationStatus !== 'contradicted'
-      || (row.groundedEvidence.rootCause !== undefined
-        && !sameRootCauseIdentity(row.groundedEvidence.rootCause, input.candidate.rootCause));
     return row.groundedEvidence.semanticsVersion !== input.currentEvidenceSemanticsVersion
       || !sameRootCauseIdentity(row.groundedEvidence.rootCause, input.candidate.rootCause);
   })) return false;
-  if (referencedEvents.some((row) => !row.disposition || row.disposition.findingId !== input.receipt.durableFindingId)) return false;
-  if (input.receipt.status === 'reopened' && !referencedEvents.some((row) =>
-    row.disposition?.kind === 'fixed' || row.disposition?.kind === 'adjudicated_false_positive')) return false;
-  return referencedFindings.length > 0;
+  if (referencedFindings.length !== 1 || referencedFindings[0]?.findingEventId !== causeOrigins[0]!.sourceEventId
+    || referencedEvents.length !== repairOrigins.length
+    || referencedEvents.some((row) => !row.disposition || row.disposition.findingId !== input.receipt.durableFindingId
+      || !['fixed', 'adjudicated_false_positive'].includes(row.disposition.kind))) return false;
+  if (repairOrigins.length === 1 && (referencedEvents[0]?.eventId !== repairOrigins[0]!.sourceEventId
+    || !verifiedRepairVerificationLinks(syntheticHistory, input.receipt.durableFindingId!, input.candidate.rootCause)
+      .some((link) => link.causeFindingEventId === causeOrigins[0]!.sourceEventId
+        && link.repairEventId === repairOrigins[0]!.sourceEventId))) return false;
+  return true;
 }
 
 export type TrustedGroundedLifecycleTransitionV1 = WindowTrustedGroundedLifecycleTransitionV1;
@@ -467,6 +518,66 @@ function makeTrustedGroundedTransition(input: Omit<TrustedGroundedLifecycleTrans
   return { ...fields, evidenceDigest: sha256(canonicalJson(fields)) };
 }
 
+export async function deriveGroundedOriginAncestryRequests(client: ReviewLifecycleQueryable, input: {
+  runId: string; executionAttempt: number; workerTokenDigest: string;
+  repositoryId: number; owner: string; repo: string; prNumber: number;
+  headSha: string; baseSha: string; policyDigest: string; configDigest: string; contextDigest: string;
+  snapshotId: string; outcomes: readonly GroundedCompletionOutcomeV2[];
+}): Promise<Readonly<Record<string, readonly GroundedContinuityOriginRef[]>>> {
+  if (!uuid(input.snapshotId) || !await historyExecutionAuthorized(client, input)) return {};
+  const snapshot = (await client.query(`SELECT snapshot.*, lifecycle.repository_id AS bound_repository_id,
+      lifecycle.owner AS bound_owner, lifecycle.repo AS bound_repo, lifecycle.pr_number AS bound_pr_number
+    FROM review_pr_lifecycle_history_snapshots snapshot
+    JOIN review_pr_lifecycles lifecycle ON lifecycle.lifecycle_id = snapshot.lifecycle_id
+    WHERE snapshot.snapshot_id = $1 AND snapshot.run_id = $2 AND snapshot.execution_attempt = $3
+      AND snapshot.expires_at > CURRENT_TIMESTAMP`, [input.snapshotId, input.runId, input.executionAttempt])).rows[0];
+  if (!snapshot || Number(snapshot.repository_id) !== input.repositoryId
+    || Number(snapshot.bound_repository_id) !== input.repositoryId
+    || snapshot.owner !== input.owner || snapshot.bound_owner !== input.owner || snapshot.repo !== input.repo
+    || snapshot.bound_repo !== input.repo || Number(snapshot.pr_number) !== input.prNumber
+    || Number(snapshot.bound_pr_number) !== input.prNumber || snapshot.head_sha !== input.headSha
+    || snapshot.base_sha !== input.baseSha || snapshot.policy_digest !== input.policyDigest
+    || snapshot.config_digest !== input.configDigest || snapshot.context_digest !== input.contextDigest
+    || Number(snapshot.event_omitted_count) !== 0 || Number(snapshot.finding_omitted_count) !== 0
+    || Number(snapshot.legacy_omitted_count) !== 0) return {};
+
+  const findingIds = stringArray(snapshot.finding_ids);
+  const eventIds = stringArray(snapshot.event_ids);
+  const findingRows = findingIds.length === 0 ? [] : (await client.query(`SELECT finding_event_id, durable_finding_id,
+      fingerprint, path, first_seen_head, last_seen_head, affected_context_digest, source_severity,
+      effective_severity, disposition, blocking, verification_status, evidence_digest, source_evidence
+    FROM review_semantic_finding_events WHERE lifecycle_id = $1 AND finding_event_id = ANY($2::uuid[])`,
+  [snapshot.lifecycle_id, findingIds])).rows;
+  const lifecycleEvents = eventIds.length === 0 ? [] : (await client.query(`SELECT event_id, event_type,
+      run_id, execution_attempt, head_sha, base_sha, policy_digest, config_digest, context_digest,
+      actor_digest, verification_status, evidence_digest, payload, created_at
+    FROM review_pr_lifecycle_events WHERE lifecycle_id = $1 AND event_id = ANY($2::uuid[])`,
+  [snapshot.lifecycle_id, eventIds])).rows;
+  const projected = capturedOriginHistory({ snapshotId: input.snapshotId, contextDigest: input.contextDigest,
+    findingIds, eventIds, findingRows, eventRows: lifecycleEvents });
+  const requests: Record<string, readonly GroundedContinuityOriginRef[]> = {};
+  const ambiguous = new Set<string>();
+  for (const outcome of input.outcomes) {
+    if (outcome.evidence?.semanticsVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
+      || !/^fp1_[a-f0-9]{24}$/u.test(outcome.fingerprint)) continue;
+    let origins: GroundedContinuityOriginRef[] | null = null;
+    if (outcome.status === 'confirmed') {
+      const candidate = groundedContinuityCandidateFrom(outcome);
+      if (candidate) origins = groundedContinuityOriginRefs({ candidate, history: projected.history,
+        currentHeadSha: input.headSha, continuityFindings: projected.findings });
+    } else if (outcome.status === 'contradicted') {
+      origins = groundedFixedOriginRefs({ fingerprint: outcome.fingerprint, path: outcome.path,
+        currentHeadSha: input.headSha, history: projected.history, continuityFindings: projected.findings });
+    }
+    if (!origins || origins.length === 0) continue;
+    const prior = requests[outcome.fingerprint];
+    if (prior && canonicalJson(prior) !== canonicalJson(origins)) ambiguous.add(outcome.fingerprint);
+    else requests[outcome.fingerprint] = origins;
+  }
+  for (const fingerprint of ambiguous) delete requests[fingerprint];
+  return requests;
+}
+
 /**
  * Builds the Gate-only history contract from the exact pre-generation DB snapshot. Every continuity
  * alias is independently rederived from captured ledger rows, exact semantics and service-rechecked
@@ -489,6 +600,8 @@ export async function createTrustedGroundedHistoryContext(client: ReviewLifecycl
     findingOmittedCount: number; legacyOmittedCount: number };
   outcomes: readonly GroundedCompletionOutcomeV2[];
   disputedRechecks?: readonly DisputedFindingRecheck[];
+  originRequestsByFingerprint: GroundedOriginAncestryRequestsByFingerprint;
+  serviceOriginAncestry: readonly GroundedOriginAncestryV1[];
   priorAncestryVerified: boolean;
   serviceAncestry?: ReviewHeadAncestryReceipt;
 }): Promise<TrustedGroundedHistoryProjection | undefined> {
@@ -518,27 +631,58 @@ export async function createTrustedGroundedHistoryContext(client: ReviewLifecycl
   const capturedIds = [...findingIds, ...lifecycleEventIds];
   if (new Set(capturedIds).size !== capturedIds.length || capturedIds.some((id) => !uuid(id))) return undefined;
   const eventRows = lifecycleEventIds.length === 0 ? [] : (await client.query(`SELECT event_id, event_type, run_id,
-      head_sha, payload, created_at FROM review_pr_lifecycle_events
+      execution_attempt, head_sha, base_sha, policy_digest, config_digest, context_digest, actor_digest,
+      verification_status, evidence_digest, payload, created_at FROM review_pr_lifecycle_events
     WHERE lifecycle_id = $1 AND event_id = ANY($2::uuid[])`, [snapshot.lifecycle_id, lifecycleEventIds])).rows;
   const priorFindingRows = findingIds.length === 0 ? [] : (await client.query(`SELECT finding_event_id,
-      durable_finding_id, run_id, execution_attempt, fingerprint, path, source_severity, verification_status,
+      durable_finding_id, run_id, execution_attempt, fingerprint, path, first_seen_head, last_seen_head,
+      source_severity, effective_severity, disposition, blocking, verification_status,
       evidence_digest, affected_context_digest, source_evidence, created_at FROM review_semantic_finding_events
     WHERE lifecycle_id = $1 AND finding_event_id = ANY($2::uuid[])`, [snapshot.lifecycle_id, findingIds])).rows;
+  const originHistory = capturedOriginHistory({ snapshotId: String(snapshot.snapshot_id),
+    contextDigest: String(snapshot.context_digest), findingIds, eventIds: lifecycleEventIds,
+    findingRows: priorFindingRows, eventRows });
+  const originPlanningHistory = planningHistoryForCapturedOrigins({ history: originHistory.history,
+    headSha: input.headSha, baseSha: input.baseSha, policyDigest: input.policyDigest, configDigest: input.configDigest });
+  const originRequestsByFingerprint = input.originRequestsByFingerprint;
+  const serviceOriginAncestryByEventId = new Map(input.serviceOriginAncestry
+    .map((origin) => [origin.sourceEventId, origin]));
+  const expectedOriginAncestryByFingerprint: Record<string, readonly GroundedOriginAncestryV1[]> = {};
+  const duplicateOriginFingerprints = new Set<string>();
+  for (const outcome of originPlanningHistory.evidenceSemanticsCompatibility.compatibleForContinuity
+    ? input.outcomes : []) {
+    const fingerprint = outcome.fingerprint;
+    const requestedRefs = originRequestsByFingerprint[fingerprint];
+    if (!requestedRefs || outcome.evidence?.semanticsVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION) continue;
+    let expectedRefs: readonly GroundedContinuityOriginRef[] | null = null;
+    if (outcome.status === 'confirmed') {
+      const candidate = groundedContinuityCandidateFrom(outcome);
+      if (candidate) expectedRefs = groundedContinuityOriginRefs({ candidate, history: originHistory.history,
+        currentHeadSha: input.headSha, continuityFindings: originHistory.findings });
+    } else if (outcome.status === 'contradicted') {
+      expectedRefs = groundedFixedOriginRefs({ fingerprint, path: outcome.path, currentHeadSha: input.headSha,
+        history: originHistory.history, continuityFindings: originHistory.findings });
+    }
+    if (!expectedRefs || canonicalJson(expectedRefs) !== canonicalJson(requestedRefs)) continue;
+    const serviceProofs = expectedRefs.flatMap((ref) => {
+      const proof = serviceOriginAncestryByEventId.get(ref.sourceEventId);
+      return proof ? [proof] : [];
+    });
+    const joined = groundedOriginAncestryJoin({ expected: expectedRefs, proofs: serviceProofs, currentHeadSha: input.headSha });
+    if (!joined) continue;
+    const prior = expectedOriginAncestryByFingerprint[fingerprint];
+    if (prior && canonicalJson(prior) !== canonicalJson(joined)) duplicateOriginFingerprints.add(fingerprint);
+    else expectedOriginAncestryByFingerprint[fingerprint] = joined;
+  }
+  for (const fingerprint of duplicateOriginFingerprints) delete expectedOriginAncestryByFingerprint[fingerprint];
   let verifiedAncestry: ReviewHeadAncestryReceipt | undefined;
   const ancestry = input.serviceAncestry;
+  const newestEligibleCompletion = selectNewestEligibleGroundedCompletion(originHistory.history.events);
   if (input.priorAncestryVerified && ancestry?.version === 'ReviewHeadAncestry.v1'
     && ancestry.result === 'ancestor' && ancestry.currentHeadSha === input.headSha
-    && validDigest(ancestry.comparisonDigest)) {
-    const priorRunEvents = eventRows.filter((row) => row.event_type === 'review.completion_recorded'
-      && String(row.run_id) === ancestry.priorRunId && String(row.head_sha) === ancestry.priorHeadSha);
-    const latest = priorRunEvents.sort((left, right) => new Date(left.created_at).getTime()
-      - new Date(right.created_at).getTime()).at(-1);
-    const completion = jsonObject(latest?.payload);
-    const decisionReceipt = jsonObject(completion.decisionReceipt);
-    if (decisionReceipt.evidenceSemanticsVersion === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION) {
-      verifiedAncestry = ancestry;
-    }
-  }
+    && validDigest(ancestry.comparisonDigest)
+    && ancestry.priorRunId === newestEligibleCompletion?.runId
+    && ancestry.priorHeadSha === newestEligibleCompletion.headSha) verifiedAncestry = ancestry;
 
   const currentCandidates = input.outcomes.flatMap((outcome) => {
     const candidate = outcome.status === 'confirmed'
@@ -566,13 +710,16 @@ export async function createTrustedGroundedHistoryContext(client: ReviewLifecycl
     if (row.status === 'confirmed' && candidate) {
       const continuity = groundedFindingContinuitySchema.safeParse(row.verifiedContinuity);
       if (continuity.success && continuity.data.status !== 'unavailable') {
+        const verifiedOriginAncestry = expectedOriginAncestryByFingerprint[row.fingerprint];
         const valid = await validatePrFindingContinuityReceipt(client, {
           runId: input.runId, executionAttempt: input.executionAttempt, workerTokenDigest: input.workerTokenDigest,
           repositoryId: input.repositoryId, owner: input.owner, repo: input.repo, prNumber: input.prNumber,
           headSha: input.headSha, baseSha: input.baseSha, policyDigest: input.policyDigest,
           configDigest: input.configDigest, contextDigest: input.contextDigest,
           currentEvidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, candidate,
-          currentCandidates, receipt: continuity.data, priorAncestryVerified: verifiedAncestry !== undefined,
+          currentCandidates, receipt: continuity.data,
+          ...(verifiedOriginAncestry ? { verifiedOriginAncestry } : {}),
+          priorAncestryVerified: verifiedAncestry !== undefined,
         });
         if (valid) {
           const prior = expectedContinuityByFingerprint[row.fingerprint];
@@ -581,14 +728,17 @@ export async function createTrustedGroundedHistoryContext(client: ReviewLifecycl
         }
       }
     }
-    if (!verifiedAncestry || !citations || typeof row.path !== 'string' || typeof row.fingerprint !== 'string'
+    if (!citations || typeof row.path !== 'string' || typeof row.fingerprint !== 'string'
       || !/^fp1_[a-f0-9]{24}$/u.test(row.fingerprint)
       || typeof row.affectedContextDigest !== 'string' || !validDigest(row.affectedContextDigest)
       || typeof row.evidenceDigest !== 'string' || !validDigest(row.evidenceDigest)
       || !validDigest(outcomeEvidence.sourceWindowManifestDigest)
       || (row.candidateSide !== 'head' && row.candidateSide !== 'base')) continue;
     if (row.status === 'contradicted') {
+      const causeOrigin = expectedOriginAncestryByFingerprint[row.fingerprint]?.find((origin) => origin.sourceKind === 'cause');
+      if (!causeOrigin) continue;
       const priorRows = priorFindingRows.filter((prior) => String(prior.fingerprint) === row.fingerprint
+        && String(prior.finding_event_id) === causeOrigin.sourceEventId
         && String(prior.path) === row.path && prior.verification_status === 'confirmed'
         && jsonObject(jsonObject(prior.source_evidence).groundedEvidenceV2).semanticsVersion
           === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION);
@@ -631,10 +781,12 @@ export async function createTrustedGroundedHistoryContext(client: ReviewLifecycl
       && ['introduced', 'exacerbated'].includes(String(causalScope))) {
       const continuity = expectedContinuityByFingerprint[row.fingerprint];
       if (!continuity || continuity.status !== 'reopened' || !continuity.durableFindingId) continue;
+      const repairOrigin = expectedOriginAncestryByFingerprint[row.fingerprint]?.find((origin) => origin.sourceKind === 'repair');
+      if (!repairOrigin) continue;
       const priorFixedEvents = eventRows.flatMap((event) => {
         const disposition = findingDispositionEventSchema.safeParse(jsonObject(event.payload));
         return disposition.success && disposition.data.kind === 'fixed'
-          && disposition.data.findingId === continuity.durableFindingId && continuity.sourceEventIds.includes(String(event.event_id))
+          && disposition.data.findingId === continuity.durableFindingId && repairOrigin.sourceEventId === String(event.event_id)
           ? [{ eventId: String(event.event_id), createdAt: event.created_at }] : [];
       }).sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
       const priorFixed = priorFixedEvents.at(-1);

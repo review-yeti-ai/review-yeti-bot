@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { findingFingerprint } from '../../src/review/findingConvergence';
 import { createHash, randomUUID } from 'node:crypto';
+import { canonicalJson, sha256 } from '../../src/review/reviewCore';
 import { createPanelDeadlineSignal, PanelConfigurationError, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
 import { workerFailureClasses } from '../../src/types/workerFailure';
 import { WORKER_PANEL_RESERVE_MS, type WorkerPanelDeadlineBudget } from '../../src/config/workerTerminalDeadline';
@@ -359,6 +360,210 @@ describe('qualification source arguments', () => {
 });
 
 describe('grounded evidence call order', () => {
+  it('compares the exact cause origin even when the newest complete failed review is an ancestor', async () => {
+    const causeRunId = `run_${'8'.repeat(32)}`;
+    const latestRunId = `run_${'9'.repeat(32)}`;
+    const causeHeadSha = '3'.repeat(40);
+    const latestHeadSha = '4'.repeat(40);
+    const causeFindingEventId = randomUUID();
+    const causeFingerprint = `fp1_${'a'.repeat(24)}`;
+    const sourceContextDigest = 'e'.repeat(64);
+    const sourceCompletion = { eventId: randomUUID(), eventType: 'review.completion_recorded',
+      runId: causeRunId, executionAttempt: 1, headSha: causeHeadSha, baseSha: BASE,
+      policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64), contextDigest: sourceContextDigest,
+      evidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+      completionStatus: 'failed' as const, coverageComplete: true, quorumSatisfied: true,
+      verificationStatus: 'insufficient' as const };
+    const history = {
+      status: 'complete' as const, snapshotId: randomUUID(), contextDigest: 'f'.repeat(64),
+      events: [{ ...sourceCompletion, eventId: randomUUID(), runId: latestRunId, headSha: latestHeadSha },
+        { eventId: randomUUID(), eventType: 'finding.independent_verification', runId: causeRunId,
+          executionAttempt: 1, headSha: causeHeadSha, contextDigest: sourceContextDigest,
+          evidenceDigest: 'a'.repeat(64), verificationStatus: 'confirmed' as const,
+          verification: { findingEventId: causeFindingEventId, fingerprint: causeFingerprint, status: 'confirmed' as const } },
+        sourceCompletion],
+      findings: [{ findingEventId: causeFindingEventId, durableFindingId: `lf1_${'b'.repeat(32)}`,
+        fingerprint: causeFingerprint, path: 'src/a.ts', groundedEvidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+        rootCause: { componentId: 'fixture.component', behaviorId: 'fixture.behavior',
+          contractId: 'fixture.contract', failureModeId: 'fixture.failure' },
+        causeAnchor: { componentPath: 'src/a.ts', side: 'head' as const, startLine: 1, endLine: 1,
+          citationIds: ['prior-cause'], contentDigest: 'b'.repeat(64) },
+        firstSeenHead: causeHeadSha, lastSeenHead: causeHeadSha, affectedContextDigest: sourceContextDigest,
+        sourceSeverity: 'P1', effectiveSeverity: 'P1', disposition: 'carried', blocking: true,
+        verificationStatus: 'confirmed' as const, evidenceDigest: 'c'.repeat(64) }],
+      eventCount: 3, findingCount: 1, loadedEventCount: 3, loadedFindingCount: 1,
+      eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+      eventsDigest: 'd'.repeat(64), findingsDigest: 'e'.repeat(64), omissions: [],
+    };
+    const comparison = vi.fn(async (baseSha: string, _headSha: string) => ({
+      status: baseSha === latestHeadSha ? 'ahead' as const : 'diverged' as const,
+      mergeBaseSha: '5'.repeat(40), files: [],
+    }));
+    const policy = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', severity_policy: 'review-yeti-severity.v2', budget: { max_investigation_turns: 1 },
+    } });
+    const receipt = await runPublishingReviewWorker(env({ REVIEW_YETI_POLICY_JSON: policy }), deps({
+      panelRunner: vi.fn(async () => ({ applicablePersonaIds: ['security'],
+        personas: [{ id: 'security', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1,
+          title: 'The tenant guard accepts a caller-selected tenant', body: 'The changed authorization path accepts a tenant from the request.',
+          blockerEvidence: { trigger: 'A caller-selected tenant reaches the changed guard.',
+            impact: 'The request can cross into another tenant.',
+            violatedContract: 'Tenant identity must come from the authenticated session.' } }] }],
+        optionalFailures: [], quorum: { required: 1, distinctProviders: ['fixture'], satisfied: true }, arbiter: { verdict: 'FINDINGS' },
+      })) as never,
+      prLifecycleHistory: { read: vi.fn(async () => history), recordVerification: vi.fn(async () => true) } as never,
+      incrementalCompareReader: { compare: comparison } as never,
+      sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF,
+        diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 1 })) as never,
+    }) as never);
+
+    expect(comparison.mock.calls.map(([from, to]) => [from, to])).toEqual(expect.arrayContaining([
+      [latestHeadSha, HEAD], [causeHeadSha, HEAD],
+    ]));
+    expect(receipt.groundedReview?.verification.outcomes[0]).toMatchObject({
+      verifiedOriginAncestry: [{ sourceEventId: causeFindingEventId, sourceKind: 'cause', priorRunId: causeRunId,
+        priorHeadSha: causeHeadSha, currentHeadSha: HEAD, result: 'not-ancestor' }],
+      verifiedContinuity: { status: 'unavailable', unavailableReason: 'stale-context', sourceEventIds: [] },
+    });
+  });
+
+  it('compares the selected repair origin even when the newest complete failed review and cause are ancestors', async () => {
+    const causeRunId = `run_${'7'.repeat(32)}`;
+    const repairRunId = `run_${'8'.repeat(32)}`;
+    const latestRunId = `run_${'9'.repeat(32)}`;
+    const causeHeadSha = '3'.repeat(40);
+    const repairHeadSha = '4'.repeat(40);
+    const latestHeadSha = '5'.repeat(40);
+    const causeFindingEventId = randomUUID();
+    const negativeFindingEventId = randomUUID();
+    const repairEventId = randomUUID();
+    const causeFingerprint = `fp1_${'a'.repeat(24)}`;
+    const durableFindingId = `lf1_${'b'.repeat(32)}`;
+    const causeContextDigest = 'c'.repeat(64);
+    const repairContextDigest = 'd'.repeat(64);
+    const affectedContextDigest = 'e'.repeat(64);
+    const policyDigest = 'c'.repeat(64);
+    const configDigest = 'd'.repeat(64);
+    const causeCompletion = { eventId: randomUUID(), eventType: 'review.completion_recorded',
+      runId: causeRunId, executionAttempt: 1, headSha: causeHeadSha, baseSha: BASE,
+      policyDigest, configDigest, contextDigest: causeContextDigest,
+      evidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+      completionStatus: 'failed' as const, coverageComplete: true, quorumSatisfied: true,
+      verificationStatus: 'insufficient' as const };
+    const repairCompletion = { ...causeCompletion, eventId: randomUUID(), runId: repairRunId,
+      headSha: repairHeadSha, contextDigest: repairContextDigest };
+    const latestCompletion = { ...causeCompletion, eventId: randomUUID(), runId: latestRunId,
+      headSha: latestHeadSha };
+    const disposition = { version: 'PrFindingDisposition.v1', kind: 'fixed' as const, findingId: durableFindingId,
+      fingerprint: causeFingerprint, path: 'src/a.ts', runId: repairRunId, executionAttempt: 1,
+      headSha: repairHeadSha, baseSha: BASE, policyDigest, configDigest, contextDigest: repairContextDigest,
+      affectedContextDigest, evidenceDigest: '6'.repeat(64),
+      provenance: { actorType: 'service' as const, actorDigest: '7'.repeat(64),
+        source: 'grounded_verifier' as const, receiptDigest: '8'.repeat(64) },
+      adjudication: { method: 'independent_grounded_verifier' as const, status: 'contradicted' as const,
+        proofDigest: '9'.repeat(64), priorFindingEventId: causeFindingEventId, changedContextDigest: affectedContextDigest } };
+    const repairEvent = { eventId: repairEventId, eventType: 'finding.disposition.fixed', runId: repairRunId,
+      executionAttempt: 1, headSha: repairHeadSha, baseSha: BASE, policyDigest, configDigest,
+      contextDigest: repairContextDigest, evidenceDigest: sha256(canonicalJson(disposition)),
+      verificationStatus: 'contradicted' as const, disposition };
+    const history = {
+      status: 'complete' as const, snapshotId: randomUUID(), contextDigest: 'f'.repeat(64),
+      events: [latestCompletion, repairEvent,
+        { eventId: randomUUID(), eventType: 'finding.independent_verification', runId: repairRunId,
+          executionAttempt: 1, headSha: repairHeadSha, baseSha: BASE, policyDigest, configDigest,
+          contextDigest: repairContextDigest, evidenceDigest: disposition.adjudication.proofDigest,
+          verificationStatus: 'contradicted' as const,
+          verification: { findingEventId: negativeFindingEventId, fingerprint: causeFingerprint,
+            status: 'contradicted' as const, currentAffectedContextDigest: affectedContextDigest,
+            sourceAffectedContextDigest: causeContextDigest } },
+        repairCompletion,
+        { eventId: randomUUID(), eventType: 'finding.independent_verification', runId: causeRunId,
+          executionAttempt: 1, headSha: causeHeadSha, contextDigest: causeContextDigest,
+          evidenceDigest: 'a'.repeat(64), verificationStatus: 'confirmed' as const,
+          verification: { findingEventId: causeFindingEventId, fingerprint: causeFingerprint, status: 'confirmed' as const } },
+        causeCompletion],
+      findings: [{ findingEventId: causeFindingEventId, durableFindingId, fingerprint: causeFingerprint,
+        path: 'src/a.ts', groundedEvidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+        rootCause: { componentId: 'fixture.component', behaviorId: 'fixture.behavior',
+          contractId: 'fixture.contract', failureModeId: 'fixture.failure' },
+        causeAnchor: { componentPath: 'src/a.ts', side: 'head' as const, startLine: 1, endLine: 1,
+          citationIds: ['prior-cause'], contentDigest: 'b'.repeat(64) },
+        firstSeenHead: causeHeadSha, lastSeenHead: causeHeadSha, affectedContextDigest: causeContextDigest,
+        sourceSeverity: 'P1', effectiveSeverity: 'P1', disposition: 'carried', blocking: true,
+        verificationStatus: 'confirmed' as const, evidenceDigest: 'b'.repeat(64) },
+      { findingEventId: negativeFindingEventId, durableFindingId, fingerprint: causeFingerprint, path: 'src/a.ts',
+        firstSeenHead: causeHeadSha, lastSeenHead: repairHeadSha, affectedContextDigest, sourceSeverity: 'P1',
+        effectiveSeverity: 'P1', disposition: 'carried', blocking: false,
+        verificationStatus: 'contradicted' as const, evidenceDigest: 'c'.repeat(64) }],
+      eventCount: 6, findingCount: 2, loadedEventCount: 6, loadedFindingCount: 2,
+      eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+      eventsDigest: 'd'.repeat(64), findingsDigest: 'e'.repeat(64), omissions: [],
+    };
+    const comparison = vi.fn(async (baseSha: string, _headSha: string) => ({
+      status: baseSha === repairHeadSha ? 'diverged' as const : 'ahead' as const,
+      mergeBaseSha: '1'.repeat(40), files: [],
+    }));
+    const policy = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', severity_policy: 'review-yeti-severity.v2', budget: { max_investigation_turns: 1 },
+    } });
+    const receipt = await runPublishingReviewWorker(env({ REVIEW_YETI_POLICY_JSON: policy }), deps({
+      panelRunner: vi.fn(async () => ({ applicablePersonaIds: ['security'],
+        personas: [{ id: 'security', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1,
+          title: 'The tenant guard accepts a caller-selected tenant', body: 'The changed authorization path accepts a tenant from the request.',
+          blockerEvidence: { trigger: 'A caller-selected tenant reaches the changed guard.',
+            impact: 'The request can cross into another tenant.',
+            violatedContract: 'Tenant identity must come from the authenticated session.' } }] }],
+        optionalFailures: [], quorum: { required: 1, distinctProviders: ['fixture'], satisfied: true }, arbiter: { verdict: 'FINDINGS' },
+      })) as never,
+      prLifecycleHistory: { read: vi.fn(async () => history), recordVerification: vi.fn(async () => true) } as never,
+      incrementalCompareReader: { compare: comparison } as never,
+      sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF,
+        diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 1 })) as never,
+    }) as never);
+
+    expect(comparison.mock.calls.map(([from, to]) => [from, to])).toEqual(expect.arrayContaining([
+      [latestHeadSha, HEAD], [causeHeadSha, HEAD], [repairHeadSha, HEAD],
+    ]));
+    expect(receipt.groundedReview?.verification.outcomes[0]).toMatchObject({
+      verifiedOriginAncestry: [
+        { sourceEventId: causeFindingEventId, sourceKind: 'cause', priorRunId: causeRunId,
+          priorHeadSha: causeHeadSha, currentHeadSha: HEAD, result: 'ancestor' },
+        { sourceEventId: repairEventId, sourceKind: 'repair', priorRunId: repairRunId,
+          priorHeadSha: repairHeadSha, currentHeadSha: HEAD, result: 'not-ancestor' },
+      ], verifiedContinuity: { status: 'unavailable', unavailableReason: 'stale-context', sourceEventIds: [] },
+    });
+  });
+
+  it('keeps a current confirmed P1 reviewable when captured history has no matching origin', async () => {
+    const history = { status: 'complete' as const, snapshotId: randomUUID(), contextDigest: 'f'.repeat(64),
+      events: [], findings: [], eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
+      eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
+      eventsDigest: sha256(canonicalJson([])), findingsDigest: sha256(canonicalJson([])), omissions: [] };
+    const compare = vi.fn(async () => ({ status: 'ahead' as const, mergeBaseSha: BASE, files: [] }));
+    const policy = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', severity_policy: 'review-yeti-severity.v2', budget: { max_investigation_turns: 1 },
+    } });
+    const receipt = await runPublishingReviewWorker(env({ REVIEW_YETI_POLICY_JSON: policy }), deps({
+      panelRunner: vi.fn(async () => ({ applicablePersonaIds: ['security'],
+        personas: [{ id: 'security', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1,
+          title: 'The tenant guard accepts a caller-selected tenant', body: 'The changed authorization path accepts a tenant from the request.',
+          blockerEvidence: { trigger: 'A caller-selected tenant reaches the changed guard.',
+            impact: 'The request can cross into another tenant.',
+            violatedContract: 'Tenant identity must come from the authenticated session.' } }] }],
+        optionalFailures: [], quorum: { required: 1, distinctProviders: ['fixture'], satisfied: true }, arbiter: { verdict: 'FINDINGS' },
+      })) as never,
+      prLifecycleHistory: { read: vi.fn(async () => history), recordVerification: vi.fn(async () => true) } as never,
+      incrementalCompareReader: { compare } as never,
+      sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF,
+        diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 1 })) as never,
+    }) as never);
+
+    expect(compare).not.toHaveBeenCalled();
+    expect(receipt.findingCount).toBe(1);
+    expect(receipt.groundedReview?.verification.outcomes[0]).toMatchObject({ status: 'confirmed',
+      verifiedContinuity: { status: 'new', sourceEventIds: [] } });
+  });
+
   it('loads the fixed service history before incremental planning and review generation', async () => {
     const order: string[] = [];
     const digest = 'e'.repeat(64);
