@@ -138,14 +138,11 @@ describe('File Coverage Quorum Validator', () => {
     expect(result.rationale).toContain('Security floor unsatisfied: [src/auth/jwt.ts]');
   });
 
-  it('bypasses coverage requirements for pure docs, assets, and lockfiles and allows clean SHIP', () => {
+  it('bypasses coverage requirements for pure docs and assets and allows clean SHIP', () => {
     const nonCodeFiles = [
       'README.md',
       'docs/architecture.md',
       'assets/logo.png',
-      'package-lock.json',
-      'mix.lock',
-      'yarn.lock',
     ];
 
     // Zero tasks executed
@@ -158,7 +155,17 @@ describe('File Coverage Quorum Validator', () => {
     expect(result.securityCoverageSatisfied).toBe(true);
     expect(result.verdict).toBe('SHIP');
     expect(result.status).toBe('COMPLETE');
-    expect(result.rationale).toContain('documentation, assets, or bypass lockfiles');
+    expect(result.rationale).toContain('documentation or assets');
+  });
+
+  it('requires completed source coverage for lockfiles and data in mixed diffs', () => {
+    const changedFiles = ['src/api/users.ts', 'package-lock.json', 'data/seeds.json'];
+    const result = validateFileCoverageQuorum({ tasks: [] }, [
+      { taskId: 'api', dimension: 'contract', coveredPaths: ['src/api/users.ts'], status: 'complete' },
+    ], changedFiles);
+    expect(result.satisfied).toBe(false);
+    expect(result.uncoveredPaths).toEqual(['package-lock.json', 'data/seeds.json']);
+    expect(result.verdict).toBe('BLOCK');
   });
 
   it('supports options object signature for ergonomic caller integration', () => {

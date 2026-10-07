@@ -526,6 +526,9 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
         ...(expectedImportResolutionSources === undefined ? {} : { expectedImportResolutionSources }),
         ...(stored.config.review_engine === 'composed' ? {
           reviewEngine: 'composed' as const,
+          // The shared admission resolver creates this receipt; checkedPrepared verifies
+          // its config digest and the fresh policy comparison preserves the frozen value.
+          composedEffectiveConfiguration: stored.config.review_configuration_receipt,
           composedChangedPaths: applicability.effectiveFiles.map((file) => file.path),
           composedMaxTasks: resolveComposedMaxTasks(stored.config.composed?.max_tasks),
         } : {}),
