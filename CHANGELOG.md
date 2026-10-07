@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.120.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.119.4...v1.120.0) (2026-10-07)
+
+
+### Features
+
+* **ws5:** add bounded partial resume support ([#1418](https://github.com/review-yeti-ai/review-yeti-bot/issues/1418)) ([46113e3](https://github.com/review-yeti-ai/review-yeti-bot/commit/46113e3c3c89e45ca03dd228bba8b3a3f4207bd8))
+
 ## [1.119.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.119.3...v1.119.4) (2026-10-07)
 
 
