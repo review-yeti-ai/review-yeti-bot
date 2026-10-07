@@ -137,7 +137,8 @@ import {
 } from '../review/groundedReviewEngine';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, GROUNDED_REVIEW_RECEIPT_V2_VERSION,
   GROUNDED_VERIFICATION_V2_VERSION } from '../review/groundedEvidenceV2';
-import { groundedContinuityCandidateFrom, resolveGroundedFindingContinuity } from '../review/findingContinuity';
+import { groundedContinuityCandidateFrom, resolveGroundedFindingContinuity,
+  selectNewestEligibleGroundedCompletion } from '../review/findingContinuity';
 import type { AuthenticatedDisputesProjection, PrLifecycleHistoryLoad, PrLifecycleHistorySource } from '../review/prLifecycleHistoryHttp';
 import { buildReviewPlanningHistoryContext, renderReviewPlanningHistoryContext,
   type FindingThreadsPlanningSnapshot } from '../review/prReviewPlanningContext';
@@ -1889,10 +1890,7 @@ export async function runPublishingReviewWorker(
       expectedConfigDigest: value(env, 'REVIEW_CONFIG_DIGEST') || undefined,
       changedPaths: changedFiles.map((file) => file.path) });
     const priorEvidenceCompletion = lifecycleHistory.status === 'complete'
-      ? [...lifecycleHistory.events].reverse().find((event) => event.eventType === 'review.completion_recorded'
-        && event.evidenceSemanticsVersion === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
-        && typeof event.runId === 'string' && typeof event.headSha === 'string')
-      : undefined;
+      ? selectNewestEligibleGroundedCompletion(lifecycleHistory.events) : undefined;
     const planningHistoryPrompt = renderReviewPlanningHistoryContext(planningHistoryContext);
     workerConfig = { ...workerConfig, rules: [...workerConfig.rules, {
       id: 'service-pr-review-history-context', severity: 'P2' as const, scope: ['**'], rule: planningHistoryPrompt,

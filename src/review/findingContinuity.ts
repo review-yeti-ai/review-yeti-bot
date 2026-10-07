@@ -1,10 +1,19 @@
 import { canonicalJson, sha256 } from './reviewCore';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from './groundedEvidenceV2';
+import type { GroundedOriginAncestryV1 } from './workerReviewCompletion';
 import { z } from 'zod';
 import type { ReviewPlanningHistoryContext } from './prReviewPlanningContext';
 import type { PrLifecycleHistoryEvent, PrLifecycleHistoryFinding, PrLifecycleHistoryLoad } from './prLifecycleHistoryHttp';
 
+export type { GroundedOriginAncestryV1 } from './workerReviewCompletion';
 export const GROUNDED_FINDING_CONTINUITY_VERSION = 'GroundedFindingContinuity.v1' as const;
+export const GROUNDED_ORIGIN_ANCESTRY_VERSION = 'GroundedOriginAncestry.v1' as const;
+
+export type GroundedContinuityOriginRef = Pick<GroundedOriginAncestryV1,
+  'sourceEventId' | 'sourceKind' | 'priorRunId' | 'priorHeadSha' | 'currentHeadSha'>;
+export type GroundedOriginAncestryRequestsByFingerprint = Readonly<Record<string, readonly GroundedContinuityOriginRef[]>>;
+
+export const MAX_GROUNDED_ORIGIN_ANCESTRY_COMPARISONS = 100;
 
 export interface GroundedRootCauseIdentity {
   componentId: string;
@@ -90,6 +99,7 @@ export interface GroundedFindingContinuity {
   causeAnchor: GroundedCauseAnchor;
   sourceWindowManifestDigest: string;
   currentOutcomeEvidenceDigest: string;
+  verifiedOriginAncestry?: GroundedOriginAncestryV1[];
   evidenceDigest: string;
   unavailableReason?: string;
 }
@@ -97,6 +107,18 @@ export interface GroundedFindingContinuity {
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const fingerprintSchema = z.string().regex(/^fp1_[a-f0-9]{24}$/u);
 const durableFindingIdSchema = z.string().regex(/^lf1_[a-f0-9]{32}$/u);
+const runIdSchema = z.string().regex(/^run_[a-f0-9]{32}$/u);
+const shaSchema = z.string().regex(/^[a-f0-9]{40}$/u);
+const groundedOriginAncestrySchema = z.object({
+  version: z.literal(GROUNDED_ORIGIN_ANCESTRY_VERSION),
+  sourceEventId: z.string().uuid(), sourceKind: z.enum(['cause', 'repair']),
+  priorRunId: runIdSchema, priorHeadSha: shaSchema, currentHeadSha: shaSchema,
+  result: z.enum(['ancestor', 'not-ancestor', 'unavailable']), comparisonDigest: digestSchema,
+}).strict();
+const groundedOriginAncestriesSchema = z.array(groundedOriginAncestrySchema).max(2)
+  .refine((values) => values.every((value, index) => index === 0
+    || `${values[index - 1]!.sourceKind}:${values[index - 1]!.sourceEventId}`
+      < `${value.sourceKind}:${value.sourceEventId}`), 'origin ancestry must be sorted and unique');
 const rootCauseSchema = z.object({ componentId: z.string().min(1), behaviorId: z.string().min(1),
   contractId: z.string().min(1), failureModeId: z.string().min(1) }).strict();
 const causeAnchorSchema = z.object({ componentPath: z.string().min(1), side: z.enum(['head', 'base']),
@@ -107,9 +129,10 @@ const continuityCommon = {
   currentFingerprint: fingerprintSchema,
   candidateSide: z.enum(['head', 'base']), rootCause: rootCauseSchema, causeAnchor: causeAnchorSchema,
   sourceWindowManifestDigest: digestSchema, currentOutcomeEvidenceDigest: digestSchema, evidenceDigest: digestSchema,
+  verifiedOriginAncestry: groundedOriginAncestriesSchema.optional(),
 };
 const emptyEventIdsSchema = z.array(z.string().uuid()).length(0);
-const nonEmptyEventIdsSchema = z.array(z.string().uuid()).min(1).max(2_000)
+const nonEmptyEventIdsSchema = z.array(z.string().uuid()).min(1).max(2)
   .refine((values) => values.every((value, index) => index === 0 || values[index - 1] < value),
     'source event IDs must be sorted and unique');
 
@@ -121,7 +144,21 @@ export const groundedFindingContinuitySchema = z.discriminatedUnion('status', [
     historySnapshotId: z.string().uuid(), historyContextDigest: digestSchema, sourceEventIds: nonEmptyEventIdsSchema }).strict(),
   z.object({ ...continuityCommon, status: z.literal('unavailable'), sourceEventIds: emptyEventIdsSchema,
     unavailableReason: z.string().min(1).max(500) }).strict(),
-]);
+]).superRefine((receipt, context) => {
+  const origins = receipt.verifiedOriginAncestry;
+  if (receipt.status === 'new' || receipt.status === 'unavailable') {
+    if (origins !== undefined) context.addIssue({ code: z.ZodIssueCode.custom,
+      path: ['verifiedOriginAncestry'], message: 'unmatched continuity cannot carry source origins' });
+    return;
+  }
+  const expectedKinds = receipt.status === 'continuous' ? ['cause'] : ['cause', 'repair'];
+  if (!origins || origins.length !== expectedKinds.length
+    || origins.some((origin, index) => origin.sourceKind !== expectedKinds[index] || origin.result !== 'ancestor')
+    || canonicalJson(receipt.sourceEventIds) !== canonicalJson(origins.map((origin) => origin.sourceEventId).sort())) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['verifiedOriginAncestry'],
+      message: 'matched continuity requires exact cause and repair origin ancestry' });
+  }
+});
 
 function digest(value: unknown): value is string { return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value); }
 function durableId(value: unknown): value is string { return typeof value === 'string' && /^lf1_[a-f0-9]{32}$/u.test(value); }
@@ -145,11 +182,6 @@ function createUnavailable(candidate: GroundedContinuityCandidate,
   return { ...fields, evidenceDigest: groundedFindingContinuityDigest(fields) };
 }
 
-function eventIdsForFinding(history: PrLifecycleHistoryLoad, findingId: string): string[] {
-  return history.events.filter((event) => event.disposition?.findingId === findingId)
-    .map((event) => event.eventId).filter((id) => /^[-0-9a-f]{36}$/iu.test(id)).sort();
-}
-
 type ReviewContextCoordinates = Pick<PrLifecycleHistoryEvent,
   'runId' | 'executionAttempt' | 'headSha' | 'baseSha' | 'policyDigest' | 'configDigest' | 'contextDigest'>;
 
@@ -169,34 +201,44 @@ function sameReviewContext(left: ReviewContextCoordinates, right: ReviewContextC
  * fingerprint, status, affected context, and run coordinates. This is audit provenance only; it
  * never supplies a root cause or a durable identity by itself.
  */
-export function verifiedFixedVerificationFindingIds(history: PrLifecycleHistoryLoad, findingId: string,
-  rootCause: GroundedRootCauseIdentity): string[] {
+export interface VerifiedRepairVerificationLink {
+  causeFindingEventId: string;
+  repairEventId: string;
+  negativeFindingEventId: string;
+}
+
+export function verifiedRepairVerificationLinks(history: PrLifecycleHistoryLoad, findingId: string,
+  rootCause: GroundedRootCauseIdentity): VerifiedRepairVerificationLink[] {
   if (!durableId(findingId) || history.status !== 'complete' || history.eventOmittedCount > 0
     || history.findingOmittedCount > 0 || history.legacyOmittedCount > 0) return [];
 
   const currentCauseRows = history.findings.filter((finding) => finding.durableFindingId === findingId
     && finding.groundedEvidenceSemanticsVersion === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
     && sameRootCause(finding.rootCause, rootCause));
-  const linkedFindingIds = new Set<string>();
-  for (const fixedEvent of history.events) {
-    const disposition = fixedEvent.disposition;
-    if (fixedEvent.eventType !== 'finding.disposition.fixed' || disposition?.kind !== 'fixed'
+  const linked = new Map<string, VerifiedRepairVerificationLink>();
+  for (const repairEvent of history.events) {
+    const disposition = repairEvent.disposition;
+    if ((disposition?.kind !== 'fixed' && disposition?.kind !== 'adjudicated_false_positive')
       || disposition.findingId !== findingId || disposition.provenance.actorType !== 'service'
       || disposition.provenance.source !== 'grounded_verifier'
       || disposition.adjudication.method !== 'independent_grounded_verifier'
       || disposition.adjudication.status !== 'contradicted'
-      || disposition.adjudication.changedContextDigest !== disposition.affectedContextDigest
-      || fixedEvent.evidenceDigest !== sha256(canonicalJson(disposition))
-      || !sameReviewContext(fixedEvent, disposition)) continue;
+      || disposition.kind === 'fixed' && disposition.adjudication.changedContextDigest !== disposition.affectedContextDigest
+      || repairEvent.eventType !== `finding.disposition.${disposition.kind}`
+      || repairEvent.evidenceDigest !== sha256(canonicalJson(disposition))
+      || !sameReviewContext(repairEvent, disposition)) continue;
 
-    const priorCause = currentCauseRows.find((finding) => finding.findingEventId === disposition.adjudication.priorFindingEventId
-      && finding.fingerprint === disposition.fingerprint && finding.path === disposition.path);
+    const causeRows = currentCauseRows.filter((finding) => finding.fingerprint === disposition.fingerprint
+      && finding.path === disposition.path && finding.durableFindingId === findingId);
+    const priorCause = disposition.kind === 'fixed'
+      ? causeRows.find((finding) => finding.findingEventId === disposition.adjudication.priorFindingEventId)
+      : causeRows.length === 1 ? causeRows[0] : undefined;
     if (!priorCause) continue;
     const hasCurrentV2Completion = history.events.some((completion) => completion.eventType === 'review.completion_recorded'
       && completion.evidenceSemanticsVersion === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
       && (completion.completionStatus === 'completed' || completion.completionStatus === 'failed')
       && completion.coverageComplete === true && completion.quorumSatisfied === true
-      && sameReviewContext(completion, fixedEvent));
+      && sameReviewContext(completion, repairEvent));
     if (!hasCurrentV2Completion) continue;
 
     const negativeRows = history.findings.filter((finding) => finding.durableFindingId === findingId
@@ -213,29 +255,219 @@ export function verifiedFixedVerificationFindingIds(history: PrLifecycleHistoryL
         && verification.verification?.findingEventId === negativeRow.findingEventId
         && verification.verification.fingerprint === negativeRow.fingerprint
         && verification.verification.status === 'contradicted'
-        && verification.runId === fixedEvent.runId && verification.executionAttempt === fixedEvent.executionAttempt
-        && verification.headSha === fixedEvent.headSha
-        && (verification.baseSha === undefined || verification.baseSha === fixedEvent.baseSha)
-        && (verification.policyDigest === undefined || verification.policyDigest === fixedEvent.policyDigest)
-        && (verification.configDigest === undefined || verification.configDigest === fixedEvent.configDigest)
+        && verification.runId === repairEvent.runId && verification.executionAttempt === repairEvent.executionAttempt
+        && verification.headSha === repairEvent.headSha
+        && (verification.baseSha === undefined || verification.baseSha === repairEvent.baseSha)
+        && (verification.policyDigest === undefined || verification.policyDigest === repairEvent.policyDigest)
+        && (verification.configDigest === undefined || verification.configDigest === repairEvent.configDigest)
         && (verification.verification.currentAffectedContextDigest !== undefined
           || verification.verification.sourceAffectedContextDigest !== undefined
           ? verification.verification.currentAffectedContextDigest === negativeRow.affectedContextDigest
             && verification.verification.sourceAffectedContextDigest === priorCause.affectedContextDigest
-            && sameReviewContext(verification, fixedEvent)
+            && sameReviewContext(verification, repairEvent)
           : verification.contextDigest === negativeRow.affectedContextDigest));
-      if (hasVerificationLink) linkedFindingIds.add(negativeRow.findingEventId);
+      if (hasVerificationLink) linked.set(repairEvent.eventId, { causeFindingEventId: priorCause.findingEventId,
+        repairEventId: repairEvent.eventId, negativeFindingEventId: negativeRow.findingEventId });
     }
   }
-  return [...linkedFindingIds].sort();
+  return [...linked.values()].sort((left, right) => left.repairEventId.localeCompare(right.repairEventId));
 }
 
-function priorCauseRows(history: ReviewPlanningHistoryContext, candidate: GroundedContinuityCandidate,
-  continuityFindings?: readonly PrLifecycleHistoryFinding[]): ReviewPlanningHistoryContext['priorFindings'] {
-  const rows: readonly ReviewPlanningHistoryContext['priorFindings'][number][] = continuityFindings ?? history.priorFindings;
+export function verifiedFixedVerificationFindingIds(history: PrLifecycleHistoryLoad, findingId: string,
+  rootCause: GroundedRootCauseIdentity): string[] {
+  return [...new Set(verifiedRepairVerificationLinks(history, findingId, rootCause)
+    .map((link) => link.negativeFindingEventId))].sort();
+}
+
+function priorCauseRows(history: PrLifecycleHistoryLoad, candidate: GroundedContinuityCandidate,
+  continuityFindings?: readonly PrLifecycleHistoryFinding[]): PrLifecycleHistoryFinding[] {
+  const rows = continuityFindings ?? history.findings;
   return rows.filter((finding) => finding.groundedEvidenceSemanticsVersion === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
     && durableId(finding.durableFindingId)
     && sameRootCause(finding.rootCause, candidate.rootCause));
+}
+
+function causeOriginRef(history: PrLifecycleHistoryLoad, finding: PrLifecycleHistoryFinding,
+  currentHeadSha: string): GroundedContinuityOriginRef | null {
+  if (finding.verificationStatus !== 'confirmed') return null;
+  const verificationEvents = history.events.filter((event) => event.eventType === 'finding.independent_verification'
+    && event.verificationStatus === finding.verificationStatus
+    && event.verification?.findingEventId === finding.findingEventId
+    && event.verification.fingerprint === finding.fingerprint
+    && event.verification.status === finding.verificationStatus
+    && event.verification.currentAffectedContextDigest === undefined
+    && event.verification.sourceAffectedContextDigest === undefined
+    && event.contextDigest === finding.affectedContextDigest
+    && event.headSha === finding.lastSeenHead
+    && event.runId && runIdSchema.safeParse(event.runId).success
+    && Number.isSafeInteger(event.executionAttempt) && event.executionAttempt! > 0
+    && digest(event.evidenceDigest));
+  const origins = [...new Map(verificationEvents.map((event) => [
+    `${event.runId}\u0000${event.headSha}`,
+    { sourceEventId: finding.findingEventId, sourceKind: 'cause' as const,
+      priorRunId: event.runId!, priorHeadSha: event.headSha!, currentHeadSha },
+  ])).values()];
+  if (origins.length !== 1 || !uuidSchema.safeParse(finding.findingEventId).success
+    || !shaSchema.safeParse(finding.lastSeenHead).success || !shaSchema.safeParse(currentHeadSha).success) return null;
+  const origin = origins[0]!;
+  const qualifiedCompletion = history.events.some((event) => event.eventType === 'review.completion_recorded'
+    && event.evidenceSemanticsVersion === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
+    && (event.completionStatus === 'completed' || event.completionStatus === 'failed')
+    && event.coverageComplete === true && event.quorumSatisfied === true
+    && event.runId === origin.priorRunId && event.headSha === origin.priorHeadSha
+    && event.executionAttempt === verificationEvents[0]!.executionAttempt);
+  return qualifiedCompletion ? origin : null;
+}
+
+const uuidSchema = z.string().uuid();
+
+function trustedRepairEvent(history: PrLifecycleHistoryLoad, findingId: string,
+  rootCause: GroundedRootCauseIdentity): PrLifecycleHistoryEvent | undefined {
+  const verifiedIds = new Set(verifiedRepairVerificationLinks(history, findingId, rootCause)
+    .map((link) => link.repairEventId));
+  return history.events.find((event) => verifiedIds.has(event.eventId));
+}
+
+/**
+ * Selects the exact cause and repair origins used by a continuity claim. History pages preserve
+ * the snapshot's newest-first ID order, so the first eligible repair/cause row is deterministic.
+ * A fixed disposition must point to the selected cause row; false-positive adjudication must bind
+ * the same original fingerprint and path. The output is bounded to two source heads per finding.
+ */
+export function groundedContinuityOriginRefs(input: {
+  candidate: GroundedContinuityCandidate;
+  history: PrLifecycleHistoryLoad;
+  currentHeadSha: string;
+  continuityFindings?: readonly PrLifecycleHistoryFinding[];
+}): GroundedContinuityOriginRef[] | null {
+  const currentHeadSha = input.currentHeadSha;
+  if (!shaSchema.safeParse(currentHeadSha).success || input.history.status !== 'complete'
+    || input.history.eventOmittedCount > 0 || input.history.findingOmittedCount > 0
+    || input.history.legacyOmittedCount > 0) return null;
+  const matches = priorCauseRows(input.history, input.candidate, input.continuityFindings);
+  const durableIds = [...new Set(matches.map((row) => row.durableFindingId!).filter(durableId))];
+  if (durableIds.length === 0) return [];
+  if (durableIds.length !== 1) return null;
+  const findingId = durableIds[0]!;
+  const repair = trustedRepairEvent(input.history, findingId, input.candidate.rootCause);
+  let cause: typeof matches[number] | undefined;
+  const repairDisposition = repair?.disposition;
+  if (repairDisposition?.kind === 'fixed') {
+    cause = matches.find((row) => row.durableFindingId === findingId
+      && row.findingEventId === repairDisposition.adjudication.priorFindingEventId
+      && row.fingerprint === repairDisposition.fingerprint && row.path === repairDisposition.path
+      && sameRootCause(row.rootCause, input.candidate.rootCause));
+  } else if (repairDisposition?.kind === 'adjudicated_false_positive') {
+    const linked = matches.filter((row) => row.durableFindingId === findingId
+      && row.fingerprint === repairDisposition.fingerprint && row.path === repairDisposition.path
+      && sameRootCause(row.rootCause, input.candidate.rootCause));
+    if (linked.length !== 1) return null;
+    cause = linked[0];
+  } else {
+    cause = matches.find((row) => row.durableFindingId === findingId
+      && sameRootCause(row.rootCause, input.candidate.rootCause));
+  }
+  if (!cause) return null;
+  if (input.candidate.causalPath.relation === 'same-component'
+    && cause.causeAnchor?.componentPath !== input.candidate.causeAnchor.componentPath) return null;
+  const causeOrigin = causeOriginRef(input.history, cause, currentHeadSha);
+  if (!causeOrigin) return null;
+  const origins = [causeOrigin];
+  if (repair) {
+    if (!repair.runId || !runIdSchema.safeParse(repair.runId).success
+      || !repair.headSha || !shaSchema.safeParse(repair.headSha).success
+      || !uuidSchema.safeParse(repair.eventId).success) return null;
+    origins.push({ sourceEventId: repair.eventId, sourceKind: 'repair', priorRunId: repair.runId,
+      priorHeadSha: repair.headSha, currentHeadSha });
+  }
+  return origins.sort((left, right) => left.sourceKind < right.sourceKind ? -1
+    : left.sourceKind > right.sourceKind ? 1 : left.sourceEventId.localeCompare(right.sourceEventId));
+}
+
+/** Cause-only lineage for a currently contradicted outcome that may support a fixed transition. */
+export function groundedFixedOriginRefs(input: {
+  fingerprint: string;
+  path: string;
+  currentHeadSha: string;
+  history: PrLifecycleHistoryLoad;
+  continuityFindings?: readonly PrLifecycleHistoryFinding[];
+}): GroundedContinuityOriginRef[] | null {
+  if (!/^fp1_[a-f0-9]{24}$/u.test(input.fingerprint) || !shaSchema.safeParse(input.currentHeadSha).success
+    || input.history.status !== 'complete' || input.history.eventOmittedCount > 0
+    || input.history.findingOmittedCount > 0 || input.history.legacyOmittedCount > 0) return null;
+  const rows = (input.continuityFindings ?? input.history.findings).filter((finding) =>
+    finding.groundedEvidenceSemanticsVersion === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
+      && finding.fingerprint === input.fingerprint && finding.path === input.path
+      && finding.verificationStatus === 'confirmed' && durableId(finding.durableFindingId)
+      && finding.rootCause !== undefined);
+  const durableIds = [...new Set(rows.map((row) => row.durableFindingId!))];
+  if (durableIds.length !== 1) return null;
+  const causeRows = rows.filter((row) => row.durableFindingId === durableIds[0]);
+  if (causeRows.length === 0) return null;
+  const causeOrigin = causeOriginRef(input.history, causeRows[0]!, input.currentHeadSha);
+  return causeOrigin ? [causeOrigin] : null;
+}
+
+/**
+ * Snapshot/page order is newest-first. Select its newest completion only when that same record is
+ * current-v2 and has complete source coverage/quorum; never fall back to an older run when the
+ * newest record is ineligible. Failed reviews with complete coverage remain repair context.
+ */
+export function selectNewestEligibleGroundedCompletion(events: readonly PrLifecycleHistoryEvent[]):
+  PrLifecycleHistoryEvent | undefined {
+  const latest = events.find((event) => event.eventType === 'review.completion_recorded');
+  if (!latest || latest.evidenceSemanticsVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
+    || (latest.completionStatus !== 'completed' && latest.completionStatus !== 'failed')
+    || latest.coverageComplete !== true || latest.quorumSatisfied !== true
+    || !latest.runId || !runIdSchema.safeParse(latest.runId).success
+    || !latest.headSha || !shaSchema.safeParse(latest.headSha).success) return undefined;
+  return latest;
+}
+
+/** Canonical digest and result reducer shared by the worker origin reader and authoritative source reader. */
+export function groundedOriginAncestryFromComparison(input: GroundedContinuityOriginRef,
+  comparison: { status: 'ahead' | 'behind' | 'diverged' | 'identical'; files: readonly unknown[] } | null,
+  unavailableReason?: string): GroundedOriginAncestryV1 {
+  const result: GroundedOriginAncestryV1['result'] = comparison && comparison.files.length < 300
+    ? comparison.status === 'ahead' || comparison.status === 'identical' ? 'ancestor' : 'not-ancestor'
+    : 'unavailable';
+  const fields = { ...input, version: GROUNDED_ORIGIN_ANCESTRY_VERSION, result };
+  return { ...fields, comparisonDigest: sha256(canonicalJson({ ...fields, comparison,
+    ...(unavailableReason ? { unavailableReason } : {}) })) };
+}
+
+/** Exact source/service origin join required before a durable identity may be reused. */
+export function groundedOriginAncestryJoin(input: {
+  expected: readonly GroundedContinuityOriginRef[];
+  proofs: readonly GroundedOriginAncestryV1[] | undefined;
+  currentHeadSha: string;
+}): GroundedOriginAncestryV1[] | null {
+  const proofs = input.proofs;
+  if (!proofs || proofs.length !== input.expected.length || proofs.length === 0) return null;
+  const parsedProofs: GroundedOriginAncestryV1[] = [];
+  for (const proof of proofs) {
+    const parsed = groundedOriginAncestrySchema.safeParse(proof);
+    if (!parsed.success) return null;
+    parsedProofs.push(parsed.data);
+  }
+  const normalized = parsedProofs.sort((left, right) => left.sourceKind < right.sourceKind ? -1
+    : left.sourceKind > right.sourceKind ? 1 : left.sourceEventId.localeCompare(right.sourceEventId));
+  const expected = [...input.expected].sort((left, right) => left.sourceKind < right.sourceKind ? -1
+    : left.sourceKind > right.sourceKind ? 1 : left.sourceEventId.localeCompare(right.sourceEventId));
+  if (!normalized.every((proof, index) => proof.result === 'ancestor'
+    && proof.currentHeadSha === input.currentHeadSha
+    && canonicalJson({ sourceEventId: proof.sourceEventId, sourceKind: proof.sourceKind,
+      priorRunId: proof.priorRunId, priorHeadSha: proof.priorHeadSha, currentHeadSha: proof.currentHeadSha })
+      === canonicalJson(expected[index]))) return null;
+  return normalized;
+}
+
+export function groundedOriginAncestryMatches(input: {
+  expected: readonly GroundedContinuityOriginRef[];
+  proofs: readonly GroundedOriginAncestryV1[] | undefined;
+  currentHeadSha: string;
+}): boolean {
+  return groundedOriginAncestryJoin(input) !== null;
 }
 
 /**
@@ -251,7 +483,10 @@ export function resolveGroundedFindingContinuity(input: {
   planningHistory: ReviewPlanningHistoryContext;
   /** Complete captured cause rows used for identity continuity; planner prompt rows are deliberately pruned. */
   continuityFindings?: readonly PrLifecycleHistoryFinding[];
-  priorAncestryVerified: boolean;
+  /** Per-origin comparisons; the generic latest-review boolean cannot grant durable identity. */
+  verifiedOriginAncestry?: readonly GroundedOriginAncestryV1[];
+  /** Legacy diagnostic only. It is deliberately not an identity authority. */
+  priorAncestryVerified?: boolean;
 }): GroundedFindingContinuity {
   const { candidate, history, planningHistory } = input;
   if (!history.snapshotId || !history.contextDigest || history.status !== 'complete'
@@ -267,7 +502,7 @@ export function resolveGroundedFindingContinuity(input: {
     || !candidate.rootCause.contractId || !candidate.rootCause.failureModeId) {
     return createUnavailable(candidate, 'claim-unmatched');
   }
-  const matchingRows = priorCauseRows(planningHistory, candidate, input.continuityFindings);
+  const matchingRows = priorCauseRows(history, candidate, input.continuityFindings);
   const durableIds = [...new Set(matchingRows.map((row) => row.durableFindingId!).filter(durableId))];
   if (durableIds.length === 0) {
     const fields = { version: GROUNDED_FINDING_CONTINUITY_VERSION, status: 'new' as const,
@@ -279,11 +514,11 @@ export function resolveGroundedFindingContinuity(input: {
     return { ...fields, evidenceDigest: groundedFindingContinuityDigest(fields) };
   }
   if (!planningHistory.evidenceSemanticsCompatibility.compatibleForContinuity
-    || planningHistory.evidenceSemanticsCompatibility.expectedVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION) {
+    || planningHistory.evidenceSemanticsCompatibility.expectedVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
+    || planningHistory.evidenceSemanticsCompatibility.sourcePolicyConfigCompatible !== true) {
     return createUnavailable(candidate, 'stale-context');
   }
   if (durableIds.length !== 1) return createUnavailable(candidate, 'ambiguous-match');
-  if (!input.priorAncestryVerified) return createUnavailable(candidate, 'stale-context');
   const related = candidate.causalPath.relation === 'same-component' || candidate.causalPath.relation === 'dependency-edge'
     || candidate.causalPath.relation === 'contract-edge';
   if (!related || candidate.causalPath.citationIds.length === 0) return createUnavailable(candidate, 'claim-unmatched');
@@ -298,21 +533,25 @@ export function resolveGroundedFindingContinuity(input: {
   if (!sameComponentUnique && candidate.causalPath.relation === 'same-component') {
     return createUnavailable(candidate, 'claim-unmatched');
   }
-  const sourceEvents = [...new Set([
-    ...matchingRows.filter((row) => row.durableFindingId === findingId
-      && sameRootCause(row.rootCause, candidate.rootCause)).map((row) => row.findingEventId),
-    ...eventIdsForFinding(history, findingId),
-    ...verifiedFixedVerificationFindingIds(history, findingId, candidate.rootCause),
-  ])].sort();
-  if (sourceEvents.length === 0) return createUnavailable(candidate, 'claim-unmatched');
-  const reopened = history.events.some((event) => event.disposition?.findingId === findingId
-    && (event.disposition.kind === 'fixed' || event.disposition.kind === 'adjudicated_false_positive'));
+  const origins = groundedContinuityOriginRefs({ candidate, history, currentHeadSha: planningHistory.expectedHeadSha,
+    continuityFindings: input.continuityFindings });
+  if (!origins || origins.length === 0 || origins.some((origin) => origin.sourceKind === 'cause'
+    && !matchingRows.some((row) => row.durableFindingId === findingId
+      && row.findingEventId === origin.sourceEventId && sameRootCause(row.rootCause, candidate.rootCause)))) {
+    return createUnavailable(candidate, 'claim-unmatched');
+  }
+  const verifiedOriginAncestry = input.verifiedOriginAncestry;
+  if (!groundedOriginAncestryMatches({ expected: origins, proofs: verifiedOriginAncestry,
+    currentHeadSha: planningHistory.expectedHeadSha })) return createUnavailable(candidate, 'stale-context');
+  const sourceEvents = origins.map((origin) => origin.sourceEventId).sort();
+  const reopened = origins.some((origin) => origin.sourceKind === 'repair');
   const fields = { version: GROUNDED_FINDING_CONTINUITY_VERSION, status: reopened ? 'reopened' as const : 'continuous' as const,
     durableFindingId: findingId, historySnapshotId: history.snapshotId, historyContextDigest: history.contextDigest,
     sourceEventIds: sourceEvents, currentFingerprint: candidate.currentFingerprint, candidateSide: candidate.candidateSide,
     rootCause: candidate.rootCause, causeAnchor: candidate.causeAnchor,
     sourceWindowManifestDigest: candidate.sourceWindowManifestDigest,
-    currentOutcomeEvidenceDigest: candidate.currentOutcomeEvidenceDigest };
+    currentOutcomeEvidenceDigest: candidate.currentOutcomeEvidenceDigest,
+    verifiedOriginAncestry: [...verifiedOriginAncestry!] };
   return { ...fields, evidenceDigest: groundedFindingContinuityDigest(fields) };
 }
 
@@ -335,7 +574,12 @@ export function continuityReceiptMatchesCurrent(input: {
   if (!receipt.historySnapshotId || receipt.historySnapshotId !== history.snapshotId
     || receipt.historyContextDigest !== history.contextDigest) return false;
   if (receipt.status === 'new') return !receipt.durableFindingId && receipt.sourceEventIds.length === 0 && !receipt.unavailableReason;
+  const origins = receipt.verifiedOriginAncestry;
+  const expectedKinds = receipt.status === 'continuous' ? ['cause'] : ['cause', 'repair'];
   return durableId(receipt.durableFindingId) && receipt.sourceEventIds.length > 0 && !receipt.unavailableReason
+    && Boolean(origins && origins.length === expectedKinds.length
+      && origins.every((origin, index) => origin.sourceKind === expectedKinds[index] && origin.result === 'ancestor')
+      && canonicalJson(receipt.sourceEventIds) === canonicalJson(origins.map((origin) => origin.sourceEventId).sort()))
     && receipt.sourceEventIds.every((id) => history.findings.some((finding) => finding.findingEventId === id)
       || history.events.some((event) => event.eventId === id && event.disposition?.findingId === receipt.durableFindingId));
 }

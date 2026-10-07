@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { groundedFindingContinuityDigest, resolveGroundedFindingContinuity, continuityReceiptMatchesCurrent,
-  groundedContinuityCandidateFrom, groundedFindingContinuitySchema, type GroundedContinuityCandidate } from '../../src/review/findingContinuity';
+  groundedContinuityCandidateFrom, groundedContinuityOriginRefs, groundedOriginAncestryFromComparison,
+  groundedFindingContinuitySchema, selectNewestEligibleGroundedCompletion, verifiedRepairVerificationLinks,
+  type GroundedContinuityCandidate, type GroundedOriginAncestryV1 }
+  from '../../src/review/findingContinuity';
 import { canonicalJson, sha256 } from '../../src/review/reviewCore';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from '../../src/review/groundedEvidenceV2';
 import type { PrLifecycleHistoryLoad } from '../../src/review/prLifecycleHistoryHttp';
@@ -37,23 +40,52 @@ function history(options: { matches?: Array<{ durableFindingId: string; eventId:
     ...(match.rootCause ? { rootCause: match.rootCause } : {}), ...(match.causeAnchor ? { causeAnchor: match.causeAnchor } : {}),
     sourceWindowManifestDigest: '7'.repeat(64),
   }));
+  const sourceRunId = `run_${'1'.repeat(32)}`;
+  const runId = options.fixed ? `run_${'2'.repeat(32)}` : sourceRunId;
+  const negativeFindingEventId = '00000000-0000-4000-8000-000000000006';
   const fixedDisposition = options.fixed ? [{ eventId: '00000000-0000-4000-8000-000000000003',
-    eventType: 'finding.disposition.fixed', verificationStatus: 'contradicted' as const,
+    eventType: 'finding.disposition.fixed', runId, executionAttempt: 1, headSha: head, baseSha: '9'.repeat(40),
+    policyDigest: contextDigest, configDigest: contextDigest, contextDigest,
+    verificationStatus: 'contradicted' as const,
     disposition: { version: 'PrFindingDisposition.v1' as const, kind: 'fixed' as const, findingId,
-      fingerprint: `fp1_${'2'.repeat(24)}`, path: 'src/auth/guard.ts', runId: `run_${'1'.repeat(32)}`,
-      executionAttempt: 1, headSha: base, baseSha: '9'.repeat(40), policyDigest: contextDigest,
+      fingerprint: rows[0]?.fingerprint ?? `fp1_${'2'.repeat(24)}`, path: rows[0]?.path ?? 'src/auth/guard.ts', runId,
+      executionAttempt: 1, headSha: head, baseSha: '9'.repeat(40), policyDigest: contextDigest,
       configDigest: contextDigest, contextDigest, affectedContextDigest: contextDigest, evidenceDigest: contextDigest,
       provenance: { actorType: 'service' as const, actorDigest: contextDigest, source: 'grounded_verifier' as const,
         receiptDigest: contextDigest }, adjudication: { method: 'independent_grounded_verifier' as const,
         status: 'contradicted' as const, proofDigest: contextDigest,
-        priorFindingEventId: '00000000-0000-4000-8000-000000000004', changedContextDigest: contextDigest } } }] : [];
-  const completion = { eventId: '00000000-0000-4000-8000-000000000005', eventType: 'review.completion_recorded',
-    runId: `run_${'1'.repeat(32)}`, executionAttempt: 1, headSha: base, baseSha: '9'.repeat(40),
-    evidenceSemanticsVersion: semantics, verificationStatus: 'insufficient' as const };
+        priorFindingEventId: rows[0]?.findingEventId ?? '00000000-0000-4000-8000-000000000004',
+        changedContextDigest: contextDigest } } }] : [];
+  const negativeFinding = options.fixed && rows[0] ? [{ findingEventId: negativeFindingEventId,
+    durableFindingId: rows[0].durableFindingId, fingerprint: rows[0].fingerprint, path: rows[0].path,
+    firstSeenHead: base, lastSeenHead: head, affectedContextDigest: contextDigest,
+    sourceSeverity: 'P1', effectiveSeverity: 'P1', disposition: 'carried', blocking: true,
+    verificationStatus: 'contradicted' as const, evidenceDigest: contextDigest }] : [];
+  const repairVerification = options.fixed && rows[0] ? [{ eventId: '00000000-0000-4000-8000-000000000007',
+    eventType: 'finding.independent_verification', runId, executionAttempt: 1, headSha: head,
+    contextDigest, evidenceDigest: contextDigest, verificationStatus: 'contradicted' as const,
+    verification: { findingEventId: negativeFindingEventId, fingerprint: rows[0].fingerprint, status: 'contradicted' as const } }] : [];
+  const causeVerificationEvents = rows.map((row, index) => ({ eventId: `00000000-0000-4000-8000-${String(index + 10).padStart(12, '0')}`,
+    eventType: 'finding.independent_verification', runId: sourceRunId, executionAttempt: 1, headSha: base,
+    contextDigest: row.affectedContextDigest, evidenceDigest: contextDigest, verificationStatus: row.verificationStatus,
+    verification: { findingEventId: row.findingEventId, fingerprint: row.fingerprint, status: row.verificationStatus } }));
+  const sourceCompletion = { eventId: '00000000-0000-4000-8000-000000000008', eventType: 'review.completion_recorded',
+    runId: sourceRunId, executionAttempt: 1, headSha: base, baseSha: '9'.repeat(40),
+    policyDigest: contextDigest, configDigest: contextDigest, contextDigest,
+    evidenceSemanticsVersion: semantics, completionStatus: 'failed' as const,
+    coverageComplete: true, quorumSatisfied: true, verificationStatus: 'insufficient' as const };
+  const completion = options.fixed ? { ...sourceCompletion, eventId: '00000000-0000-4000-8000-000000000005',
+    runId, headSha: head } : sourceCompletion;
+  const repairEventPayload = fixedDisposition[0]?.disposition;
+  const fixedEvent = repairEventPayload ? [{ ...fixedDisposition[0]!,
+    evidenceDigest: sha256(canonicalJson(repairEventPayload)) }] : [];
   const serviceHistory: PrLifecycleHistoryLoad = {
-    status: 'complete', snapshotId: '00000000-0000-4000-8000-000000000006', contextDigest,
-    events: [completion, ...fixedDisposition], findings: rows, eventCount: 1 + fixedDisposition.length,
-    findingCount: rows.length, loadedEventCount: 1 + fixedDisposition.length, loadedFindingCount: rows.length,
+    status: 'complete', snapshotId: '00000000-0000-4000-8000-000000000020', contextDigest,
+    events: [...fixedEvent, ...repairVerification, completion,
+      ...(options.fixed ? [...causeVerificationEvents, sourceCompletion] : causeVerificationEvents)],
+    findings: [...rows, ...negativeFinding], eventCount: 1 + fixedEvent.length + repairVerification.length + causeVerificationEvents.length,
+    findingCount: rows.length + negativeFinding.length, loadedEventCount: 1 + fixedEvent.length + repairVerification.length
+      + causeVerificationEvents.length, loadedFindingCount: rows.length + negativeFinding.length,
     eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0,
     eventsDigest: contextDigest, findingsDigest: contextDigest, omissions: [],
   };
@@ -64,11 +96,26 @@ function history(options: { matches?: Array<{ durableFindingId: string; eventId:
       compatibleForContinuity: true, compatibleForCheckpointReuse: true, compatibleForCoverageReuse: true,
       completionCoverageComplete: true, completionQuorumSatisfied: true, sourcePolicyConfigCompatible: true,
       completionStatus: 'completed', reason: 'matching grounded evidence semantics' },
-    priorFindings: rows, dispositions: fixedDisposition.flatMap((event) => event.disposition ? [event.disposition] : []),
+    priorFindings: rows, dispositions: fixedEvent.flatMap((event) => event.disposition ? [event.disposition] : []),
     authenticatedDisputes: { status: 'complete', count: 0, paths: [] },
     priorThreads: [], omissions: [], canWaiveCurrentBlocker: false,
   };
   return { history: serviceHistory, planningHistory };
+}
+
+function originProofs(input: { candidate: GroundedContinuityCandidate; history: PrLifecycleHistoryLoad;
+  planningHistory: ReviewPlanningHistoryContext; continuityFindings?: PrLifecycleHistoryLoad['findings'];
+  results?: readonly GroundedOriginAncestryV1['result'][] }): GroundedOriginAncestryV1[] {
+  const refs = groundedContinuityOriginRefs({ candidate: input.candidate, history: input.history,
+    currentHeadSha: input.planningHistory.expectedHeadSha, continuityFindings: input.continuityFindings });
+  return (refs ?? []).map((ref, index) => groundedOriginAncestryFromComparison(ref,
+    input.results?.[index] === 'not-ancestor' ? { status: 'diverged', files: [] } : { status: 'ahead', files: [] }));
+}
+
+function resolveWithOriginProofs(input: Parameters<typeof resolveGroundedFindingContinuity>[0]) {
+  const verifiedOriginAncestry = input.verifiedOriginAncestry ?? originProofs({ candidate: input.candidate,
+    history: input.history, planningHistory: input.planningHistory, continuityFindings: input.continuityFindings });
+  return resolveGroundedFindingContinuity({ ...input, verifiedOriginAncestry });
 }
 
 describe('verified durable finding continuity', () => {
@@ -78,7 +125,7 @@ describe('verified durable finding continuity', () => {
       componentPath: 'src/auth/guard.ts', side: 'head', startLine: 99, endLine: 103,
       citationIds: ['head:src/auth/guard.ts:99-103'], contentDigest: '5'.repeat(64),
     } });
-    const receipt = resolveGroundedFindingContinuity({ candidate: current, ...fixture,
+    const receipt = resolveWithOriginProofs({ candidate: current, ...fixture,
       priorAncestryVerified: true });
 
     expect(receipt).toMatchObject({ status: 'continuous', durableFindingId: findingId,
@@ -90,9 +137,46 @@ describe('verified durable finding continuity', () => {
     expect(evidenceDigest).toBe(groundedFindingContinuityDigest(unsigned));
   });
 
-  it('keeps prior IDs unavailable when exact source ancestry is not verified', () => {
+  it('does not let a generic latest-review ancestry boolean authorize a matched cause', () => {
     const fixture = history();
-    const receipt = resolveGroundedFindingContinuity({ candidate: candidate(), ...fixture, priorAncestryVerified: false });
+    const receipt = resolveGroundedFindingContinuity({ candidate: candidate(), ...fixture, priorAncestryVerified: true });
+
+    expect(receipt).toMatchObject({ status: 'unavailable', unavailableReason: 'stale-context', sourceEventIds: [] });
+    expect(receipt).not.toHaveProperty('durableFindingId');
+  });
+
+  it('selects the newest eligible completion from the newest-first snapshot and does not fall back past an ineligible latest row', () => {
+    const fixture = history();
+    const older = fixture.history.events.find((event) => event.eventType === 'review.completion_recorded')!;
+    const newest = { ...older, eventId: '00000000-0000-4000-8000-000000000099',
+      runId: `run_${'9'.repeat(32)}`, headSha: head };
+
+    expect(selectNewestEligibleGroundedCompletion([newest, older])).toEqual(newest);
+    expect(selectNewestEligibleGroundedCompletion([{ ...newest, coverageComplete: false }, older])).toBeUndefined();
+    expect(selectNewestEligibleGroundedCompletion([{ ...newest, evidenceSemanticsVersion: 'GroundedReviewReceipt.v1' }, older]))
+      .toBeUndefined();
+  });
+
+  it('rejects a cause origin on a force-pushed-away head even when the latest review head is an ancestor', () => {
+    const fixture = history();
+    const current = candidate();
+    const proofs = originProofs({ candidate: current, history: fixture.history, planningHistory: fixture.planningHistory,
+      continuityFindings: fixture.history.findings, results: ['not-ancestor'] });
+    const receipt = resolveGroundedFindingContinuity({ candidate: current, ...fixture,
+      continuityFindings: fixture.history.findings, priorAncestryVerified: true, verifiedOriginAncestry: proofs });
+
+    expect(receipt).toMatchObject({ status: 'unavailable', unavailableReason: 'stale-context', sourceEventIds: [] });
+    expect(receipt).not.toHaveProperty('durableFindingId');
+  });
+
+  it('rejects a dropped repair origin even when the cause and generic latest head are ancestors', () => {
+    const fixture = history({ fixed: true });
+    const current = candidate();
+    const planningHistory = { ...fixture.planningHistory, expectedHeadSha: 'd'.repeat(40) };
+    const proofs = originProofs({ candidate: current, history: fixture.history, planningHistory,
+      continuityFindings: fixture.history.findings, results: ['ancestor', 'not-ancestor'] });
+    const receipt = resolveGroundedFindingContinuity({ candidate: current, history: fixture.history, planningHistory,
+      continuityFindings: fixture.history.findings, priorAncestryVerified: true, verifiedOriginAncestry: proofs });
 
     expect(receipt).toMatchObject({ status: 'unavailable', unavailableReason: 'stale-context', sourceEventIds: [] });
     expect(receipt).not.toHaveProperty('durableFindingId');
@@ -110,7 +194,7 @@ describe('verified durable finding continuity', () => {
   it('requires strict continuity receipts with citation-bound anchors and status-specific identity fields', () => {
     const current = candidate();
     const { history: prior, planningHistory } = history();
-    const valid = resolveGroundedFindingContinuity({ candidate: current, history: prior, planningHistory,
+    const valid = resolveWithOriginProofs({ candidate: current, history: prior, planningHistory,
       priorAncestryVerified: true });
     expect(groundedFindingContinuitySchema.safeParse(valid).success).toBe(true);
     expect(groundedFindingContinuitySchema.safeParse({ ...valid, causeAnchor: {
@@ -130,13 +214,13 @@ describe('verified durable finding continuity', () => {
     const current = candidate({ causeAnchor: { ...candidate().causeAnchor, componentPath: 'src/lib/shared.ts' },
       causalPath: { relation: 'contract-edge', candidatePath: 'src/caller.ts', componentPath: 'src/lib/shared.ts',
         citationIds: ['caller-contract-edge'] } });
-    const receipt = resolveGroundedFindingContinuity({ candidate: current, history: fullHistory, planningHistory,
+    const receipt = resolveWithOriginProofs({ candidate: current, history: fullHistory, planningHistory,
       continuityFindings: fullHistory.findings, priorAncestryVerified: true });
     expect(receipt).toMatchObject({ status: 'continuous', durableFindingId: findingId,
       sourceEventIds: [sharedSource.findingEventId] });
   });
 
-  it('keeps every authenticated finding event for a reopened durable cause after planner dedupe', () => {
+  it('uses the exact cause row referenced by the trusted repair after planner dedupe', () => {
     const firstEventId = '00000000-0000-4000-8000-000000000031';
     const secondEventId = '00000000-0000-4000-8000-000000000032';
     const fixture = history({ fixed: true, matches: [
@@ -148,10 +232,10 @@ describe('verified durable finding continuity', () => {
           citationIds: ['prior:second'], contentDigest: '2'.repeat(64) } },
     ] });
     const prunedPlanning = { ...fixture.planningHistory, priorFindings: [fixture.planningHistory.priorFindings[1]!] };
-    const receipt = resolveGroundedFindingContinuity({ candidate: candidate(), history: fixture.history,
+    const receipt = resolveWithOriginProofs({ candidate: candidate(), history: fixture.history,
       planningHistory: prunedPlanning, continuityFindings: fixture.history.findings, priorAncestryVerified: true });
     expect(receipt.status).toBe('reopened');
-    expect(receipt.sourceEventIds).toEqual(['00000000-0000-4000-8000-000000000003', firstEventId, secondEventId]);
+    expect(receipt.sourceEventIds).toEqual([firstEventId, '00000000-0000-4000-8000-000000000003'].sort());
   });
 
   it('includes a fixed contradicted finding only through its current-v2 completion and service verification link', () => {
@@ -201,22 +285,35 @@ describe('verified durable finding continuity', () => {
     const detailedVerificationEvent = { ...verificationEvent, baseSha: base, policyDigest: contextDigest,
       configDigest: contextDigest, contextDigest, verification: { ...verificationEvent.verification,
         currentAffectedContextDigest: currentContextDigest, sourceAffectedContextDigest: priorCause.affectedContextDigest } };
+    const priorOriginEvents = fixture.history.events.filter((event) => event.eventType === 'review.completion_recorded'
+      || event.eventType === 'finding.independent_verification');
     const fixedHistory = { ...fixture.history, findings: [...fixture.history.findings, contradictedFinding],
-      events: [completionEvent, fixedEvent, verificationEvent], eventCount: 3, loadedEventCount: 3,
+      events: [fixedEvent, verificationEvent, completionEvent, ...priorOriginEvents],
+      eventCount: 3 + priorOriginEvents.length, loadedEventCount: 3 + priorOriginEvents.length,
       findingCount: fixture.history.findings.length + 1, loadedFindingCount: fixture.history.findings.length + 1 };
     const fixedPlanningHistory = { ...fixture.planningHistory, dispositions: [fixedDisposition] };
 
     expect(contradictedFinding).not.toHaveProperty('rootCause');
+    const validOriginProofs = originProofs({ candidate: candidate(), history: fixedHistory,
+      planningHistory: fixedPlanningHistory, continuityFindings: fixedHistory.findings });
     const receipt = resolveGroundedFindingContinuity({ candidate: candidate(), history: fixedHistory,
-      planningHistory: fixedPlanningHistory, continuityFindings: fixedHistory.findings, priorAncestryVerified: true });
+      planningHistory: fixedPlanningHistory, continuityFindings: fixedHistory.findings,
+      priorAncestryVerified: false, verifiedOriginAncestry: validOriginProofs });
 
     expect(receipt.status).toBe('reopened');
-    expect(receipt.sourceEventIds).toContain(contradictedFindingEventId);
-    expect(receipt.sourceEventIds).toEqual([priorCause.findingEventId, fixedEventId, contradictedFindingEventId].sort());
-    const detailedReceipt = resolveGroundedFindingContinuity({ candidate: candidate(),
-      history: { ...fixedHistory, events: [completionEvent, fixedEvent, detailedVerificationEvent] },
-      planningHistory: fixedPlanningHistory, continuityFindings: fixedHistory.findings, priorAncestryVerified: true });
-    expect(detailedReceipt.sourceEventIds).toContain(contradictedFindingEventId);
+    expect(receipt.sourceEventIds).toEqual([priorCause.findingEventId, fixedEventId].sort());
+    expect(receipt.verifiedOriginAncestry?.map(({ sourceKind }) => sourceKind)).toEqual(['cause', 'repair']);
+    expect(verifiedRepairVerificationLinks(fixedHistory, findingId, rootCause)).toEqual([{
+      causeFindingEventId: priorCause.findingEventId, repairEventId: fixedEventId,
+      negativeFindingEventId: contradictedFindingEventId,
+    }]);
+    const detailedHistory = { ...fixedHistory, events: [fixedEvent, detailedVerificationEvent, completionEvent, ...priorOriginEvents] };
+    const detailedProofs = originProofs({ candidate: candidate(), history: detailedHistory,
+      planningHistory: fixedPlanningHistory, continuityFindings: detailedHistory.findings });
+    const detailedReceipt = resolveGroundedFindingContinuity({ candidate: candidate(), history: detailedHistory,
+      planningHistory: fixedPlanningHistory, continuityFindings: detailedHistory.findings,
+      verifiedOriginAncestry: detailedProofs });
+    expect(detailedReceipt.sourceEventIds).toEqual([priorCause.findingEventId, fixedEventId].sort());
 
     const invalidEventSets = [
       [completionEvent, fixedEvent],
@@ -241,10 +338,12 @@ describe('verified durable finding continuity', () => {
       [{ ...completionEvent, quorumSatisfied: false }, fixedEvent, verificationEvent],
     ];
     for (const events of invalidEventSets) {
-      const invalidHistory = { ...fixedHistory, events };
+      const invalidHistory = { ...fixedHistory, events: [...events, ...priorOriginEvents] };
       const invalidReceipt = resolveGroundedFindingContinuity({ candidate: candidate(), history: invalidHistory,
-        planningHistory: fixedPlanningHistory, continuityFindings: invalidHistory.findings, priorAncestryVerified: true });
-      expect(invalidReceipt.sourceEventIds).not.toContain(contradictedFindingEventId);
+        planningHistory: fixedPlanningHistory, continuityFindings: invalidHistory.findings,
+        priorAncestryVerified: true, verifiedOriginAncestry: validOriginProofs });
+      expect(invalidReceipt).toMatchObject({ status: 'unavailable', unavailableReason: 'stale-context', sourceEventIds: [] });
+      expect(invalidReceipt).not.toHaveProperty('durableFindingId');
     }
   });
 
@@ -256,7 +355,7 @@ describe('verified durable finding continuity', () => {
     const mixedHistory = { ...fixture.history, findings: [legacy, current], findingCount: 2, loadedFindingCount: 2 };
     const mixedPlanning = { ...fixture.planningHistory, priorFindings: [legacy, current] };
 
-    const receipt = resolveGroundedFindingContinuity({ candidate: candidate(), history: mixedHistory,
+    const receipt = resolveWithOriginProofs({ candidate: candidate(), history: mixedHistory,
       planningHistory: mixedPlanning, continuityFindings: mixedHistory.findings, priorAncestryVerified: true });
 
     expect(receipt).toMatchObject({ status: 'continuous', durableFindingId: findingId,
@@ -288,7 +387,7 @@ describe('verified durable finding continuity', () => {
         causeAnchor: { componentPath: 'src/auth/guard.ts', side: 'head', startLine: 80, endLine: 82,
           citationIds: ['head:src/auth/guard.ts:80-82'], contentDigest: '2'.repeat(64) } },
     ] });
-    const receipt = resolveGroundedFindingContinuity({ candidate: candidate(), ...fixture,
+    const receipt = resolveWithOriginProofs({ candidate: candidate(), ...fixture,
       priorAncestryVerified: true });
 
     expect(receipt).toMatchObject({ status: 'unavailable', unavailableReason: 'ambiguous-match', sourceEventIds: [] });
@@ -299,7 +398,7 @@ describe('verified durable finding continuity', () => {
     const fixture = history();
     const current = candidate();
     const second = candidate({ causeAnchor: { ...current.causeAnchor, startLine: 80, endLine: 83 } });
-    const receipt = resolveGroundedFindingContinuity({ candidate: current, currentCandidates: [current, second], ...fixture,
+    const receipt = resolveWithOriginProofs({ candidate: current, currentCandidates: [current, second], ...fixture,
       priorAncestryVerified: true });
 
     expect(receipt).toMatchObject({ status: 'unavailable', unavailableReason: 'ambiguous-match', sourceEventIds: [] });
@@ -348,10 +447,11 @@ describe('verified durable finding continuity', () => {
 
   it('marks a verified defect after a fixed disposition as reopened without manufacturing approval', () => {
     const fixture = history({ fixed: true });
-    const receipt = resolveGroundedFindingContinuity({ candidate: candidate(), ...fixture,
+    const receipt = resolveWithOriginProofs({ candidate: candidate(), ...fixture,
       priorAncestryVerified: true });
 
     expect(receipt).toMatchObject({ status: 'reopened', durableFindingId: findingId });
-    expect(receipt.sourceEventIds).toContain('00000000-0000-4000-8000-000000000003');
+    expect(receipt.sourceEventIds).toEqual([fixture.history.findings[0]!.findingEventId,
+      '00000000-0000-4000-8000-000000000003'].sort());
   });
 });
