@@ -20,6 +20,8 @@ import {
   joinGatewayRequestAttestation,
   loadPinnedAcceptancePlan,
   normalizeDiscoveryRunEnvelope,
+  readWs5ResumeStartMarker,
+  resumePublicRunCells,
   runPublicRunCells,
 } from './ws5-acceptance.mjs';
 import { createWs5PublicInputStage } from './ws5-external-data-contract.mjs';
@@ -69,6 +71,30 @@ export const WS5_PRIMARY_MODEL_CONFIG_PROFILE = Object.freeze({
   reasoningEffort: null,
 });
 
+export function resolveWs5ResumeWallBudget({ createdAt, nowMs = Date.now() } = {}) {
+  const originalStartedAtMs = typeof createdAt === 'string' && Number.isFinite(Date.parse(createdAt))
+    && new Date(Date.parse(createdAt)).toISOString() === createdAt ? Date.parse(createdAt) : NaN;
+  if (!Number.isSafeInteger(originalStartedAtMs) || !Number.isSafeInteger(nowMs)
+    || nowMs < originalStartedAtMs) throw new Error('ws5_resume_wall_marker_invalid');
+  const absoluteDeadlineMs = originalStartedAtMs + MAX_PANEL_WALL_MS;
+  const dispatchDeadlineMs = Math.min(
+    originalStartedAtMs + PREFLIGHT_WALL_MS + MODEL_CELLS * CELL_WALL_MS,
+    absoluteDeadlineMs - FINALIZATION_WALL_MS,
+  );
+  if (!Number.isSafeInteger(absoluteDeadlineMs) || !Number.isSafeInteger(dispatchDeadlineMs)
+    || nowMs >= absoluteDeadlineMs) throw new Error('ws5_resume_absolute_deadline_exceeded');
+  return {
+    originalStartedAtMs,
+    absoluteDeadlineMs,
+    absoluteDeadlineAt: new Date(absoluteDeadlineMs).toISOString(),
+    dispatchDeadlineMs,
+    preflightDeadlineMs: Math.min(nowMs + PREFLIGHT_WALL_MS, dispatchDeadlineMs),
+    resumeStartedAtMs: nowMs,
+    remainingWallMs: absoluteDeadlineMs - nowMs,
+    remainingModelWallMs: Math.max(0, dispatchDeadlineMs - nowMs),
+  };
+}
+
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
@@ -76,6 +102,11 @@ function sha256(value) {
 function safeCode(error, fallback = 'cell_dispatch_failed') {
   const value = String(error?.message || '');
   return /^[a-z0-9_]{1,100}$/u.test(value) ? value : fallback;
+}
+
+export function safeCellFailureCode(error, fallback = 'cell_dispatch_failed') {
+  const code = safeCode(error, fallback);
+  return code === 'ws5_gateway_attestation_timeout' ? 'ws5_gateway_attestation_incomplete' : code;
 }
 
 function runGit(args, cwd) {
@@ -105,6 +136,14 @@ export function readRuntimeIdentity(runtimeRoot) {
     throw new Error('ws5_host_execution_identity_missing');
   }
   return identity;
+}
+
+/** Dispatch the unchanged full schedule or the explicitly verified partial-resume contract. */
+export function runWs5PublicRunCells(bundle, options = {}) {
+  const { resume, ...runOptions } = options;
+  return resume
+    ? resumePublicRunCells(bundle, { ...resume, ...runOptions })
+    : runPublicRunCells(bundle, runOptions);
 }
 
 /** Check the actual arm identity; a caller-supplied "finalized" flag is never consulted. */
@@ -483,7 +522,7 @@ export async function awaitParentOperation(operation, timeoutMs, parentSignal, t
   let timer;
   let abortHandler;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => { controller.abort(); reject(new Error(timeoutCode)); }, timeoutMs);
+    timer = setTimeout(() => { controller.abort({ code: timeoutCode }); reject(new Error(timeoutCode)); }, timeoutMs);
   });
   const cancelled = new Promise((_, reject) => {
     abortHandler = () => { controller.abort(); reject(new Error('ws5_parent_cancelled')); };
@@ -921,6 +960,7 @@ export async function runWs5Matrix({
   alibabaBinaryPath,
   pins,
   parentBroker,
+  resume = null,
   signal: parentSignal,
 } = {}) {
   if (authorizeModelDispatch !== true) throw new Error('ws5_model_dispatch_not_authorized_by_root');
@@ -936,7 +976,10 @@ export async function runWs5Matrix({
     || schedule.filter((entry) => entry.execution === 'model_run').length !== MODEL_CELLS) {
     throw new Error('ws5_frozen_matrix_shape_mismatch');
   }
-  assertPrivateOutputDirectory(root, bundle.dataRootPath, outputDirectory);
+  if (!resume) assertPrivateOutputDirectory(root, bundle.dataRootPath, outputDirectory);
+  else if (typeof outputDirectory !== 'string' || outputDirectory.length === 0) {
+    throw new Error('ws5_run_output_directory_required');
+  }
   if (typeof sourceCacheRoot !== 'string' || !path.isAbsolute(sourceCacheRoot)
     || typeof alibabaBinaryPath !== 'string' || !path.isAbsolute(alibabaBinaryPath)) {
     throw new Error('ws5_local_pinned_inputs_required');
@@ -946,11 +989,23 @@ export async function runWs5Matrix({
   if (!parentBroker || typeof parentBroker.preflightAlias !== 'function'
     || typeof parentBroker.readApiKeyInMemory !== 'function' || typeof parentBroker.attestRequests !== 'function'
     || typeof parentBroker.bifrostBaseUrl !== 'string') throw new Error('ws5_parent_broker_contract_missing');
-  const startedAt = Date.now();
-  const preflightDeadline = startedAt + PREFLIGHT_WALL_MS;
-  const dispatchDeadline = preflightDeadline + MODEL_CELLS * CELL_WALL_MS;
+  const hostOrchestratorRuntimeIdentity = resume ? runtimeGitIdentity(root) : null;
+  if (resume && (!hostOrchestratorRuntimeIdentity.worktreeClean
+    || !GIT_SHA_RE.test(String(hostOrchestratorRuntimeIdentity.commit || ''))
+    || !GIT_SHA_RE.test(String(hostOrchestratorRuntimeIdentity.tree || '')))) {
+    throw new Error('ws5_resume_host_orchestrator_source_not_clean');
+  }
+  const resumeMarker = resume ? readWs5ResumeStartMarker(resume) : null;
+  const resumeWallBudget = resumeMarker ? resolveWs5ResumeWallBudget({
+    createdAt: resumeMarker.createdAt,
+    nowMs: Date.now(),
+  }) : null;
+  const startedAt = resumeWallBudget?.originalStartedAtMs ?? Date.now();
+  const preflightDeadline = resumeWallBudget?.preflightDeadlineMs ?? startedAt + PREFLIGHT_WALL_MS;
+  const dispatchDeadline = resumeWallBudget?.dispatchDeadlineMs ?? preflightDeadline + MODEL_CELLS * CELL_WALL_MS;
   const panelAbortController = new AbortController();
-  const globalPanelTimer = setTimeout(() => panelAbortController.abort(), MAX_PANEL_WALL_MS);
+  const globalPanelTimer = setTimeout(() => panelAbortController.abort({ code: 'ws5_global_panel_wall_time_cap_exceeded' }),
+    resumeWallBudget?.remainingWallMs ?? MAX_PANEL_WALL_MS);
   const relayParentAbort = () => panelAbortController.abort();
   parentSignal?.addEventListener('abort', relayParentAbort, { once: true });
   const runSignal = panelAbortController.signal;
@@ -965,6 +1020,28 @@ export async function runWs5Matrix({
   let privateCredential = null;
   let dispatchStopCode = null;
   let abortedByParent = runSignal.aborted;
+  const currentExecutionBindings = () => ({
+    runnerSourceRootGit: bundle.externalDataContract?.sourceRootGit || null,
+    externalDataContractSha256: bundle.externalDataContract?.sha256 || null,
+    sourceFreeze: sourceFreezeIdentity,
+    revisedRuntime: revisedRuntimeIdentity ? {
+      commit: revisedRuntimeIdentity.commit, tree: revisedRuntimeIdentity.tree,
+      worktreeClean: revisedRuntimeIdentity.worktreeClean,
+    } : null,
+    hostExecutionByArm: {
+      baseline: baselineRuntimeIdentity?.hostExecution || null,
+      revised: revisedRuntimeIdentity?.hostExecution || null,
+      repeated: repeatRuntimeIdentity?.hostExecution || null,
+    },
+    transportProfilesByArm,
+    workerImageProvenanceReference: imageIdentity,
+    workerImageExecution: 'provenance_reference_only_not_executed_by_ws5_host_runner',
+    hostOrchestratorSource: hostOrchestratorRuntimeIdentity ? {
+      commit: hostOrchestratorRuntimeIdentity.commit,
+      tree: hostOrchestratorRuntimeIdentity.tree,
+      worktreeClean: hostOrchestratorRuntimeIdentity.worktreeClean,
+    } : null,
+  });
 
   const preflightPanel = async (input) => {
     if (runSignal.aborted) throw new Error('ws5_parent_cancelled');
@@ -1166,7 +1243,7 @@ export async function runWs5Matrix({
         } catch (error) {
           receipt.status = 'incomplete';
           receipt.outcome = { ...(receipt.outcome || {}), terminalState: 'provider_attestation_missing',
-            failureCode: safeCode(error, 'ws5_provider_attestation_missing') };
+            failureCode: safeCellFailureCode(error, 'ws5_provider_attestation_missing') };
           receipt.providerAttestation = null;
         }
         receipt.qualityScore = null;
@@ -1178,7 +1255,7 @@ export async function runWs5Matrix({
         return receipt;
       } catch (error) {
         return modelCellFailureReceipt(bundle, cell, verifiedSourceCases.get(cell.caseId),
-          safeCode(error), Date.now() - startedAt);
+          safeCellFailureCode(error), Date.now() - startedAt);
       } finally {
         clearTimeout(timer);
         parentSignal?.removeEventListener('abort', forwardAbort);
@@ -1344,7 +1421,7 @@ export async function runWs5Matrix({
           timeoutMs: Math.max(1, cellDeadline - Date.now()), signal: runSignal,
         }); } catch {}
       }
-      return withLocalTlsBoundary(modelCellFailureReceipt(bundle, cell, verifiedSourceCases.get(cell.caseId), safeCode(error),
+      return withLocalTlsBoundary(modelCellFailureReceipt(bundle, cell, verifiedSourceCases.get(cell.caseId), safeCellFailureCode(error),
         Date.now() - cellStartedAt, snapshot, providerAttestation));
     } finally {
       if (proxy) await proxy.close();
@@ -1357,16 +1434,31 @@ export async function runWs5Matrix({
     buildAlibabaSourceScopeAbstention(bundle, preflight.alibaba, cell.caseId);
 
   try {
-    const result = await runPublicRunCells(bundle, {
+    const runOptions = {
       outputDirectory,
       authorizeModelDispatch: true,
       preflightPanel,
       dispatchCell,
       preflightAbstention,
+    };
+    const result = await runWs5PublicRunCells(bundle, {
+      ...runOptions,
+      resume: resume ? {
+        ...resume,
+        currentExecutionBindings,
+        maxPanelWallMs: MAX_PANEL_WALL_MS,
+        maxPreflightWallMs: PREFLIGHT_WALL_MS,
+        maxCellWallMs: CELL_WALL_MS,
+        maxFinalizationWallMs: FINALIZATION_WALL_MS,
+        maxForwardedModelRequestsPerCell: CASE_LIMIT,
+      } : null,
     });
-    const globalWallCapExceeded = Date.now() - startedAt > MAX_PANEL_WALL_MS;
+    const globalWallCapExceeded = resumeWallBudget
+      ? Date.now() >= resumeWallBudget.absoluteDeadlineMs
+      : Date.now() - startedAt > MAX_PANEL_WALL_MS;
+    const finalExecutionBindings = resume ? currentExecutionBindings() : null;
     const envelope = {
-      schemaVersion: 'ReviewYetiWS5MatrixExecutionEnvelope.v1',
+      schemaVersion: resume ? 'ReviewYetiWS5MatrixExecutionEnvelope.v2' : 'ReviewYetiWS5MatrixExecutionEnvelope.v1',
       status: globalWallCapExceeded || runSignal.aborted ? 'incomplete_global_wall_or_operator_abort' : result.manifest.status,
       noAutomaticRetries: true,
       expectedCells: WS5_MATRIX_BOUNDS.expectedCells,
@@ -1398,6 +1490,29 @@ export async function runWs5Matrix({
       workerImageProvenanceReference: imageIdentity,
       workerImageExecution: 'provenance_reference_only_not_executed_by_ws5_host_runner',
       runManifestSha256: result.manifestSha256,
+      ...(resume ? {
+        partialResumeContractVersion: 'ReviewYetiWS5PartialResume.v1',
+        partialResumeManifestSha256: result.resumeManifestSha256,
+        absoluteDeadlineAt: resumeWallBudget.absoluteDeadlineAt,
+        sourceRoles: {
+          hostOrchestrator: {
+            role: 'host_orchestrator', commit: finalExecutionBindings.hostOrchestratorSource.commit,
+            tree: finalExecutionBindings.hostOrchestratorSource.tree,
+            worktreeClean: finalExecutionBindings.hostOrchestratorSource.worktreeClean,
+          },
+          frozenBenchmarkSource: {
+            role: 'frozen_benchmark_source', commit: sourceFreezeIdentity.headCommitSha,
+            tree: sourceFreezeIdentity.gitTreeOid,
+          },
+          engineRuntime: {
+            role: 'engine_runtime', commit: revisedRuntimeIdentity.commit, tree: revisedRuntimeIdentity.tree,
+          },
+          workerImage: {
+            role: 'worker_image_provenance_reference_only', digest: imageIdentity.imageDigest,
+            platform: imageIdentity.platform, executedByHostRunner: false,
+          },
+        },
+      } : {}),
       qualityScore: null,
       providerServingEffort: 'unknown_until_per_request_attestation',
       billedRequestCount: null,
