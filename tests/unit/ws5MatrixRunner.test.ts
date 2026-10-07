@@ -68,6 +68,40 @@ describe('WS5 finite matrix runner', () => {
     });
   });
 
+  it('binds Yeti child-dispatch profile fields to the matching frozen matrix arm', () => {
+    expect(runner).not.toBeNull();
+    expect(typeof runner.resolveYetiDispatchProfile).toBe('function');
+    const arm = ws5Fixture.bundle.plan.publicRunMatrix.arms.find((entry: any) => entry.id === 'yeti-revised-medium');
+    if (!arm) throw new Error('unit_fixture_yeti_arm_missing');
+    const policyProjectionBytes = Buffer.from('{"schemaVersion":"unit-medium-policy"}');
+    const bundle = {
+      ...ws5Fixture.bundle,
+      pinnedChildInputBytes: { policyProjections: { medium: policyProjectionBytes } },
+    };
+    const cell = { armId: arm.id, effortProfile: arm.effortProfile, verifierMode: arm.verifierMode };
+
+    const dispatchProfile = runner.resolveYetiDispatchProfile(bundle, cell);
+
+    expect(dispatchProfile).toMatchObject({
+      armId: 'yeti-revised-medium',
+      effortProfile: 'medium',
+      verifierMode: 'production_independent_verifier_required',
+    });
+    expect(dispatchProfile.policyProjectionBytes).toBe(policyProjectionBytes);
+  });
+
+  it('fails closed when a Yeti dispatch cell references an unknown arm', () => {
+    expect(runner).not.toBeNull();
+    const arm = ws5Fixture.bundle.plan.publicRunMatrix.arms.find((entry: any) => entry.id === 'yeti-revised-medium');
+    if (!arm) throw new Error('unit_fixture_yeti_arm_missing');
+    const bundle = { ...ws5Fixture.bundle, pinnedChildInputBytes: { policyProjections: {
+      medium: Buffer.from('{"schemaVersion":"unit-medium-policy"}'),
+    } } };
+    expect(() => runner.resolveYetiDispatchProfile(bundle, {
+      armId: 'unknown-yeti-arm', effortProfile: arm.effortProfile, verifierMode: arm.verifierMode,
+    })).toThrow('ws5_model_dispatch_arm_invalid');
+  });
+
   it('requires identical pinned route resources across the baseline revised and repeat no-call preflights', () => {
     const profile = (transportName = 'openrouter') => ({
       status: 'ready_without_model_call', modelCalls: 0, transportName, requestedModel: 'pr-reviewer',

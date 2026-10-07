@@ -168,6 +168,23 @@ export function selectYetiRuntimeForCell(cell, pins, identities) {
   };
 }
 
+/** Resolve discovery dispatch settings from the exact modeled arm represented by a frozen matrix cell. */
+export function resolveYetiDispatchProfile(bundle, cell) {
+  const arms = bundle?.plan?.publicRunMatrix?.arms;
+  if (!Array.isArray(arms) || typeof cell?.armId !== 'string') throw new Error('ws5_model_dispatch_arm_invalid');
+  const matches = arms.filter((entry) => entry?.id === cell.armId);
+  if (matches.length !== 1) throw new Error('ws5_model_dispatch_arm_invalid');
+  const arm = matches[0];
+  if (typeof arm.effortProfile !== 'string' || !arm.effortProfile
+    || typeof arm.verifierMode !== 'string' || !arm.verifierMode
+    || cell.effortProfile !== arm.effortProfile || cell.verifierMode !== arm.verifierMode) {
+    throw new Error('ws5_model_dispatch_arm_profile_mismatch');
+  }
+  const policyProjectionBytes = bundle.pinnedChildInputBytes?.policyProjections?.[arm.effortProfile];
+  if (!Buffer.isBuffer(policyProjectionBytes)) throw new Error('ws5_model_dispatch_policy_projection_missing');
+  return { armId: arm.id, effortProfile: arm.effortProfile, verifierMode: arm.verifierMode, policyProjectionBytes };
+}
+
 /** Verify pinned public-source bytes against both a freeze receipt and its committed Git blobs. */
 export function verifyPublicSourceFreeze(repoRoot, freezePath, expectedFreezeSha256) {
   const root = fs.realpathSync(path.resolve(repoRoot));
@@ -1182,12 +1199,11 @@ export async function runWs5Matrix({
     let attestationAttempted = false;
     const rawRunPath = path.join(scratch, 'runtime-run.json');
     const purpose = cell.armId === 'yeti-v1-native-baseline' ? 'baseline' : 'qualification';
-    const effortProfile = arm.effortProfile;
-    const verifierMode = arm.verifierMode;
+    const { effortProfile, verifierMode, policyProjectionBytes } = resolveYetiDispatchProfile(bundle, cell);
     const childInputStageDirectory = path.join(scratch, 'public-inputs');
     fs.mkdirSync(childInputStageDirectory, { recursive: false, mode: 0o700 });
     const childInputStage = createWs5PublicInputStage(bundle, childInputStageDirectory, 'discovery', {
-      policyProjectionBytes: bundle.pinnedChildInputBytes.policyProjections[effortProfile],
+      policyProjectionBytes,
     });
     childInputBoundary = {
       stagedFiles: childInputStage.stagedFileNames,
