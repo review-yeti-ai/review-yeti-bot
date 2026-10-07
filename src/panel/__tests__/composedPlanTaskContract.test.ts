@@ -162,6 +162,7 @@ describe('composed plan task-field contract clarity', () => {
   it.each(['blank fields', 'nonce mismatch', 'oversized id'] as const)(
     'captures a valid correction after %s and includes the full nonce/path/task contract in both requests', async (firstFailure) => {
     const requests: any[] = [];
+    const checkpoints: any[] = [];
     const correctedTask = {
       ...validTask(),
       id: 'security-auth-corrected',
@@ -197,6 +198,11 @@ describe('composed plan task-field contract clarity', () => {
       repository: 'acme/reviewer-fixture',
       headSha: 'a'.repeat(40),
       client: { complete },
+      checkpoint: {
+        resumed: null,
+        capture: (snapshot) => { checkpoints.push(structuredClone(snapshot)); },
+        save: async () => {},
+      },
     });
 
     expect(complete).toHaveBeenCalledTimes(3);
@@ -220,7 +226,13 @@ describe('composed plan task-field contract clarity', () => {
     } else {
       expect(correctionText).toContain(`Changed files you may name, and no others: ${JSON.stringify([changedPath])}.`);
     }
-    expect(result.taskPlan).toEqual([correctedTask]);
+    expect(checkpoints.at(-1)?.plannerPlan).toEqual([correctedTask]);
+    expect(checkpoints.at(-1)?.plan).toEqual(result.taskPlan);
+    expect(result.taskPlan).toEqual([{
+      ...correctedTask,
+      question: `Test a specific changed behavior; rules=architecture,correctness,performance; risk=security-sensitive:0. ${correctedTask.question}`,
+      rationale: expect.stringMatching(/^Regions=[a-f0-9]{64}\. Caller\/contract context: \[\]\. Required: trace the changed security boundary through the enforcing caller and protected operation\. Corrected model values are deliberately distinct from the prompt example\.$/u),
+    }]);
     expect(result.personas).toMatchObject([{ id: correctedTask.id, decision: 'APPROVE', findings: [] }]);
     },
   );
