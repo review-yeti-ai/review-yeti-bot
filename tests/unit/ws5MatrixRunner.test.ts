@@ -26,6 +26,68 @@ afterAll(() => {
 const sha256 = (value: Buffer | string) => crypto.createHash('sha256').update(value).digest('hex');
 
 describe('WS5 finite matrix runner', () => {
+  it('types attestation-timeout cancellation separately from parent cancellation', async () => {
+    expect(runner).not.toBeNull();
+    vi.useFakeTimers();
+    try {
+      let timeoutReason: unknown;
+      const timeoutOperation = runner.awaitParentOperation((signal: AbortSignal) => {
+        signal.addEventListener('abort', () => { timeoutReason = signal.reason; }, { once: true });
+        return new Promise(() => {});
+      }, 5, undefined, 'ws5_gateway_attestation_timeout');
+      const timeoutRejection = expect(timeoutOperation).rejects.toThrow('ws5_gateway_attestation_timeout');
+      await vi.advanceTimersByTimeAsync(5);
+      await timeoutRejection;
+      expect(timeoutReason).toEqual({ code: 'ws5_gateway_attestation_timeout' });
+
+      const parent = new AbortController();
+      let parentReason: unknown;
+      const parentOperation = runner.awaitParentOperation((signal: AbortSignal) => {
+        signal.addEventListener('abort', () => { parentReason = signal.reason; }, { once: true });
+        return new Promise(() => {});
+      }, 100, parent.signal, 'ws5_gateway_attestation_timeout');
+      const parentRejection = expect(parentOperation).rejects.toThrow('ws5_parent_cancelled');
+      await Promise.resolve();
+      parent.abort();
+      await parentRejection;
+      expect(parentReason).not.toEqual({ code: 'ws5_gateway_attestation_timeout' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('records only a typed gateway attestation timeout as incomplete instead of a systemic stop code', () => {
+    expect(runner).not.toBeNull();
+    expect(runner.safeCellFailureCode(new Error('ws5_gateway_attestation_timeout')))
+      .toBe('ws5_gateway_attestation_incomplete');
+    expect(runner.safeCellFailureCode(new Error('gateway_parent_broker_evidence_unverified')))
+      .toBe('gateway_parent_broker_evidence_unverified');
+    expect(runner.safeCellFailureCode(new Error('ws5_cell_wall_time_cap_exceeded')))
+      .toBe('ws5_cell_wall_time_cap_exceeded');
+  });
+
+  it('derives continuation bounds from the once-marker start instead of granting a fresh panel window', () => {
+    expect(runner).not.toBeNull();
+    const originalStartMs = Date.UTC(2025, 0, 1, 0, 0, 0, 0);
+    const nowMs = originalStartMs + 2_650_456;
+    const bounds = runner.resolveWs5ResumeWallBudget({
+      createdAt: new Date(originalStartMs).toISOString(),
+      nowMs,
+    });
+
+    expect(bounds).toMatchObject({
+      originalStartedAtMs: originalStartMs,
+      absoluteDeadlineMs: originalStartMs + 33_900_000,
+      dispatchDeadlineMs: originalStartMs + 33_600_000,
+      remainingWallMs: 33_900_000 - 2_650_456,
+    });
+    expect(bounds.absoluteDeadlineMs).not.toBe(nowMs + 33_900_000);
+    expect(() => runner.resolveWs5ResumeWallBudget({
+      createdAt: new Date(originalStartMs).toISOString(),
+      nowMs: originalStartMs + 33_900_000,
+    })).toThrow('ws5_resume_absolute_deadline_exceeded');
+  });
+
   it('rejects stale revised and repeat runtime pins even when they match the old baseline', () => {
     expect(runner).not.toBeNull();
     expect(typeof runner.assertRuntimeIdentity).toBe('function');

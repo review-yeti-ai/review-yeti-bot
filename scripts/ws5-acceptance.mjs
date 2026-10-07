@@ -45,6 +45,8 @@ const REPAIR_DESCRIPTOR_PATH = 'eval-baselines/competitive-review-benchmark/ws5-
 const LIVE_ARMS_DESCRIPTOR_PATH = 'eval-baselines/competitive-review-benchmark/ws5-live-arms-v1.json';
 const GIT_SHA_RE = /^[a-f0-9]{40}$/iu;
 const SHA256_RE = /^[a-f0-9]{64}$/iu;
+const IMAGE_DIGEST_RE = /^sha256:[a-f0-9]{64}$/u;
+const WS5_RESUME_MAX_REQUESTS_PER_CELL = 100;
 const CAUSAL_CLASSES = new Set([
   'introduced_defect', 'preexisting_defect', 'nit', 'false_positive', 'unresolved',
 ]);
@@ -613,6 +615,515 @@ function safeFailureCode(error) {
   return /^[a-z0-9_]{1,80}$/u.test(candidate) ? candidate : 'cell_dispatch_failed';
 }
 
+const WS5_RESUME_MAX_COMBINED_PHYSICAL_ATTEMPTS = 2_700;
+
+function assertPrivateOwnedPath(filePath, kind, failureCode) {
+  let stat;
+  try { stat = fs.lstatSync(filePath); } catch { throw new Error(failureCode); }
+  const expectedType = kind === 'directory' ? stat.isDirectory() : stat.isFile();
+  const ownerMatches = typeof process.getuid !== 'function' || stat.uid === process.getuid();
+  if (!expectedType || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0 || !ownerMatches
+    || (kind === 'file' && stat.nlink !== 1)) throw new Error(failureCode);
+  return stat;
+}
+
+function readPrivateJsonArtifact(filePath, failureCode) {
+  assertPrivateOwnedPath(filePath, 'file', failureCode);
+  let bytes;
+  try { bytes = fs.readFileSync(filePath); } catch { throw new Error(failureCode); }
+  let value;
+  try { value = JSON.parse(bytes.toString('utf8')); } catch { throw new Error(failureCode); }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(failureCode);
+  return { bytes, sha256: sha256(bytes), value };
+}
+
+function writeExclusiveBytes(filePath, bytes) {
+  const descriptor = fs.openSync(filePath, 'wx', 0o600);
+  try {
+    fs.writeFileSync(descriptor, bytes);
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function createPublicPreflightInput(acceptance) {
+  return {
+    planSha256: acceptance.panelSha256,
+    manifestSha256: acceptance.manifestSha256,
+    preparedInputSha256: acceptance.plan.publicPanel.preparedInputSha256,
+    caseIds: [...acceptance.plan.publicPanel.caseIds],
+    arms: acceptance.plan.publicRunMatrix.arms.map((arm) => ({
+      id: arm.id,
+      caseIds: [...arm.caseIds],
+      runtimeSha: arm.runtimeSha,
+      modelAlias: arm.modelAlias || null,
+      nativeSourceLimitations: arm.nativeSourceLimitations || {},
+    })),
+    preparedDiscovery: acceptance.preparedDiscovery,
+  };
+}
+
+function summarizePublicPreflight(preflight) {
+  return {
+    status: preflight.status,
+    planSha256: preflight.planSha256,
+    manifestSha256: preflight.manifestSha256,
+    preparedInputSha256: preflight.preparedInputSha256,
+    sourceCaseIds: preflight.sourceCases.map((entry) => entry.caseId),
+    allSourceCachesVerified: true,
+    alibabaStatus: preflight.alibaba.status,
+    alibabaBinarySha256: preflight.alibaba.binary?.sha256 || null,
+    alibabaCaseStatuses: preflight.alibaba.cases.map((entry) => ({
+      caseId: entry.caseId,
+      status: entry.status,
+      changedFileCount: entry.changedFileCount,
+      sourceCachePreflightStatus: entry.sourceCachePreflight.status,
+      changedPathsSha256: entry.preview.changedPathsSha256,
+    })),
+    alibabaProviderCalls: preflight.alibaba.providerCalls,
+    providerStatus: preflight.provider.status,
+    providerModelAlias: preflight.provider.modelAlias,
+    providerCalls: preflight.provider.providerCalls,
+  };
+}
+
+function assertPrivateDirectory(directoryPath, failureCode) {
+  assertPrivateOwnedPath(directoryPath, 'directory', failureCode);
+  let realPath;
+  try { realPath = fs.realpathSync(directoryPath); } catch { throw new Error(failureCode); }
+  return realPath;
+}
+
+function assertOutsideRoots(candidatePath, roots, failureCode) {
+  for (const rootPath of roots) {
+    if (typeof rootPath !== 'string' || rootPath.length === 0) continue;
+    const root = fs.realpathSync(rootPath);
+    const relative = path.relative(root, candidatePath);
+    if (!relative || (relative !== '..' && !relative.startsWith('..' + path.sep))) {
+      throw new Error(failureCode);
+    }
+  }
+}
+
+function expectedCellReceiptFile(cell) {
+  return `cell-${String(cell.ordinal).padStart(2, '0')}-${cell.armId}-${cell.caseId}.json`;
+}
+
+function assertWs5ResumeExecutionBindings(parentEnvelope, currentExecutionBindings) {
+  if (!currentExecutionBindings || typeof currentExecutionBindings !== 'object') {
+    throw new Error('ws5_resume_execution_binding_mismatch');
+  }
+  const bindingFields = [
+    'runnerSourceRootGit', 'externalDataContractSha256', 'sourceFreeze', 'revisedRuntime',
+    'hostExecutionByArm', 'transportProfilesByArm', 'workerImageProvenanceReference', 'workerImageExecution',
+  ];
+  for (const field of bindingFields) {
+    if (!Object.hasOwn(currentExecutionBindings, field)
+      || !isDeepStrictEqual(parentEnvelope[field], currentExecutionBindings[field])) {
+      throw new Error('ws5_resume_execution_binding_mismatch');
+    }
+  }
+  const hostSource = currentExecutionBindings.hostOrchestratorSource;
+  if (!hostSource || !GIT_SHA_RE.test(String(hostSource.commit || ''))
+    || !GIT_SHA_RE.test(String(hostSource.tree || '')) || hostSource.worktreeClean !== true) {
+    throw new Error('ws5_resume_host_orchestrator_identity_invalid');
+  }
+  return currentExecutionBindings;
+}
+
+function validateResumeBrokerEvidence(evidence, schedule, receiptCounts, expectedCount) {
+  if (evidence.schemaVersion !== 'ReviewYetiWS5ParentBrokerEvidence.v1'
+    || evidence.visibility !== 'private_receipt'
+    || evidence.source !== 'parent_broker_independent_telemetry'
+    || !Number.isSafeInteger(evidence.capturedUpstreamAttemptCount)
+    || evidence.capturedUpstreamAttemptCount !== expectedCount
+    || !Array.isArray(evidence.requests) || !Array.isArray(evidence.unlinkedUpstreamAttempts)
+    || evidence.requests.length + evidence.unlinkedUpstreamAttempts.length !== expectedCount
+    || !Number.isSafeInteger(evidence.failedExactLogQueryCount) || evidence.failedExactLogQueryCount < 0
+    || evidence.successfulResponseMissingRouteIdentityCount !== 0) {
+    throw new Error('ws5_resume_parent_broker_evidence_invalid');
+  }
+  if (evidence.requests.some((row) => row.exactLogStatus !== 'exact_row_matched')
+    || evidence.unlinkedUpstreamAttempts.some((row) => !['query_failed', 'not_attested'].includes(row.exactLogStatus)
+      || row.captureJoinStatus !== 'attestation_callback_interrupted')
+    || evidence.unlinkedUpstreamAttempts.filter((row) => row.exactLogStatus === 'query_failed').length
+      !== evidence.failedExactLogQueryCount
+    || [...evidence.requests, ...evidence.unlinkedUpstreamAttempts].some((row) =>
+      row.requestState !== 'response_received' || row.gatewayHttpStatus !== 200)
+    || evidence.requests.some((row) => typeof row.provider !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,119}$/u.test(row.provider)
+      || typeof row.servedModel !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,119}$/u.test(row.servedModel)
+      || (row.servedEffort !== null && row.servedEffort !== undefined
+        && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/u.test(row.servedEffort)))) {
+    throw new Error('ws5_resume_parent_broker_attestation_state_invalid');
+  }
+  const scheduleByKey = new Map(schedule.map((cell) => [`${cell.armId}\u0000${cell.caseId}`, cell]));
+  const physicalRanges = [];
+  let nextPhysicalOrdinal = 1;
+  for (const cell of schedule) {
+    if (cell.execution !== 'model_run') continue;
+    const count = receiptCounts.get(cell.ordinal) || 0;
+    if (count > 0) {
+      physicalRanges.push({ cell, start: nextPhysicalOrdinal, end: nextPhysicalOrdinal + count - 1 });
+      nextPhysicalOrdinal += count;
+    }
+  }
+  if (nextPhysicalOrdinal - 1 !== expectedCount) throw new Error('ws5_resume_parent_broker_receipt_count_mismatch');
+  const physicalOrdinals = new Set();
+  const callerIds = new Set();
+  const responseIds = new Set();
+  const perCellCounts = new Map();
+  const validateRow = (row, unlinked) => {
+    let cell = null;
+    if (typeof row?.armId === 'string' && typeof row?.caseId === 'string') {
+      cell = scheduleByKey.get(`${row.armId}\u0000${row.caseId}`) || null;
+    } else if (unlinked && row?.armId === undefined && row?.caseId === undefined) {
+      cell = physicalRanges.find((range) => row?.physicalOrdinal >= range.start
+        && row?.physicalOrdinal <= range.end)?.cell || null;
+    }
+    const cellRange = cell && physicalRanges.find((range) => range.cell.ordinal === cell.ordinal);
+    if (!cell || !cellRange || !Number.isSafeInteger(row.physicalOrdinal) || row.physicalOrdinal < 1
+      || row.physicalOrdinal > expectedCount || physicalOrdinals.has(row.physicalOrdinal)
+      || !Number.isSafeInteger(row.localAttemptOrdinal) || row.localAttemptOrdinal < 1
+      || row.localAttemptOrdinal !== row.physicalOrdinal - cellRange.start + 1
+      || !SHA256_RE.test(row.callerRequestIdSha256 || '')
+      || !SHA256_RE.test(row.providerResponseRequestIdSha256 || '')
+      || !/^[a-f0-9]{16}$/u.test(row.providerResponseRequestIdDigest || '')
+      || !SHA256_RE.test(row.requestBodySha256 || '')) {
+      throw new Error('ws5_resume_parent_broker_attempt_invalid');
+    }
+    if (callerIds.has(row.callerRequestIdSha256) || responseIds.has(row.providerResponseRequestIdDigest)) {
+      throw new Error('ws5_resume_parent_broker_duplicate_request_id');
+    }
+    physicalOrdinals.add(row.physicalOrdinal);
+    callerIds.add(row.callerRequestIdSha256);
+    responseIds.add(row.providerResponseRequestIdDigest);
+    perCellCounts.set(cell.ordinal, (perCellCounts.get(cell.ordinal) || 0) + 1);
+  };
+  for (const row of evidence.requests) validateRow(row, false);
+  for (const row of evidence.unlinkedUpstreamAttempts) validateRow(row, true);
+  if (!hasExactOrdinalSet([...physicalOrdinals], expectedCount)) {
+    throw new Error('ws5_resume_parent_broker_physical_ordinal_mismatch');
+  }
+  for (const cell of schedule) {
+    if ((perCellCounts.get(cell.ordinal) || 0) !== (receiptCounts.get(cell.ordinal) || 0)) {
+      throw new Error('ws5_resume_parent_broker_receipt_count_mismatch');
+    }
+  }
+  return {
+    capturedUpstreamAttemptCount: expectedCount,
+    matchedExactLogRows: evidence.requests.length,
+    failedExactLogQueryCount: evidence.failedExactLogQueryCount,
+    unlinkedAttemptCount: evidence.unlinkedUpstreamAttempts.length,
+    responseReceivedCount: [...evidence.requests, ...evidence.unlinkedUpstreamAttempts]
+      .filter((row) => row.requestState === 'response_received').length,
+    http200ResponseCount: [...evidence.requests, ...evidence.unlinkedUpstreamAttempts]
+      .filter((row) => row.gatewayHttpStatus === 200).length,
+    providerIdentityUnknownCount: evidence.unlinkedUpstreamAttempts.length,
+    successfulResponseMissingRouteIdentityCount: evidence.successfulResponseMissingRouteIdentityCount,
+    perCellCounts,
+  };
+}
+
+function readWs5OnceMarker(onceMarkerPath, expectedOnceMarkerSha256) {
+  const markerArtifact = readPrivateJsonArtifact(onceMarkerPath, 'ws5_resume_once_marker_invalid');
+  if (markerArtifact.sha256 !== expectedOnceMarkerSha256) throw new Error('ws5_resume_once_marker_digest_mismatch');
+  const marker = markerArtifact.value;
+  if (typeof marker.schemaVersion !== 'string'
+    || !/^ReviewYetiWS5PrimaryDiscoveryOneShot\.[A-Za-z0-9.-]+\.v1$/u.test(marker.schemaVersion)
+    || typeof marker.createdAt !== 'string' || !Number.isFinite(Date.parse(marker.createdAt))
+    || new Date(Date.parse(marker.createdAt)).toISOString() !== marker.createdAt
+    || typeof marker.authorization !== 'string' || marker.authorization.length === 0
+    || !GIT_SHA_RE.test(marker.hostRunnerCommit || '') || !GIT_SHA_RE.test(marker.engineRuntimeCommit || '')
+    || !IMAGE_DIGEST_RE.test(marker.workerImageDigest || '')
+    || typeof marker.workerImagePlatform !== 'string'
+    || !SHA256_RE.test(marker.launcherSha256 || '') || !SHA256_RE.test(marker.mockTestSha256 || '')
+    || !SHA256_RE.test(marker.readinessSha256 || '')) {
+    throw new Error('ws5_resume_once_marker_contract_invalid');
+  }
+  return {
+    schemaVersion: marker.schemaVersion,
+    createdAt: marker.createdAt,
+    hostRunnerCommit: marker.hostRunnerCommit,
+    engineRuntimeCommit: marker.engineRuntimeCommit,
+    workerImageDigest: marker.workerImageDigest,
+    workerImagePlatform: marker.workerImagePlatform,
+    launcherSha256: marker.launcherSha256,
+    mockTestSha256: marker.mockTestSha256,
+    readinessSha256: marker.readinessSha256,
+    markerSha256: markerArtifact.sha256,
+  };
+}
+
+export function readWs5ResumeStartMarker({ onceMarkerPath, expectedOnceMarkerSha256 } = {}) {
+  return readWs5OnceMarker(onceMarkerPath, expectedOnceMarkerSha256);
+}
+
+function loadWs5ResumeContext(acceptance, options) {
+  const schedule = createPublicRunCellPlan(acceptance.plan);
+  if (schedule.length !== 28 || schedule.filter((cell) => cell.execution === 'model_run').length !== 27
+    || schedule.filter((cell) => cell.execution === 'preflight_abstention').length !== 1) {
+    throw new Error('ws5_resume_frozen_schedule_invalid');
+  }
+  const {
+    priorOutputDirectory,
+    expectedPriorRun,
+    onceMarkerPath,
+    expectedOnceMarkerSha256,
+    currentExecutionBindings,
+    expectedConsumedOrdinals,
+    expectedNeverDispatchedOrdinals,
+    expectedPriorPhysicalRequestAttempts,
+    maxPanelWallMs,
+    maxPreflightWallMs,
+    maxCellWallMs,
+    maxFinalizationWallMs,
+    maxForwardedModelRequestsPerCell,
+  } = options;
+  if (typeof priorOutputDirectory !== 'string' || typeof onceMarkerPath !== 'string'
+    || !expectedPriorRun || !SHA256_RE.test(expectedPriorRun.runManifestSha256 || '')
+    || !SHA256_RE.test(expectedPriorRun.executionEnvelopeSha256 || '')
+    || !SHA256_RE.test(expectedPriorRun.brokerEvidenceSha256 || '')
+    || !SHA256_RE.test(expectedOnceMarkerSha256 || '')
+    || !Number.isSafeInteger(expectedPriorPhysicalRequestAttempts) || expectedPriorPhysicalRequestAttempts < 0
+    || !Number.isSafeInteger(maxPanelWallMs) || !Number.isSafeInteger(maxPreflightWallMs)
+    || !Number.isSafeInteger(maxCellWallMs) || !Number.isSafeInteger(maxFinalizationWallMs)
+    || !Number.isSafeInteger(maxForwardedModelRequestsPerCell)
+    || !Array.isArray(expectedConsumedOrdinals) || !Array.isArray(expectedNeverDispatchedOrdinals)
+    || (typeof currentExecutionBindings !== 'function'
+      && (!currentExecutionBindings || typeof currentExecutionBindings !== 'object'))) {
+    throw new Error('ws5_resume_contract_input_invalid');
+  }
+  const sourceRoot = fs.realpathSync(SOURCE_ROOT);
+  const dataRoot = fs.realpathSync(acceptance.dataRootPath || acceptance.rootPath || SOURCE_ROOT);
+  const priorPath = assertPrivateDirectory(path.resolve(priorOutputDirectory),
+    'ws5_resume_prior_directory_not_private');
+  assertOutsideRoots(priorPath, [sourceRoot, dataRoot], 'ws5_resume_prior_directory_inside_protected_root');
+
+  const manifestArtifact = readPrivateJsonArtifact(path.join(priorPath, 'run-manifest.json'),
+    'ws5_resume_parent_manifest_invalid');
+  const envelopeArtifact = readPrivateJsonArtifact(path.join(priorPath, 'execution-envelope.json'),
+    'ws5_resume_parent_envelope_invalid');
+  const brokerArtifact = readPrivateJsonArtifact(path.join(priorPath, 'parent-broker-attestation.json'),
+    'ws5_resume_parent_broker_evidence_invalid');
+  if (manifestArtifact.sha256 !== expectedPriorRun.runManifestSha256
+    || envelopeArtifact.sha256 !== expectedPriorRun.executionEnvelopeSha256
+    || brokerArtifact.sha256 !== expectedPriorRun.brokerEvidenceSha256) {
+    throw new Error('ws5_resume_parent_artifact_hash_mismatch');
+  }
+  const manifest = manifestArtifact.value;
+  const envelope = envelopeArtifact.value;
+  if (manifest.schemaVersion !== 'ReviewYetiWS5RunManifest.v1' || manifest.status !== 'incomplete'
+    || manifest.noAutomaticRetries !== true || manifest.expectedCells !== schedule.length
+    || manifest.modelRunCells !== 27
+    || !Number.isSafeInteger(manifest.preflightAbstentions) || manifest.preflightAbstentions < 0
+    || manifest.preflightAbstentions > 1
+    || manifest.preflightAbstentions !== manifest.cells?.filter((row) => row.status === 'source_scope_unsupported').length
+    || manifest.planSha256 !== acceptance.panelSha256 || manifest.manifestSha256 !== acceptance.manifestSha256
+    || manifest.preparedInputSha256 !== acceptance.plan.publicPanel.preparedInputSha256
+    || !isDeepStrictEqual(manifest.caseIds, acceptance.plan.publicPanel.caseIds)
+    || !Array.isArray(manifest.cells) || manifest.cells.length !== schedule.length
+    || !manifest.preflightSummary
+    || manifest.preflightSummarySha256 !== sha256(JSON.stringify(manifest.preflightSummary))) {
+    throw new Error('ws5_resume_parent_manifest_binding_mismatch');
+  }
+  if (envelope.schemaVersion !== 'ReviewYetiWS5MatrixExecutionEnvelope.v1'
+    || envelope.status !== 'incomplete_global_wall_or_operator_abort'
+    || envelope.noAutomaticRetries !== true || envelope.runManifestSha256 !== manifestArtifact.sha256
+    || envelope.expectedCells !== 28 || envelope.modelRunCells !== 27
+    || envelope.maxConcurrentCells !== 1 || envelope.maxForwardedModelRequestsPerCell !== maxForwardedModelRequestsPerCell
+    || envelope.maxPreflightWallMs !== maxPreflightWallMs || envelope.maxCellWallMs !== maxCellWallMs
+    || envelope.maxFinalizationWallMs !== maxFinalizationWallMs || envelope.maxPanelWallMs !== maxPanelWallMs
+    || envelope.qualityScore !== null || envelope.billedRequestCount !== null || envelope.actualCostUsd !== null) {
+    throw new Error('ws5_resume_parent_envelope_binding_mismatch');
+  }
+  if (typeof currentExecutionBindings !== 'function') {
+    assertWs5ResumeExecutionBindings(envelope, currentExecutionBindings);
+  }
+  if (envelope.maxPanelWallMs !== maxPanelWallMs || envelope.maxPreflightWallMs !== maxPreflightWallMs
+    || envelope.maxCellWallMs !== maxCellWallMs || envelope.maxFinalizationWallMs !== maxFinalizationWallMs
+    || envelope.maxForwardedModelRequestsPerCell !== maxForwardedModelRequestsPerCell
+    || maxForwardedModelRequestsPerCell !== WS5_RESUME_MAX_REQUESTS_PER_CELL) {
+    throw new Error('ws5_resume_resource_cap_mismatch');
+  }
+
+  const expectedReceiptFiles = [];
+  const parentCells = [];
+  const receiptCounts = new Map();
+  const physicalRequestIds = new Set();
+  const consumedOrdinals = [];
+  const neverDispatchedOrdinals = [];
+  const abstentionOrdinals = [];
+  let priorPhysicalAttempts = 0;
+  for (let index = 0; index < schedule.length; index += 1) {
+    const cell = schedule[index];
+    const row = manifest.cells[index];
+    const fileName = expectedCellReceiptFile(cell);
+    if (!row || row.ordinal !== cell.ordinal || row.armId !== cell.armId || row.caseId !== cell.caseId
+      || row.execution !== cell.execution || row.receiptFile !== fileName || row.noAutomaticRetry !== true
+      || row.noModelDispatch !== (cell.execution === 'preflight_abstention')
+      || !SHA256_RE.test(row.receiptSha256 || '')) {
+      throw new Error('ws5_resume_parent_cell_manifest_invalid');
+    }
+    expectedReceiptFiles.push(fileName);
+    const receiptArtifact = readPrivateJsonArtifact(path.join(priorPath, fileName), 'ws5_resume_prior_receipt_invalid');
+    if (receiptArtifact.sha256 !== row.receiptSha256) throw new Error('ws5_resume_prior_receipt_digest_mismatch');
+    const receipt = receiptArtifact.value;
+    if (receipt.armId !== cell.armId || receipt.caseId !== cell.caseId || receipt.status !== row.status
+      || receipt.qualityScore !== null || receipt.noAutomaticRetry !== true) {
+      throw new Error('ws5_resume_prior_receipt_identity_mismatch');
+    }
+    assertPublicReceiptFields(receipt);
+    let physicalAttempts = 0;
+    if (cell.execution === 'preflight_abstention') {
+      const modelAttempts = receipt.model?.httpAttempts;
+      if (row.noModelDispatch !== true || receipt.noModelDispatch !== true || receipt.providerAttestation !== null
+        || (Array.isArray(modelAttempts) && modelAttempts.length !== 0)
+        || (Number.isSafeInteger(receipt.model?.callAccounting?.localHttpRequestAttempts)
+          && receipt.model.callAccounting.localHttpRequestAttempts !== 0)) {
+        throw new Error('ws5_resume_prior_abstention_attempted_model');
+      }
+      abstentionOrdinals.push(cell.ordinal);
+    } else {
+      const attempts = receipt.model?.httpAttempts;
+      const accounting = receipt.model?.callAccounting;
+      if (!Array.isArray(attempts) || !Number.isSafeInteger(accounting?.localHttpRequestAttempts)
+        || accounting.localHttpRequestAttempts !== attempts.length || attempts.length > maxForwardedModelRequestsPerCell
+        || attempts.some((attempt, attemptIndex) => attempt?.localAttemptOrdinal !== attemptIndex + 1)) {
+        throw new Error('ws5_resume_prior_attempt_accounting_invalid');
+      }
+      physicalAttempts = attempts.length;
+      for (const attempt of attempts) {
+        const digest = attempt.gatewayRequestIdDigests?.[0];
+        if (digest !== undefined) {
+          if (!/^[a-f0-9]{16}$/u.test(digest) || physicalRequestIds.has(digest)) {
+            throw new Error('ws5_resume_prior_duplicate_request_id');
+          }
+          physicalRequestIds.add(digest);
+        }
+      }
+      if (physicalAttempts > 0) {
+        consumedOrdinals.push(cell.ordinal);
+        if (receipt.status !== 'completed' && receipt.status !== 'incomplete') {
+          throw new Error('ws5_resume_consumed_receipt_status_invalid');
+        }
+      } else {
+        const failureCode = receipt.outcome?.failureCode || receipt.runnerFailureCode || null;
+        if (receipt.status !== 'incomplete' || failureCode !== 'ws5_parent_cancelled'
+          || receipt.providerAttestation !== null
+          || ![null, 0].includes(accounting.logicalCompletionDispatches)) {
+          throw new Error('ws5_resume_zero_attempt_cell_not_proven_undispatched');
+        }
+        neverDispatchedOrdinals.push(cell.ordinal);
+      }
+    }
+    priorPhysicalAttempts += physicalAttempts;
+    receiptCounts.set(cell.ordinal, physicalAttempts);
+    parentCells.push({ cell, row, receipt, fileName, receiptBytes: receiptArtifact.bytes, physicalAttempts });
+  }
+  const expectedFiles = [...expectedReceiptFiles, 'run-manifest.json', 'execution-envelope.json', 'parent-broker-attestation.json'];
+  const actualFiles = fs.readdirSync(priorPath).sort();
+  if (!isDeepStrictEqual(actualFiles, expectedFiles.sort())) throw new Error('ws5_resume_parent_directory_contents_invalid');
+
+  const brokerAccounting = validateResumeBrokerEvidence(brokerArtifact.value, schedule, receiptCounts,
+    expectedPriorPhysicalRequestAttempts);
+  if (priorPhysicalAttempts !== expectedPriorPhysicalRequestAttempts
+    || brokerAccounting.capturedUpstreamAttemptCount !== priorPhysicalAttempts) {
+    throw new Error('ws5_resume_prior_physical_attempt_count_mismatch');
+  }
+  if (!isDeepStrictEqual(consumedOrdinals, expectedConsumedOrdinals)
+    || !isDeepStrictEqual(neverDispatchedOrdinals, expectedNeverDispatchedOrdinals)
+    || !isDeepStrictEqual(abstentionOrdinals, schedule.filter((cell) => cell.execution === 'preflight_abstention')
+      .map((cell) => cell.ordinal))) {
+    throw new Error('ws5_resume_schedule_state_mismatch');
+  }
+
+  const onceMarker = readWs5OnceMarker(onceMarkerPath, expectedOnceMarkerSha256);
+  if (onceMarker.hostRunnerCommit !== envelope.sourceFreeze?.headCommitSha
+    || onceMarker.hostRunnerCommit !== envelope.hostExecutionByArm?.baseline?.runnerSourceCommit
+    || onceMarker.hostRunnerCommit !== envelope.hostExecutionByArm?.revised?.runnerSourceCommit
+    || onceMarker.hostRunnerCommit !== envelope.hostExecutionByArm?.repeated?.runnerSourceCommit
+    || onceMarker.engineRuntimeCommit !== envelope.revisedRuntime?.commit
+    || onceMarker.workerImageDigest !== envelope.workerImageProvenanceReference?.imageDigest
+    || onceMarker.workerImagePlatform !== envelope.workerImageProvenanceReference?.platform
+    || envelope.workerImageProvenanceReference?.sourceCommit !== envelope.revisedRuntime?.commit) {
+    throw new Error('ws5_resume_once_marker_binding_mismatch');
+  }
+  const originalStartedAtMs = Date.parse(onceMarker.createdAt);
+  const absoluteDeadlineMs = originalStartedAtMs + maxPanelWallMs;
+  if (!Number.isSafeInteger(absoluteDeadlineMs) || Date.now() >= absoluteDeadlineMs) {
+    throw new Error('ws5_resume_absolute_deadline_exceeded');
+  }
+  const parentReceiptLedger = parentCells.map(({ cell, row, physicalAttempts }) => ({
+    ordinal: cell.ordinal, armId: cell.armId, caseId: cell.caseId, status: row.status,
+    receiptFile: row.receiptFile, receiptSha256: row.receiptSha256, physicalAttempts,
+  }));
+  const parentReceiptLedgerSha256 = sha256(JSON.stringify(parentReceiptLedger));
+  const parentArtifactFiles = expectedFiles.map((name) => {
+    const filePath = path.join(priorPath, name);
+    const bytes = fs.readFileSync(filePath);
+    return { name, sha256: sha256(bytes), bytes };
+  });
+  const parentRunTreeSha256 = sha256(JSON.stringify(parentArtifactFiles.map(({ name, sha256: digest }) => ({ name, sha256: digest }))));
+  return {
+    parentPath: priorPath,
+    parentManifest: manifest,
+    parentManifestSha256: manifestArtifact.sha256,
+    parentEnvelope: envelope,
+    parentEnvelopeSha256: envelopeArtifact.sha256,
+    parentBrokerEvidenceSha256: brokerArtifact.sha256,
+    parentBrokerEvidenceSummary: {
+      capturedUpstreamAttemptCount: brokerAccounting.capturedUpstreamAttemptCount,
+      matchedExactLogRows: brokerAccounting.matchedExactLogRows,
+      failedExactLogQueryCount: brokerAccounting.failedExactLogQueryCount,
+      unlinkedAttemptCount: brokerAccounting.unlinkedAttemptCount,
+      responseReceivedCount: brokerAccounting.responseReceivedCount,
+      http200ResponseCount: brokerAccounting.http200ResponseCount,
+      providerIdentityUnknownCount: brokerAccounting.providerIdentityUnknownCount,
+      successfulResponseMissingRouteIdentityCount: brokerAccounting.successfulResponseMissingRouteIdentityCount,
+    },
+    parentCells,
+    parentCellsByOrdinal: new Map(parentCells
+      .filter((entry) => consumedOrdinals.includes(entry.cell.ordinal))
+      .map((entry) => [entry.cell.ordinal, entry])),
+    parentArtifactFiles,
+    parentReceiptLedger,
+    parentReceiptLedgerSha256,
+    parentRunTreeSha256,
+    consumedOrdinals,
+    neverDispatchedOrdinals,
+    abstentionOrdinals,
+    priorPhysicalAttempts,
+    onceMarker,
+    onceMarkerSha256: onceMarker.markerSha256,
+    originalStartedAtMs,
+    absoluteDeadlineMs,
+    currentExecutionBindings,
+    maxForwardedModelRequestsPerCell,
+    maxCombinedPhysicalAttempts: WS5_RESUME_MAX_COMBINED_PHYSICAL_ATTEMPTS,
+    maxNewAttemptsFromCellLimits: Math.min(
+      WS5_RESUME_MAX_COMBINED_PHYSICAL_ATTEMPTS - priorPhysicalAttempts,
+      neverDispatchedOrdinals.length * WS5_RESUME_MAX_REQUESTS_PER_CELL,
+    ),
+  };
+}
+
+function copyResumeParentRun(resumeContext, outputPath) {
+  const priorDirectory = path.join(outputPath, 'prior');
+  fs.mkdirSync(priorDirectory, { recursive: false, mode: 0o700 });
+  for (const entry of resumeContext.parentArtifactFiles) {
+    writeExclusiveBytes(path.join(priorDirectory, entry.name), entry.bytes);
+    if (sha256(fs.readFileSync(path.join(priorDirectory, entry.name))) !== entry.sha256) {
+      throw new Error('ws5_resume_parent_copy_digest_mismatch');
+    }
+  }
+  const currentDirectory = path.join(outputPath, 'current');
+  fs.mkdirSync(currentDirectory, { recursive: false, mode: 0o700 });
+  return { priorDirectory, currentDirectory };
+}
+
 function hasExactOrdinalSet(ordinals, count) {
   if (!Number.isSafeInteger(count) || count < 0 || !Array.isArray(ordinals) || ordinals.length !== count) return false;
   const unique = new Set(ordinals);
@@ -676,13 +1187,13 @@ function validatePlannedCellReceipt(cell, rawReceipt) {
 /** @param {any} bundle @param {{outputDirectory?: string, authorizeModelDispatch?: boolean,
  * preflightPanel?: (input: any) => Promise<any>, dispatchCell?: (cell: any) => Promise<any>,
  * preflightAbstention?: (cell: any, preflight: any) => Promise<any>}} options */
-export async function runPublicRunCells(bundle, {
+async function runPublicRunCellsCore(bundle, {
   outputDirectory,
   authorizeModelDispatch = false,
   preflightPanel,
   dispatchCell,
   preflightAbstention,
-} = {}) {
+} = {}, resumeContext = null) {
   const acceptance = bundle?.plan ? bundle : null;
   if (!acceptance || !Array.isArray(acceptance.plan?.publicPanel?.caseIds)) throw new Error('ws5_panel_bundle_missing');
   const cells = createPublicRunCellPlan(acceptance.plan);
@@ -700,6 +1211,7 @@ export async function runPublicRunCells(bundle, {
   if (typeof outputDirectory !== 'string' || outputDirectory.length === 0) throw new Error('ws5_run_output_directory_required');
   const projectRoot = fs.realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
   const outputPath = path.resolve(outputDirectory);
+  if (resumeContext && fs.existsSync(outputPath)) throw new Error('ws5_resume_output_directory_must_be_new');
   const lexicalOutputRelative = path.relative(projectRoot, outputPath);
   const lexicalOutputIsInsideSource = !lexicalOutputRelative
     || (lexicalOutputRelative !== '..' && !lexicalOutputRelative.startsWith('..' + path.sep));
@@ -712,29 +1224,23 @@ export async function runPublicRunCells(bundle, {
     || !outputRelative || (outputRelative !== '..' && !outputRelative.startsWith('..' + path.sep))) {
     throw new Error('ws5_run_output_must_be_outside_source_tree');
   }
+  if (resumeContext && ((outputStats.mode & 0o077) !== 0
+    || (typeof process.getuid === 'function' && outputStats.uid !== process.getuid()))) {
+    throw new Error('ws5_resume_output_directory_not_private');
+  }
   if (fs.readdirSync(outputPath).length !== 0) throw new Error('ws5_run_output_directory_not_empty');
+  if (resumeContext) copyResumeParentRun(resumeContext, outputPath);
 
-  const publicPreflightInput = {
-    planSha256: acceptance.panelSha256,
-    manifestSha256: acceptance.manifestSha256,
-    preparedInputSha256: acceptance.plan.publicPanel.preparedInputSha256,
-    caseIds: [...acceptance.plan.publicPanel.caseIds],
-    arms: acceptance.plan.publicRunMatrix.arms.map((arm) => ({
-      id: arm.id,
-      caseIds: [...arm.caseIds],
-      runtimeSha: arm.runtimeSha,
-      modelAlias: arm.modelAlias || null,
-      nativeSourceLimitations: arm.nativeSourceLimitations || {},
-    })),
-    preparedDiscovery: acceptance.preparedDiscovery,
-  };
-  let preflight = null;
+  const publicPreflightInput = createPublicPreflightInput(acceptance);
+  let preflight = resumeContext?.preflight || null;
   let preflightFailure = null;
-  try {
-    assertBlindDiscoveryInputCases(publicPreflightInput.preparedDiscovery.cases);
-    preflight = assertRootDispatchPreflight(acceptance, await preflightPanel(publicPreflightInput));
-  } catch (error) {
-    preflightFailure = safeFailureCode(error);
+  if (!preflight) {
+    try {
+      assertBlindDiscoveryInputCases(publicPreflightInput.preparedDiscovery.cases);
+      preflight = assertRootDispatchPreflight(acceptance, await preflightPanel(publicPreflightInput));
+    } catch (error) {
+      preflightFailure = safeFailureCode(error);
+    }
   }
 
   if (preflightFailure) {
@@ -806,9 +1312,32 @@ export async function runPublicRunCells(bundle, {
 
   const rows = [];
   const results = [];
-  let modelRunCells = 0;
+  let modelRunCells = resumeContext?.consumedOrdinals.length || 0;
   let preflightAbstentions = 0;
+  const currentDirectory = resumeContext ? path.join(outputPath, 'current') : outputPath;
   for (const cell of cells) {
+    const consumedReceipt = resumeContext?.parentCellsByOrdinal.get(cell.ordinal);
+    if (consumedReceipt) {
+      const receiptFile = path.posix.join('prior', consumedReceipt.fileName);
+      const result = {
+        ...cell,
+        ...consumedReceipt.receipt,
+        ordinal: cell.ordinal,
+        armId: cell.armId,
+        caseId: cell.caseId,
+        execution: cell.execution,
+        noModelDispatch: false,
+        noAutomaticRetry: true,
+        qualityScore: null,
+        receiptFile,
+        receiptSha256: consumedReceipt.row.receiptSha256,
+      };
+      results.push(result);
+      rows.push({ ordinal: cell.ordinal, armId: cell.armId, caseId: cell.caseId, execution: cell.execution,
+        status: result.status, receiptFile, receiptSha256: consumedReceipt.row.receiptSha256,
+        noAutomaticRetry: true, noModelDispatch: false });
+      continue;
+    }
     let receipt;
     let executionFailure = null;
     try {
@@ -835,15 +1364,16 @@ export async function runPublicRunCells(bundle, {
     }
     if (receipt.status === 'source_scope_unsupported') preflightAbstentions += 1;
     const fileName = `cell-${String(cell.ordinal).padStart(2, '0')}-${cell.armId}-${cell.caseId}.json`;
-    const receiptPath = path.join(outputPath, fileName);
+    const receiptFile = resumeContext ? path.posix.join('current', fileName) : fileName;
+    const receiptPath = path.join(currentDirectory, fileName);
     const receiptSha256 = writeExclusiveJson(receiptPath, receipt);
     const result = { ...cell, ...receipt, ordinal: cell.ordinal, armId: cell.armId, caseId: cell.caseId,
       execution: cell.execution, noModelDispatch: cell.noModelDispatch, noAutomaticRetry: true,
-      qualityScore: null, receiptFile: fileName, receiptSha256,
+      qualityScore: null, receiptFile, receiptSha256,
       ...(executionFailure ? { runnerFailureCode: executionFailure } : {}) };
     results.push(result);
     rows.push({ ordinal: cell.ordinal, armId: cell.armId, caseId: cell.caseId, execution: cell.execution,
-      status: result.status, receiptFile: fileName, receiptSha256,
+      status: result.status, receiptFile, receiptSha256,
       noAutomaticRetry: true, noModelDispatch: cell.execution === 'preflight_abstention' });
   }
 
@@ -865,27 +1395,139 @@ export async function runPublicRunCells(bundle, {
   });
   const acceptanceGate = validatePublicRunCells(acceptance.plan, results);
   const providerAttestationComplete = acceptanceGate.status.startsWith('READY_FOR_BLIND_ADJUDICATION');
-  const preflightSummary = {
-    status: preflight.status,
-    planSha256: preflight.planSha256,
-    manifestSha256: preflight.manifestSha256,
-    preparedInputSha256: preflight.preparedInputSha256,
-    sourceCaseIds: preflight.sourceCases.map((entry) => entry.caseId),
-    allSourceCachesVerified: true,
-    alibabaStatus: preflight.alibaba.status,
-    alibabaBinarySha256: preflight.alibaba.binary?.sha256 || null,
-    alibabaCaseStatuses: preflight.alibaba.cases.map((entry) => ({
-      caseId: entry.caseId,
-      status: entry.status,
-      changedFileCount: entry.changedFileCount,
-      sourceCachePreflightStatus: entry.sourceCachePreflight.status,
-      changedPathsSha256: entry.preview.changedPathsSha256,
-    })),
-    alibabaProviderCalls: preflight.alibaba.providerCalls,
-    providerStatus: preflight.provider.status,
-    providerModelAlias: preflight.provider.modelAlias,
-    providerCalls: preflight.provider.providerCalls,
-  };
+  const preflightSummary = summarizePublicPreflight(preflight);
+  let resumeManifest = null;
+  let resumeManifestSha256 = null;
+  let resumePhysicalAccounting = null;
+  if (resumeContext) {
+    const newPhysicalRequestAttempts = resumeContext.neverDispatchedOrdinals.reduce((sum, ordinal) => {
+      const cell = results.find((entry) => entry.ordinal === ordinal);
+      const attempts = cell?.model?.httpAttempts;
+      if (!Array.isArray(attempts) || attempts.length > resumeContext.maxForwardedModelRequestsPerCell) {
+        throw new Error('ws5_resume_new_attempt_accounting_invalid');
+      }
+      return sum + attempts.length;
+    }, 0);
+    const cumulativePhysicalRequestAttempts = resumeContext.priorPhysicalAttempts + newPhysicalRequestAttempts;
+    if (newPhysicalRequestAttempts > resumeContext.maxNewAttemptsFromCellLimits
+      || cumulativePhysicalRequestAttempts > resumeContext.maxCombinedPhysicalAttempts) {
+      throw new Error('ws5_resume_physical_request_budget_exceeded');
+    }
+    const currentReceiptLedger = rows.map((row) => ({
+      ordinal: row.ordinal, armId: row.armId, caseId: row.caseId,
+      receiptFile: row.receiptFile, receiptSha256: row.receiptSha256, status: row.status,
+    }));
+    const currentReceiptLedgerSha256 = sha256(JSON.stringify(currentReceiptLedger));
+    const newlyDispatchedOrdinals = resumeContext.neverDispatchedOrdinals.filter((ordinal) => {
+      const cell = results.find((entry) => entry.ordinal === ordinal);
+      return Array.isArray(cell?.model?.httpAttempts) && cell.model.httpAttempts.length > 0;
+    });
+    const zeroAttemptCandidateOrdinals = resumeContext.neverDispatchedOrdinals
+      .filter((ordinal) => !newlyDispatchedOrdinals.includes(ordinal));
+    const sourceRoles = {
+      hostOrchestrator: {
+        role: 'host_orchestrator',
+        sourceCommit: resumeContext.currentExecutionBindings.hostOrchestratorSource.commit,
+        sourceTree: resumeContext.currentExecutionBindings.hostOrchestratorSource.tree,
+        sourceClean: resumeContext.currentExecutionBindings.hostOrchestratorSource.worktreeClean,
+      },
+      frozenBenchmarkSource: {
+        role: 'frozen_benchmark_source',
+        commit: resumeContext.currentExecutionBindings.sourceFreeze.headCommitSha,
+        tree: resumeContext.currentExecutionBindings.sourceFreeze.gitTreeOid,
+      },
+      engineRuntime: {
+        role: 'engine_runtime',
+        commit: resumeContext.currentExecutionBindings.revisedRuntime.commit,
+        tree: resumeContext.currentExecutionBindings.revisedRuntime.tree,
+      },
+      workerImage: {
+        role: 'worker_image_provenance_reference_only',
+        digest: resumeContext.currentExecutionBindings.workerImageProvenanceReference.imageDigest,
+        platform: resumeContext.currentExecutionBindings.workerImageProvenanceReference.platform,
+        executedByHostRunner: false,
+      },
+    };
+    const resumeManifestBody = {
+      schemaVersion: 'ReviewYetiWS5PartialResumeManifest.v1',
+      contractVersion: 'ReviewYetiWS5PartialResume.v1',
+      resumeId: crypto.randomUUID(),
+      status: incompleteCells > 0 ? 'incomplete' : acceptanceGate.status,
+      sourceRoles,
+      frozenInputs: {
+        planSha256: acceptance.panelSha256,
+        manifestSha256: acceptance.manifestSha256,
+        preparedInputSha256: acceptance.plan.publicPanel.preparedInputSha256,
+        caseIds: [...acceptance.plan.publicPanel.caseIds],
+        cellScheduleSha256: sha256(JSON.stringify(cells.map(({ ordinal, armId, caseId, execution }) => ({
+          ordinal, armId, caseId, execution,
+        })))),
+      },
+      resourceCaps: {
+        maxConcurrentCells: 1,
+        maxForwardedModelRequestsPerCell: resumeContext.maxForwardedModelRequestsPerCell,
+        maxPreflightWallMs: resumeContext.parentEnvelope.maxPreflightWallMs,
+        maxCellWallMs: resumeContext.parentEnvelope.maxCellWallMs,
+        maxFinalizationWallMs: resumeContext.parentEnvelope.maxFinalizationWallMs,
+        maxPanelWallMs: resumeContext.parentEnvelope.maxPanelWallMs,
+        originalStartedAt: new Date(resumeContext.originalStartedAtMs).toISOString(),
+        absoluteDeadlineAt: new Date(resumeContext.absoluteDeadlineMs).toISOString(),
+        elapsedWallMs: Math.max(0, Date.now() - resumeContext.originalStartedAtMs),
+        remainingWallMs: Math.max(0, resumeContext.absoluteDeadlineMs - Date.now()),
+      },
+      parent: {
+        runManifestSchemaVersion: resumeContext.parentManifest.schemaVersion,
+        executionEnvelopeSchemaVersion: resumeContext.parentEnvelope.schemaVersion,
+        brokerEvidenceSchemaVersion: 'ReviewYetiWS5ParentBrokerEvidence.v1',
+        runManifestSha256: resumeContext.parentManifestSha256,
+        executionEnvelopeSha256: resumeContext.parentEnvelopeSha256,
+        brokerEvidenceSha256: resumeContext.parentBrokerEvidenceSha256,
+        brokerEvidenceSummary: resumeContext.parentBrokerEvidenceSummary,
+        onceMarkerSha256: resumeContext.onceMarkerSha256,
+        receiptLedgerSha256: resumeContext.parentReceiptLedgerSha256,
+        runTreeSha256: resumeContext.parentRunTreeSha256,
+        copiedDirectory: 'prior',
+        artifactFiles: resumeContext.parentArtifactFiles.map(({ name, sha256: digest }) => ({ name, sha256: digest })),
+      },
+      selection: {
+        consumedOrdinals: resumeContext.consumedOrdinals,
+        candidateOrdinals: resumeContext.neverDispatchedOrdinals,
+        adapterInvokedOrdinals: resumeContext.neverDispatchedOrdinals,
+        newlyDispatchedOrdinals,
+        zeroAttemptCandidateOrdinals,
+        abstentionOrdinals: resumeContext.abstentionOrdinals,
+      },
+      priorReceipts: resumeContext.parentReceiptLedger,
+      currentReceipts: currentReceiptLedger,
+      currentReceiptLedgerSha256,
+      physicalAccounting: {
+        priorPhysicalRequestAttempts: resumeContext.priorPhysicalAttempts,
+        newPhysicalRequestAttempts,
+        cumulativePhysicalRequestAttempts,
+        maximumCombinedPhysicalRequestAttempts: resumeContext.maxCombinedPhysicalAttempts,
+        remainingGlobalAttemptCeiling: resumeContext.maxCombinedPhysicalAttempts - resumeContext.priorPhysicalAttempts,
+        maximumNewAttemptsFromCellLimits: resumeContext.maxNewAttemptsFromCellLimits,
+        localAttemptRecordsComplete: localAccountingComplete,
+        gatewayRelayCount: null,
+        providerCompletionCount: null,
+        billedRequestCount: null,
+        actualCostUsd: null,
+      },
+      qualityScore: null,
+    };
+    const lineageSha256 = sha256(JSON.stringify({
+      parentRunManifestSha256: resumeManifestBody.parent.runManifestSha256,
+      parentExecutionEnvelopeSha256: resumeManifestBody.parent.executionEnvelopeSha256,
+      parentBrokerEvidenceSha256: resumeManifestBody.parent.brokerEvidenceSha256,
+      parentReceiptLedgerSha256: resumeManifestBody.parent.receiptLedgerSha256,
+      parentRunTreeSha256: resumeManifestBody.parent.runTreeSha256,
+      onceMarkerSha256: resumeManifestBody.parent.onceMarkerSha256,
+      currentReceiptLedgerSha256,
+    }));
+    resumeManifest = { ...resumeManifestBody, lineageSha256 };
+    resumeManifestSha256 = writeExclusiveJson(path.join(outputPath, 'resume-manifest.json'), resumeManifest);
+    resumePhysicalAccounting = resumeManifest.physicalAccounting;
+  }
   const runManifest = {
     schemaVersion: 'ReviewYetiWS5RunManifest.v1',
     status: incompleteCells > 0 ? 'incomplete' : acceptanceGate.status,
@@ -926,10 +1568,83 @@ export async function runPublicRunCells(bundle, {
       qualityScore: null,
     },
     qualityScore: null,
+    ...(resumeContext ? {
+      partialResumeContractVersion: 'ReviewYetiWS5PartialResume.v1',
+      partialResumeManifestSha256: resumeManifestSha256,
+      ...resumePhysicalAccounting,
+    } : {}),
     cells: rows,
   };
   const runManifestSha256 = writeExclusiveJson(path.join(outputPath, 'run-manifest.json'), runManifest);
-  return { manifest: runManifest, manifestSha256: runManifestSha256, cells: results, outputDirectory: outputPath };
+  return { manifest: runManifest, manifestSha256: runManifestSha256, cells: results, outputDirectory: outputPath,
+    ...(resumeContext ? { resumeManifest, resumeManifestSha256 } : {}) };
+}
+
+export function runPublicRunCells(bundle, options = {}) {
+  return runPublicRunCellsCore(bundle, options, null);
+}
+
+function assertFreshResumeOutputDirectory(acceptance, outputDirectory, priorOutputDirectory) {
+  if (typeof outputDirectory !== 'string' || outputDirectory.length === 0) {
+    throw new Error('ws5_run_output_directory_required');
+  }
+  const target = path.resolve(outputDirectory);
+  if (fs.existsSync(target) || target === path.resolve(priorOutputDirectory)) {
+    throw new Error('ws5_resume_output_directory_must_be_new');
+  }
+  const parent = path.dirname(target);
+  const realParent = assertPrivateDirectory(parent, 'ws5_resume_output_parent_not_private');
+  const realTarget = path.join(realParent, path.basename(target));
+  const projectRoot = fs.realpathSync(SOURCE_ROOT);
+  const dataRoot = fs.realpathSync(acceptance.dataRootPath || acceptance.rootPath || SOURCE_ROOT);
+  assertOutsideRoots(realTarget, [projectRoot, dataRoot], 'ws5_run_output_must_be_outside_source_tree');
+  if (realTarget === fs.realpathSync(priorOutputDirectory)) throw new Error('ws5_resume_output_directory_must_be_new');
+}
+
+/**
+ * Continue an immutable v1 parent run in a fresh private directory. The caller pins the
+ * parent artifact hashes, one-shot marker, prior consumed/undispatched ordinals, and the
+ * unchanged runtime bindings; this function never replays a cell with physical attempts.
+ * @param {any} bundle
+ * @param {Record<string, any>} options
+ */
+export async function resumePublicRunCells(bundle, options = {}) {
+  const acceptance = bundle?.plan ? bundle : null;
+  if (!acceptance || !Array.isArray(acceptance.plan?.publicPanel?.caseIds)) throw new Error('ws5_panel_bundle_missing');
+  const cells = createPublicRunCellPlan(acceptance.plan);
+  if (cells.some((cell) => cell.execution === 'model_run') && options.authorizeModelDispatch !== true) {
+    throw new Error('ws5_model_dispatch_not_authorized_by_root');
+  }
+  if (typeof options.preflightPanel !== 'function') throw new Error('ws5_root_dispatch_preflight_required');
+  if (cells.some((cell) => cell.execution === 'model_run') && typeof options.dispatchCell !== 'function') {
+    throw new Error('ws5_parent_dispatch_adapter_required');
+  }
+  if (cells.some((cell) => cell.execution === 'preflight_abstention') && typeof options.preflightAbstention !== 'function') {
+    throw new Error('ws5_preflight_abstention_adapter_required');
+  }
+  const resumeContext = loadWs5ResumeContext(acceptance, options);
+  assertFreshResumeOutputDirectory(acceptance, options.outputDirectory, resumeContext.parentPath);
+
+  let preflight;
+  try {
+    const publicPreflightInput = createPublicPreflightInput(acceptance);
+    assertBlindDiscoveryInputCases(publicPreflightInput.preparedDiscovery.cases);
+    preflight = assertRootDispatchPreflight(acceptance, await options.preflightPanel(publicPreflightInput));
+  } catch {
+    throw new Error('ws5_resume_current_preflight_not_ready');
+  }
+  const preflightSummary = summarizePublicPreflight(preflight);
+  if (!isDeepStrictEqual(preflightSummary, resumeContext.parentManifest.preflightSummary)) {
+    throw new Error('ws5_resume_preflight_binding_mismatch');
+  }
+  const suppliedBindings = typeof options.currentExecutionBindings === 'function'
+    ? options.currentExecutionBindings() : options.currentExecutionBindings;
+  const currentExecutionBindings = suppliedBindings || preflight.executionBindings;
+  resumeContext.currentExecutionBindings = assertWs5ResumeExecutionBindings(
+    resumeContext.parentEnvelope, currentExecutionBindings,
+  );
+  resumeContext.preflight = preflight;
+  return runPublicRunCellsCore(bundle, options, resumeContext);
 }
 
 /** Join parent-broker Bifrost evidence to every physical local HTTP attempt by hashed request ID. */
