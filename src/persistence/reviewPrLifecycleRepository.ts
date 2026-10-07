@@ -838,7 +838,8 @@ export async function createTrustedGroundedHistoryContext(client: ReviewLifecycl
   const uniqueServiceEventIds = [...new Set(serviceEventIds)].sort().slice(0, 4_096);
   return { groundedHistory: { snapshotId: String(snapshot.snapshot_id), contextDigest: String(snapshot.context_digest), eventIds: uniqueServiceEventIds,
     currentRunId: input.runId, currentHeadSha: input.headSha, expectedContinuityByFingerprint,
-    expectedTransitionsByFingerprint, authenticatedDisputePaths: [...disputedFindingPaths].sort(),
+    expectedTransitionsByFingerprint, expectedOriginAncestryByFingerprint,
+    authenticatedDisputePaths: [...disputedFindingPaths].sort(),
     ...(verifiedAncestry ? { verifiedAncestry } : {}) },
   authenticatedDisputes, consumedConventionSourceIdDigests, disputedFindingPaths: [...disputedFindingPaths].sort() };
 }

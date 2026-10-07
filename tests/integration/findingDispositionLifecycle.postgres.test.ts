@@ -46,6 +46,7 @@ import {
   groundedFixedOriginRefs,
   groundedOriginAncestryFromComparison,
   resolveGroundedFindingContinuity,
+  verifiedRepairVerificationLinks,
   type GroundedContinuityCandidate,
   type GroundedContinuityOriginRef,
   type GroundedFindingContinuity,
@@ -109,6 +110,7 @@ let schemaName = '';
 let repositoryId = 0;
 let nextPrNumber = 100;
 let nextAt = Date.now();
+const fixtureHeadParents = new Map<string, string>();
 
 function newRunId(): string {
   return `run_${randomBytes(16).toString('hex')}`;
@@ -121,6 +123,29 @@ function digestOf(value: unknown): string {
 function nextTimestamp(): number {
   nextAt += 2_000;
   return nextAt;
+}
+
+function fixtureCommitChain(headSha: string): string[] {
+  const chain: string[] = [];
+  const visited = new Set<string>();
+  let current = headSha;
+  while (current && !visited.has(current)) {
+    chain.push(current);
+    if (current === BASE) break;
+    visited.add(current);
+    current = fixtureHeadParents.get(current) ?? '';
+  }
+  return chain;
+}
+
+function fixtureComparison(baseSha: string, headSha: string) {
+  const baseChain = fixtureCommitChain(baseSha);
+  const headChain = fixtureCommitChain(headSha);
+  const mergeBaseSha = baseChain.find((sha) => headChain.includes(sha)) ?? BASE;
+  const status = baseSha === headSha ? 'identical' as const
+    : headChain.includes(baseSha) ? 'ahead' as const
+      : baseChain.includes(headSha) ? 'behind' as const : 'diverged' as const;
+  return { status, mergeBaseSha, files: [] as Array<{ path: string }> };
 }
 
 function testIdentity(prNumber = nextPrNumber++) {
@@ -145,7 +170,7 @@ interface RunFixture {
 function activeRun(prNumber: number, options: Partial<Pick<RunFixture,
   'headSha' | 'baseSha' | 'policyDigest' | 'configDigest' | 'contextDigest'>> = {}): RunFixture {
   const at = nextTimestamp();
-  return {
+  const run = {
     ...testIdentity(prNumber),
     runId: newRunId(),
     executionAttempt: 1,
@@ -156,6 +181,8 @@ function activeRun(prNumber: number, options: Partial<Pick<RunFixture,
     contextDigest: options.contextDigest ?? sha256(`context:${prNumber}:${at}`),
     at,
   };
+  if (!fixtureHeadParents.has(run.headSha)) fixtureHeadParents.set(run.headSha, run.baseSha);
+  return run;
 }
 
 async function transaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -239,6 +266,8 @@ function completionInput(run: RunFixture, gate: ReviewGateDecision,
     status: gate.eligible ? 'completed' as const : 'failed' as const,
     completionDigest: digestOf({ runId: run.runId, headSha: run.headSha, gate, findings }),
     decisionReceipt: {
+      serviceCoverage: { coverageComplete: receiptOptions.coverageComplete ?? true,
+        quorumSatisfied: receiptOptions.quorumSatisfied ?? true },
       ...(receiptOptions.omitEvidenceSemanticsVersion ? {} : {
         evidenceSemanticsVersion: receiptOptions.evidenceSemanticsVersion ?? SEMANTICS,
       }),
@@ -308,6 +337,7 @@ function dispositionDraft(kind: FindingDispositionKind, run: RunFixture, fingerp
   priorFindingEventId?: string;
   priorFixedEventId?: string;
   changedContextDigest?: string;
+  proofDigest?: string;
   receiptDigest?: string;
 } = {}): FindingDispositionDraft {
   const digestFor = (label: string) => sha256(`${run.runId}:${kind}:${label}`);
@@ -345,9 +375,9 @@ function dispositionDraft(kind: FindingDispositionKind, run: RunFixture, fingerp
       : kind === 'accepted_convention'
         ? { ...common, adjudication: { method: 'authorized_human' as const, conventionId: 'documented-tenant-boundary',
           status: 'accepted' as const, proofDigest: digestFor('proof') } }
-        : kind === 'fixed'
+      : kind === 'fixed'
           ? { ...common, adjudication: { method: 'independent_grounded_verifier' as const,
-            status: 'contradicted' as const, proofDigest: digestFor('proof'),
+            status: 'contradicted' as const, proofDigest: options.proofDigest ?? digestFor('proof'),
             priorFindingEventId: options.priorFindingEventId ?? randomUUID(),
             changedContextDigest: options.changedContextDigest ?? run.contextDigest } }
           : { ...common, adjudication: { method: 'independent_grounded_verifier' as const,
@@ -715,10 +745,8 @@ function continuityCandidate(fingerprint: string, overrides: Partial<GroundedCon
 }
 
 function originAncestryProofs(refs: readonly GroundedContinuityOriginRef[] | null | undefined) {
-  return (refs ?? []).map((ref) => {
-    const comparison = { status: 'ahead' as const, mergeBaseSha: ref.priorHeadSha, files: [] };
-    return groundedOriginAncestryFromComparison(ref, comparison);
-  });
+  return (refs ?? []).map((ref) => groundedOriginAncestryFromComparison(ref,
+    fixtureComparison(ref.priorHeadSha, ref.currentHeadSha)));
 }
 
 function candidateOriginAncestry(candidate: GroundedContinuityCandidate, history: PrLifecycleHistoryLoad,
@@ -758,7 +786,7 @@ async function trustedContinuityProjection(run: RunFixture, history: PrLifecycle
   const serviceOriginAncestry = originAncestryProofs(originRefs);
   const ancestry = await verifyReviewHeadAncestry({
     priorRunId: prior.runId, priorHeadSha: prior.headSha, currentHeadSha: run.headSha,
-    reader: { compare: async () => ({ status: 'ahead' as const, mergeBaseSha: prior.headSha, files: [] }) },
+    reader: { compare: async (baseSha, headSha) => fixtureComparison(baseSha, headSha) },
   });
   const outcomes = [{ status: 'confirmed' as const, fingerprint: candidate.currentFingerprint,
     path: candidate.causeAnchor.componentPath, line: candidate.causeAnchor.startLine, title: 'fixture candidate',
@@ -1266,7 +1294,7 @@ describeWithPostgres('typed PR finding disposition lifecycle (real PostgreSQL)',
     const oldRow = (await pool!.query(`SELECT finding_event_id, durable_finding_id, fingerprint
       FROM review_semantic_finding_events WHERE run_id = $1`, [original.runId])).rows[0];
 
-    const fixedRun = activeRun(prNumber, { headSha: sha256('continuity-fixed-head').slice(0, 40),
+    const fixedRun = activeRun(prNumber, { headSha: sha256('continuity-fixed-head').slice(0, 40), baseSha: original.headSha,
       contextDigest: sha256('continuity-fixed-context') });
     await insertRun(fixedRun);
     const candidate = continuityCandidate(oldFinding.fingerprint);
@@ -1284,6 +1312,8 @@ describeWithPostgres('typed PR finding disposition lifecycle (real PostgreSQL)',
     const preFixTrusted = await trustedContinuityProjection(fixedRun, preFixHistory, candidate, preFixReceipt, original);
     expect(preFixTrusted.ancestry.result).toBe('ancestor');
     expect(preFixTrusted.projection?.groundedHistory.expectedContinuityByFingerprint[oldFinding.fingerprint]).toEqual(preFixReceipt);
+    expect(preFixTrusted.projection?.groundedHistory.expectedOriginAncestryByFingerprint?.[oldFinding.fingerprint])
+      .toEqual(preFixReceipt.verifiedOriginAncestry);
     const contradicted = {
       ...finding(fixedRun, { fingerprint: oldFinding.fingerprint, verification: 'contradicted', blocking: false,
         changedPatch: '@@ -18 +19 @@\n-accept supplied tenant\n+bind tenant to authenticated session' }),
@@ -1293,6 +1323,7 @@ describeWithPostgres('typed PR finding disposition lifecycle (real PostgreSQL)',
     const fixed = dispositionDraft('fixed', fixedRun, oldFinding.fingerprint, {
       findingId: String(oldRow.durable_finding_id), priorFindingEventId: String(oldRow.finding_event_id),
       changedContextDigest: fixedRun.contextDigest,
+      proofDigest: contradicted.independentVerification!.evidenceDigest,
     });
     await recordCompletion(fixedRun, gateFor(fixedRun, 0), [contradicted], [fixed]);
     const fixedRow = (await pool!.query(`SELECT event_id FROM review_pr_lifecycle_events
@@ -1302,7 +1333,7 @@ describeWithPostgres('typed PR finding disposition lifecycle (real PostgreSQL)',
     expect(fixedRow).toBeDefined();
     expect(fixedFindingRow).toBeDefined();
 
-    const cleanDescendant = activeRun(prNumber, { headSha: sha256('continuity-clean-descendant').slice(0, 40),
+    const cleanDescendant = activeRun(prNumber, { headSha: sha256('continuity-clean-descendant').slice(0, 40), baseSha: fixedRun.headSha,
       contextDigest: sha256('continuity-clean-context') });
     await insertRun(cleanDescendant, 'succeeded');
     await recordCompletion(cleanDescendant, gateFor(cleanDescendant, 0), []);
@@ -1312,7 +1343,7 @@ describeWithPostgres('typed PR finding disposition lifecycle (real PostgreSQL)',
     expect(Number((await pool!.query(`SELECT count(*)::integer AS count FROM review_pr_lifecycle_events
       WHERE event_id = $1 AND event_type = 'finding.disposition.fixed'`, [fixedRow.event_id])).rows[0].count)).toBe(1);
 
-    const active = activeRun(prNumber, { headSha: sha256('continuity-confirmed-descendant').slice(0, 40),
+    const active = activeRun(prNumber, { headSha: sha256('continuity-confirmed-descendant').slice(0, 40), baseSha: cleanDescendant.headSha,
       contextDigest: sha256('continuity-confirmed-context') });
     await insertRun(active);
     const history = await historyClient(active).read();
@@ -1341,6 +1372,8 @@ describeWithPostgres('typed PR finding disposition lifecycle (real PostgreSQL)',
       priorHeadSha: cleanDescendant.headSha, currentHeadSha: active.headSha });
     expect(reopenedTrusted.projection?.groundedHistory.expectedContinuityByFingerprint[oldFinding.fingerprint])
       .toEqual(receipt);
+    expect(reopenedTrusted.projection?.groundedHistory.expectedOriginAncestryByFingerprint?.[oldFinding.fingerprint])
+      .toEqual(receipt.verifiedOriginAncestry);
     expect(await continuityInput(active, candidate, receipt, false)).toBe(true);
     expect(await continuityInput(active, { ...candidate,
       rootCause: { ...candidate.rootCause, contractId: 'other-contract' } }, receipt)).toBe(false);
@@ -1472,12 +1505,14 @@ describeWithPostgres('grounded v2 continuity through the real PostgreSQL Gate tr
 
   function makeRun(prNumber: number, headNumber: number, baseSha = BASE): GateLifecycleRun {
     nextRunAt += 2_000;
-    return {
+    const run = {
       runId: newRunId(), repositoryId: gateRepositoryId, owner: 'example-org', repo: gateRepo,
       prNumber, headSha: sha256(`v2-gate-head:${prNumber}:${headNumber}`).slice(0, 40), baseSha,
       policyDigest: GATE_TEST_PLAN_DIGEST, configDigest: GATE_TEST_CONFIG_DIGEST,
       contextDigest: sha256(`v2-gate-context:${prNumber}:${headNumber}`), at: nextRunAt,
     };
+    if (!fixtureHeadParents.has(run.headSha)) fixtureHeadParents.set(run.headSha, run.baseSha);
+    return run;
   }
 
   async function transactionOnGatePool<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -1689,8 +1724,7 @@ describeWithPostgres('grounded v2 continuity through the real PostgreSQL Gate tr
     const prior = await selectPriorReviewRecord(gatePool, run.runId);
     const ancestry = prior ? await verifyReviewHeadAncestry({
       priorRunId: prior.runId, priorHeadSha: prior.headSha, currentHeadSha: run.headSha,
-      reader: { compare: async (baseSha, headSha) => ({ status: 'ahead', mergeBaseSha: baseSha,
-        files: [{ path: GATE_TEST_PATH, status: 'modified', patch: `@@ -1 +1 @@\n-old-${headSha.slice(0, 5)}\n+new-${headSha.slice(0, 5)}` }] }) },
+      reader: { compare: async (baseSha, headSha) => fixtureComparison(baseSha, headSha) },
     }) : undefined;
     const planning = buildReviewPlanningHistoryContext({ history, threadSnapshot: threadSnapshot(run.headSha),
       expectedHeadSha: run.headSha, expectedBaseSha: run.baseSha,
@@ -1791,14 +1825,24 @@ describeWithPostgres('grounded v2 continuity through the real PostgreSQL Gate tr
     if (confirmedHint && !input.forgedContinuity && !input.forgedSeverity && !input.allowInvalidDerivation) {
       expect(dbRebuiltHistory?.groundedHistory).toBeDefined();
       expect(dbRebuiltHistory?.groundedHistory.expectedContinuityByFingerprint[confirmedHint.currentFingerprint]).toEqual(confirmedHint);
+      expect(dbRebuiltHistory?.groundedHistory.expectedOriginAncestryByFingerprint?.[confirmedHint.currentFingerprint])
+        .toEqual(confirmedHint.verifiedOriginAncestry);
+      const trustedDerivation = deriveCanonicalWorkerReviewEvidence(event, {
+        expectedCoordinates, expectedPersonaIds: ['security'], reviewDecisionPolicy: REVIEW_SEVERITY_POLICY_V2,
+        changedFiles, coverageComplete: true, quorumSatisfied: true,
+        groundedVerifierRouting: { primaryModel: 'grounded-fixture-model' },
+        groundedHistory: dbRebuiltHistory?.groundedHistory,
+      });
+      if (!trustedDerivation.valid) throw new Error(`DB-rebuilt canonical Gate derivation failed: ${trustedDerivation.message}`);
+      expect(trustedDerivation.groundedContinuity).toContainEqual(confirmedHint);
     }
     const resolve = async (_gate: StoredReviewGate, _incremental: unknown, _verdictCache: unknown,
       historyInput?: ResolverHistoryInput): Promise<TrustedGateCompletionContext> => {
+      expect(historyInput?.originRequestsByFingerprint).toEqual(gateOriginRequests);
       const serviceAncestry = historyInput?.prior ? await verifyReviewHeadAncestry({
         priorRunId: historyInput.prior.runId, priorHeadSha: historyInput.prior.headSha,
         currentHeadSha: run.headSha,
-        reader: { compare: async (baseSha, headSha) => ({ status: 'ahead', mergeBaseSha: baseSha,
-          files: [{ path: GATE_TEST_PATH, status: 'modified', patch: `@@ -1 +1 @@\n-old-${headSha.slice(0, 5)}\n+new-${headSha.slice(0, 5)}` }] }) },
+        reader: { compare: async (baseSha, headSha) => fixtureComparison(baseSha, headSha) },
       }) : undefined;
       const serviceOriginAncestry = Object.values(historyInput?.originRequestsByFingerprint ?? {})
         .flatMap(originAncestryProofs);
@@ -1886,10 +1930,10 @@ describeWithPostgres('grounded v2 continuity through the real PostgreSQL Gate tr
       status: 'failure', eligible: false, reason: 'blocking-findings',
     });
     const continuousFinding = await persistedFinding(continuous.runId);
-    expect(continuousFinding?.durable_finding_id).toBe(durableId);
     expect(continuousFinding?.source_evidence.groundedEvidenceV2.verifiedContinuity).toMatchObject({
       status: 'continuous', durableFindingId: durableId,
     });
+    expect(continuousFinding?.durable_finding_id).toBe(durableId);
 
     const fixed = makeRun(prNumber, 3, continuous.headSha);
     const fixedRepository = await prepareGateRun(fixed);
@@ -1914,6 +1958,14 @@ describeWithPostgres('grounded v2 continuity through the real PostgreSQL Gate tr
     expect(reopenedResult.history.status).toBe('complete');
     expect(reopenedResult.history.events.some((event) => event.eventType === 'finding.disposition.fixed'
       && event.disposition?.findingId === durableId)).toBe(true);
+    const selectedRepairEventId = String(fixedEvents[0]?.event_id);
+    const negativeFindingEventId = String(fixedFinding?.finding_event_id);
+    const selectedRootCause = continuousFinding?.source_evidence.groundedEvidenceV2.rootCause as typeof ROOT_CAUSE | undefined;
+    expect(selectedRootCause).toBeDefined();
+    expect(verifiedRepairVerificationLinks(reopenedResult.history, durableId, selectedRootCause!)).toContainEqual({
+      causeFindingEventId: fixedSourceId, repairEventId: selectedRepairEventId,
+      negativeFindingEventId,
+    });
     expect(reopenedResult.decision.rows[0]?.decision).toMatchObject({ status: 'failure', eligible: false, reason: 'blocking-findings' });
     const reopenedFinding = await persistedFinding(reopened.runId);
     expect(reopenedFinding?.durable_finding_id).toBe(durableId);
@@ -1921,8 +1973,9 @@ describeWithPostgres('grounded v2 continuity through the real PostgreSQL Gate tr
       status: 'reopened', durableFindingId: durableId,
     });
     expect(reopenedFinding?.source_evidence.groundedEvidenceV2.verifiedContinuity.sourceEventIds)
-      .toEqual(expect.arrayContaining([String(initial?.finding_event_id), String(continuousFinding?.finding_event_id),
-        String(fixedFinding?.finding_event_id), String(fixedEvents[0]?.event_id)]));
+      .toEqual([fixedSourceId, selectedRepairEventId].sort());
+    expect(reopenedFinding?.source_evidence.groundedEvidenceV2.verifiedContinuity.sourceEventIds)
+      .not.toContain(negativeFindingEventId);
     const reopenedEvents = await dispositionsFor(reopened.runId);
     expect(reopenedEvents).toHaveLength(1);
     expect(reopenedEvents[0]).toMatchObject({ event_type: 'finding.disposition.regressed',
