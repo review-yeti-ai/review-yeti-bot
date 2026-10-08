@@ -134,7 +134,7 @@ function contextFixture(fetcher: typeof fetch | null) {
   const prior: PriorReviewRecord = {
     runId: PRIOR_RUN, executionAttempt: 1, repositoryId: 123, prNumber: 42, headSha: PREV_HEAD, baseSha: PREV_BASE,
     policyDigest, configDigest, completionDigest: 'e'.repeat(64), ageMs: 60_000,
-    coverageComplete: true, shipComplete: true, findingPaths: ['src/open.ts'],
+    coverageComplete: true, shipComplete: true, findingPaths: [], findings: [],
   };
   const incremental = (carriedForwardPaths: string[], overrides: Partial<IncrementalVerificationInput> = {}): IncrementalVerificationInput => ({
     claim: { version: 'IncrementalReview.v1', previousRunId: PRIOR_RUN, previousExecutionAttempt: 1,
@@ -158,9 +158,11 @@ describe('trusted completion context verification', () => {
     expect(await f.context(f.gate)).not.toHaveProperty('coverage.incrementalVerified');
   });
 
-  it('does not verify a claim carrying a file with an open finding (planted)', async () => {
+  it('does not verify any carry claim when a prior finding lacks caller/contract closure', async () => {
     const f = contextFixture(githubFetch());
-    expect((await f.context(f.gate, f.incremental(['src/b.ts', 'src/open.ts']))).coverage.incrementalVerified).toBe(false);
+    const priorWithFinding = { ...f.prior, findingPaths: ['src/open.ts'] };
+    expect((await f.context(f.gate, f.incremental(['src/b.ts'], { prior: priorWithFinding })))
+      .coverage.incrementalVerified).toBe(false);
   });
 
   it('does not verify after a force-push, with a stale or foreign record, or without comparisons', async () => {

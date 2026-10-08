@@ -149,11 +149,11 @@ function source(overrides: Partial<Omit<VerdictCacheSource, 'prior'>> & { prior?
     prior: {
       runId: SOURCE_RUN, executionAttempt: 1, repositoryId: REPO_ID, prNumber: 7, headSha: SOURCE_HEAD, baseSha: SOURCE_BASE,
       policyDigest: POLICY, configDigest: CONFIG, completionDigest: 'e'.repeat(64), ageMs: 60_000, shipComplete: true,
-      coverageComplete: true, findingPaths: ['src/open.ts'],
+      coverageComplete: true, findingPaths: [],
       ...prior,
     },
     laneKeys: { ...LANE_KEYS },
-    entries: [entry('src/changed.ts'), entry('src/open.ts'), entry('src/same.ts')],
+    entries: [entry('src/changed.ts'), entry('src/same.ts')],
     lanes: ['arch-lane', 'sec-lane'],
     ...rest,
   };
@@ -462,8 +462,12 @@ describe('verdict cache decision', () => {
   });
 
   it('never serves a file with a finding in the source, or a lane that did not complete (planted)', async () => {
-    const withFinding = source({ prior: { findingPaths: ['src/open.ts', 'src/same.ts'] } });
-    expect(await decide({ src: withFinding })).toEqual({ mode: 'full', reason: 'nothing-cached' });
+    const withFinding = source({ prior: { findingPaths: ['src/open.ts', 'src/same.ts'] },
+      entries: [entry('src/open.ts'), entry('src/same.ts')] });
+    const repairRefusal = await decide({ src: withFinding });
+    expect(repairRefusal).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
+    expect(renderVerdictCacheSummary(null, { scope: null, decision: repairRefusal as never, contentIndex: null }, undefined)[0])
+      .toContain('without a complete affected caller/contract receipt');
     expect(await decide({ src: source({ lanes: ['sec-lane'] }) })).toEqual({ mode: 'full', reason: 'nothing-cached' });
     expect(await decide({ src: source({ laneKeys: { 'sec-lane': LANE_KEYS['sec-lane'] } }) }))
       .toEqual({ mode: 'full', reason: 'nothing-cached' });

@@ -13,7 +13,6 @@ import {
   deltaMaxTasks,
   deltaReviewedLines,
   deltaHunkRanges,
-  openFindingFrom,
 } from '../../src/review/incrementalDelta';
 import { changedLineNumbers } from '../../src/review/reviewCore';
 import { evaluateFindingConvergence } from '../../src/review/findingConvergence';
@@ -67,13 +66,12 @@ const identity = (index: number): IncrementalCurrentIdentity => ({
   policyDigest: POLICY, configDigest: CONFIG, executionAttempt: 1,
 });
 
-// The previous review of head `index - 1`, which left one open P2 on the appliance contract checker.
+// The previous review of head `index - 1`, with complete coverage and no findings.
 const priorFor = (index: number, chainDepth: number): PriorReviewRecord => ({
   runId: `run_${String(index - 1).repeat(32)}`, executionAttempt: 1, repositoryId: 7, prNumber: 1975,
   headSha: fixture.heads[index - 1], baseSha: fixture.base, policyDigest: POLICY, configDigest: CONFIG,
   completionDigest: 'e'.repeat(64), ageMs: 25 * 60_000, coverageComplete: true, shipComplete: true,
-  findingPaths: [OPEN_PATH], chainDepth, taskCount: 5,
-  findings: [openFindingFrom({ path: OPEN_PATH, line: 40, severity: 'P2', title: 'Parity gap in the Go checker' })],
+  findingPaths: [], chainDepth, taskCount: 5, findings: [],
 });
 
 async function planStep(index: number, chainDepth: number) {
@@ -90,37 +88,33 @@ describe('real-PR replay (ADR 0771)', () => {
     expect(fixture.steps).toHaveLength(4);
   });
 
-  it.each([1, 2, 3, 4])('step %i: reviews only the pushed hunks plus the open-finding file, and carries the rest', async (index) => {
+  it.each([1, 2, 3, 4])('step %i: delta-reviews pushed hunks from a finding-free complete prior', async (index) => {
     const result = await planStep(index, index - 1);
     const scope = result?.scope;
     expect(scope).toBeTruthy();
     const touched = new Set(fixture.steps[index - 1].files.map((file) => file.path));
     const deltaPaths = scope!.deltaFiles!.map((file) => file.path);
 
-    // Every touched, previously-reviewed, finding-free file is delta-scoped; nothing else is.
-    expect(deltaPaths.sort()).toEqual([...touched].filter((p) => p !== OPEN_PATH).sort());
-    // The open-finding file is reviewed whole even when this push touched it.
-    expect(deltaPaths).not.toContain(OPEN_PATH);
-    // Its prior finding is still itemized for the ledger, and it is never narrowed.
-    expect(scope!.openFindings!.map((finding) => finding.path)).toEqual([OPEN_PATH]);
-    // `openFindingPaths` lists open-finding files this push did NOT touch, which are re-read whole.
-    expect(scope!.openFindingPaths).toEqual(touched.has(OPEN_PATH) ? [] : [OPEN_PATH]);
+    // Every touched file is delta-scoped only because the prior receipt is finding-free and complete.
+    expect(deltaPaths.sort()).toEqual([...touched].sort());
+    expect(scope!.openFindings).toEqual([]);
+    expect(scope!.openFindingPaths).toEqual([]);
     // Untouched files are carried and never re-read.
     for (const carried of scope!.carriedForwardPaths) expect(touched.has(carried)).toBe(false);
     expect(scope!.chainDepth).toBe(index);
     expect(result?.decision).toMatchObject({ mode: 'incremental' });
   });
 
-  it('shrinks the reviewed patch text to a fraction of the whole PR at every step', async () => {
+  it('keeps the reviewed patch below one third of the whole PR at every clean step', async () => {
     const ratios: number[] = [];
     for (const index of [1, 2, 3, 4]) {
       const scope = (await planStep(index, index - 1))!.scope!;
       const deltaChars = scope.deltaFiles!.reduce((sum, file) => sum + file.patch.length, 0);
-      // Delta files plus the whole open-finding file stays well under re-reading the whole PR.
+      // The validated hunks stay well under re-reading the whole PR.
       expect(deltaChars).toBeLessThan(fixture.prPatchChars[index] / 2);
       ratios.push(deltaChars / fixture.prPatchChars[index]);
     }
-    expect(Math.max(...ratios)).toBeLessThan(0.25);
+    expect(Math.max(...ratios)).toBeLessThan(0.32);
   });
 
   it('bounds the model calls: never more than 3 tasks however many hunks the push has', async () => {

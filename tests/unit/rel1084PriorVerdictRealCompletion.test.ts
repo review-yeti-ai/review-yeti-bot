@@ -273,7 +273,7 @@ describe('a prior built by the real completion builder and the real gate', () =>
     expect(decision.mode === 'cache' && decision.permitted.map((entry) => entry.path)).toEqual(['src/same.ts', 'src/stable.ts']);
   });
 
-  it('keeps a complete failed P1 review as repair context and re-reviews its finding path', async () => {
+  it('keeps a complete failed P1 review as context but starts a full fresh decision without caller closure', async () => {
     const completion = await realPriorCompletion({ findings: { 'sec-lane': [
       { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Non-admin caller can read protected data',
         body: 'The changed guard returns true when isAdmin is false.', blockerEvidence: accessControlBlockerEvidence('src/stable.ts') },
@@ -301,13 +301,13 @@ describe('a prior built by the real completion builder and the real gate', () =>
     expect(recorded.decision).toMatchObject({ status: 'failure', reason: 'blocking-findings' });
     const rows = storedRows(completion, recorded);
     expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'run-not-succeeded' });
-    expect(decideNext(completion, rows)).toMatchObject({ mode: 'incremental', openFindingPaths: ['src/stable.ts'] });
+    expect(decideNext(completion, rows)).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
     // Even a run row forged to 'succeeded' does not make the gate's FIX_FIRST record a SHIP.
     const forged = { ...rows, run: { ...rows.run, status: 'succeeded' } };
     expect(priorReviewRecordFromRows(forged)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-not-clean' });
     // The reason reaches the check-summary disclosure.
     expect(renderIncrementalSummary(null, { scope: null, decision: decideNext(completion, forged), ancestryVerified: false })).toEqual([
-      '**Incremental re-review** (`REVIEW_YETI_INCREMENTAL`): full review, because no file could be carried forward.',
+      '**Incremental re-review** (`REVIEW_YETI_INCREMENTAL`): full review, because the previous review contained findings without a complete affected caller/contract receipt.',
     ]);
     // And a surviving P1 over a gate record forged to clean SHIP is refused at published severity.
     const clean = gateRecordFor(await realPriorCompletion(), { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles() });
@@ -339,7 +339,7 @@ describe('a prior built by the real completion builder and the real gate', () =>
       .toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-not-clean' });
   });
 
-  it('#1034 shape: a raw P1 calibrated to P2 stays an open path in incremental and cache decisions', async () => {
+  it('#1034 shape: a raw P1 calibrated to P2 forces fresh coverage and stays out of the verdict cache', async () => {
     const completion = await realPriorCompletion({ findings: { 'sec-lane': [
       { severity: 'P1', path: 'src/stable.ts', line: 11,
         title: 'Naming regression: canReadStable grants non-admin callers protected data',
@@ -359,14 +359,14 @@ describe('a prior built by the real completion builder and the real gate', () =>
     expect(recorded.decision).toMatchObject({ status: 'success', reason: 'clean-review' });
     const rows = storedRows(completion, recorded);
     expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });
-    expect(decideNext(completion, rows)).toMatchObject({ mode: 'incremental', openFindingPaths: ['src/stable.ts'], reviewPaths: ['src/changed.ts', 'src/stable.ts'], carriedForwardPaths: ['src/same.ts'] });
-    // The cache may reuse only paths without an open finding.
+    expect(decideNext(completion, rows)).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
+    // The path-only completion receipt cannot prove caller closure, so it cannot supply either
+    // cross-head coverage or a per-file verdict cache while the prior contains a finding.
     const source = verdictCacheSourceFromRows(rows);
     expect(source?.prior.shipComplete).toBe(true);
     const current = nextIdentity(completion);
     const content = await gatherVerdictCacheContent(contentReader(), REPO_ID, source!.prior, current);
     const decision = decideVerdictCache({ source, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS, current, ...content });
-    expect(decision.mode).toBe('cache');
-    expect(decision.mode === 'cache' && decision.permitted.map((entry) => entry.path)).toEqual(['src/same.ts']);
+    expect(decision).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
   });
 });
