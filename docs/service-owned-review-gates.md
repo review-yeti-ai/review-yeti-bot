@@ -308,6 +308,13 @@ finite Actions/OIDC repository and owner allowlists:
   delivery for an exact-head `review-yeti/refresh`. Its default is false so
   ingress, signature verification, and delivery can be proven before the old
   producer is removed.
+- `REVIEW_YETI_MERGE_GROUP_OPERATOR_WAIT_MS` (optional, 1000–480000, default
+  300000) is the gate-wide ceiling the merge-group publisher waits for each
+  queued constituent's operator SHIP publication to become durable. The wait
+  rechecks with backoff (1 s doubling to 10 s), also accepts the exact official
+  passthrough `Review Yeti` + `Review Yeti Gate` pair for the durable receipt as
+  soon as both are on the head, and ends the check as a failure naming which
+  half of the pair is missing. The ceiling stays under the 10 minute claim lease.
 - A refresh is fail-closed: the check must be the official App's completed
   `Review Yeti` failure for `:a1`, carry one exact pull request, and use one of
   the persisted no-verdict/infrastructure failure titles. The service derives

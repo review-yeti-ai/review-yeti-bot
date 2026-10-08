@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceConfig';
-import { createMergeGroupGate, MergeGroupGateInProgressError } from '../../src/review/mergeGroupGate';
+import {
+  createMergeGroupGate, MergeGroupGateInProgressError, mergeGroupOperatorWaitMsFromEnv,
+  OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MS,
+} from '../../src/review/mergeGroupGate';
 import type { MergeGroupGatePriorPublication } from '../../src/persistence/mergeGroupGateRepository';
 import { canonicalJson, sha256 } from '../../src/review/reviewCore';
 import {
@@ -523,39 +526,152 @@ describe('native merge-group Review Yeti gate', () => {
     }
   });
 
-  it('fails closed when a durable operator publication remains pending past its bounded wait', async () => {
+  // REL-1551: harness for a passthrough constituent whose durable receipt and
+  // official check pair are controlled by the test.
+  function passthroughHarness(opts: { checksOnHead: () => any[]; receipt: () => any; checkId: number;
+    wait?: number }) {
+    const pausedConfig = { ...config, passthroughEnabled: true };
+    const calls: Array<{ url: string; method?: string; body?: any }> = [];
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      if (url.endsWith(`/commits/${GROUP_HEAD}/check-runs?filter=all&per_page=100`)) {
+        return response({ total_count: 0, check_runs: [] });
+      }
+      if (url.endsWith('/check-runs') && init?.method === 'POST') return groupCheckResponse(opts.checkId, init, true);
+      if (url === 'https://api.github.com/graphql') return response(queue());
+      if (url.endsWith(`/commits/${PR_HEAD}/check-runs?filter=all&per_page=100`)) {
+        const runs = opts.checksOnHead();
+        return response({ total_count: runs.length, check_runs: runs });
+      }
+      if (url.endsWith(`/check-runs/${opts.checkId}`) && init?.method === 'PATCH') {
+        return groupCheckResponse(opts.checkId, init, true);
+      }
+      return response({ error: 'unexpected request' }, 500);
+    }) as typeof fetch;
+    const ensureOperatorPassthrough = vi.fn(async () => opts.receipt());
+    const gate = createMergeGroupGate({ config: pausedConfig, repository: repository() as any,
+      tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation, ensureOperatorPassthrough,
+      ...(opts.wait !== undefined ? { operatorPassthroughWaitMs: opts.wait } : {}) });
+    const completion = () => calls.find((call) => call.url.endsWith(`/check-runs/${opts.checkId}`)
+      && call.method === 'PATCH' && call.body?.status === 'completed');
+    return { gate, calls, ensureOperatorPassthrough, completion };
+  }
+  const officialPair = () => [
+    { id: 8100, name: 'Review Yeti', head_sha: PR_HEAD, external_id: currentOperatorReviewId,
+      status: 'completed', conclusion: 'success', app: officialApp,
+      output: { title: 'Review Yeti: SHIP (passthrough: no review performed)',
+        summary: 'review-mode=passthrough Zero review lanes ran.' } },
+    { id: 8101, name: 'Review Yeti Gate', head_sha: PR_HEAD, external_id: currentOperatorGateId,
+      status: 'completed', conclusion: 'success', app: officialApp,
+      output: { title: 'Review Yeti Gate: SHIP (operator passthrough SHIP)',
+        summary: 'review-mode=passthrough Zero review lanes ran.' } },
+  ];
+
+  it('REL-1551: waits well past 30s and succeeds when the pair lands about 90s after the queue event', async () => {
     vi.useFakeTimers();
     try {
-      const pausedConfig = { ...config, passthroughEnabled: true };
-      const calls: Array<{ url: string; method?: string; body?: any }> = [];
-      const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        calls.push({ url, method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
-        if (url.endsWith(`/commits/${GROUP_HEAD}/check-runs?filter=all&per_page=100`)) {
-          return response({ total_count: 0, check_runs: [] });
-        }
-        if (url.endsWith('/check-runs') && init?.method === 'POST') return groupCheckResponse(9062, init, true);
-        if (url === 'https://api.github.com/graphql') return response(queue());
-        if (url.endsWith('/check-runs/9062') && init?.method === 'PATCH') return groupCheckResponse(9062, init, true);
-        return response({ error: 'unexpected request' }, 500);
-      }) as typeof fetch;
-      const ensureOperatorPassthrough = vi.fn(async () => pendingOperatorReceipt);
-      const gate = createMergeGroupGate({ config: pausedConfig, repository: repository() as any,
-        tokenFor: vi.fn(async () => 'ghs_test'), fetchImplementation, ensureOperatorPassthrough });
-
-      const pendingGate = gate(payload(), { deliveryId: 'delivery-timeout', deliveryDigest: 'c'.repeat(64) });
-      await vi.advanceTimersByTimeAsync(30_001);
-
-      await expect(pendingGate).resolves.toEqual({ checkId: 9062, conclusion: 'failure',
+      let publication: any = pendingOperatorReceipt;
+      let pairPublished = false;
+      setTimeout(() => { publication = currentOperatorReceipt; pairPublished = true; }, 90_000);
+      const harness = passthroughHarness({ checkId: 9070, receipt: () => publication,
+        checksOnHead: () => (pairPublished ? officialPair() : []) });
+      const pendingGate = harness.gate(payload(), { deliveryId: 'delivery-slow', deliveryDigest: 'a'.repeat(64) });
+      await vi.advanceTimersByTimeAsync(95_000);
+      await expect(pendingGate).resolves.toEqual({ checkId: 9070, conclusion: 'success',
         snapshotDigest: queueSnapshotDigest(true), constituents: 1 });
-      expect(ensureOperatorPassthrough.mock.calls.length).toBeGreaterThan(1);
-      expect(calls.some((call) => call.url.endsWith(`/commits/${PR_HEAD}/check-runs?filter=all&per_page=100`))).toBe(false);
-      const completion = calls.find((call) => call.url.endsWith('/check-runs/9062')
-        && call.method === 'PATCH' && call.body?.status === 'completed');
-      expect(completion?.body?.conclusion).toBe('failure');
-      expect(completion?.body?.output?.summary).toContain('operator SHIP publication did not become durable within 30000ms');
+      expect(harness.completion()?.body?.conclusion).toBe('success');
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  it('REL-1551: treats the exact official passthrough pair on the head as satisfied while the receipt still reads pending', async () => {
+    vi.useFakeTimers();
+    try {
+      let pairPublished = false;
+      setTimeout(() => { pairPublished = true; }, 2_500);
+      const harness = passthroughHarness({ checkId: 9071, receipt: () => pendingOperatorReceipt,
+        checksOnHead: () => (pairPublished ? officialPair() : []) });
+      const pendingGate = harness.gate(payload(), { deliveryId: 'delivery-lag', deliveryDigest: 'a'.repeat(64) });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(pendingGate).resolves.toEqual({ checkId: 9071, conclusion: 'success',
+        snapshotDigest: queueSnapshotDigest(true), constituents: 1 });
+      expect(harness.completion()?.body?.conclusion).toBe('success');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('REL-1551: does not accept a pair whose external ids belong to a different publication', async () => {
+    vi.useFakeTimers();
+    try {
+      const stalePair = officialPair().map((run) => ({ ...run,
+        external_id: run.name === 'Review Yeti' ? oldOperatorReviewId : oldOperatorGateId }));
+      const harness = passthroughHarness({ checkId: 9072, receipt: () => pendingOperatorReceipt,
+        checksOnHead: () => stalePair, wait: 20_000 });
+      const pendingGate = harness.gate(payload(), { deliveryId: 'delivery-stale', deliveryDigest: 'a'.repeat(64) });
+      await vi.advanceTimersByTimeAsync(20_001);
+      await expect(pendingGate).resolves.toMatchObject({ conclusion: 'failure' });
+      expect(harness.completion()?.body?.output?.summary)
+        .toContain('operator SHIP publication did not become durable within 20000ms');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('REL-1551: fails closed with a clear, specific verdict after the bounded ceiling when the Gate never lands', async () => {
+    vi.useFakeTimers();
+    try {
+      const rawOnly = () => officialPair().filter((run) => run.name === 'Review Yeti');
+      const harness = passthroughHarness({ checkId: 9062, receipt: () => pendingOperatorReceipt,
+        checksOnHead: rawOnly });
+      let settled = false;
+      const pendingGate = harness.gate(payload(), { deliveryId: 'delivery-timeout', deliveryDigest: 'c'.repeat(64) })
+        .finally(() => { settled = true; });
+      // The former fixed 30s budget must no longer end the wait.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MS);
+      await expect(pendingGate).resolves.toEqual({ checkId: 9062, conclusion: 'failure',
+        snapshotDigest: queueSnapshotDigest(true), constituents: 1 });
+      const summary = harness.completion()?.body?.output?.summary as string;
+      expect(summary).toContain(`operator SHIP publication did not become durable within ${OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MS}ms`);
+      expect(summary).toContain('passthrough Review Yeti check: success');
+      expect(summary).toContain('paired Review Yeti Gate: missing');
+      expect(harness.completion()?.body?.conclusion).toBe('failure');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('REL-1551: backs off between rechecks instead of polling every second for the whole ceiling', async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = passthroughHarness({ checkId: 9073, receipt: () => pendingOperatorReceipt,
+        checksOnHead: () => [] });
+      const pendingGate = harness.gate(payload(), { deliveryId: 'delivery-backoff', deliveryDigest: 'c'.repeat(64) });
+      await vi.advanceTimersByTimeAsync(OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MS + 1_000);
+      await expect(pendingGate).resolves.toMatchObject({ conclusion: 'failure' });
+      // 1s,2s,4s,8s then 10s steps across 300s is roughly 34 rechecks, not 300.
+      expect(harness.ensureOperatorPassthrough.mock.calls.length).toBeGreaterThan(10);
+      expect(harness.ensureOperatorPassthrough.mock.calls.length).toBeLessThan(45);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('REL-1551: rejects an out-of-range publication wait and parses the env override strictly', () => {
+    const base = { config: { ...config, passthroughEnabled: true }, repository: repository() as any,
+      tokenFor: vi.fn(async () => 'ghs_test') };
+    expect(() => createMergeGroupGate({ ...base, operatorPassthroughWaitMs: 0 })).toThrow();
+    expect(() => createMergeGroupGate({ ...base, operatorPassthroughWaitMs: 10 * 60_000 })).toThrow();
+    expect(() => createMergeGroupGate({ ...base, operatorPassthroughWaitMs: 120_000 })).not.toThrow();
+    expect(mergeGroupOperatorWaitMsFromEnv({})).toBeUndefined();
+    expect(mergeGroupOperatorWaitMsFromEnv({ REVIEW_YETI_MERGE_GROUP_OPERATOR_WAIT_MS: '' })).toBeUndefined();
+    expect(mergeGroupOperatorWaitMsFromEnv({ REVIEW_YETI_MERGE_GROUP_OPERATOR_WAIT_MS: '240000' })).toBe(240_000);
+    for (const bad of ['0', '999', '480001', '1.5', 'abc', '-5', '3e5']) {
+      expect(() => mergeGroupOperatorWaitMsFromEnv({ REVIEW_YETI_MERGE_GROUP_OPERATOR_WAIT_MS: bad })).toThrow();
     }
   });
 
