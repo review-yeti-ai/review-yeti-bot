@@ -106,9 +106,11 @@ describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suit
     });
 
     it('serves a hydratable live swarm page and its actual client chunks', async () => {
-      assertLiveMarkup(liveHtmlContent);
-      expect(dashboardDocument(liveHtmlContent).querySelector('header h1')?.textContent).toBe('Live Review Inspector');
-      await assertDashboardClientAssets(app, liveHtmlContent, 'live');
+      const res = await request(app).get('/dashboard/live');
+      expect(res.status).toBe(200);
+      assertLiveMarkup(res.text);
+      expect(dashboardDocument(res.text).querySelector('header h1')?.textContent).toBe('Live Review Inspector');
+      await assertDashboardClientAssets(app, res.text, 'live');
     });
 
     it('rejects a wrong-route shell and hidden placeholders in place of the settings editor', () => {

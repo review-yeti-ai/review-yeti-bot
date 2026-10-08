@@ -619,6 +619,7 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
 
     it('EMP-M2-WRK-01: uses composed tasks when explicitly configured in authoritative mode', async () => {
       const fix = createWorkerFixture('composed');
+      fix.env.REVIEW_EXECUTION_ATTEMPT = '1';
 
       await runPublishingReviewWorker(fix.env, fix.deps);
 
