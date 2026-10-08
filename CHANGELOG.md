@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.120.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.120.2...v1.120.3) (2026-10-08)
+
+
+### Bug Fixes
+
+* **review:** require full repair review without caller closure ([#1430](https://github.com/review-yeti-ai/review-yeti-bot/issues/1430)) ([08c5306](https://github.com/review-yeti-ai/review-yeti-bot/commit/08c5306346ab844ac941926b9565f2d9c436884f))
+
 ## [1.120.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.120.1...v1.120.2) (2026-10-07)
 
 
