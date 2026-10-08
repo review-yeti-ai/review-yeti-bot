@@ -50,6 +50,8 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
     'get_runtime_metrics',
     'get_analytics_dashboard',
     'purge_cache',
+    'get_checkpoint_metrics',
+    'get_compaction_analytics',
   ];
 
   function createMockCaller(options: {
@@ -91,7 +93,7 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
   // 1. Tool Catalog Registration (18 Tools)
   // ===========================================================================
   describe('1. Tool Catalog Registration & Schema Audit', () => {
-    it.each(['registration', 'reversed'] as const)('registers the complete 18-tool catalog in %s listing order', (order) => {
+    it.each(['registration', 'reversed'] as const)('registers the complete 20-tool catalog in %s listing order', (order) => {
       const registry = createDefaultToolRegistry();
       if (order === 'reversed') {
         const registered = registry.listTools();
@@ -100,8 +102,8 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       const tools = registry.listTools();
 
       const names = tools.map((t) => t.name);
-      expect(names).toHaveLength(18);
-      expect(new Set(names).size).toBe(18);
+      expect(names).toHaveLength(EXPECTED_MCP_TOOL_NAMES.length);
+      expect(new Set(names).size).toBe(EXPECTED_MCP_TOOL_NAMES.length);
       expect([...names].sort()).toEqual([...EXPECTED_MCP_TOOL_NAMES].sort());
 
       for (const tool of tools) {
@@ -112,7 +114,7 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       }
     });
 
-    it.each(['registration', 'reversed'] as const)('serves the complete 18-tool catalog via HTTP in %s listing order', async (order) => {
+    it.each(['registration', 'reversed'] as const)('serves the complete 20-tool catalog via HTTP in %s listing order', async (order) => {
       const caller = createMockCaller({ isAdmin: true });
       const registry = createDefaultToolRegistry();
       if (order === 'reversed') {
@@ -133,8 +135,8 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
 
         expect(response.status).toBe(200);
         const toolNames = response.body.result.tools.map((t: any) => t.name);
-        expect(toolNames).toHaveLength(18);
-        expect(new Set(toolNames).size).toBe(18);
+        expect(toolNames).toHaveLength(EXPECTED_MCP_TOOL_NAMES.length);
+        expect(new Set(toolNames).size).toBe(EXPECTED_MCP_TOOL_NAMES.length);
         expect([...toolNames].sort()).toEqual([...EXPECTED_MCP_TOOL_NAMES].sort());
       } finally {
         router.destroy();
