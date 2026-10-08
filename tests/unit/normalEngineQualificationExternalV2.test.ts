@@ -15,29 +15,18 @@ const policyContent = JSON.stringify({ schema: 'exampleorg.review-policy.v1', re
   budget: { max_investigation_turns: 20 },
 } });
 const candidateSha = createHash('sha256').update(policyContent).digest('hex');
-const configSha = '0933fc3afc3f57133845a9f7aa87678bb5502a87211dcb90dbe84babdbc40e3e';
-const centralConfigProjectionSha = 'f737fbef64a7336614e441d092e3899d0c2b674f04ea197c610aaf7db9050df1';
+const configSha = '6'.repeat(64);
+const centralConfigProjectionSha = '7'.repeat(64);
 const inferenceBaseUrl = 'https://gateway.example.invalid/v1';
+const testRouteAlias = 'fixture-reviewer';
 const policySource = { repository: 'exampleorg/review-yeti-policy-fixture', repositoryId: 73011,
-  sourceRef: 'a'.repeat(40), path: 'policy/review-yeti-v2-candidate.json',
+  sourceRef: 'a'.repeat(40), path: 'policy/review-policy-fixture.json',
   contentSha256: candidateSha };
 const runtime = { sourceRevision: 'a'.repeat(40), workerImageDigest: `sha256:${'b'.repeat(64)}`, runtimeManifestSha256: 'c'.repeat(64) };
-const privateBinding = {
-  schemaVersion: 'ReviewYetiExternalNormalQualificationPrivateBinding.v1' as const,
-  credentialBindingSha256: 'd'.repeat(64),
-  phaseRoot: { canonicalPath: path.resolve(tmpdir(), 'ws5-test-phase-root'),
-    uid: process.getuid?.() ?? 1, gid: process.getgid?.() ?? 1, mode: 0o700 as const, initialEntryCount: 0 as const },
-  sourceDescriptor: { ...policySource, candidateHead: 'e'.repeat(40), preparedFixtureReviewHead: 'f'.repeat(40) },
-  transport: { selectedBaseUrl: inferenceBaseUrl, modelAlias: 'pr-reviewer' },
-  managementBaseUrl: 'https://management.example.invalid',
-  runtime: { finalSourceRevision: runtime.sourceRevision, workerImageDigest: runtime.workerImageDigest,
-    runtimeManifestSha256: runtime.runtimeManifestSha256 },
-};
-
 function bindings(overrides: Partial<NodeJS.ProcessEnv> = {}): NodeJS.ProcessEnv {
   const source = { repositoryId: policySource.repositoryId, repository: policySource.repository, sha: policySource.sourceRef,
     path: policySource.path, contentDigest: candidateSha };
-  const transport = { baseUrl: inferenceBaseUrl, model: 'pr-reviewer' };
+  const transport = { baseUrl: inferenceBaseUrl, model: testRouteAlias };
   const prepared = preparePublishingPolicy({ source, content: policyContent }, transport,
     { owner: 'exampleorg', repo: 'review-yeti-policy-fixture' });
   const config = prepared.config as unknown as Record<string, any>;
@@ -67,6 +56,34 @@ function bindings(overrides: Partial<NodeJS.ProcessEnv> = {}): NodeJS.ProcessEnv
   };
 }
 
+const initialEnv = bindings();
+const privateBinding = {
+  schemaVersion: 'ReviewYetiExternalNormalQualificationPrivateBinding.v1' as const,
+  credentialBindingSha256: '0'.repeat(64),
+  phaseRoot: { canonicalPath: path.resolve(tmpdir(), 'ws5-test-phase-root'),
+    uid: process.getuid?.() ?? 1, gid: process.getgid?.() ?? 1, mode: 0o700 as const, initialEntryCount: 0 as const },
+  sourceDescriptor: { ...policySource, candidateHead: 'e'.repeat(40), preparedFixtureReviewHead: 'f'.repeat(40) },
+  transport: { selectedBaseUrl: inferenceBaseUrl, modelAlias: testRouteAlias },
+  managementBaseUrl: 'https://management.example.invalid',
+  policy: {
+    candidateGitBlob: '8'.repeat(40), executionPlanFixtureSha256: '9'.repeat(64),
+    executionPlanNormalizedSha256: 'a'.repeat(64), preparedExecutionFixtureSha256: 'b'.repeat(64),
+    preparedExecutionManifestSha256: 'c'.repeat(64), preparedExecutionSha256: 'd'.repeat(64),
+    syntheticProjectionFixtureSha256: 'e'.repeat(64), centralEffectiveConfigProjectionSha256: centralConfigProjectionSha,
+    effectiveConfigSha256: configSha, effectivePolicySha256: initialEnv.REVIEW_POLICY_DIGEST!, v1Promotion: 'fixture-v1-promotion',
+    policyInputDigests: { candidatePath: candidateSha, executionPlanFixturePath: '9'.repeat(64),
+      preparedExecutionFixturePath: 'b'.repeat(64), syntheticProjectionPath: 'e'.repeat(64),
+      preparedExecutionManifestPath: 'c'.repeat(64) },
+    targetProjections: [73002, 73003, 73004].map((repositoryId) => ({ repositoryId,
+      normalizedPlanSha256: 'a'.repeat(64), centralEffectiveConfigProjectionSha256: centralConfigProjectionSha,
+      preparedExecutionSha256: 'd'.repeat(64), effectiveConfigSha256: configSha,
+      effectivePolicySha256: initialEnv.REVIEW_POLICY_DIGEST!,
+      preparedExecutionFile: `prepared-host/prepared-${repositoryId}-default.json` })),
+  },
+  runtime: { finalSourceRevision: runtime.sourceRevision, workerImageDigest: runtime.workerImageDigest,
+    runtimeManifestSha256: runtime.runtimeManifestSha256 },
+};
+
 async function persistFakeReceipt(root: string, receipt: Record<string, any>): Promise<void> {
   const relative = path.join('normal-engine-qualification-store', receipt.runId, receipt.phase,
     receipt.target.caseId, 'receipt.json');
@@ -87,11 +104,11 @@ const projection = {
   sourceBundleSha256: '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1',
   runId: `nq_${'1'.repeat(32)}`, runtime,
   policy: { candidateHead: 'e'.repeat(40), candidateRawSha256: candidateSha, effectiveConfigSha256: configSha,
-    effectivePolicySha256: 'f707fd3481c13d9d84bea2d7b70a3e5f1dbca99f349e1eb0032b6c424363cd25',
+    effectivePolicySha256: privateBinding.policy.effectivePolicySha256,
     centralEffectiveConfigProjectionSha256: centralConfigProjectionSha,
-    preparedExecutionSha256: '618916ab3bfd1d03ec4dfb7ab32abac424fdc397b31da9545a126ab433611c5d',
+    preparedExecutionSha256: privateBinding.policy.preparedExecutionSha256,
     preparedExecutionFile: 'prepared-host/prepared-73004-default.json', policySource,
-    routeAlias: 'pr-reviewer', requestedEffort: 'medium', inferenceBaseUrl },
+    routeAlias: testRouteAlias, requestedEffort: 'medium', inferenceBaseUrl },
 };
 
 describe('current-source external v2 worker adapter', () => {
@@ -128,7 +145,7 @@ describe('current-source external v2 worker adapter', () => {
         provider: { calls: [{ clientRequestIdSha256: createHash('sha256').update('123e4567-e89b-42d3-a456-426614174000').digest('hex'),
           bifrostLogRequestIdSha256: createHash('sha256').update('123e4567-e89b-42d3-a456-426614174000').digest('hex'),
           upstreamResponseRequestIdSha256: null, httpStatus: 200, fetchFailureClass: null,
-          requestedAlias: 'pr-reviewer', requestedEffort: 'medium', startedAt: '2026-10-07T20:00:00.000Z',
+          requestedAlias: 'fixture-reviewer', requestedEffort: 'medium', startedAt: '2026-10-07T20:00:00.000Z',
           tokenUsage: { prompt: 10, completion: 4, total: 14 } }] },
         terminal: { status: 'completed' },
       };
@@ -153,7 +170,7 @@ describe('current-source external v2 worker adapter', () => {
     expect(passedEnv).not.toHaveProperty('GH_TOKEN');
     expect(passedEnv).not.toHaveProperty('REVIEW_NORMAL_ENGINE_QUALIFICATION_EXPECTED_VERDICT');
     expect(receipt).toMatchObject({ clientCalls: 1, terminalStatus: 'completed', providerCalls: [{
-      requestedAlias: 'pr-reviewer', requestedEffort: 'medium',
+      requestedAlias: 'fixture-reviewer', requestedEffort: 'medium',
     }] });
     expect(receipt).toMatchObject({ outcome: { gateOutcomeClass: 'completed_eligible' }, qualificationControl: 'none',
       artifactReferences: [{ canonicalSha256: expect.any(String) }] });
@@ -204,7 +221,7 @@ describe('current-source external v2 worker adapter', () => {
         const cid = `123e4567-e89b-42d3-a456-${String(index).padStart(12, '0')}`;
         const cidHash = createHash('sha256').update(cid).digest('hex');
         calls.push({ clientRequestIdSha256: cidHash, bifrostLogRequestIdSha256: cidHash,
-          upstreamResponseRequestIdSha256: null, requestedAlias: 'pr-reviewer',
+          upstreamResponseRequestIdSha256: null, requestedAlias: 'fixture-reviewer',
           requestedEffort: 'medium', startedAt: '2026-10-07T20:00:00.000Z', httpStatus: 200,
           fetchFailureClass: null, tokenUsage: null });
         try {

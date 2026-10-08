@@ -30,7 +30,7 @@ test('joins each actual outbound CID to one exact metadata-only Bifrost row', as
       fetchImpl: async (url, init) => {
         urlAndHeaders.push({ url: String(url), init });
         return new Response(JSON.stringify({ data: [{
-          id: cid, provider: 'provider-a', alias: 'pr-reviewer', model: 'model-a', status: 'success',
+          id: cid, provider: 'provider-a', alias: 'fixture-reviewer', model: 'model-a', status: 'success',
           service_tier: 'default', fallback_index: 0, upstream_latency_ms: 123,
           token_usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 }, cost: 0.0123,
           prompt: 'private prompt must be skipped', response_body: 'private completion must be skipped',
@@ -53,7 +53,7 @@ test('joins each actual outbound CID to one exact metadata-only Bifrost row', as
       exactLogRowSha256: receipt.rows[0].exactLogRowSha256,
       exactLogResponseSha256: receipt.rows[0].exactLogResponseSha256,
       bifrostLogStatus: 'success', bifrostLogRowIdSha256: cidSha, upstreamResponseRequestIdSha256: null,
-      bifrostParentRequestIdSha256: null, provider: 'provider-a', bifrostAlias: 'pr-reviewer',
+      bifrostParentRequestIdSha256: null, provider: 'provider-a', bifrostAlias: 'fixture-reviewer',
       resolvedModel: 'model-a', servedModel: null, serviceTier: 'default', speed: null, inferenceGeo: null,
       gatewayTokenUsage: { prompt: 11, completion: 5, total: 16 }, bifrostCalculatedCostUsd: 0.0123,
     });

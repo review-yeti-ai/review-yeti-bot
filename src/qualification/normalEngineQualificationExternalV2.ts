@@ -68,6 +68,23 @@ export interface ExternalNormalV2PrivateBinding {
     contentSha256: string; candidateHead: string; preparedFixtureReviewHead: string };
   transport: { selectedBaseUrl: string; modelAlias: string };
   managementBaseUrl: string;
+  policy: {
+    candidateGitBlob: string;
+    executionPlanFixtureSha256: string;
+    executionPlanNormalizedSha256: string;
+    preparedExecutionFixtureSha256: string;
+    preparedExecutionManifestSha256: string;
+    preparedExecutionSha256: string;
+    syntheticProjectionFixtureSha256: string;
+    centralEffectiveConfigProjectionSha256: string;
+    effectiveConfigSha256: string;
+    effectivePolicySha256: string;
+    v1Promotion: string;
+    policyInputDigests: Record<string, string>;
+    targetProjections: Array<{ repositoryId: number; normalizedPlanSha256: string;
+      centralEffectiveConfigProjectionSha256: string; preparedExecutionSha256: string;
+      effectiveConfigSha256: string; effectivePolicySha256: string; preparedExecutionFile: string }>;
+  };
   runtime: { finalSourceRevision: string; workerImageDigest: string; runtimeManifestSha256: string };
 }
 
@@ -108,43 +125,76 @@ function hasExactKeys(value: unknown, keys: string[]): value is Record<string, u
 }
 
 export function validateExternalNormalV2PrivateBinding(value: unknown, env?: Env): ExternalNormalV2PrivateBinding {
-  const bindingKeys = ['schemaVersion', 'credentialBindingSha256', 'phaseRoot', 'sourceDescriptor', 'transport', 'managementBaseUrl', 'runtime'];
+  const binding = value as unknown as ExternalNormalV2PrivateBinding;
+  const bindingKeys = ['schemaVersion', 'credentialBindingSha256', 'phaseRoot', 'sourceDescriptor', 'transport', 'managementBaseUrl', 'policy', 'runtime'];
   const phaseRootKeys = ['canonicalPath', 'uid', 'gid', 'mode', 'initialEntryCount'];
   const sourceKeys = ['repository', 'repositoryId', 'sourceRef', 'path', 'contentSha256', 'candidateHead', 'preparedFixtureReviewHead'];
   const transportKeys = ['selectedBaseUrl', 'modelAlias'];
+  const policyKeys = ['candidateGitBlob', 'executionPlanFixtureSha256', 'executionPlanNormalizedSha256',
+    'preparedExecutionFixtureSha256', 'preparedExecutionManifestSha256', 'preparedExecutionSha256',
+    'syntheticProjectionFixtureSha256', 'centralEffectiveConfigProjectionSha256', 'effectiveConfigSha256',
+    'effectivePolicySha256', 'v1Promotion', 'policyInputDigests', 'targetProjections'];
+  const policyInputKeys = ['candidatePath', 'executionPlanFixturePath', 'preparedExecutionFixturePath',
+    'syntheticProjectionPath', 'preparedExecutionManifestPath'];
+  const targetKeys = ['repositoryId', 'normalizedPlanSha256', 'centralEffectiveConfigProjectionSha256',
+    'preparedExecutionSha256', 'effectiveConfigSha256', 'effectivePolicySha256', 'preparedExecutionFile'];
+  const policyDigestKeys = ['executionPlanFixtureSha256', 'executionPlanNormalizedSha256', 'preparedExecutionFixtureSha256',
+    'preparedExecutionManifestSha256', 'preparedExecutionSha256', 'syntheticProjectionFixtureSha256',
+    'centralEffectiveConfigProjectionSha256', 'effectiveConfigSha256', 'effectivePolicySha256'] as const;
+  const targetDigestKeys = ['normalizedPlanSha256', 'centralEffectiveConfigProjectionSha256',
+    'preparedExecutionSha256', 'effectiveConfigSha256', 'effectivePolicySha256'] as const;
   const runtimeKeys = ['finalSourceRevision', 'workerImageDigest', 'runtimeManifestSha256'];
-  if (!hasExactKeys(value, bindingKeys) || value.schemaVersion !== 'ReviewYetiExternalNormalQualificationPrivateBinding.v1'
-    || typeof value.credentialBindingSha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(value.credentialBindingSha256)
-    || !hasExactKeys(value.phaseRoot, phaseRootKeys) || typeof value.phaseRoot.canonicalPath !== 'string'
-    || !resolve(value.phaseRoot.canonicalPath).startsWith('/') || resolve(value.phaseRoot.canonicalPath) !== value.phaseRoot.canonicalPath
-    || !Number.isSafeInteger(value.phaseRoot.uid) || (value.phaseRoot.uid as number) < 0
-    || !Number.isSafeInteger(value.phaseRoot.gid) || (value.phaseRoot.gid as number) < 0
-    || value.phaseRoot.mode !== 0o700 || value.phaseRoot.initialEntryCount !== 0
-    || !hasExactKeys(value.sourceDescriptor, sourceKeys)
-    || typeof value.sourceDescriptor.repository !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(value.sourceDescriptor.repository)
-    || value.sourceDescriptor.repository.split('/').some((part) => part === '.' || part === '..')
-    || !Number.isSafeInteger(value.sourceDescriptor.repositoryId) || (value.sourceDescriptor.repositoryId as number) < 1
-    || typeof value.sourceDescriptor.sourceRef !== 'string' || !/^[a-f0-9]{40}$/iu.test(value.sourceDescriptor.sourceRef)
-    || typeof value.sourceDescriptor.path !== 'string' || !value.sourceDescriptor.path
-    || value.sourceDescriptor.path.startsWith('/') || value.sourceDescriptor.path.includes('\\')
-    || value.sourceDescriptor.path.split('/').some((segment) => !segment || segment === '.' || segment === '..')
-    || typeof value.sourceDescriptor.contentSha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(value.sourceDescriptor.contentSha256)
-    || typeof value.sourceDescriptor.candidateHead !== 'string' || !/^[a-f0-9]{40}$/iu.test(value.sourceDescriptor.candidateHead)
-    || typeof value.sourceDescriptor.preparedFixtureReviewHead !== 'string'
-    || !/^[a-f0-9]{40}$/iu.test(value.sourceDescriptor.preparedFixtureReviewHead)
-    || !hasExactKeys(value.transport, transportKeys) || typeof value.transport.selectedBaseUrl !== 'string'
-    || typeof value.transport.modelAlias !== 'string' || !/^[A-Za-z0-9._/-]+$/u.test(value.transport.modelAlias)
-    || typeof value.managementBaseUrl !== 'string'
-    || !hasExactKeys(value.runtime, runtimeKeys)
-    || typeof value.runtime.finalSourceRevision !== 'string' || !/^[a-f0-9]{40}$/iu.test(value.runtime.finalSourceRevision)
-    || typeof value.runtime.workerImageDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/iu.test(value.runtime.workerImageDigest)
-    || typeof value.runtime.runtimeManifestSha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(value.runtime.runtimeManifestSha256)) {
+  if (!hasExactKeys(value, bindingKeys) || binding.schemaVersion !== 'ReviewYetiExternalNormalQualificationPrivateBinding.v1'
+    || typeof binding.credentialBindingSha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(binding.credentialBindingSha256)
+    || !hasExactKeys(binding.phaseRoot, phaseRootKeys) || typeof binding.phaseRoot.canonicalPath !== 'string'
+    || !resolve(binding.phaseRoot.canonicalPath).startsWith('/') || resolve(binding.phaseRoot.canonicalPath) !== binding.phaseRoot.canonicalPath
+    || !Number.isSafeInteger(binding.phaseRoot.uid) || (binding.phaseRoot.uid as number) < 0
+    || !Number.isSafeInteger(binding.phaseRoot.gid) || (binding.phaseRoot.gid as number) < 0
+    || binding.phaseRoot.mode !== 0o700 || binding.phaseRoot.initialEntryCount !== 0
+    || !hasExactKeys(binding.sourceDescriptor, sourceKeys)
+    || typeof binding.sourceDescriptor.repository !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(binding.sourceDescriptor.repository)
+    || binding.sourceDescriptor.repository.split('/').some((part) => part === '.' || part === '..')
+    || !Number.isSafeInteger(binding.sourceDescriptor.repositoryId) || (binding.sourceDescriptor.repositoryId as number) < 1
+    || typeof binding.sourceDescriptor.sourceRef !== 'string' || !/^[a-f0-9]{40}$/iu.test(binding.sourceDescriptor.sourceRef)
+    || typeof binding.sourceDescriptor.path !== 'string' || !binding.sourceDescriptor.path
+    || binding.sourceDescriptor.path.startsWith('/') || binding.sourceDescriptor.path.includes('\\')
+    || binding.sourceDescriptor.path.split('/').some((segment) => !segment || segment === '.' || segment === '..')
+    || typeof binding.sourceDescriptor.contentSha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(binding.sourceDescriptor.contentSha256)
+    || typeof binding.sourceDescriptor.candidateHead !== 'string' || !/^[a-f0-9]{40}$/iu.test(binding.sourceDescriptor.candidateHead)
+    || typeof binding.sourceDescriptor.preparedFixtureReviewHead !== 'string'
+    || !/^[a-f0-9]{40}$/iu.test(binding.sourceDescriptor.preparedFixtureReviewHead)
+    || !hasExactKeys(binding.transport, transportKeys) || typeof binding.transport.selectedBaseUrl !== 'string'
+    || typeof binding.transport.modelAlias !== 'string' || !/^[A-Za-z0-9._/-]+$/u.test(binding.transport.modelAlias)
+    || typeof binding.managementBaseUrl !== 'string'
+    || !hasExactKeys(binding.policy, policyKeys)
+    || typeof binding.policy.candidateGitBlob !== 'string' || !/^[a-f0-9]{40}$/iu.test(binding.policy.candidateGitBlob)
+    || !policyDigestKeys
+      .every((key) => typeof binding.policy[key] === 'string' && /^[a-f0-9]{64}$/iu.test(binding.policy[key]))
+    || typeof binding.policy.v1Promotion !== 'string' || !binding.policy.v1Promotion
+    || !hasExactKeys(binding.policy.policyInputDigests, policyInputKeys)
+    || !policyInputKeys.every((key) => typeof binding.policy.policyInputDigests[key] === 'string'
+      && /^[a-f0-9]{64}$/iu.test(binding.policy.policyInputDigests[key]))
+    || binding.policy.policyInputDigests.candidatePath !== binding.sourceDescriptor.contentSha256
+    || !Array.isArray(binding.policy.targetProjections) || binding.policy.targetProjections.length !== 3
+    || binding.policy.targetProjections.some((target) => !hasExactKeys(target, targetKeys)
+      || !Number.isSafeInteger(target.repositoryId) || (target.repositoryId as number) < 1
+      || !targetDigestKeys.every((key) => typeof target[key] === 'string'
+          && /^[a-f0-9]{64}$/iu.test(target[key] as string))
+      || target.preparedExecutionSha256 !== binding.policy.preparedExecutionSha256
+      || target.centralEffectiveConfigProjectionSha256 !== binding.policy.centralEffectiveConfigProjectionSha256
+      || target.effectiveConfigSha256 !== binding.policy.effectiveConfigSha256
+      || target.effectivePolicySha256 !== binding.policy.effectivePolicySha256
+      || target.preparedExecutionFile !== `prepared-host/prepared-${target.repositoryId}-default.json`)
+    || !hasExactKeys(binding.runtime, runtimeKeys)
+    || typeof binding.runtime.finalSourceRevision !== 'string' || !/^[a-f0-9]{40}$/iu.test(binding.runtime.finalSourceRevision)
+    || typeof binding.runtime.workerImageDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/iu.test(binding.runtime.workerImageDigest)
+    || typeof binding.runtime.runtimeManifestSha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(binding.runtime.runtimeManifestSha256)) {
     throw new Error('external_normal_v2_private_binding_invalid');
   }
   let selectedBase: URL; let managementBase: URL;
   try {
-    selectedBase = new URL(value.transport.selectedBaseUrl);
-    managementBase = new URL(value.managementBaseUrl);
+    selectedBase = new URL(binding.transport.selectedBaseUrl);
+    managementBase = new URL(binding.managementBaseUrl);
   } catch { throw new Error('external_normal_v2_private_binding_invalid'); }
   if (selectedBase.protocol !== 'https:' || selectedBase.username || selectedBase.password || selectedBase.search || selectedBase.hash
     || selectedBase.pathname === '/' || selectedBase.pathname.endsWith('/')
@@ -153,29 +203,33 @@ export function validateExternalNormalV2PrivateBinding(value: unknown, env?: Env
     throw new Error('external_normal_v2_private_binding_invalid');
   }
   if (env) {
-    const [owner, repository] = value.sourceDescriptor.repository.split('/');
-    if (requiredEnv(env, 'OPENAI_BASE_URL') !== value.transport.selectedBaseUrl
-      || requiredEnv(env, 'REVIEW_MODEL') !== value.transport.modelAlias
-      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET') !== value.sourceDescriptor.repository
-      || Number(requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID')) !== value.sourceDescriptor.repositoryId
+    const [owner, repository] = binding.sourceDescriptor.repository.split('/');
+    if (requiredEnv(env, 'OPENAI_BASE_URL') !== binding.transport.selectedBaseUrl
+      || requiredEnv(env, 'REVIEW_MODEL') !== binding.transport.modelAlias
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET') !== binding.sourceDescriptor.repository
+      || Number(requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID')) !== binding.sourceDescriptor.repositoryId
       || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER') !== owner
       || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO') !== repository
-      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF') !== value.sourceDescriptor.sourceRef
-      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH') !== value.sourceDescriptor.path
-      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256') !== value.sourceDescriptor.contentSha256
-      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_SOURCE_REVISION') !== value.runtime.finalSourceRevision
-      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_WORKER_IMAGE_DIGEST') !== value.runtime.workerImageDigest
-      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256') !== value.runtime.runtimeManifestSha256) {
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF') !== binding.sourceDescriptor.sourceRef
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH') !== binding.sourceDescriptor.path
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256') !== binding.sourceDescriptor.contentSha256
+      || requiredEnv(env, 'REVIEW_CONFIG_DIGEST') !== binding.policy.effectiveConfigSha256
+      || requiredEnv(env, 'REVIEW_POLICY_DIGEST') !== binding.policy.effectivePolicySha256
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_SOURCE_REVISION') !== binding.runtime.finalSourceRevision
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_WORKER_IMAGE_DIGEST') !== binding.runtime.workerImageDigest
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256') !== binding.runtime.runtimeManifestSha256) {
       throw new Error('external_normal_v2_private_binding_environment_mismatch');
     }
-    let prepared: { transport?: { baseUrl?: unknown; model?: unknown } };
+    let prepared: { transport?: { baseUrl?: unknown; model?: unknown };
+      config?: { review_configuration_receipt?: { effective?: { provider?: { requested_effort?: unknown } } } } };
     try { prepared = JSON.parse(requiredEnv(env, 'REVIEW_PREPARED_CONFIG_JSON')) as typeof prepared; }
     catch { throw new Error('external_normal_v2_private_binding_prepared_config_invalid'); }
-    if (prepared.transport?.baseUrl !== value.transport.selectedBaseUrl || prepared.transport?.model !== value.transport.modelAlias) {
+    if (prepared.transport?.baseUrl !== binding.transport.selectedBaseUrl || prepared.transport?.model !== binding.transport.modelAlias
+      || prepared.config?.review_configuration_receipt?.effective?.provider?.requested_effort !== 'medium') {
       throw new Error('external_normal_v2_private_binding_prepared_transport_mismatch');
     }
   }
-  return value as unknown as ExternalNormalV2PrivateBinding;
+  return binding;
 }
 
 export function trustedPreparedBudget(env: Env): { total: number; investigation: number; verifier: number; maxTasks: number } {
@@ -274,12 +328,24 @@ function buildCaseEnvironment(baseEnv: Env, projection: ExternalNormalV2Projecti
   childEnv.REVIEW_CONFIG_DIGEST = projection.policy.effectiveConfigSha256;
   if (privateBinding) validateExternalNormalV2PrivateBinding(privateBinding, baseEnv);
   const [policyOwner, policyRepo] = projection.policy.policySource.repository.split('/');
+  const preparedTargetBinding = privateBinding?.policy.targetProjections
+    .find((target) => target.repositoryId === projection.targetRepositoryId);
   if (!policyOwner || !policyRepo
     || (privateBinding && (projection.policy.policySource.repository !== privateBinding.sourceDescriptor.repository
       || projection.policy.policySource.repositoryId !== privateBinding.sourceDescriptor.repositoryId
       || projection.policy.policySource.sourceRef !== privateBinding.sourceDescriptor.sourceRef
       || projection.policy.policySource.path !== privateBinding.sourceDescriptor.path
-      || projection.policy.policySource.contentSha256 !== privateBinding.sourceDescriptor.contentSha256))
+      || projection.policy.policySource.contentSha256 !== privateBinding.sourceDescriptor.contentSha256
+      || projection.policy.candidateHead !== privateBinding.sourceDescriptor.candidateHead
+      || projection.policy.candidateRawSha256 !== privateBinding.sourceDescriptor.contentSha256
+      || projection.policy.effectiveConfigSha256 !== privateBinding.policy.effectiveConfigSha256
+      || projection.policy.effectivePolicySha256 !== privateBinding.policy.effectivePolicySha256
+      || projection.policy.centralEffectiveConfigProjectionSha256 !== privateBinding.policy.centralEffectiveConfigProjectionSha256
+      || !preparedTargetBinding
+      || projection.policy.preparedExecutionSha256 !== preparedTargetBinding.preparedExecutionSha256
+      || projection.policy.effectiveConfigSha256 !== preparedTargetBinding.effectiveConfigSha256
+      || projection.policy.effectivePolicySha256 !== preparedTargetBinding.effectivePolicySha256
+      || projection.policy.centralEffectiveConfigProjectionSha256 !== preparedTargetBinding.centralEffectiveConfigProjectionSha256))
     || requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET') !== projection.policy.policySource.repository
     || Number(requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID')) !== projection.policy.policySource.repositoryId
     || requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER') !== policyOwner
@@ -287,8 +353,11 @@ function buildCaseEnvironment(baseEnv: Env, projection: ExternalNormalV2Projecti
     || requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF') !== projection.policy.policySource.sourceRef
     || requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH') !== projection.policy.policySource.path
     || requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256') !== projection.policy.policySource.contentSha256
+    || requiredEnv(baseEnv, 'REVIEW_CONFIG_DIGEST') !== projection.policy.effectiveConfigSha256
+    || requiredEnv(baseEnv, 'REVIEW_POLICY_DIGEST') !== projection.policy.effectivePolicySha256
     || requiredEnv(baseEnv, 'OPENAI_BASE_URL') !== projection.policy.inferenceBaseUrl
     || requiredEnv(baseEnv, 'REVIEW_MODEL') !== projection.policy.routeAlias
+    || projection.policy.requestedEffort !== 'medium'
     || projection.policy.policySource.contentSha256 !== projection.policy.candidateRawSha256) {
     throw new Error('external_normal_v2_policy_source_binding_invalid');
   }
@@ -314,6 +383,7 @@ function buildCaseEnvironment(baseEnv: Env, projection: ExternalNormalV2Projecti
   const parsed = parseNormalEngineQualificationRequest(childEnv);
   const prepared = JSON.parse(requiredEnv(childEnv, 'REVIEW_PREPARED_CONFIG_JSON')) as {
     transport?: { baseUrl?: unknown; model?: unknown };
+    config?: { review_configuration_receipt?: { effective?: { provider?: { requested_effort?: unknown } } } };
   };
   if (parsed.runId !== projection.runId || parsed.fixture.caseId !== projection.caseId
     || parsed.fixture.inputSha256 !== projection.inputSha256 || parsed.fixture.repository.repositoryId !== projection.targetRepositoryId
@@ -330,6 +400,7 @@ function buildCaseEnvironment(baseEnv: Env, projection: ExternalNormalV2Projecti
     || childEnv.REVIEW_MODEL !== selectedModelAlias
     || prepared.transport?.baseUrl !== selectedBaseUrl
     || prepared.transport?.model !== selectedModelAlias
+    || prepared.config?.review_configuration_receipt?.effective?.provider?.requested_effort !== 'medium'
     || parsed.historyRunId !== (projection.historyRunId ?? null)) {
     throw new Error('external_normal_v2_worker_binding_mismatch');
   }
@@ -869,17 +940,27 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
   };
   const executeCase = async (projection: ExternalNormalV2Projection, context: ExternalNormalV2Context) => {
     validateExternalNormalV2PrivateBinding(privateBinding, baseEnv);
+    const targetBinding = privateBinding.policy.targetProjections
+      .find((target) => target.repositoryId === projection.targetRepositoryId);
     if (projection.runtime.sourceRevision !== privateBinding.runtime.finalSourceRevision
       || projection.runtime.workerImageDigest !== privateBinding.runtime.workerImageDigest
       || projection.runtime.runtimeManifestSha256 !== privateBinding.runtime.runtimeManifestSha256
       || projection.policy.inferenceBaseUrl !== privateBinding.transport.selectedBaseUrl
       || projection.policy.routeAlias !== privateBinding.transport.modelAlias
+      || projection.policy.requestedEffort !== 'medium'
       || projection.policy.candidateHead !== privateBinding.sourceDescriptor.candidateHead
+      || projection.policy.candidateRawSha256 !== privateBinding.sourceDescriptor.contentSha256
       || projection.policy.policySource.repository !== privateBinding.sourceDescriptor.repository
       || projection.policy.policySource.repositoryId !== privateBinding.sourceDescriptor.repositoryId
       || projection.policy.policySource.sourceRef !== privateBinding.sourceDescriptor.sourceRef
       || projection.policy.policySource.path !== privateBinding.sourceDescriptor.path
-      || projection.policy.policySource.contentSha256 !== privateBinding.sourceDescriptor.contentSha256) {
+      || projection.policy.policySource.contentSha256 !== privateBinding.sourceDescriptor.contentSha256
+      || projection.policy.effectiveConfigSha256 !== privateBinding.policy.effectiveConfigSha256
+      || projection.policy.effectivePolicySha256 !== privateBinding.policy.effectivePolicySha256
+      || projection.policy.centralEffectiveConfigProjectionSha256 !== privateBinding.policy.centralEffectiveConfigProjectionSha256
+      || !targetBinding || projection.policy.preparedExecutionSha256 !== targetBinding.preparedExecutionSha256
+      || projection.policy.effectiveConfigSha256 !== targetBinding.effectiveConfigSha256
+      || projection.policy.effectivePolicySha256 !== targetBinding.effectivePolicySha256) {
       throw new Error('external_normal_v2_private_case_binding_mismatch');
     }
     const imageRef = ensureImage(projection.runtime.workerImageDigest);

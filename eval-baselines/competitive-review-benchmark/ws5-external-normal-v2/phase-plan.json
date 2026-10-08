@@ -59,21 +59,21 @@
     "status": "host configuration is independently accepted; do not dispatch or claim optimized behavior until integrated source/image/runtime manifest pins and exact host-tailnet DNS/TLS readiness evidence are frozen and reviewed"
   },
   "policy": {
-    "candidateRawSha256": "c7de3af7f4e5c98de86a4a2a8f962a1779d0195e7ab470b25332b0f6fbe0210b",
-    "candidateGitBlob": "45220896683e76a7ddfc2475b2798a4112950040",
-    "executionPlanFixtureSha256": "921237a89577ee13cee5fdfb48701bdf8bdeff49cfcb4551b124efaf2d1daccb",
-    "executionPlanNormalizedSha256": "c1bf8e0420e4fba3cf64449f5d6d0a3da1da4e0d30f18f9f64e7e6199bd1fc39",
-    "preparedExecutionFixtureSha256": "e8727f39a601d84480ef1045738628a6028747fd0cb9f5f3c904eb8e29cf090c",
-    "preparedExecutionManifestSha256": "ecacf5d532de24292f9fb27dc91b92ac426f469165799b0431a2e952027140dd",
-    "preparedExecutionSha256": "618916ab3bfd1d03ec4dfb7ab32abac424fdc397b31da9545a126ab433611c5d",
-    "syntheticProjectionFixtureSha256": "d397462b4aed0223f99839ac6ff0d700e526eb2a794daa9f084aac34adceab8d",
-    "centralEffectiveConfigProjectionSha256": "f737fbef64a7336614e441d092e3899d0c2b674f04ea197c610aaf7db9050df1",
-    "effectiveConfigSha256": "0933fc3afc3f57133845a9f7aa87678bb5502a87211dcb90dbe84babdbc40e3e",
-    "effectivePolicySha256": "f707fd3481c13d9d84bea2d7b70a3e5f1dbca99f349e1eb0032b6c424363cd25",
-    "routeAlias": "pr-reviewer",
+    "candidateRawSha256": null,
+    "candidateGitBlob": null,
+    "executionPlanFixtureSha256": null,
+    "executionPlanNormalizedSha256": null,
+    "preparedExecutionFixtureSha256": null,
+    "preparedExecutionManifestSha256": null,
+    "preparedExecutionSha256": null,
+    "syntheticProjectionFixtureSha256": null,
+    "centralEffectiveConfigProjectionSha256": null,
+    "effectiveConfigSha256": null,
+    "effectivePolicySha256": null,
+    "routeAlias": null,
     "requestedEffort": "medium",
-    "servedProviderModelEffort": "unknown_until_exact_caller_cid_log_join",
-    "v1Promotion": "not changed by this phase"
+    "servedProviderModelEffort": "medium",
+    "v1Promotion": null
   },
   "policyInputs": {
     "candidatePath": "policy-inputs/review-yeti-v2-candidate.json",
@@ -89,34 +89,34 @@
       "repositoryId": 73002,
       "repository": "synthetic/fixture-sequence",
       "prNumber": 41,
-      "normalizedPlanSha256": "86c5a461bd45c13c677c1abaa609802cb14bdadcfc602c2d4a64178c7c4802d0",
-      "centralEffectiveConfigProjectionSha256": "f737fbef64a7336614e441d092e3899d0c2b674f04ea197c610aaf7db9050df1",
-      "preparedExecutionSha256": "618916ab3bfd1d03ec4dfb7ab32abac424fdc397b31da9545a126ab433611c5d",
-      "effectiveConfigSha256": "0933fc3afc3f57133845a9f7aa87678bb5502a87211dcb90dbe84babdbc40e3e",
-      "effectivePolicySha256": "f707fd3481c13d9d84bea2d7b70a3e5f1dbca99f349e1eb0032b6c424363cd25",
-      "preparedExecutionFile": "prepared-host/prepared-73002-default.json"
+      "normalizedPlanSha256": null,
+      "centralEffectiveConfigProjectionSha256": null,
+      "preparedExecutionSha256": null,
+      "effectiveConfigSha256": null,
+      "effectivePolicySha256": null,
+      "preparedExecutionFile": null
     },
     {
       "repositoryId": 73003,
       "repository": "synthetic/fixture-large-crossfile",
       "prNumber": 42,
-      "normalizedPlanSha256": "ad0a6a721f774facedf57fe4158cdcc5a449bb842970abffd2ab5e434106805d",
-      "centralEffectiveConfigProjectionSha256": "f737fbef64a7336614e441d092e3899d0c2b674f04ea197c610aaf7db9050df1",
-      "preparedExecutionSha256": "618916ab3bfd1d03ec4dfb7ab32abac424fdc397b31da9545a126ab433611c5d",
-      "effectiveConfigSha256": "0933fc3afc3f57133845a9f7aa87678bb5502a87211dcb90dbe84babdbc40e3e",
-      "effectivePolicySha256": "f707fd3481c13d9d84bea2d7b70a3e5f1dbca99f349e1eb0032b6c424363cd25",
-      "preparedExecutionFile": "prepared-host/prepared-73003-default.json"
+      "normalizedPlanSha256": null,
+      "centralEffectiveConfigProjectionSha256": null,
+      "preparedExecutionSha256": null,
+      "effectiveConfigSha256": null,
+      "effectivePolicySha256": null,
+      "preparedExecutionFile": null
     },
     {
       "repositoryId": 73004,
       "repository": "synthetic/fixture-display-sort",
       "prNumber": 43,
-      "normalizedPlanSha256": "cab59dc64f21e25b70676fc788540b42344cf24c1254cb55e319ed40171a2010",
-      "centralEffectiveConfigProjectionSha256": "f737fbef64a7336614e441d092e3899d0c2b674f04ea197c610aaf7db9050df1",
-      "preparedExecutionSha256": "618916ab3bfd1d03ec4dfb7ab32abac424fdc397b31da9545a126ab433611c5d",
-      "effectiveConfigSha256": "0933fc3afc3f57133845a9f7aa87678bb5502a87211dcb90dbe84babdbc40e3e",
-      "effectivePolicySha256": "f707fd3481c13d9d84bea2d7b70a3e5f1dbca99f349e1eb0032b6c424363cd25",
-      "preparedExecutionFile": "prepared-host/prepared-73004-default.json"
+      "normalizedPlanSha256": null,
+      "centralEffectiveConfigProjectionSha256": null,
+      "preparedExecutionSha256": null,
+      "effectiveConfigSha256": null,
+      "effectivePolicySha256": null,
+      "preparedExecutionFile": null
     }
   ],
   "sourceBundle": {

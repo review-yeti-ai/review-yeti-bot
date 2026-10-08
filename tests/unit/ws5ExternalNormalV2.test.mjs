@@ -20,8 +20,23 @@ function privateBinding(canonicalPath = path.join(tmpdir(), 'ws5-private-phase-r
     sourceDescriptor: { repository: 'exampleorg/review-policy-fixture', repositoryId: 73,
       sourceRef: 'b'.repeat(40), path: 'policy/candidate.json', contentSha256: 'c'.repeat(64),
       candidateHead: 'd'.repeat(40), preparedFixtureReviewHead: 'e'.repeat(40) },
-    transport: { selectedBaseUrl: 'https://gateway.example.invalid/v1', modelAlias: 'pr-reviewer' },
+    transport: { selectedBaseUrl: 'https://gateway.example.invalid/v1', modelAlias: 'fixture-reviewer' },
     managementBaseUrl: 'https://management.example.invalid',
+    policy: {
+      candidateGitBlob: '6'.repeat(40),
+      executionPlanFixtureSha256: '7'.repeat(64), executionPlanNormalizedSha256: '8'.repeat(64),
+      preparedExecutionFixtureSha256: '9'.repeat(64), preparedExecutionManifestSha256: 'a'.repeat(64),
+      preparedExecutionSha256: '8'.repeat(64), syntheticProjectionFixtureSha256: 'c'.repeat(64),
+      centralEffectiveConfigProjectionSha256: 'd'.repeat(64), effectiveConfigSha256: 'e'.repeat(64),
+      effectivePolicySha256: 'f'.repeat(64), v1Promotion: 'fixture-v1-promotion',
+      policyInputDigests: { candidatePath: 'c'.repeat(64), executionPlanFixturePath: '2'.repeat(64),
+        preparedExecutionFixturePath: '3'.repeat(64), syntheticProjectionPath: '4'.repeat(64),
+        preparedExecutionManifestPath: '5'.repeat(64) },
+      targetProjections: [73002, 73003, 73004].map((repositoryId) => ({ repositoryId,
+        normalizedPlanSha256: '7'.repeat(64), centralEffectiveConfigProjectionSha256: 'd'.repeat(64),
+        preparedExecutionSha256: '8'.repeat(64), effectiveConfigSha256: 'e'.repeat(64),
+        effectivePolicySha256: 'f'.repeat(64), preparedExecutionFile: `prepared-host/prepared-${repositoryId}-default.json` })),
+    },
     runtime: { finalSourceRevision: 'f'.repeat(40), workerImageDigest: `sha256:${'1'.repeat(64)}`,
       runtimeManifestSha256: '2'.repeat(64) },
   };
@@ -52,6 +67,13 @@ test('public phase plan is a non-dispatchable template and requires a private ro
   assert.equal(plan.dispatchAuthorization, false);
   assert.equal(Object.hasOwn(plan.policy, 'policySource'), false);
   assert.equal(Object.hasOwn(plan.policy, 'inferenceBaseUrl'), false);
+  assert.equal(plan.policy.routeAlias, null);
+  assert.equal(plan.policy.candidateRawSha256, null);
+  assert.equal(plan.policy.effectiveConfigSha256, null);
+  assert.equal(plan.policy.effectivePolicySha256, null);
+  assert.equal(plan.targetProjections.every((row) => row.preparedExecutionSha256 === null
+    && row.effectiveConfigSha256 === null && row.effectivePolicySha256 === null
+    && row.preparedExecutionFile === null), true);
   assert.equal(Object.hasOwn(plan.artifactRoots.phaseRoot, 'canonicalPath'), false);
   assert.equal(Object.hasOwn(plan.artifactRoots.phaseRoot, 'uid'), false);
   assert.equal(Object.hasOwn(plan.artifactRoots.phaseRoot, 'gid'), false);
@@ -77,7 +99,7 @@ test('ships only the exact new synthetic v2 source inputs into the worker image'
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json']);
   const expected = new Map([
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json',
-      '31eedf8e86f5e2bfa18ad55413c6d1653b0b610bf80eda76d7d15a0c12fed107'],
+      '9e3c025779c199af8e02805aca8534f916c9f1d984a411bf0d1d4671b77425ab'],
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json',
       '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1'],
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json',
@@ -134,17 +156,15 @@ test('uses the five-by-58 review allocations plus one-call fault controls and ke
 
 test('ROOTGO binds phase, exact plan, output root, runtime and policy tuple and rejects stale or replayed grants', async () => {
   const binding = privateBinding();
-  const plan = { phaseId: 'ws5-current-source-external-v2', sourceBundle: { sha256: 'a'.repeat(64) },
-    runtime: { ...binding.runtime, currentBudgetFixCandidate: '3'.repeat(40) },
-    policy: { candidateHead: binding.sourceDescriptor.candidateHead, candidateRawSha256: binding.sourceDescriptor.contentSha256,
-      effectiveConfigSha256: '4'.repeat(64) },
-    targetProjections: [{ effectiveConfigSha256: '2'.repeat(64) }],
-    artifactRoots: { phaseRoot: binding.phaseRoot,
-    normalEngineQualificationStore: { relativePath: 'normal-engine-qualification-store', mode: 0o700 } } };
-  plan.targetProjections[0].effectiveConfigSha256 = plan.policy.effectiveConfigSha256;
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const template = JSON.parse(await readFile(path.join(repositoryRoot, 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json')));
+  const plan = runner.bindExternalNormalV2PrivateInputs(template, binding);
   const pinnedRootSha = createHash('sha256').update(binding.phaseRoot.canonicalPath).digest('hex');
   const tuple = runner.buildExternalNormalV2AuthorizationTuple(plan, '5'.repeat(64), pinnedRootSha,
     '0'.repeat(64), pinnedRootSha, binding);
+  assert.throws(() => runner.buildExternalNormalV2AuthorizationTuple({
+    ...plan, policy: { ...plan.policy, effectiveConfigSha256: '0'.repeat(64) },
+  }, '5'.repeat(64), pinnedRootSha, '0'.repeat(64), pinnedRootSha, binding), /private_binding_plan_mismatch/u);
   assert.equal(tuple.qualificationArtifactStoreRootSha256, pinnedRootSha);
   assert.equal(tuple.qualificationArtifactStoreIdentitySha256, pinnedRootSha);
   assert.equal(tuple.launcherSourceTupleSha256, '0'.repeat(64));
@@ -231,12 +251,12 @@ test('accepts only one exact Bifrost row for every client CID and keeps cost led
   const calls = [
     { clientRequestIdSha256: 'a'.repeat(64), bifrostLogRequestIdSha256: 'a'.repeat(64),
       upstreamResponseRequestIdSha256: 'c'.repeat(64),
-      requestedAlias: 'pr-reviewer', requestedEffort: 'medium', startedAt: '2026-10-07T20:00:00.000Z',
+      requestedAlias: 'fixture-reviewer', requestedEffort: 'medium', startedAt: '2026-10-07T20:00:00.000Z',
       requestDigest: 'c'.repeat(64), workerTokenUsage: { prompt: 10, completion: 5, total: 15 }, workerEstimatedUsd: 0.01,
       httpStatus: 200 },
     { clientRequestIdSha256: 'd'.repeat(64), bifrostLogRequestIdSha256: 'e'.repeat(64),
       upstreamResponseRequestIdSha256: 'f'.repeat(64),
-      requestedAlias: 'pr-reviewer', requestedEffort: 'medium', startedAt: '2026-10-07T20:01:00.000Z',
+      requestedAlias: 'fixture-reviewer', requestedEffort: 'medium', startedAt: '2026-10-07T20:01:00.000Z',
       requestDigest: 'f'.repeat(64), workerTokenUsage: { prompt: 20, completion: 8, total: 28 }, workerEstimatedUsd: 0.02,
       httpStatus: 200 },
   ];
@@ -245,7 +265,7 @@ test('accepts only one exact Bifrost row for every client CID and keeps cost led
     bifrostLogRowIdSha256: call.bifrostLogRequestIdSha256,
     upstreamResponseRequestIdSha256: call.upstreamResponseRequestIdSha256,
     bifrostParentRequestIdSha256: String(index + 5).repeat(64),
-    bifrostLogStatus: 'success', provider: 'provider-a', bifrostAlias: 'pr-reviewer',
+    bifrostLogStatus: 'success', provider: 'provider-a', bifrostAlias: 'fixture-reviewer',
     resolvedModel: 'model-a', servedModel: null, serviceTier: 'default', speed: 'standard', inferenceGeo: 'global',
     gatewayTokenUsage: { prompt: 10, completion: 5, total: 15 },
     bifrostCalculatedCostUsd: index === 0 ? 0.01 : 0.02 }));
@@ -258,9 +278,9 @@ test('accepts only one exact Bifrost row for every client CID and keeps cost led
   assert.equal(result.upstreamLedger[0].bifrostLogRowIdSha256, calls[0].bifrostLogRequestIdSha256);
   assert.equal(result.upstreamLedger[0].upstreamResponseRequestIdSha256, calls[0].upstreamResponseRequestIdSha256);
   assert.equal(result.upstreamLedger[0].bifrostParentRequestIdSha256, '5'.repeat(64));
-  assert.equal(runner.validateCapturedRouteIdentity(calls, rows, 'pr-reviewer').status, 'observed');
+  assert.equal(runner.validateCapturedRouteIdentity(calls, rows, 'fixture-reviewer').status, 'observed');
   assert.throws(() => runner.validateCapturedRouteIdentity(calls,
-    [rows[0], { ...rows[1], bifrostAlias: 'other-route' }], 'pr-reviewer'), /route_identity_not_proven/u);
+    [rows[0], { ...rows[1], bifrostAlias: 'other-route' }], 'fixture-reviewer'), /route_identity_not_proven/u);
   assert.notEqual(result.requestLedgerSha256, result.upstreamLedgerSha256);
   assert.notEqual(result.tokenLedgerSha256, result.actualBilledLedgerSha256);
   assert.throws(() => runner.validateExactLogLedger(calls, { status: 'captured', rows: rows.slice(1) }), /exact_log_rows_missing/u);
@@ -313,14 +333,14 @@ test('recovers only digest-checked private IDs and bounds them to the arm alloca
       managementBaseUrl: 'https://management.example.invalid',
       readManagementAuthInMemory: () => ({ username: 'u', password: 'p' }),
       fetchImpl: async () => new Response(JSON.stringify({ data: [{ id: rows[0].callerRequestId,
-        provider: 'provider-a', alias: 'pr-reviewer', model: 'model-a', status: 'success' }] }),
+        provider: 'provider-a', alias: 'fixture-reviewer', model: 'model-a', status: 'success' }] }),
       { status: 200, headers: { 'content-type': 'application/json' } }) });
     const recoveredCapture = await collector({ phaseId: 'ws5-current-source-external-v2', planSha256: 'b'.repeat(64),
       artifactStoreRoot: root, calls: recovered.calls,
       stepReceipts: [{ stepId: 'v2-p2-first', runId, artifactReferences: [recovered.sidecarReference] }],
       deadlineAt: Date.now() + 10_000 });
     assert.equal(recoveredCapture.status, 'captured', JSON.stringify(recoveredCapture));
-    assert.equal(recoveredCapture.rows[0].bifrostAlias, 'pr-reviewer');
+    assert.equal(recoveredCapture.rows[0].bifrostAlias, 'fixture-reviewer');
     assert.equal(JSON.stringify(recoveredCapture).includes(rows[0].callerRequestId), false);
     assert.equal((await runner.recoverExternalNormalV2PrivateIdentifierSidecar(root, runId, 'single',
       'ws5-current-1dd-v2-provider-failure', 1)).status, 'absent');
@@ -339,7 +359,7 @@ test('requires actual Gate, history, and typed preflight evidence for each norma
   const p2 = plan.runs.find((step) => step.stepId === 'v2-p2-first');
   const eligible = { stepId: p2.stepId, terminalStatus: 'completed', clientCalls: 3,
     providerCalls: [{ clientRequestIdSha256: digest('7'), bifrostLogRequestIdSha256: digest('7'),
-      requestedAlias: 'pr-reviewer', requestedEffort: 'medium', startedAt: '2026-10-07T20:00:00.000Z',
+      requestedAlias: 'fixture-reviewer', requestedEffort: 'medium', startedAt: '2026-10-07T20:00:00.000Z',
       requestDigest: digest('8') }],
     outcome: { workerOutcomeClass: 'completed_eligible', gateOutcomeClass: 'completed_eligible', agreement: 'agreement',
       canonicalEvidenceSha256: digest('a'), gateDecisionSha256: digest('b') },
