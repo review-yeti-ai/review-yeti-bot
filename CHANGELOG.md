@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.120.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.120.4...v1.120.5) (2026-10-08)
+
+
+### Bug Fixes
+
+* classify reader failures and allow contributor identities ([#1428](https://github.com/review-yeti-ai/review-yeti-bot/issues/1428)) ([b365556](https://github.com/review-yeti-ai/review-yeti-bot/commit/b36555644a209fb5edc4bb36c2aff965244c7fc7))
+
 ## [1.120.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.120.3...v1.120.4) (2026-10-08)
 
 
