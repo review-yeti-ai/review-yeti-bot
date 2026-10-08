@@ -487,16 +487,13 @@ export function createDashboardRouter(): Router {
   // POST /api/dashboard/trigger-test-review
   router.post('/trigger-test-review', (req: Request, res: Response) => {
     const body = req.body || {};
-    const repo = body.repo || 'exampleorg/example-api';
-    const isCtMeta = repo === 'exampleorg/example-meta';
-    const prNumber = body.prNumber || (isCtMeta ? Math.floor(Math.random() * 50) + 108 : Math.floor(Math.random() * 200) + 3052);
-    const title = body.title || (isCtMeta ? `feat(contract): OpenAPI v3 schema validation & tenant policy sync for PR #${prNumber}` : `feat(ingestion): refactor CDR payload parsing & multi-tenant pipeline rules for PR #${prNumber}`);
+    const repo = body.repo || 'unspecified/repo';
+    const prNumber = body.prNumber || Math.floor(Math.random() * 200) + 1000;
+    const title = body.title || `Test Review Execution for ${repo} #${prNumber}`;
     const verdict = body.verdict || 'SHIP';
-    const personas = body.personas || (isCtMeta ? ['security', 'architecture', 'api_contract'] : ['security', 'architecture', 'quality', 'database', 'performance']);
-    const tokenDetails = isCtMeta
-      ? { prompt: 32400, completion: 4100, total: 36500 }
-      : { prompt: 48500, completion: 6200, total: 54700 };
-    const costUSD = isCtMeta ? 0.365 : 0.547;
+    const personas = body.personas || ['security', 'architecture', 'quality', 'database', 'performance'];
+    const tokenDetails = body.tokenDetails || { prompt: 15000, completion: 2500, total: 17500 };
+    const costUSD = body.costUSD || 0.15;
 
     const personaSettings = dashboardStore.getPersonaSettings();
     const personaLogs = [

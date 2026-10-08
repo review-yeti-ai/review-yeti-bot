@@ -215,7 +215,7 @@ export function createOnboardingRouter(options: OnboardingRouterOptions = {}): R
         action: 'opened',
         delivery_id: `sim_${crypto.randomBytes(6).toString('hex')}`,
         repository: {
-          full_name: repoId || 'exampleorg/example-api',
+          full_name: repoId || 'unknown/repository',
         },
         pull_request: {
           number: 1,
@@ -422,7 +422,7 @@ export function createOnboardingRouter(options: OnboardingRouterOptions = {}): R
       const panelResult = await executePersonaPanel({
         config: panelConfig,
         changedFiles: sampleFiles,
-        repository: repoId || 'exampleorg/example-api',
+        repository: repoId || 'unknown/repository',
         headSha: 'a1b2c3d4e5f67890a1b2c3d4e5f67890a1b2c3d4',
         client: openRouterClient,
       });

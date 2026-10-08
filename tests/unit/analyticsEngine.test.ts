@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app';
 import {
@@ -24,6 +24,23 @@ describe('Milestone 4: Analytics Engine & Multi-Horizon Verification', () => {
       .send({ username: 'admin', password: 'admin123' });
 
     authToken = loginRes.body.token;
+
+    // Seed test review fixtures for analytics engine verification
+    const testLogs = generateDefaultReviewLogs();
+    (dashboardStore as any).data.reviewLogs = [...testLogs];
+    (dashboardStore as any).data.reviewCounter = testLogs.length;
+    (dashboardStore as any).data.totalCostUSD = parseFloat(
+      testLogs.reduce((acc: number, l: any) => acc + (l.costUSD || l.cost || 0), 0).toFixed(4)
+    );
+    (dashboardStore as any).data.totalPromptTokens = testLogs.reduce(
+      (acc: number, l: any) => acc + (l.tokens?.prompt || 0),
+      0
+    );
+    (dashboardStore as any).data.totalCompletionTokens = testLogs.reduce(
+      (acc: number, l: any) => acc + (l.tokens?.completion || 0),
+      0
+    );
+    (dashboardStore as any).invalidateCache();
   });
 
   // ==========================================================================
@@ -328,5 +345,9 @@ describe('Milestone 4: Analytics Engine & Multi-Horizon Verification', () => {
       expect(res.body.success).toBe(true);
       expect(res.body.indexer).toBeDefined();
     });
+  });
+
+  afterAll(() => {
+    dashboardStore.reset();
   });
 });

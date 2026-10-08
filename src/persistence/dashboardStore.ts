@@ -1264,53 +1264,8 @@ export class DashboardStore {
 
   private defaultData(): DashboardData {
     const now = new Date().toISOString();
-    const defaultReviewLogs = generateDefaultReviewLogs();
-    const defaultFindingsData = generateDefaultFindingsData(defaultReviewLogs);
     return {
-      repositories: [
-        {
-          id: 'repo-example-api',
-          name: 'example-api',
-          full_name: 'exampleorg/example-api',
-          owner: 'exampleorg',
-          repo: 'example-api',
-          private: false,
-          automationEnabled: true,
-          generateArchitecturalFlowchart: true,
-          strictnessProfile: 'balanced',
-          customProfile: 'balanced',
-          defaultBranch: 'main',
-          updatedAt: now,
-        },
-        {
-          id: 'repo-example-meta',
-          name: 'example-meta',
-          full_name: 'exampleorg/example-meta',
-          owner: 'exampleorg',
-          repo: 'example-meta',
-          private: true,
-          automationEnabled: true,
-          generateArchitecturalFlowchart: true,
-          strictnessProfile: 'balanced',
-          customProfile: 'balanced',
-          defaultBranch: 'main',
-          updatedAt: now,
-        },
-        {
-          id: 'repo-ct-review-bot',
-          name: 'ct-review-bot',
-          full_name: 'exampleorg/ct-review-bot',
-          owner: 'exampleorg',
-          repo: 'ct-review-bot',
-          private: false,
-          automationEnabled: true,
-          generateArchitecturalFlowchart: true,
-          strictnessProfile: 'assertive',
-          customProfile: 'assertive',
-          defaultBranch: 'main',
-          updatedAt: now,
-        },
-      ],
+      repositories: [],
       settings: {
         defaultModelOverrides: {
           openrouter: 'openrouter/auto',
@@ -2053,25 +2008,25 @@ export class DashboardStore {
         },
       },
       apiKeys: [],
-      reviewCounter: defaultReviewLogs.length,
-      totalCostUSD: parseFloat(defaultReviewLogs.reduce((acc, l) => acc + (l.costUSD || l.cost || 0), 0).toFixed(4)),
-      totalPromptTokens: defaultReviewLogs.reduce((acc, l) => acc + (l.tokens?.prompt || 0), 0),
-      totalCompletionTokens: defaultReviewLogs.reduce((acc, l) => acc + (l.tokens?.completion || 0), 0),
-      reviewLogs: defaultReviewLogs,
+      reviewCounter: 0,
+      totalCostUSD: 0,
+      totalPromptTokens: 0,
+      totalCompletionTokens: 0,
+      reviewLogs: [],
       integrations: {
         linear: {
           id: 'linear',
           name: 'Linear Issue Tracker',
           status: 'disconnected',
           lastSyncAt: now,
-          settings: { teamKey: 'CT' },
+          settings: { teamKey: '' },
           updatedAt: now,
         },
         github: {
           id: 'github',
           name: 'GitHub App Integration',
-          status: 'connected',
-          settings: { appId: '1092381' },
+          status: 'disconnected',
+          settings: { appId: '' },
           updatedAt: now,
         },
         context7: {
@@ -2091,7 +2046,7 @@ export class DashboardStore {
           id: 'posthog',
           name: 'PostHog Analytics',
           status: 'disconnected',
-          settings: { projectId: '10492' },
+          settings: { projectId: '' },
           updatedAt: now,
         },
         doppler: {
@@ -2099,7 +2054,7 @@ export class DashboardStore {
           name: 'Doppler Secret Manager',
           status: 'disconnected',
           lastSyncAt: now,
-          settings: { project: 'ct-review-bot', configName: 'prd' },
+          settings: { project: '', configName: '' },
           updatedAt: now,
         },
         sentry: {
@@ -2107,7 +2062,7 @@ export class DashboardStore {
           name: 'Sentry Error Tracking',
           status: 'disconnected',
           lastSyncAt: now,
-          settings: { orgSlug: 'exampleorg', projectSlug: 'review-bot' },
+          settings: { orgSlug: '', projectSlug: '' },
           updatedAt: now,
         },
         jira: {
@@ -2115,16 +2070,16 @@ export class DashboardStore {
           name: 'Jira Software Integration',
           status: 'disconnected',
           lastSyncAt: now,
-          settings: { hostUrl: 'https://exampleorg.atlassian.net', email: 'bot@example.com', projectKey: 'CT' },
+          settings: { hostUrl: '', email: '', projectKey: '' },
           updatedAt: now,
         },
         slack: {
           id: 'slack',
           name: 'Slack Notifications & Webhooks',
           status: 'disconnected',
-          webhookUrl: 'https://hooks.slack.com/services/T00/B00/X00',
+          webhookUrl: '',
           lastSyncAt: now,
-          settings: { defaultChannel: '#code-reviews' },
+          settings: { defaultChannel: '' },
           updatedAt: now,
         },
       },
@@ -2141,12 +2096,12 @@ export class DashboardStore {
           updatedAt: now,
         },
       ],
-      findingStates: defaultFindingsData.findingStates,
+      findingStates: {},
       promptGuidance: {},
       verdictOverrides: {},
       auditEvents: {},
       gateAttempts: {},
-      findings: defaultFindingsData.findings,
+      findings: {},
     };
   }
 
@@ -2265,16 +2220,15 @@ export class DashboardStore {
       data.dailyReviewCounts = {};
     }
     if (!data.reviewLogs) {
-      data.reviewLogs = generateDefaultReviewLogs();
-      data.reviewCounter = data.reviewLogs.length;
-      data.totalCostUSD = parseFloat(data.reviewLogs.reduce((acc, l) => acc + (l.costUSD || l.cost || 0), 0).toFixed(4));
-      data.totalPromptTokens = data.reviewLogs.reduce((acc, l) => acc + (l.tokens?.prompt || 0), 0);
-      data.totalCompletionTokens = data.reviewLogs.reduce((acc, l) => acc + (l.tokens?.completion || 0), 0);
+      data.reviewLogs = [];
+      data.reviewCounter = 0;
+      data.totalCostUSD = 0;
+      data.totalPromptTokens = 0;
+      data.totalCompletionTokens = 0;
     }
     if (!data.findingStates) {
-      const defaultFindings = generateDefaultFindingsData(data.reviewLogs);
-      data.findingStates = defaultFindings.findingStates;
-      data.findings = defaultFindings.findings;
+      data.findingStates = {};
+      data.findings = {};
     }
     const logs = data.reviewLogs || [];
     const countsFromLogs: Record<string, number> = {};
@@ -3520,10 +3474,10 @@ export class DashboardStore {
       repo,
       timestamp: new Date().toISOString(),
       previousPeriod: {
-        p95DurationMs: Math.round(p95DurationMs * 1.12),
-        totalSpendUsd: parseFloat((totalSpendUsd * 0.92).toFixed(2)),
-        totalTokens: Math.round(totalTokens * 0.94),
-        acceptanceRate: 81.5,
+        p95DurationMs: 0,
+        totalSpendUsd: 0,
+        totalTokens: 0,
+        acceptanceRate: 0,
       },
     };
 
@@ -3679,16 +3633,11 @@ export class DashboardStore {
       const providerId = known ? known.providerId : key.split('-')[0];
 
       const stats = modelStats[key];
-      let spendUsd = parseFloat(stats.spendUsd.toFixed(4));
-      if (loggedSpendSum === 0 && totalSpendUsd > 0) {
-        spendUsd = parseFloat((totalSpendUsd / modelKeys.length).toFixed(4));
-      }
-
+      const spendUsd = parseFloat(stats.spendUsd.toFixed(4));
       const percentage = totalSpendUsd > 0 ? Math.round((spendUsd / totalSpendUsd) * 100) : 0;
-      const modelRatio = totalSpendUsd > 0 ? spendUsd / totalSpendUsd : 1 / modelKeys.length;
-      const prompt = stats.promptTokens || Math.round(totalPrompt * modelRatio);
-      const completion = stats.completionTokens || Math.round(totalCompletion * modelRatio);
-      const callCount = stats.callCount || Math.round(totalCalls * modelRatio);
+      const prompt = stats.promptTokens;
+      const completion = stats.completionTokens;
+      const callCount = stats.callCount;
 
       return {
         model: key,
@@ -4036,7 +3985,7 @@ export class DashboardStore {
 
     const result = standardPersonas.map((sp) => {
       const stats = personaStats[sp.persona];
-      const totalReviews = stats.totalReviews > 0 ? stats.totalReviews : logs.length;
+      const totalReviews = stats.totalReviews;
       const shipCount = stats.verdicts.SHIP;
       const approvalRate = totalReviews > 0 ? parseFloat((shipCount / totalReviews).toFixed(2)) : 0;
 
@@ -4204,12 +4153,34 @@ export class DashboardStore {
 
     const logs = this.getFilteredReviewLogs(range, repo);
     const totalReviews = logs.length;
+    if (totalReviews === 0) {
+      const result: CompactionAnalyticsResponse = {
+        success: true,
+        range,
+        window: range,
+        repo,
+        totalReviews: 0,
+        rawDiffTokensAvg: 0,
+        compactedTokensAvg: 0,
+        compactionRatio: 0,
+        tokensSavedTotal: 0,
+        diffEvictionReceiptsCount: 0,
+        getHunkInvocationsCount: 0,
+        astOutlineCoveragePercent: 0,
+        flatContextSlopeConfirmed: true,
+        maxPrTokensHandled: 0,
+      };
+      if (!this.cache.compactionAnalytics) this.cache.compactionAnalytics = {};
+      this.cache.compactionAnalytics[cacheKey] = result;
+      return result;
+    }
+
     const rawDiffTokensAvg = 24800;
     const compactedTokensAvg = 5900;
     const compactionRatio = 4.2;
-    const tokensSavedTotal = totalReviews > 0 ? totalReviews * (rawDiffTokensAvg - compactedTokensAvg) : 0;
-    const diffEvictionReceiptsCount = totalReviews > 0 ? totalReviews * 6 : 0;
-    const getHunkInvocationsCount = totalReviews > 0 ? Math.round(totalReviews * 3.4) : 0;
+    const tokensSavedTotal = totalReviews * (rawDiffTokensAvg - compactedTokensAvg);
+    const diffEvictionReceiptsCount = totalReviews * 6;
+    const getHunkInvocationsCount = Math.round(totalReviews * 3.4);
 
     const result: CompactionAnalyticsResponse = {
       success: true,
@@ -4241,13 +4212,32 @@ export class DashboardStore {
 
     const logs = this.getFilteredReviewLogs(range, repo);
     const totalReviews = logs.length;
+    if (totalReviews === 0) {
+      const result: IncrementalLifecycleResponse = {
+        success: true,
+        range,
+        window: range,
+        repo,
+        recheckLaneRuns: 0,
+        catch22Preventions: 0,
+        findingsAutoResolvedCount: 0,
+        findingsRegressedCount: 0,
+        resolutionRatePercent: 0,
+        avgCommitsToResolution: 0,
+        priorOpenFindingsTracked: 0,
+      };
+      if (!this.cache.incrementalLifecycle) this.cache.incrementalLifecycle = {};
+      this.cache.incrementalLifecycle[cacheKey] = result;
+      return result;
+    }
+
     const recheckLaneRuns = Math.round(totalReviews * 0.42);
     const catch22Preventions = recheckLaneRuns;
     const findingsAutoResolvedCount = Math.round(totalReviews * 1.8);
     const findingsRegressedCount = Math.round(totalReviews * 0.1);
     const resolutionRatePercent = findingsAutoResolvedCount + findingsRegressedCount > 0
       ? parseFloat(((findingsAutoResolvedCount / (findingsAutoResolvedCount + findingsRegressedCount)) * 100).toFixed(1))
-      : 94.7;
+      : 0;
 
     const result: IncrementalLifecycleResponse = {
       success: true,
@@ -4276,6 +4266,30 @@ export class DashboardStore {
 
     const logs = this.getFilteredReviewLogs(range, repo);
     const totalReviews = logs.length;
+    if (totalReviews === 0) {
+      const result: BlockerFastPathMetricsResponse = {
+        success: true,
+        range,
+        window: range,
+        repo,
+        totalFastPathExits: 0,
+        abortedStreamsCount: 0,
+        tokensSavedFromAbort: 0,
+        estimatedCostSavedUSD: 0,
+        avgTimeToBlockerMs: 0,
+        normalQuorumLatencyAvgMs: 0,
+        latencyReductionPercent: 0,
+        reasonsBreakdown: {
+          critical_security_vulnerability: 0,
+          credential_leak: 0,
+          data_corruption_risk: 0,
+        },
+      };
+      if (!this.cache.blockerFastPath) this.cache.blockerFastPath = {};
+      this.cache.blockerFastPath[cacheKey] = result;
+      return result;
+    }
+
     const totalFastPathExits = Math.round(totalReviews * 0.14);
     const abortedStreamsCount = totalFastPathExits * 3;
     const tokensSavedFromAbort = abortedStreamsCount * 3600;
