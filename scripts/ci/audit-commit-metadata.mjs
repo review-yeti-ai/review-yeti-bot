@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Fails when a commit in the given range names the deploying organization or its private repositories in the
-// author or committer identity, or in the commit message. The terms are assembled from parts so this file does
-// not itself contain them. Merge commits are ignored (they are created by the hosting service).
+// Fails when a commit message in the given range names private deployment details. Contributor identities
+// and trailing co-author credits are permitted. Terms are assembled so this file does not contain them.
+// Merge commits are ignored (they are created by the hosting service).
 //
 // usage: node scripts/ci/audit-commit-metadata.mjs <base>..<head>
 import { execFileSync } from 'node:child_process';
@@ -22,9 +22,11 @@ export const FORBIDDEN = new RegExp(FORBIDDEN_PATTERN, 'iu');
 export function findViolations(records) {
   const findings = [];
   for (const record of records) {
-    const fields = { author: `${record.an} <${record.ae}>`, committer: `${record.cn} <${record.ce}>`, message: record.body };
-    const bad = Object.entries(fields).filter(([, value]) => FORBIDDEN.test(value)).map(([key]) => key);
-    if (bad.length > 0) findings.push({ sha: record.sha, fields: bad });
+    const lines = (record.body ?? '').trimEnd().split(/\r?\n/u);
+    // GitHub squash merges may append contributor attribution. Exempt only
+    // well-formed credits at the end, never a matching line inside prose.
+    while (/^Co-authored-by:\s+[^<>\r\n]+\s+<[^<>\s]+@[^<>\s]+>$/iu.test(lines.at(-1) ?? '')) lines.pop();
+    if (FORBIDDEN.test(lines.join('\n'))) findings.push({ sha: record.sha, fields: ['message'] });
   }
   return findings;
 }
@@ -47,8 +49,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   }
   const findings = findViolations(readRange(range));
   if (findings.length > 0) {
-    for (const f of findings) console.error(`::error::commit ${f.sha.slice(0, 12)} names the deploying organization in its ${f.fields.join(', ')}`);
-    console.error('Set a neutral identity before committing: scripts/use-neutral-git-identity.sh');
+    for (const f of findings) console.error(`::error::commit ${f.sha.slice(0, 12)} names private deployment details in its ${f.fields.join(', ')}`);
+    console.error('Remove private deployment details from the commit subject or narrative body. Contributor identities are allowed.');
     process.exit(1);
   }
   console.log(`commit metadata clean for ${range}`);

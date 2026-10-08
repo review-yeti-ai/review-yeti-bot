@@ -2,14 +2,15 @@
 
 ## Commit identity
 
-This repository is public and independent of the organizations that deploy it. Commits must carry a neutral
-identity: run `scripts/use-neutral-git-identity.sh` once in every clone or worktree. Pull requests are checked by
-`scripts/ci/audit-commit-metadata.mjs`, which rejects commits whose author, committer or message names a deploying
-organization or one of its private repositories. A squash merge records the pull request author's identity and a rebase merge by a person records that person as the
-committer, so merging with a personal or shared account puts that identity into the history. Merge with an identity that
-is itself neutral. The review GitHub App would be that identity, but it is not installed on this repository yet (an
-organization owner has to install it with contents and pull-request write access); until then, merges by a person
-must be followed by a metadata cleanup of the resulting commits.
+Personal, organization, shared-account, and bot identities are welcome as authors, committers, co-authors,
+and merge actors. GitHub may record the merging account's name and email in the commit metadata; this is
+normal attribution and does not require anonymization or a history rewrite.
+
+`scripts/use-neutral-git-identity.sh` remains an optional convenience for contributors who prefer that identity.
+`scripts/ci/audit-commit-metadata.mjs` checks commit subjects and narrative bodies for private deployment details.
+It permits contributor names and emails in identity fields and trailing `Co-authored-by` credits.
+Keep private repository names, deployment configuration, credentials, and operational details out of commit
+subjects, narrative bodies, pull request descriptions, and tracked files.
 
 ## Tree hygiene
 
