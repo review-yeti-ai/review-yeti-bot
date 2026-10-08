@@ -37,6 +37,7 @@ import { PATCH_UNAVAILABLE_MARKER } from '../../src/review/patchAvailability';
 import { logger } from '../../src/utils/logger';
 import { getMetrics } from '../../src/telemetry';
 import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
+import { preparedCheckpointHistory } from '../support/preparedCheckpointHistory';
 
 /*
  * REL-1124 (REL-1113 follow-up): a panel that THROWS on the path to the model -- a required
@@ -100,6 +101,27 @@ function fixture(executionAttempt = '1', reviewEngine: 'panel' | 'composed' = 'p
   vi.spyOn(logger, 'info').mockImplementation(() => undefined);
   vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected external request'));
   return { env, deps, prepared, source, checkClient, sourceLoader, panelRunner, reportReviewResult, warn };
+}
+
+function exactRetryCheckpoint(f: ReturnType<typeof fixture>) {
+  const plan = [{ id: 'sec-lane', dimension: 'security' as const, paths: ['src/a.ts'],
+    question: 'Is the changed source safe?', rationale: 'This exact source task belongs to the retry.' }];
+  return {
+    version: 'ReviewExecutionCheckpoint.v1' as const,
+    runId: f.env.REVIEW_RUN_ID!,
+    repositoryId: Number(f.env.REVIEW_REPOSITORY_ID),
+    owner: 'example',
+    repo: 'project',
+    prNumber: Number(f.env.REVIEW_PR_NUMBER),
+    headSha: HEAD,
+    baseSha: BASE,
+    policyDigest: f.prepared.policy.effectivePolicyDigest,
+    configDigest: f.prepared.policy.effectiveConfigDigest,
+    executionAttempt: Number(f.env.REVIEW_EXECUTION_ATTEMPT) - 1,
+    revision: 1,
+    plan,
+    completedTasks: [],
+  };
 }
 
 // ---- The thrown shapes, exactly as `executePersonaPanel` now throws them (pinned below by the
@@ -184,7 +206,26 @@ describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE (authori
     const composedReviewRunner = vi.fn<NonNullable<PublishingReviewDeps['composedReviewRunner']>>()
       .mockRejectedValue(new OpenRouterResponseError(`gateway HTTP 429 ${PRIVATE_DETAIL}`, 429));
 
-    await expect(runPublishingReviewWorker(f.env, { ...f.deps, composedReviewRunner }))
+    const retrySupport = attempt === '1' ? {} : {
+      ...preparedCheckpointHistory({
+        policyDigest: f.prepared.policy.effectivePolicyDigest,
+        configDigest: f.prepared.policy.effectiveConfigDigest,
+        currentHeadSha: HEAD,
+        priorHeadSha: HEAD,
+        baseSha: BASE,
+      }),
+      reviewCheckpoint: {
+        read: vi.fn(async () => ({ checkpoint: exactRetryCheckpoint(f), disputedFindingRechecks: [] })),
+        write: vi.fn(async () => 2),
+      } as never,
+    };
+    const deps = {
+      ...f.deps,
+      ...retrySupport,
+      composedReviewRunner,
+    };
+
+    await expect(runPublishingReviewWorker(f.env, deps))
       .resolves.toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', failureClass: 'rate_limit' });
     expect(composedReviewRunner).toHaveBeenCalledOnce();
     expect(f.panelRunner).not.toHaveBeenCalled();

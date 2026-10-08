@@ -373,12 +373,23 @@ describe('service-owned authoritative completion context', () => {
 
   it('derives a legacy-severity composed V2 worker receipt with the service-prepared config', async () => {
     const f = fixture({}, composedPrepared());
+    const currentReceipt = f.stored.config.review_configuration_receipt!;
+    expect(f.stored.config.swarm_context_isolation).toBe(true);
+    expect(f.stored.config.composed?.swarm_context_isolation).toBe(true);
+    expect(f.stored.config.composed?.quorum_policy).toMatchObject({ mode: 'file_coverage',
+      blocker_fast_path_enabled: true });
+    expect(currentReceipt.effective.composed_budget.configured_overrides)
+      .toMatchObject({ swarm_context_isolation: true, quorum_policy: { mode: 'file_coverage', blocker_fast_path_enabled: true } });
     const legacyPrepared = structuredClone(f.stored);
     const legacyConfig = legacyPrepared.config as unknown as Record<string, unknown>;
     delete legacyConfig.swarm_context_isolation;
     const legacyComposed = legacyConfig.composed as Record<string, unknown>;
     delete legacyComposed.swarm_context_isolation;
     delete legacyComposed.quorum_policy;
+    const legacyOverrides = legacyPrepared.config.review_configuration_receipt!
+      .effective.composed_budget.configured_overrides as Record<string, unknown>;
+    delete legacyOverrides.swarm_context_isolation;
+    delete legacyOverrides.quorum_policy;
     legacyPrepared.policy.effectiveConfigDigest = fingerprintEffectiveReviewConfig({
       config: legacyPrepared.config, transport: legacyPrepared.transport,
     });
