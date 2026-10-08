@@ -722,7 +722,24 @@ export const effectiveReviewConfigReceiptSchema = z.object({
       max_concurrent_tasks: z.number().int().positive(),
       total_turns_hard_cap: z.number().int().positive(),
       operator_total_turn_override: z.literal('COMPOSED_ENGINE_MAX_TURNS'),
-    }).strict(),
+      /** Optional trusted source capability. Older prepared configs remain legacy-readable. */
+      provider_attempt_budget: z.object({
+        capability_version: z.literal('ReviewProviderAttemptBudget.v1'),
+        total_limit: z.number().int().positive().safe(),
+        investigation_limit: z.number().int().positive().safe(),
+        verifier_reserve: z.number().int().nonnegative().safe(),
+        operator_override_value: z.number().int().positive().safe().nullable(),
+      }).strict().optional(),
+    }).strict().superRefine((budget, context) => {
+      const attempts = budget.provider_attempt_budget;
+      if (!attempts) return;
+      const expectedLimit = attempts.operator_override_value ?? budget.central_policy_total_turns;
+      if (attempts.total_limit !== attempts.investigation_limit + attempts.verifier_reserve
+        || attempts.total_limit !== expectedLimit || attempts.total_limit > budget.total_turns_hard_cap) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ['provider_attempt_budget'],
+          message: 'normalized physical request budget disagrees with its trusted allowance' });
+      }
+    }),
     worker_limits: z.object({
       effective_investigation_turns: z.number().int().positive(),
       effective_reviewed_lockfile_patch_chars: z.number().int().positive().nullable(),

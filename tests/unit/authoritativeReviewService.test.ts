@@ -138,6 +138,18 @@ afterEach(() => {
 });
 
 describe('createAuthoritativeReviewService wiring', () => {
+  it('passes only the service-owned composed budget override into prepared policy resolution', () => {
+    const previous = process.env.COMPOSED_ENGINE_MAX_TURNS;
+    process.env.COMPOSED_ENGINE_MAX_TURNS = '200';
+    try {
+      createAuthoritativeReviewService(fixture().options);
+      expect(resolverOptions().composedEngineMaxTurns).toBe('200');
+    } finally {
+      if (previous === undefined) delete process.env.COMPOSED_ENGINE_MAX_TURNS;
+      else process.env.COMPOSED_ENGINE_MAX_TURNS = previous;
+    }
+  });
+
   it('keeps concrete database imports out of the service boundary', () => {
     const source = readFileSync(new URL('../../src/review/authoritativeReviewService.ts', import.meta.url), 'utf8');
     expect(source).not.toMatch(/from\s+['"](?:pg|\.\.\/persistence\/[^'"]+)['"]/u);

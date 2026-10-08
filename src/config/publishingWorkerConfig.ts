@@ -4,7 +4,7 @@ import { disputedBlockerAdjudicatorSchema, type ComposedEngineConfig, type CtRev
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, type CompiledDomainIndex } from '../pipeline/domainIndex';
 import { resolveMaxReviewedLockfilePatchChars } from '../pipeline/hunkFilter';
-import { GROUNDED_VERIFICATION_VERSION } from '../review/groundedReviewEngine';
+import { GROUNDED_DEFAULT_BUDGET, GROUNDED_VERIFICATION_VERSION } from '../review/groundedReviewEngine';
 import { groundedVerificationCapabilityForRuntime } from '../review/groundedCandidateManifestCapability';
 import {
   COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS,
@@ -14,6 +14,7 @@ import {
   COMPOSED_PLAN_MAX_TURNS,
   COMPOSED_TASK_MAX_TURNS,
   COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+  resolveComposedEngineWorkBudget,
 } from '../panel/composedEngineBudget';
 
 export { isTriggerActionAllowed, type TriggerActionOptions };
@@ -471,6 +472,12 @@ export function resolveWorkerConfig(
     };
   });
 
+  const composedProviderAttemptBudget = reviewEngine === 'composed'
+    ? resolveComposedEngineWorkBudget(env, composed.max_turns_total, GROUNDED_DEFAULT_BUDGET.callsPerTask)
+    : undefined;
+  const rawComposedTurnOverride = Number(env.COMPOSED_ENGINE_MAX_TURNS);
+  const normalizedOperatorTurnOverride = Number.isSafeInteger(rawComposedTurnOverride) && rawComposedTurnOverride > 0
+    ? Math.min(rawComposedTurnOverride, COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP) : null;
   const reviewConfigurationReceipt = {
     schema: 'review-yeti-effective-config.v1' as const,
     requested: {
@@ -544,6 +551,13 @@ export function resolveWorkerConfig(
         max_concurrent_tasks: COMPOSED_TASK_CONCURRENCY_CEILING,
         total_turns_hard_cap: COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP,
         operator_total_turn_override: 'COMPOSED_ENGINE_MAX_TURNS' as const,
+        ...(composedProviderAttemptBudget ? { provider_attempt_budget: {
+          capability_version: 'ReviewProviderAttemptBudget.v1' as const,
+          total_limit: composedProviderAttemptBudget.totalTurns + composedProviderAttemptBudget.verificationReserveTurns,
+          investigation_limit: composedProviderAttemptBudget.totalTurns,
+          verifier_reserve: composedProviderAttemptBudget.verificationReserveTurns,
+          operator_override_value: normalizedOperatorTurnOverride,
+        } } : {}),
       },
       worker_limits: {
         effective_investigation_turns: Math.min(PUBLISHING_MAX_TURNS, Math.max(1, maxInvestigationTurns || PUBLISHING_MAX_TURNS)),

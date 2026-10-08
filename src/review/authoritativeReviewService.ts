@@ -117,6 +117,9 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
   const resolver = new AuthoritativePublishingResolver({
     policyRepository: config.policyRepository, policyRef: config.policyRef, policyPath: config.policyPath,
     transport: config.transport, candidateReaderFactory: readerFactory, policyReaderFactory,
+    ...(process.env.COMPOSED_ENGINE_MAX_TURNS === undefined ? {} : {
+      composedEngineMaxTurns: process.env.COMPOSED_ENGINE_MAX_TURNS,
+    }),
   });
   const passthroughEnabled = options.passthroughEnabled === true;
   const operatorRepository = options.operatorPassthroughRepository;

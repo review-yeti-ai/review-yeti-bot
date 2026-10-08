@@ -5,6 +5,7 @@ import { describeErrorChain, errorCauseLogFields, type SanitizedErrorCause } fro
 import { raceWithAbort as sharedRaceWithAbort } from './raceWithAbort';
 import { TokenBatcher, type TokenBatcherOptions } from './tokenBatcher';
 import { parseRetryAfter, retryAfterRemainingMs, type RetryAfter } from './retryAfter';
+import { ProviderAttemptBudgetExceededError } from './providerAttemptBudget';
 
 export class OpenRouterConnectionError extends Error {
   /**
@@ -160,6 +161,8 @@ export interface OpenRouterRequest {
     task?: 'persona' | 'moderator' | 'arbiter' | 'classifier' | 'map_reduce_reduce' | 'composed_plan' | 'composed_task';
     lane?: string;
   };
+  /** Worker-local attempt hook; called once before each physical fetch and never serialized. */
+  beforePhysicalAttempt?: () => void;
 }
 
 export interface TokensUsed {
@@ -2062,6 +2065,21 @@ export class OpenRouterClient implements ReviewModelClient {
     // readers. Stream inactivity is a transport cleanup event, not a request-deadline event.
     const requestAbortController = new AbortController();
     const streamAbortController = new AbortController();
+    let providerAttemptBudgetExceeded: ProviderAttemptBudgetExceededError | undefined;
+    const fetchForAttempt: FetchImplementation = async (input, init) => {
+      const signal = init?.signal;
+      if (signal?.aborted) throw timeoutErrorForSignal(signal as AbortSignal);
+      try {
+        request.beforePhysicalAttempt?.();
+      } catch (error) {
+        if (error instanceof ProviderAttemptBudgetExceededError) providerAttemptBudgetExceeded = error;
+        throw error;
+      }
+      // A budgeted request cannot follow a redirect outside its attempt hook. Leave other clients'
+      // historical redirect behavior unchanged.
+      return this.fetchImplementation(input, request.beforePhysicalAttempt
+        ? { ...init, redirect: 'error' } : init);
+    };
     let requestDeadlineExpired = false;
     let callerCancelled = false;
     let streamTransportFailure = false;
@@ -2112,7 +2130,7 @@ export class OpenRouterClient implements ReviewModelClient {
         applyGatewayPolicyHeaders(headers);
         const body = JSON.stringify(buildOpenRouterChatRequest({ ...request, stream: true }));
         let response = await raceWithAbort(
-          this.fetchImplementation(`${this.baseUrl}/chat/completions`, {
+          fetchForAttempt(`${this.baseUrl}/chat/completions`, {
             method: 'POST',
             headers,
             body,
@@ -2238,7 +2256,7 @@ export class OpenRouterClient implements ReviewModelClient {
           createOpenRouterSdkClient({
             baseUrl: this.baseUrl,
             apiKey: this.apiKey,
-            fetchImplementation: this.fetchImplementation,
+            fetchImplementation: fetchForAttempt,
             onGenerationId: (value) => { generationId = value; },
             onRetryAfter: (value) => { sdkRetryAfter = value; },
             now: this.now,
@@ -2407,7 +2425,9 @@ export class OpenRouterClient implements ReviewModelClient {
       return { model, content, usage, costUSD, raw: data };
     } catch (error: any) {
       let classifiedError: Error;
-      if (callerCancelled || request.signal?.aborted) {
+      if (providerAttemptBudgetExceeded) {
+        classifiedError = providerAttemptBudgetExceeded;
+      } else if (callerCancelled || request.signal?.aborted) {
         classifiedError = new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
       } else if (error instanceof OpenRouterResponseError
           || error instanceof OpenRouterConnectionError

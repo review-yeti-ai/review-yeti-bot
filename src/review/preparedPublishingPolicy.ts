@@ -77,7 +77,8 @@ export function parsePreparedReviewExecution(json: string, expectedDigest: strin
  * and turn clamp remain owned by the shared worker resolver. */
 export function preparePublishingPolicy(file: ImmutableReviewPolicyFile,
   transport: PreparedPublishingPolicy['transport'],
-  trustedTarget?: { owner: string; repo: string }): PreparedPublishingPolicy {
+  trustedTarget?: { owner: string; repo: string },
+  trustedRuntime?: { composedEngineMaxTurns?: string }): PreparedPublishingPolicy {
   try {
     const resolvedTransport = transportSchema.parse(transport);
     const source = reviewPolicySourceSchema.parse(file.source);
@@ -102,7 +103,10 @@ export function preparePublishingPolicy(file: ImmutableReviewPolicyFile,
       },
     };
     const effectivePolicyJson = JSON.stringify(effectivePolicy);
-    const effective = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: effectivePolicyJson }, { ...resolvedTransport, apiKey: '' });
+    const effective = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: effectivePolicyJson,
+      ...(trustedRuntime?.composedEngineMaxTurns === undefined ? {} : {
+        COMPOSED_ENGINE_MAX_TURNS: trustedRuntime.composedEngineMaxTurns,
+      }) }, { ...resolvedTransport, apiKey: '' });
     const config = ctReviewConfigV3Schema.parse(effective);
     const expectedPersonaIds = config.personas.filter((persona) => persona.enabled).map((persona) => persona.id);
     if (expectedPersonaIds.length === 0 || expectedPersonaIds.length > 64

@@ -958,6 +958,30 @@ function composedRuntimeResourcesRefusal(input: { result: WorkerReviewResult; ta
     || canonicalJson(receipt.configuration.value) !== canonicalJson(input.expectedConfiguration)) {
     return 'composed runtime resource receipt is not bound to the service-prepared effective configuration';
   }
+  const expectedAttemptBudget = input.expectedConfiguration.effective.composed_budget.provider_attempt_budget;
+  if (expectedAttemptBudget && (receipt.version !== 'ComposedRuntimeResources.v2' || !receipt.providerAttempts)) {
+    return 'current composed review lacks physical provider attempt evidence';
+  }
+  if (receipt.providerAttempts) {
+    const attempts = receipt.providerAttempts;
+    const budget = receipt.budget;
+    const hardCap = receipt.configuration.value.effective.composed_budget.total_turns_hard_cap;
+    const expectedTotal = expectedAttemptBudget?.total_limit
+      ?? receipt.configuration.value.effective.composed_budget.central_policy_total_turns;
+    if (attempts.totalLimit !== budget.configuredTotalTurns
+      || attempts.investigationLimit !== budget.investigationTurns
+      || attempts.verificationLimit !== budget.verificationReserveTurns
+      || attempts.totalLimit > hardCap
+      || attempts.totalLimit !== expectedTotal
+      || (expectedAttemptBudget && (attempts.investigationLimit !== expectedAttemptBudget.investigation_limit
+        || attempts.verificationLimit !== expectedAttemptBudget.verifier_reserve))
+      || attempts.totalStarted !== attempts.investigationStarted + attempts.verificationStarted
+      || attempts.totalStarted > attempts.totalLimit
+      || attempts.investigationStarted > attempts.investigationLimit
+      || attempts.verificationStarted > attempts.verificationLimit) {
+      return 'composed physical provider attempts disagree with the prepared and reserved budgets';
+    }
+  }
   const verifierCalls = input.result.groundedReview?.version === GROUNDED_REVIEW_RECEIPT_V2_VERSION
     ? input.result.groundedReview.verification.calls : null;
   if (verifierCalls === null || receipt.usage.verifierCalls.value !== verifierCalls) {

@@ -15,6 +15,7 @@ import { parseChangedFiles } from '../../src/review/changedFiles';
 import { groundedRelativeImportCandidates } from '../../src/review/groundedContractResolver';
 import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
 import { completeComposedRuntimeResources, ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
+import { ProviderAttemptBudget } from '../../src/gateway/providerAttemptBudget';
 import type { ReviewModelClient } from '../../src/gateway/openRouterClient';
 import type { RepoFileProvider } from '../../src/panel/panelEngine';
 import {
@@ -302,14 +303,17 @@ describe('WorkerReviewCompletion.v1', () => {
     }) }, { baseUrl: 'https://gateway.example.invalid', apiKey: 'test', model: 'test-model' });
     const configuration = prepared.review_configuration_receipt;
     if (!configuration) throw new Error('test effective configuration receipt was not produced');
-    const observer = new ComposedRuntimeResourceObserver({ configDigest: expectedCoordinates.configDigest, configuration });
+    const providerAttemptBudget = new ProviderAttemptBudget({ totalLimit: 100, investigationLimit: 88, verificationLimit: 12 });
+    const observer = new ComposedRuntimeResourceObserver({ configDigest: expectedCoordinates.configDigest, configuration,
+      providerAttemptBudget });
     observer.configureBudget({ configuredTotalTurns: 100, investigationTurns: 88, verificationReserveTurns: 12 });
     observer.setPlan([task]);
     observer.markTaskStarted(task.id);
     observer.markTaskOutcome(task.id, 'completed', sourceDelivery);
     const observation = observer.snapshot('terminal');
     if (!observation) throw new Error('test composed resource observation was not produced');
-    const resources = completeComposedRuntimeResources({ observation, configDigest: expectedCoordinates.configDigest, verifierCalls: 0 });
+    const resources = completeComposedRuntimeResources({ observation, configDigest: expectedCoordinates.configDigest,
+      verifierCalls: 0, providerAttemptBudget: providerAttemptBudget.snapshot() });
     if (!resources) throw new Error('test worker resource receipt was not produced');
 
     const input = completion({ result: { ...completion().result, personas: [lane(task.id, { sourceDelivery })], taskPlan: [task] } });
@@ -330,6 +334,58 @@ describe('WorkerReviewCompletion.v1', () => {
       composedChangedPaths: ['src/example.ts'], composedMaxTasks: 8, composedEffectiveConfiguration: configuration };
     expect(derive(v2, trusted)).toMatchObject({ valid: true, evidence: { reviewEngine: 'composed',
       coverageComplete: true, verdict: 'SHIP' } });
+
+    const declaredOperatorAllowance = structuredClone(v2);
+    declaredOperatorAllowance.result.composedResources!.budget = { configuredTotalTurns: 200,
+      investigationTurns: 188, verificationReserveTurns: 12 };
+    declaredOperatorAllowance.result.composedResources!.providerAttempts = {
+      version: 'ReviewProviderAttemptBudget.v1', totalLimit: 200,
+      investigationLimit: 188, verificationLimit: 12, totalStarted: 0,
+      investigationStarted: 0, verificationStarted: 0, deniedAttempts: 0,
+      investigationDenied: 0, verificationDenied: 0,
+    };
+    expectInvalid(derive(declaredOperatorAllowance, trusted), /physical provider attempts disagree/u);
+
+    const legacyPrepared = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({
+      review_engine: 'composed', personas: ['security'],
+    }) }, { baseUrl: 'https://gateway.example.invalid', apiKey: 'test', model: 'test-model' });
+    const legacyConfiguration = structuredClone(legacyPrepared.review_configuration_receipt!);
+    delete (legacyConfiguration.effective.composed_budget as Record<string, unknown>).provider_attempt_budget;
+    const legacyGroundedPublisher = structuredClone(v2);
+    delete legacyGroundedPublisher.result.reviewDecision;
+    legacyGroundedPublisher.result.composedResources!.version = 'ComposedRuntimeResources.v1' as never;
+    delete legacyGroundedPublisher.result.composedResources!.providerAttempts;
+    legacyGroundedPublisher.result.composedResources!.configuration = { value: legacyConfiguration, unavailableReason: null };
+    const { reviewDecisionPolicy: _legacyPolicy, ...legacyTrustedContract } = trusted;
+    const legacyDerived = derive(legacyGroundedPublisher, { ...legacyTrustedContract,
+      composedEffectiveConfiguration: legacyConfiguration });
+    expect(legacyDerived, JSON.stringify(legacyDerived)).toMatchObject({ valid: true,
+      evidence: { reviewEngine: 'composed', coverageComplete: true, verdict: 'SHIP' } });
+
+    const missingPhysicalAttempts = structuredClone(v2);
+    missingPhysicalAttempts.result.composedResources!.version = 'ComposedRuntimeResources.v1' as never;
+    delete missingPhysicalAttempts.result.composedResources!.providerAttempts;
+    expectInvalid(derive(missingPhysicalAttempts, trusted), /lacks physical provider attempt evidence/u);
+
+    const overHardCap = structuredClone(v2);
+    overHardCap.result.composedResources!.budget = { configuredTotalTurns: 201,
+      investigationTurns: 189, verificationReserveTurns: 12 };
+    overHardCap.result.composedResources!.providerAttempts = {
+      version: 'ReviewProviderAttemptBudget.v1', totalLimit: 201,
+      investigationLimit: 189, verificationLimit: 12, totalStarted: 0,
+      investigationStarted: 0, verificationStarted: 0, deniedAttempts: 0,
+      investigationDenied: 0, verificationDenied: 0,
+    };
+    expectInvalid(derive(overHardCap, trusted), /physical provider attempts disagree/u);
+
+    const overInvestigationBudget = structuredClone(v2);
+    overInvestigationBudget.result.composedResources!.providerAttempts = {
+      version: 'ReviewProviderAttemptBudget.v1', totalLimit: 100,
+      investigationLimit: 88, verificationLimit: 12, totalStarted: 89,
+      investigationStarted: 89, verificationStarted: 0, deniedAttempts: 0,
+      investigationDenied: 0, verificationDenied: 0,
+    } as never;
+    expect(() => derive(overInvestigationBudget, trusted)).toThrow();
 
     // Exercise the production service builder rather than hand-supplying its missing authority.
     const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
@@ -361,6 +417,45 @@ describe('WorkerReviewCompletion.v1', () => {
     serviceCompletion.result.composedResources!.configDigest = { value: coordinates.configDigest, unavailableReason: null };
     serviceCompletion.result.composedResources!.configuration.value = frozen.config.review_configuration_receipt!;
     expect(derive(serviceCompletion, { ...serviceContext.coverage, expectedCoordinates: coordinates })).toMatchObject({
+      valid: true, evidence: { reviewEngine: 'composed', coverageComplete: true, verdict: 'SHIP' },
+    });
+
+    const operator200 = preparePublishingPolicy({ content, source: {
+      repositoryId: 4321, repository: 'exampleorg/central-policy', sha: 'f'.repeat(40),
+      path: 'policy/review.json', contentDigest: sha256(content),
+    } }, { baseUrl: 'https://gateway.example.invalid', model: 'test-model' }, undefined,
+    { composedEngineMaxTurns: '200' });
+    const operatorCoordinates = { ...expectedCoordinates, policyDigest: operator200.policy.effectivePolicyDigest,
+      configDigest: operator200.policy.effectiveConfigDigest };
+    const operatorCurrent = current;
+    const operatorContext = await createAuthoritativeCompletionContext({ getStoredPrepared: async () => operator200,
+      readerFactory: async () => ({ currentCandidate: async () => operatorCurrent,
+        exactCurrentDiff: async () => ({ current: operatorCurrent, diff: '', expectedFileCount: 1, changedFiles }) }),
+      publishingResolver: { resolve: async () => ({ current: operatorCurrent, prepared: operator200,
+        identity: buildAuthoritativeReviewIdentity({ requested: operatorCurrent, current: operatorCurrent,
+          policy: operator200.policy }) }) },
+    });
+    const operatorServiceContext = await operatorContext({ coordinates: { ...operatorCoordinates,
+      attemptId: `${operatorCoordinates.runId}-g0-e2` }, reviewGeneration: 0, expectedAppId: 1234,
+      externalId: 'service-gate', checkId: 456, creationState: 'bound', desiredState: 'in_progress',
+      desiredVersion: 1, publishedVersion: 1, current: true });
+    const operatorCompletion = structuredClone(serviceCompletion);
+    Object.assign(operatorCompletion, operatorCoordinates);
+    operatorCompletion.result.reviewDecision!.policyDigest = operatorCoordinates.policyDigest;
+    operatorCompletion.result.composedResources!.configDigest = {
+      value: operatorCoordinates.configDigest, unavailableReason: null,
+    };
+    operatorCompletion.result.composedResources!.configuration.value = operator200.config.review_configuration_receipt!;
+    operatorCompletion.result.composedResources!.budget = { configuredTotalTurns: 200,
+      investigationTurns: 188, verificationReserveTurns: 12 };
+    operatorCompletion.result.composedResources!.providerAttempts = {
+      version: 'ReviewProviderAttemptBudget.v1', totalLimit: 200,
+      investigationLimit: 188, verificationLimit: 12, totalStarted: 0,
+      investigationStarted: 0, verificationStarted: 0, deniedAttempts: 0,
+      investigationDenied: 0, verificationDenied: 0,
+    };
+    expect(derive(operatorCompletion, { ...operatorServiceContext.coverage,
+      expectedCoordinates: operatorCoordinates })).toMatchObject({
       valid: true, evidence: { reviewEngine: 'composed', coverageComplete: true, verdict: 'SHIP' },
     });
 

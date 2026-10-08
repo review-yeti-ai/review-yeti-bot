@@ -11,6 +11,7 @@ import { REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { groundedRelativeImportCandidates } from '../../src/review/groundedContractResolver';
 import type { ReviewModelClient } from '../../src/gateway/openRouterClient';
+import { ProviderAttemptBudget } from '../../src/gateway/providerAttemptBudget';
 import type { RepoFileProvider } from '../../src/panel/panelEngine';
 
 const head = 'a'.repeat(40);
@@ -471,6 +472,38 @@ describe('grounded review engine', () => {
     expect(result.coverageComplete).toBe(false);
     expect(result.calls).toBe(1);
     expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it('spends only the verifier partition of the shared physical request budget', async () => {
+    const path = 'src/verify.ts';
+    const previous = 'oldOperation();\n';
+    const current = 'newOperation();\n';
+    const changedPatch = '@@ -1 +1 @@\n-oldOperation();\n+newOperation();\n';
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (_path, side) => ({ content: side === 'head' ? current : previous,
+        sha: side === 'head' ? head : base, presence: 'present', source: { repository, path, side } }),
+      readDiff: () => ({ patch: changedPatch, identity: { repository, headSha: head, baseSha: base } }),
+    };
+    const providerAttemptBudget = new ProviderAttemptBudget({ totalLimit: 2, investigationLimit: 1, verificationLimit: 1 });
+    providerAttemptBudget.beginAttempt('investigation');
+    const complete = vi.fn(async (request: any) => {
+      request.beforePhysicalAttempt?.();
+      return { model: 'test-verifier', content: JSON.stringify({ status: 'insufficient', citations: [] }), usage: null, costUSD: null };
+    });
+
+    const verification = await runIndependentGroundedVerification({
+      findings: [{ severity: 'P1', path, line: 1, title: 'Unsafe changed call' }],
+      changedFiles: [{ path, patch: changedPatch }], provider, repository, headSha: head, baseSha: base,
+      verificationVersion: GROUNDED_VERIFICATION_VERSION, severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+      model: 'test-model', client: { complete } as unknown as ReviewModelClient, providerAttemptBudget,
+    });
+
+    expect(complete).toHaveBeenCalledOnce();
+    expect(verification).toMatchObject({ calls: 1, budget: { totalCalls: 1 },
+      outcomes: [{ status: 'insufficient' }], unverifiedBlockerCount: 1, coverageComplete: false });
+    expect(providerAttemptBudget.snapshot()).toMatchObject({ totalLimit: 2, totalStarted: 2,
+      investigationStarted: 1, verificationStarted: 1, deniedAttempts: 0 });
   });
 
   it('rejects a stale provider content digest without burning a v2 verifier call', async () => {

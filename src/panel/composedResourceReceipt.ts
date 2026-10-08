@@ -4,6 +4,7 @@ import { effectiveReviewConfigReceiptSchema, type EffectiveReviewConfigReceipt }
 import { taskSourceReceiptSchema, type TaskSourceReceipt } from '../review/taskSourceDelivery';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from '../review/groundedEvidenceV2';
 import type { ReviewTask } from '../reviewTaskContract';
+import type { ProviderAttemptBudget, ProviderAttemptBudgetSnapshot } from '../gateway/providerAttemptBudget';
 
 const count = z.number().int().nonnegative().safe();
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -24,8 +25,30 @@ function nullableReasonPair<T extends z.ZodTypeAny>(value: T) {
     });
 }
 
+const providerAttemptBudgetSnapshotSchema = z.object({
+  version: z.literal('ReviewProviderAttemptBudget.v1'),
+  totalLimit: count,
+  investigationLimit: count,
+  verificationLimit: count,
+  totalStarted: count,
+  investigationStarted: count,
+  verificationStarted: count,
+  deniedAttempts: count,
+  investigationDenied: count,
+  verificationDenied: count,
+}).strict().superRefine((budget, context) => {
+  if (budget.totalLimit !== budget.investigationLimit + budget.verificationLimit
+    || budget.totalStarted !== budget.investigationStarted + budget.verificationStarted
+    || budget.totalStarted > budget.totalLimit || budget.investigationStarted > budget.investigationLimit
+    || budget.verificationStarted > budget.verificationLimit
+    || budget.deniedAttempts !== budget.investigationDenied + budget.verificationDenied) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['totalStarted'],
+      message: 'provider attempts must stay within their total and phase budgets' });
+  }
+});
+
 export const composedRuntimeResourcesSchema = z.object({
-  version: z.literal('ComposedRuntimeResources.v1'),
+  version: z.enum(['ComposedRuntimeResources.v1', 'ComposedRuntimeResources.v2']),
   stage: z.enum(['composed_engine', 'worker_completion']),
   discoveryScope: z.literal('composed_engine'),
   evidenceSemanticsVersion: z.literal(GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION),
@@ -37,6 +60,7 @@ export const composedRuntimeResourcesSchema = z.object({
     investigationTurns: count,
     verificationReserveTurns: count,
   }).strict(),
+  providerAttempts: providerAttemptBudgetSnapshotSchema.optional(),
   usage: z.object({
     totalTurns: count,
     planningTurns: count,
@@ -73,6 +97,19 @@ export const composedRuntimeResourcesSchema = z.object({
   }).strict(),
 }).strict().superRefine((receipt, context) => {
   const { budget, usage, tasks, coverage } = receipt;
+  if ((receipt.version === 'ComposedRuntimeResources.v1') === (receipt.providerAttempts !== undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['providerAttempts'],
+      message: 'physical provider attempt evidence is required only by resource receipt v2' });
+  }
+  if (receipt.version === 'ComposedRuntimeResources.v2'
+    && (budget.configuredTotalTurns < 1 || budget.investigationTurns < 1)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['budget'],
+      message: 'composed physical attempt budgets must allow at least one investigation request' });
+  }
+  if (receipt.providerAttempts && receipt.stage === 'composed_engine' && receipt.providerAttempts.verificationStarted !== 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['providerAttempts', 'verificationStarted'],
+      message: 'the composed engine cannot claim later verifier attempts' });
+  }
   if (budget.configuredTotalTurns !== budget.investigationTurns + budget.verificationReserveTurns) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['budget'], message: 'turn budget must conserve the verifier reserve' });
   }
@@ -131,6 +168,7 @@ export class ComposedRuntimeResourceObserver {
   private configuredTotalTurns: number | null = null;
   private investigationTurns: number | null = null;
   private verificationReserveTurns: number | null = null;
+  private readonly providerAttemptBudget?: ProviderAttemptBudget;
   private readonly plan = new Map<string, ReviewTask>();
   private readonly statuses = new Map<string, TaskStatus>();
   private readonly sourceReceipts = new Map<string, TaskSourceReceipt>();
@@ -147,6 +185,7 @@ export class ComposedRuntimeResourceObserver {
   constructor(input: {
     configDigest?: string;
     configuration?: EffectiveReviewConfigReceipt;
+    providerAttemptBudget?: ProviderAttemptBudget;
     now?: () => number;
     onSnapshot?: (snapshot: ComposedRuntimeResources) => void;
   }) {
@@ -155,6 +194,7 @@ export class ComposedRuntimeResourceObserver {
     this.configDigest = sha256.safeParse(input.configDigest).success ? input.configDigest! : null;
     this.configuration = input.configuration && effectiveReviewConfigReceiptSchema.safeParse(input.configuration).success
       ? input.configuration : null;
+    this.providerAttemptBudget = input.providerAttemptBudget;
     this.onSnapshot = input.onSnapshot;
   }
 
@@ -249,7 +289,7 @@ export class ComposedRuntimeResourceObserver {
     const engineExecutionState = mode === 'running' ? 'running'
       : completed.length === plannedTasks.length && remainingPaths.length === 0 ? 'complete' : 'incomplete';
     const result = {
-      version: 'ComposedRuntimeResources.v1' as const,
+      version: this.providerAttemptBudget ? 'ComposedRuntimeResources.v2' as const : 'ComposedRuntimeResources.v1' as const,
       stage: 'composed_engine' as const,
       discoveryScope: 'composed_engine' as const,
       evidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
@@ -265,6 +305,7 @@ export class ComposedRuntimeResourceObserver {
         investigationTurns: this.investigationTurns,
         verificationReserveTurns: this.verificationReserveTurns,
       },
+      ...(this.providerAttemptBudget ? { providerAttempts: this.providerAttemptBudget.snapshot() } : {}),
       usage: {
         totalTurns: this.planningTurns + this.discoveryTurns + this.taskFinalizationTurns,
         planningTurns: this.planningTurns,
@@ -319,10 +360,17 @@ export function completeComposedRuntimeResources(input: {
   observation: unknown;
   configDigest?: string;
   verifierCalls: number | null;
+  providerAttemptBudget?: ProviderAttemptBudgetSnapshot;
   verifierCallsUnknownReason?: string;
 }): ComposedRuntimeResources | undefined {
   const parsed = composedRuntimeResourcesSchema.safeParse(input.observation);
   if (!parsed.success || parsed.data.stage !== 'composed_engine') return undefined;
+  if (input.providerAttemptBudget && parsed.data.version !== 'ComposedRuntimeResources.v2') return undefined;
+  if (input.providerAttemptBudget && (input.providerAttemptBudget.totalLimit !== parsed.data.budget.configuredTotalTurns
+    || input.providerAttemptBudget.investigationLimit !== parsed.data.budget.investigationTurns
+    || input.providerAttemptBudget.verificationLimit !== parsed.data.budget.verificationReserveTurns
+    || input.providerAttemptBudget.investigationStarted !== parsed.data.providerAttempts?.investigationStarted
+    || input.providerAttemptBudget.investigationDenied !== parsed.data.providerAttempts?.investigationDenied)) return undefined;
   const trustedDigest = sha256.safeParse(input.configDigest).success ? input.configDigest! : null;
   const configDigest = trustedDigest !== null && parsed.data.configDigest.value === trustedDigest
     ? { value: trustedDigest, unavailableReason: null }
@@ -335,6 +383,7 @@ export function completeComposedRuntimeResources(input: {
       || 'The worker completion bridge did not receive an observed grounded-verifier call count.' };
   const completed = {
     ...parsed.data,
+    ...(input.providerAttemptBudget ? { providerAttempts: input.providerAttemptBudget } : {}),
     stage: 'worker_completion' as const,
     engineExecutionState: parsed.data.engineExecutionState === 'running' || parsed.data.tasks.interrupted.length > 0
       ? 'interrupted' as const : parsed.data.engineExecutionState,
