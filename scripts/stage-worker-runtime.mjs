@@ -142,7 +142,11 @@ async function main() {
 
   // Qualification images receive only neutral, digest-pinned worker inputs and descriptors.
   // Oracle/scorer files and the unrelated eight-case offline corpus are never staged.
-  for (const fixture of await verifyQualificationFixtureAllowlist(packageRoot)) {
+  // The phase plan is a host-side ROOTGO descriptor that pins the built image
+  // and runtime manifest. Copying it into the image would create a digest cycle.
+  for (const fixture of await verifyQualificationFixtureAllowlist(packageRoot, [
+    'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json',
+  ])) {
     files.add(relativeSafe(path.resolve(packageRoot, fixture.path)));
   }
 

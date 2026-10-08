@@ -248,6 +248,10 @@ export function createNormalEngineQualificationRepoFileProvider(
   }).files.map((file) => [file.path, file]));
   const readAt = async (path: string, side: 'head' | 'base' | 'merge-base') => {
     if (!validPath(path)) throw new Error('normal_engine_qualification_source_path_invalid');
+    if (request.arm === 'preflight-source-coverage-control' && side === 'head' && path === 'src/modules/module-01.ts') {
+      return { content: null, sha: input.source.headSha, presence: 'unavailable' as const,
+        source: { repository, path, side }, unavailableReason: 'qualification coverage fault withholds this exact head window' };
+    }
     const revision = side === 'head' ? source.headRevision : side === 'base' ? source.baseRevision : undefined;
     if (!revision) return { content: null, sha: input.source.headSha, presence: 'unavailable' as const,
       source: { repository, path, side } };
@@ -355,10 +359,18 @@ function requiredRecord(value: unknown, name: string): Record<string, unknown> {
   return record;
 }
 
-function budgetProfileForArm(arm: NormalEngineQualificationArm): NormalEngineQualificationBudgetProfile {
+function budgetProfileForArm(arm: NormalEngineQualificationArm, caseId?: string): NormalEngineQualificationBudgetProfile {
+  if (caseId === 'ws5-current-1dd-v2-sequence-b' && arm === 'repair-head-history-unavailable') {
+    return 'required-history-preflight-15s';
+  }
+  if (caseId?.startsWith('ws5-current-1dd-v2-')
+    && ['p2-only', 'repair-introduction', 'repair-head-history', 'repair-head-empty-history'].includes(arm)) {
+    return 'normal-canary-240s-capture-outside-child';
+  }
   if (arm === 'adjudicator-recheck') return 'normal-canary-120s';
   if (arm === 'provider-failure') return 'bifrost-auth-rejection-30s-one-request';
   if (arm === 'resource-exhaustion') return 'resource-exhaustion-60s-one-request';
+  if (arm === 'preflight-source-coverage-control') return 'source-coverage-preflight-15s';
   if (arm === 'large-crossfile') return 'large-crossfile-canary-300s';
   if (['p2-only', 'repair-introduction', 'repair-head-history', 'repair-head-repeat',
     'repair-head-empty-history', 'repair-head-history-unavailable', 'repair-head-verifier-unavailable'].includes(arm)) {
@@ -486,23 +498,27 @@ function qualificationHistoryBinding(
   workerEnv: NodeJS.ProcessEnv,
 ): import('./normalEngineQualificationHistory').NormalEngineQualificationHistoryBinding | undefined {
   if (!request.historyRunId) return undefined;
+  const lineage = request.historyLineage;
+  if (!lineage) throw new Error('normal_engine_qualification_history_lineage_missing');
   const repair = buildNormalEngineQualificationSourceInput(request);
   const sameHeadRecheck = request.arm === 'adjudicator-recheck';
   return {
     runId: request.historyRunId,
     repairRunId: request.runId,
-    sequenceId: 'ws5-repair-sequence-v1',
-    sourceCaseId: 'ws5-sequence-a-v1',
-    repairCaseId: sameHeadRecheck ? 'ws5-sequence-a-v1' : 'ws5-sequence-b-v1',
+    sequenceId: lineage.sequenceId,
+    sourceCaseId: lineage.sourceCaseId,
+    repairCaseId: sameHeadRecheck ? lineage.sourceCaseId : lineage.repairCaseId,
     bundleSha256: request.fixture.bundleSha256,
-    sourceInputSha256: '31feff802596e9e8b52aa45b64a1a00fc2af5e221158815c007188b3b11877a5',
-    repairInputSha256: request.fixture.inputSha256,
+    sourceInputSha256: lineage.sourceInputSha256,
+    repairInputSha256: lineage.repairInputSha256,
     repositoryId: request.fixture.repository.repositoryId,
     repository: `${request.fixture.repository.owner}/${request.fixture.repository.repo}`,
     currentBaseSha: repair.source.baseSha,
     currentHeadSha: repair.source.headSha,
     policyDigest: String(workerEnv.REVIEW_POLICY_DIGEST || ''),
     configDigest: String(workerEnv.REVIEW_CONFIG_DIGEST || ''),
+    configurationVariant: request.configurationVariant,
+    runtime: request.runtime,
     mode: sameHeadRecheck ? 'same-head-recheck' : 'repair-head',
     currentInputSha256: request.fixture.inputSha256,
   };
@@ -523,7 +539,8 @@ function qualificationHistorySource(
         return {
           status: 'unavailable' as const, events: [], findings: [], eventCount: 0, findingCount: 0,
           loadedEventCount: 0, loadedFindingCount: 0, eventOmittedCount: 0, findingOmittedCount: 0,
-          legacyOmittedCount: 0, omissions: ['qualification history access unavailable for this fixed arm'],
+          legacyOmittedCount: 0, omissions: [request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2'
+            ? 'injected required-history transport failure before planning' : 'qualification history access unavailable for this fixed arm'],
         };
       },
       async recordVerification() { return false; },
@@ -572,18 +589,23 @@ function historyStateFromCompletion(
   gateDecisionSha256: string,
 ): NormalEngineQualificationHistoryState | undefined {
   if (request.arm !== 'repair-introduction' || !completion.result.groundedReview
-    || request.configurationVariant !== NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT
-    || disputedBlockerAdjudicator.state !== 'available' || !disputedBlockerAdjudicator.modelAlias
-    || !disputedBlockerAdjudicator.reasoningEffort
+    || !request.historyLineage
     || !canonicalEvidenceSha256 || receipt.coverage.fullPanelComplete !== true
     || receipt.coverage.groundedReviewComplete === false) return undefined;
+  const configuredAdjudicator = request.configurationVariant === NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT;
+  if ((configuredAdjudicator && (disputedBlockerAdjudicator.state !== 'available' || !disputedBlockerAdjudicator.modelAlias
+      || !disputedBlockerAdjudicator.reasoningEffort))
+    || (!configuredAdjudicator && disputedBlockerAdjudicator.state === 'available')) return undefined;
   const grounded = completion.result.groundedReview;
   if (grounded.version !== GROUNDED_REVIEW_RECEIPT_V2_VERSION
     || grounded.semanticsVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
     || grounded.verification.semanticsVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION) return undefined;
   if (!grounded.coverage.complete || !grounded.verification.coverageComplete) return undefined;
-  const verifiedAdjudicator = { state: 'available' as const,
-    modelAlias: disputedBlockerAdjudicator.modelAlias!, reasoningEffort: disputedBlockerAdjudicator.reasoningEffort! };
+  const verifiedAdjudicator: NormalEngineQualificationHistoryState['disputedBlockerAdjudicator'] = configuredAdjudicator
+    ? { state: 'available', modelAlias: disputedBlockerAdjudicator.modelAlias!,
+      reasoningEffort: disputedBlockerAdjudicator.reasoningEffort! }
+    : { state: disputedBlockerAdjudicator.state === 'inactive' ? 'inactive' : 'unconfigured',
+      modelAlias: null, reasoningEffort: null };
   const contextDigest = grounded.coverage.digest;
   const outcomes = grounded.verification.outcomes;
   const events = outcomes.map((outcome) => {
@@ -645,7 +667,7 @@ function historyStateFromCompletion(
     configurationVariant: request.configurationVariant,
     executionAttempt: completion.executionAttempt,
     disputedBlockerAdjudicator: verifiedAdjudicator,
-    adjudicatorRecheckTarget: selectQualificationAdjudicatorRecheckTarget({
+    adjudicatorRecheckTarget: configuredAdjudicator ? selectQualificationAdjudicatorRecheckTarget({
       historyLoad,
       qualificationRunId: request.runId,
       workerRunId: completion.runId,
@@ -654,22 +676,23 @@ function historyStateFromCompletion(
       headSha: completion.headSha,
       policyDigest: completion.policyDigest,
       configDigest: completion.configDigest,
-    }),
+    }) : null,
     runId: request.runId,
-    sequenceId: 'ws5-repair-sequence-v1',
-    caseId: request.fixture.caseId,
+    sequenceId: request.historyLineage.sequenceId,
+    caseId: request.historyLineage.sourceCaseId,
     bundleSha256: request.fixture.bundleSha256,
-    inputSha256: request.fixture.inputSha256,
-    repairCaseId: 'ws5-sequence-b-v1',
-    repairInputSha256: '4023515cfc0daef0b1c00089924ca12d5071080da4e97d6e964c03c8596bbceb',
-    repairBaseSha: '1035dc8db9a222447aa774fd9660c224e5d37655',
-    repairHeadSha: '1b183caf5f8c518a3acda3fb2d8eea38133eed98',
+    inputSha256: request.historyLineage.sourceInputSha256,
+    repairCaseId: request.historyLineage.repairCaseId,
+    repairInputSha256: request.historyLineage.repairInputSha256,
+    repairBaseSha: request.historyLineage.repairBaseSha,
+    repairHeadSha: request.historyLineage.repairHeadSha,
     repositoryId: request.fixture.repository.repositoryId,
     repository: `${request.fixture.repository.owner}/${request.fixture.repository.repo}`,
     baseSha: request.fixture.baseSha,
     headSha: request.fixture.headSha,
     policyDigest: request.policy.policyDigest,
     configDigest: request.policy.configDigest,
+    runtime: request.runtime,
     workerCompletionSha256: sha256(canonicalJson(completion)),
     canonicalEvidenceSha256,
     gateDecisionSha256,
@@ -778,11 +801,26 @@ function qualificationGroundedVerification(
 function panelSecondsForBudget(profile: NormalEngineQualificationBudgetProfile): number | null {
   switch (profile) {
     case 'normal-canary-120s': return 120;
+    case 'normal-canary-240s-capture-outside-child': return 240;
     case 'large-crossfile-canary-300s': return 300;
     case 'bifrost-auth-rejection-30s-one-request': return 30;
     case 'resource-exhaustion-60s-one-request': return 60;
+    case 'source-coverage-preflight-15s': return 15;
+    case 'required-history-preflight-15s': return 15;
     case 'prepared-policy-default': return null;
   }
+}
+
+/** Capture is a separate post-child phase when true, so it cannot extend the review worker deadline. */
+export function normalEngineQualificationChildDeadlineAt(
+  nowMs: number,
+  activeMs: number,
+  captureOutsideChild: boolean,
+): string | null {
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0 || !Number.isSafeInteger(activeMs) || activeMs <= 0) return null;
+  const deadline = nowMs + activeMs + (captureOutsideChild ? 0 : 300_000);
+  if (!Number.isSafeInteger(deadline)) return null;
+  return new Date(deadline).toISOString();
 }
 
 export async function runNormalEngineQualificationCase(
@@ -840,13 +878,14 @@ export async function runNormalEngineQualificationCase(
       || preparedAdjudicatorReceipt?.reasoning_effort === undefined))) {
     throw new Error('normal_engine_qualification_configuration_variant_mismatch');
   }
-  const sourceCoverageComplete = buildDeterministicCoverageManifest(parsedDiff.files).complete;
+  const sourceCoverageComplete = request.arm === 'preflight-source-coverage-control'
+    ? false : buildDeterministicCoverageManifest(parsedDiff.files).complete;
   const effectiveChangedPaths = buildEffectiveReviewFiles(parsedDiff.files, { pathFilters: prepared.config.path_filters })
     .files.map((file) => file.path);
   const now = dependencies.now || Date.now;
   const startedAt = new Date(now()).toISOString();
-  const testBudgetProfile = dependencies.testBudgetProfile ?? budgetProfileForArm(request.arm);
-  if (testBudgetProfile !== budgetProfileForArm(request.arm)) {
+  const testBudgetProfile = dependencies.testBudgetProfile ?? budgetProfileForArm(request.arm, request.fixture.caseId);
+  if (testBudgetProfile !== budgetProfileForArm(request.arm, request.fixture.caseId)) {
     throw new Error('normal_engine_qualification_test_budget_profile_mismatch');
   }
   const panelBudgetSeconds = panelSecondsForBudget(testBudgetProfile);
@@ -966,7 +1005,9 @@ export async function runNormalEngineQualificationCase(
     REVIEW_PUBLICATION_MODE: 'disabled',
   };
   const terminalDeadlineAt = panelBudgetSeconds === null ? null
-    : new Date(now() + (request.arm === 'resource-exhaustion' ? panelBudgetSeconds : panelBudgetSeconds + 300) * 1_000).toISOString();
+    : normalEngineQualificationChildDeadlineAt(now(), panelBudgetSeconds * 1_000,
+      !['normal-canary-240s-capture-outside-child', 'source-coverage-preflight-15s', 'required-history-preflight-15s'].includes(testBudgetProfile)
+        && request.arm !== 'resource-exhaustion' && request.arm !== 'provider-failure');
   if (terminalDeadlineAt) workerEnv.REVIEW_TERMINAL_DEADLINE = terminalDeadlineAt;
   let completion: WorkerReviewCompletion | undefined;
   let workerReceipt: PublishingReviewReceipt | undefined;
@@ -1008,6 +1049,8 @@ export async function runNormalEngineQualificationCase(
     }
   }
   const fixtureProvider = createNormalEngineQualificationRepoFileProvider(request);
+  let sourceCoverageControlSatisfied = false;
+  let requiredHistoryControlSatisfied = false;
   try {
     assertNoAmbientComposedEngineOverrides();
     workerReceipt = await (dependencies.runPublishingWorker || runPublishingReviewWorker)(workerEnv, {
@@ -1045,6 +1088,23 @@ export async function runNormalEngineQualificationCase(
         if (sourceRequest.repo !== `${input.source.repository.owner}/${input.source.repository.repo}`
           || sourceRequest.prNumber !== input.source.prNumber || sourceRequest.expectedBaseSha !== input.source.baseSha
           || sourceRequest.expectedHeadSha !== input.source.headSha) throw new Error('qualification source identity mismatch');
+        if (request.arm === 'preflight-source-coverage-control') {
+          const readFileAt = fixtureProvider.readFileAt;
+          if (!readFileAt) throw new Error('normal_engine_qualification_source_window_provider_unavailable');
+          const withheld = await readFileAt('src/modules/module-01.ts', 'head');
+          sourceCoverageControlSatisfied = withheld.presence === 'unavailable' && withheld.content === null
+            && withheld.source?.side === 'head' && withheld.source?.path === 'src/modules/module-01.ts';
+          if (!sourceCoverageControlSatisfied) throw new Error('normal_engine_qualification_coverage_fault_not_observed');
+          throw new Error('normal_engine_qualification_required_source_window_unavailable');
+        }
+        if (request.arm === 'repair-head-history-unavailable' && request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2') {
+          if (!history) throw new Error('normal_engine_qualification_required_history_source_missing');
+          const historyLoad = await history.read(executionSignal);
+          requiredHistoryControlSatisfied = historyLoad.status === 'unavailable' && historyLoad.eventCount === 0
+            && historyLoad.findingCount === 0;
+          if (!requiredHistoryControlSatisfied) throw new Error('normal_engine_qualification_required_history_transport_fault_not_observed');
+          throw new Error('normal_engine_qualification_required_history_unavailable_transport');
+        }
         return { baseSha: input.source.baseSha, headSha: input.source.headSha, diff: sourceDiff, diffDigest: diffSha256, githubReads: 0 };
       },
       currentPullRequestVerifier: async (candidate) => {
@@ -1065,9 +1125,22 @@ export async function runNormalEngineQualificationCase(
   } catch (error) {
     workerError = error;
   }
+  if (request.arm === 'preflight-source-coverage-control' && sourceCoverageControlSatisfied
+    && workerError instanceof Error && workerError.message === 'normal_engine_qualification_required_source_window_unavailable') {
+    workerError = undefined;
+  }
+  if (request.arm === 'repair-head-history-unavailable' && request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2'
+    && requiredHistoryControlSatisfied && workerError instanceof Error
+    && workerError.message === 'normal_engine_qualification_required_history_unavailable_transport') {
+    workerError = undefined;
+  }
   assertNoAmbientComposedEngineOverrides();
 
-  if (request.phase === 'repair-head' || request.phase === 'same-head-recheck') {
+  if ((request.phase === 'repair-head' || request.phase === 'same-head-recheck')
+    && !(request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2'
+      && request.arm === 'repair-head-history-unavailable' && requiredHistoryControlSatisfied)) {
+    const lineage = request.historyLineage;
+    if (!lineage) throw new Error('normal_engine_qualification_history_lineage_missing');
     const mode = request.arm === 'repair-head-empty-history' ? 'empty-context' as const
       : request.arm === 'repair-head-history-unavailable' ? 'history-unavailable' as const
         : request.arm === 'repair-head-verifier-unavailable' ? 'verifier-unavailable' as const
@@ -1076,9 +1149,9 @@ export async function runNormalEngineQualificationCase(
     const identity: NormalEngineQualificationVerificationSetIdentity = {
       runId: request.runId,
       sourceRunId: mode === 'empty-context' ? null : request.historyRunId,
-      sequenceId: 'ws5-repair-sequence-v1',
-      sourceCaseId: 'ws5-sequence-a-v1',
-      repairCaseId: request.phase === 'same-head-recheck' ? 'ws5-sequence-a-v1' : 'ws5-sequence-b-v1',
+      sequenceId: lineage.sequenceId,
+      sourceCaseId: lineage.sourceCaseId,
+      repairCaseId: request.phase === 'same-head-recheck' ? lineage.sourceCaseId : lineage.repairCaseId,
     };
     try {
       const verificationSet = await store.finalizeVerificationSet(identity, mode, binding);
@@ -1094,6 +1167,7 @@ export async function runNormalEngineQualificationCase(
   let gateDecision: ReturnType<typeof evaluateReviewGate>;
   let gateDecisionSha256: string;
   let canonicalEvidenceValid = false;
+  let canonicalReviewEvidence: NonNullable<NormalEngineQualificationReceipt['canonicalReviewEvidence']> | null = null;
   if (completion && workerReceipt
     && completion.result.groundedReview?.version === GROUNDED_REVIEW_RECEIPT_V2_VERSION
     && completion.result.groundedReview.semanticsVersion === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
@@ -1120,6 +1194,43 @@ export async function runNormalEngineQualificationCase(
     const derived = deriveCanonicalWorkerReviewEvidence(completion, contract);
     canonicalEvidenceValid = derived.valid;
     canonicalEvidenceSha256 = derived.valid ? sha256(canonicalJson({ canonical: derived.canonical, evidence: derived.evidence })) : null;
+    if (derived.valid) {
+      const verificationOutcomes = completion.result.groundedReview.verification.outcomes;
+      canonicalReviewEvidence = {
+        decisionClassification: derived.evidence.reviewDecision?.classification ?? 'INCOMPLETE_REVIEW',
+        counts: { p0Count: derived.evidence.p0Count, p1Count: derived.evidence.p1Count,
+          p2Count: derived.evidence.p2Count, p3Count: derived.canonical.metrics.p3Count,
+          nitCount: derived.canonical.metrics.nitCount },
+        coverageComplete: derived.evidence.coverageComplete,
+        quorumSatisfied: derived.evidence.quorumSatisfied,
+        blockingFindings: (derived.evidence.blockingFindings ?? []).map((finding) => {
+          const verified = verificationOutcomes.find((outcome) => outcome.fingerprint === finding.fingerprint);
+          const scope = verified?.evidence && 'scopeDecision' in verified.evidence ? verified.evidence.scopeDecision : undefined;
+          const reviewIdentity = scope?.reviewIdentity ? { repository: scope.reviewIdentity.repository,
+            baseSha: scope.reviewIdentity.baseSha, headSha: scope.reviewIdentity.headSha } : null;
+          const verifierEvidence = verified?.evidence && 'citations' in verified.evidence
+            && 'sourceWindowManifestDigest' in verified.evidence ? verified.evidence : undefined;
+          const citationEvidence = verifierEvidence ? {
+            sourceWindowManifestDigest: verifierEvidence.sourceWindowManifestDigest,
+            usedCitationIds: verifierEvidence.usedCitationIds,
+            citations: verifierEvidence.citations.map((citation) => ({ id: citation.id, path: citation.path,
+              repository: citation.repository, side: citation.side, revisionSha: citation.revisionSha,
+              headSha: citation.headSha, baseSha: citation.baseSha, sourceDigest: citation.sourceDigest,
+              window: citation.window ? { id: citation.window.id, role: citation.window.role,
+                startLine: citation.window.startLine, endLine: citation.window.endLine,
+                windowSha256: citation.window.windowSha256, fullContentSha256: citation.window.fullContentSha256,
+                regionDigest: citation.window.regionDigest } : null })),
+          } : null;
+          return { fingerprintSha256: sha256(finding.fingerprint), severity: finding.severity, path: finding.path,
+            line: finding.line, title: finding.title, claim: finding.body, blockerEvidence: finding.blockerEvidence,
+            verificationStatus: verified?.status ?? 'unavailable', causalScope: scope?.causalScope ?? 'unproven',
+            sourceReviewIdentitySha256: reviewIdentity ? sha256(canonicalJson(reviewIdentity)) : null,
+            reviewIdentity,
+            scopeEvidenceSha256: scope?.evidenceDigest ?? null,
+            blockerEvidenceSha256: sha256(canonicalJson(finding.blockerEvidence)), citationEvidence };
+        }),
+      };
+    }
     const candidate = { repositoryId: input.source.repository.repositoryId, prNumber: input.source.prNumber,
       headSha: input.source.headSha, baseSha: input.source.baseSha, policyDigest: request.policy.policyDigest };
     gateDecision = evaluateReviewGate({ candidate, current: { ...candidate, open: true, draft: false },
@@ -1177,6 +1288,14 @@ export async function runNormalEngineQualificationCase(
     gateEvidenceValid: canonicalEvidenceValid,
   });
   const calls = attestor.snapshot();
+  if (request.arm === 'preflight-source-coverage-control'
+    && (!sourceCoverageControlSatisfied || calls.length !== 0 || gateDecision.eligible)) {
+    workerError ||= new Error('qualification source coverage fault did not abstain before model calls');
+  }
+  if (request.arm === 'repair-head-history-unavailable' && request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2'
+    && (!requiredHistoryControlSatisfied || calls.length !== 0 || gateDecision.eligible)) {
+    workerError ||= new Error('qualification required history transport failure did not abstain before model calls');
+  }
   let providerCapture: NormalEngineProviderCaptureV1 | undefined;
   let providerCaptureStatus: NormalEngineQualificationReceipt['provider']['captureStatus'] = 'unavailable';
   let providerCapturePath: string | null = null;
@@ -1342,13 +1461,24 @@ export async function runNormalEngineQualificationCase(
       canonicalEvidenceSha256,
       gateDecisionSha256,
     },
+    canonicalReviewEvidence,
+    ...(request.arm === 'preflight-source-coverage-control' ? { preflight: {
+      control: 'source-coverage-unavailable' as const, sourceCoverage: 'unavailable' as const,
+      withheldPath: 'src/modules/module-01.ts' as const, physicalClientCalls: 0 as const,
+    } } : request.arm === 'repair-head-history-unavailable' && request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2'
+      && requiredHistoryControlSatisfied ? { preflight: {
+        control: 'required-history-unavailable-transport' as const, historyStatus: 'unavailable' as const,
+        historyFailureClass: 'transport' as const, historySourceRunIdSha256: sha256(request.historyRunId!),
+        physicalClientCalls: 0 as const,
+      } } : {}),
     composedLimits: effectiveComposedLimits,
     composedResourcesStatus,
     composedResourcesPath,
     composedResourcesSha256,
     composedResourcesUnavailableReason,
     groundedVerification,
-    qualificationControl: request.arm === 'repair-head-empty-history' ? 'empty-history-ablation'
+    qualificationControl: request.arm === 'preflight-source-coverage-control' ? 'source-coverage-unavailable'
+      : request.arm === 'repair-head-empty-history' ? 'empty-history-ablation'
       : request.arm === 'repair-head-history-unavailable' ? 'history-unavailable'
       : request.arm === 'repair-head-verifier-unavailable' ? 'grounded-verifier-unavailable'
       : request.arm === 'adjudicator-recheck' ? 'authenticated-adjudicator-recheck'
@@ -1379,7 +1509,10 @@ export async function runNormalEngineQualificationCase(
         || (request.arm === 'resource-exhaustion' && !resourceExhaustionControlSatisfied)
         || (request.arm === 'adjudicator-recheck' && !adjudicatorRecheckControlSatisfied) ? 'failed' : workerError
         ? ['repair-head-verifier-unavailable', 'provider-failure', 'resource-exhaustion'].includes(request.arm) ? 'incomplete' : 'failed'
-        : workerOutcome.gateOutcomeClass === 'incomplete' || workerOutcome.workerOutcomeClass === 'incomplete' ? 'incomplete'
+        : (request.arm === 'preflight-source-coverage-control' && sourceCoverageControlSatisfied)
+          || (request.arm === 'repair-head-history-unavailable' && request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2'
+            && requiredHistoryControlSatisfied) ? 'incomplete'
+          : workerOutcome.gateOutcomeClass === 'incomplete' || workerOutcome.workerOutcomeClass === 'incomplete' ? 'incomplete'
           : composedResourcesComplete ? 'completed' : 'failed',
       startedAt, completedAt,
     },

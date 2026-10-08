@@ -1,0 +1,86 @@
+{
+  "schemaVersion": "WS5P2DisplaySortInput.v1",
+  "caseId": "ws5-current-1dd-v2-resource-exhaustion",
+  "source": {
+    "repository": {
+      "repositoryId": 73004,
+      "owner": "synthetic",
+      "repo": "fixture-display-sort"
+    },
+    "prNumber": 43,
+    "baseSha": "740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7",
+    "headSha": "e4edc4bd9f74fd9ec3e8f8f7d9a83bd821832497",
+    "changedPaths": [
+      "src/catalog-sort.ts"
+    ],
+    "revisions": [
+      {
+        "commitSha": "740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7",
+        "treeSha": "69b3deddf471ae8e4a8fe9e5dfaf3fccaf863a66",
+        "parentSha": null,
+        "commitTimestamp": "2026-10-06T13:20:00+00:00",
+        "commitMessage": "Synthetic display ordering contract",
+        "files": [
+          {
+            "path": "src/catalog-screen.ts",
+            "mode": "100644",
+            "gitBlobSha": "cbbba9865c65c37f8daff13a4fa1e73c53b30d5a",
+            "sha256": "5d45d7d61508a03a70d25511ee0e914ce8062469d2ec0e65a7dd2df020d5c43c",
+            "content": "import { CatalogItem, visibleCatalog } from \"./catalog-sort\";\n\nexport function catalogRows(items: CatalogItem[]): string[] {\n  return visibleCatalog(items).map((item) => item.id + \": \" + item.label);\n}\n"
+          },
+          {
+            "path": "src/catalog-sort.ts",
+            "mode": "100644",
+            "gitBlobSha": "89983f0f386b26e1ada00e05f0aff8fb9ee0f390",
+            "sha256": "20bac7e370b55efbb483670a83934089ffa1b74a46464cc08ac5010d2b035a8d",
+            "content": "export type CatalogItem = { id: string; label: string; visible: boolean };\n\nexport function visibleCatalog(items: CatalogItem[]): CatalogItem[] {\n  return items\n    .filter((item) => item.visible)\n    .sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));\n}\n"
+          },
+          {
+            "path": "test/catalog-sort.test.ts",
+            "mode": "100644",
+            "gitBlobSha": "6a4656a3d6db37bf9fbb3b88d60015ca6e460eef",
+            "sha256": "afe2ad74f5544752a161498fd99852072b4d6125fb93f99a83d368e43dc23cdd",
+            "content": "import { describe, expect, it } from \"vitest\";\nimport { visibleCatalog } from \"../src/catalog-sort\";\n\ndescribe(\"visibleCatalog\", () => {\n  it(\"keeps stable identifier order for equal display labels\", () => {\n    const items = [\n      { id: \"item-b\", label: \"Standard\", visible: true },\n      { id: \"item-a\", label: \"Standard\", visible: true },\n    ];\n    expect(visibleCatalog(items).map((item) => item.id)).toEqual([\"item-a\", \"item-b\"]);\n  });\n});\n"
+          }
+        ]
+      },
+      {
+        "commitSha": "e4edc4bd9f74fd9ec3e8f8f7d9a83bd821832497",
+        "treeSha": "26b0f2d5ee97785df5de9871024eb84bee6572ca",
+        "parentSha": "740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7",
+        "commitTimestamp": "2026-10-06T13:21:00+00:00",
+        "commitMessage": "Remove stable tie-breaker from display ordering",
+        "files": [
+          {
+            "path": "src/catalog-screen.ts",
+            "mode": "100644",
+            "gitBlobSha": "cbbba9865c65c37f8daff13a4fa1e73c53b30d5a",
+            "sha256": "5d45d7d61508a03a70d25511ee0e914ce8062469d2ec0e65a7dd2df020d5c43c",
+            "content": "import { CatalogItem, visibleCatalog } from \"./catalog-sort\";\n\nexport function catalogRows(items: CatalogItem[]): string[] {\n  return visibleCatalog(items).map((item) => item.id + \": \" + item.label);\n}\n"
+          },
+          {
+            "path": "src/catalog-sort.ts",
+            "mode": "100644",
+            "gitBlobSha": "925a517cc06f99b7153d782b50a7f8388f8a9c21",
+            "sha256": "9cd42b98564f9b75db83008a312db931bd61fb5f070e8de20b328d67744e2451",
+            "content": "export type CatalogItem = { id: string; label: string; visible: boolean };\n\nexport function visibleCatalog(items: CatalogItem[]): CatalogItem[] {\n  return items\n    .filter((item) => item.visible)\n    .sort((left, right) => left.label.localeCompare(right.label));\n}\n"
+          },
+          {
+            "path": "test/catalog-sort.test.ts",
+            "mode": "100644",
+            "gitBlobSha": "6a4656a3d6db37bf9fbb3b88d60015ca6e460eef",
+            "sha256": "afe2ad74f5544752a161498fd99852072b4d6125fb93f99a83d368e43dc23cdd",
+            "content": "import { describe, expect, it } from \"vitest\";\nimport { visibleCatalog } from \"../src/catalog-sort\";\n\ndescribe(\"visibleCatalog\", () => {\n  it(\"keeps stable identifier order for equal display labels\", () => {\n    const items = [\n      { id: \"item-b\", label: \"Standard\", visible: true },\n      { id: \"item-a\", label: \"Standard\", visible: true },\n    ];\n    expect(visibleCatalog(items).map((item) => item.id)).toEqual([\"item-a\", \"item-b\"]);\n  });\n});\n"
+          }
+        ]
+      }
+    ],
+    "patches": [
+      {
+        "path": "src/catalog-sort.ts",
+        "patch": "diff --git a/src/catalog-sort.ts b/src/catalog-sort.ts\nindex 89983f0..925a517 100644\n--- a/src/catalog-sort.ts\n+++ b/src/catalog-sort.ts\n@@ -1,7 +1,7 @@\n export type CatalogItem = { id: string; label: string; visible: boolean };\n \n export function visibleCatalog(items: CatalogItem[]): CatalogItem[] {\n   return items\n     .filter((item) => item.visible)\n-    .sort((left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id));\n+    .sort((left, right) => left.label.localeCompare(right.label));\n }\n",
+        "sha256": "aae7141a3b83ed114458bfba5e2a077d3239917843f6eaf9877392e6d571c7a8"
+      }
+    ]
+  }
+}

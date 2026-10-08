@@ -1,0 +1,301 @@
+{
+  "schemaVersion": "ReviewYetiExternalNormalQualificationPlan.v2",
+  "phaseId": "ws5-current-source-external-v2",
+  "status": "candidate-host-config-accepted-awaiting-integrated-source-image-attestation",
+  "dispatchAuthorization": false,
+  "readiness": {
+    "hostPreparedConfigReview": "accepted-by-independent-recomputation",
+    "integratedSourceImageAttestation": "pending",
+    "rootGo": "not-issued"
+  },
+  "publication": {
+    "mode": "disabled",
+    "githubWrites": 0,
+    "appChecks": 0,
+    "reviews": 0,
+    "comments": 0,
+    "ordinaryGateTouched": false
+  },
+  "artifactRoots": {
+    "phaseRoot": {
+      "canonicalPath": "/private/tmp/ws5-current-source-external-v2-phase-root",
+      "uid": 501,
+      "gid": 20,
+      "mode": 448,
+      "initialEntryCount": 0
+    },
+    "normalEngineQualificationStore": {
+      "relativePath": "normal-engine-qualification-store",
+      "mode": 448
+    }
+  },
+  "scope": {
+    "targetMode": "standalone-synthetic-source-snapshots",
+    "repositoryIds": [73002, 73003, 73004],
+    "callTelemetryPassthrough": true,
+    "publicBotSelfEnabled": false,
+    "excludedTargets": ["ordinary CallTelemetry PRs", "ct-infrastructure PR #1298", "UAT-1740"]
+  },
+  "runtime": {
+    "baseMain": "ab5183141397c55975d8fdd48243c4243a5909f7",
+    "currentBudgetFixCandidate": "3a22bc1365e404362a7d072f8eb472850c2bbf6c",
+    "preparedConfigHelperSourceRevision": "1917204826d9a145dc7db8217b01978dad679e2b",
+    "deployedSourceBeforeBudgetFix": "1ddbc65d2fdae527a604c94fb6ae1d941471dfe9",
+    "workerImageIndexBeforeBudgetFix": "sha256:afadc116b2266b3cc5dbc119361b0300f29eaa8789d9b1a30fc80bd24baf2b1a",
+    "workerImageDigest": null,
+    "workerImageRepository": "ghcr.io/review-yeti-ai/review-yeti-worker",
+    "runtimeManifestSha256": null,
+    "finalSourceRevision": null,
+    "executionMode": "host-coordinator-with-pinned-worker-image-children",
+    "executionNetwork": "docker-bridge-to-tailnet-origin",
+    "executionUser": "container runs as the nonroot host uid that owns the private phaseRoot",
+    "executionOriginReadiness": "read-only DNS and certificate-verified TLS proof inside the exact worker image is required before the first model request",
+    "artifactStoreBinding": "canonical private phaseRoot/normal-engine-qualification-store",
+    "status": "host configuration is independently accepted; do not dispatch or claim optimized behavior until integrated source/image/runtime manifest pins and exact host-tailnet DNS/TLS readiness evidence are frozen and reviewed"
+  },
+  "policy": {
+    "candidateHead": "53e8a9444997173d7a48d3679c79d2c33437f4d8",
+    "preparedFixtureReviewHead": "91207aebbacd6133d5ef1b99a24ca0903144308f",
+    "mergedMain": "14b84c17daaa1ae8da7d4f1cfa53385e756fe544",
+    "candidatePath": "policy/review-yeti-v2-candidate.json",
+    "candidateRawSha256": "c7de3af7f4e5c98de86a4a2a8f962a1779d0195e7ab470b25332b0f6fbe0210b",
+    "candidateGitBlob": "45220896683e76a7ddfc2475b2798a4112950040",
+    "executionPlanFixtureSha256": "921237a89577ee13cee5fdfb48701bdf8bdeff49cfcb4551b124efaf2d1daccb",
+    "executionPlanNormalizedSha256": "c1bf8e0420e4fba3cf64449f5d6d0a3da1da4e0d30f18f9f64e7e6199bd1fc39",
+    "preparedExecutionFixtureSha256": "e8727f39a601d84480ef1045738628a6028747fd0cb9f5f3c904eb8e29cf090c",
+    "preparedExecutionManifestSha256": "ecacf5d532de24292f9fb27dc91b92ac426f469165799b0431a2e952027140dd",
+    "preparedExecutionSha256": "618916ab3bfd1d03ec4dfb7ab32abac424fdc397b31da9545a126ab433611c5d",
+    "syntheticProjectionFixtureSha256": "d397462b4aed0223f99839ac6ff0d700e526eb2a794daa9f084aac34adceab8d",
+    "centralEffectiveConfigProjectionSha256": "f737fbef64a7336614e441d092e3899d0c2b674f04ea197c610aaf7db9050df1",
+    "effectiveConfigSha256": "0933fc3afc3f57133845a9f7aa87678bb5502a87211dcb90dbe84babdbc40e3e",
+    "effectivePolicySha256": "f707fd3481c13d9d84bea2d7b70a3e5f1dbca99f349e1eb0032b6c424363cd25",
+    "policySource": {
+      "repository": "calltelemetry/ct-review-actions",
+      "repositoryId": 1339040553,
+      "sourceRef": "14b84c17daaa1ae8da7d4f1cfa53385e756fe544",
+      "path": "policy/review-yeti-v2-candidate.json",
+      "contentSha256": "c7de3af7f4e5c98de86a4a2a8f962a1779d0195e7ab470b25332b0f6fbe0210b"
+    },
+    "routeAlias": "pr-reviewer",
+    "inferenceBaseUrl": "https://llm-gateway.tailebe851.ts.net/v1",
+    "requestedEffort": "medium",
+    "servedProviderModelEffort": "unknown_until_exact_caller_cid_log_join",
+    "v1Promotion": "not changed by this phase"
+  },
+  "policyInputs": {
+    "candidatePath": "policy-inputs/review-yeti-v2-candidate.json",
+    "executionPlanFixturePath": "policy-inputs/review-yeti-v2-candidate-execution-plan.fixture.json",
+    "preparedExecutionFixturePath": "policy-inputs/review-yeti-v2-prepared-execution-host.fixture.json",
+    "syntheticProjectionPath": "policy-inputs/review-yeti-v2-synthetic-execution-plans-host.fixture.json",
+    "preparedExecutionManifestPath": "policy-inputs/review-yeti-v2-prepared-execution-host.manifest.json",
+    "allFilesMode0600": true,
+    "useOnlyExactDigestsAbove": true
+  },
+  "targetProjections": [
+    {
+      "repositoryId": 73002,
+      "repository": "synthetic/fixture-sequence",
+      "prNumber": 41,
+      "normalizedPlanSha256": "86c5a461bd45c13c677c1abaa609802cb14bdadcfc602c2d4a64178c7c4802d0",
+      "centralEffectiveConfigProjectionSha256": "f737fbef64a7336614e441d092e3899d0c2b674f04ea197c610aaf7db9050df1",
+      "preparedExecutionSha256": "618916ab3bfd1d03ec4dfb7ab32abac424fdc397b31da9545a126ab433611c5d",
+      "effectiveConfigSha256": "0933fc3afc3f57133845a9f7aa87678bb5502a87211dcb90dbe84babdbc40e3e",
+      "effectivePolicySha256": "f707fd3481c13d9d84bea2d7b70a3e5f1dbca99f349e1eb0032b6c424363cd25",
+      "preparedExecutionFile": "prepared-host/prepared-73002-default.json"
+    },
+    {
+      "repositoryId": 73003,
+      "repository": "synthetic/fixture-large-crossfile",
+      "prNumber": 42,
+      "normalizedPlanSha256": "ad0a6a721f774facedf57fe4158cdcc5a449bb842970abffd2ab5e434106805d",
+      "centralEffectiveConfigProjectionSha256": "f737fbef64a7336614e441d092e3899d0c2b674f04ea197c610aaf7db9050df1",
+      "preparedExecutionSha256": "618916ab3bfd1d03ec4dfb7ab32abac424fdc397b31da9545a126ab433611c5d",
+      "effectiveConfigSha256": "0933fc3afc3f57133845a9f7aa87678bb5502a87211dcb90dbe84babdbc40e3e",
+      "effectivePolicySha256": "f707fd3481c13d9d84bea2d7b70a3e5f1dbca99f349e1eb0032b6c424363cd25",
+      "preparedExecutionFile": "prepared-host/prepared-73003-default.json"
+    },
+    {
+      "repositoryId": 73004,
+      "repository": "synthetic/fixture-display-sort",
+      "prNumber": 43,
+      "normalizedPlanSha256": "cab59dc64f21e25b70676fc788540b42344cf24c1254cb55e319ed40171a2010",
+      "centralEffectiveConfigProjectionSha256": "f737fbef64a7336614e441d092e3899d0c2b674f04ea197c610aaf7db9050df1",
+      "preparedExecutionSha256": "618916ab3bfd1d03ec4dfb7ab32abac424fdc397b31da9545a126ab433611c5d",
+      "effectiveConfigSha256": "0933fc3afc3f57133845a9f7aa87678bb5502a87211dcb90dbe84babdbc40e3e",
+      "effectivePolicySha256": "f707fd3481c13d9d84bea2d7b70a3e5f1dbca99f349e1eb0032b6c424363cd25",
+      "preparedExecutionFile": "prepared-host/prepared-73004-default.json"
+    }
+  ],
+  "sourceBundle": {
+    "version": "WS5ExternalNormalBundle.v2",
+    "path": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json",
+    "sha256": "99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1",
+    "oracleFieldsInInputs": false
+  },
+  "executionEnvelope": {
+    "maxPhaseClientCalls": 300,
+    "clientCallCountIncludes": ["review", "verifier", "fault controls", "unsuccessful attempts"],
+    "perArmClientHttpAttemptAllocation": {
+      "normalArms": 58,
+      "providerFailureControl": 1,
+      "resourceExhaustionControl": 1,
+      "coveragePreflightControl": 0,
+      "declaredArmTotal": 292,
+      "unspendableSharedReserve": 8,
+      "synchronousBlockBeforeFetch": true
+    },
+    "maxLogicalCompletionAttemptsPerNormalReview": 100,
+    "trustedProviderAttemptBudget": {
+      "capabilityVersion": "ReviewProviderAttemptBudget.v1",
+      "totalLimit": 100,
+      "investigationLimit": 88,
+      "verifierReserve": 12,
+      "totalIncludesVerifierReserve": true,
+      "operatorOverrideValue": "unset"
+    },
+    "verifierReserve": "read from the exact trusted prepared configuration; never omit or reduce",
+    "maxTasksPerNormalReview": 8,
+    "maxReviewAssignmentsPerNormalReview": 24,
+    "operator200AttemptOverride": "unset",
+    "perNormalArmActiveDeadlineMs": 240000,
+    "captureOutsideChildDeadline": true,
+    "workerContainer": {
+      "imageRepository": "ghcr.io/review-yeti-ai/review-yeti-worker",
+      "pullPolicy": "never",
+      "rootFilesystemReadOnly": true,
+      "sourceRuntimeFromPinnedImage": true,
+      "hostSourceMounted": false,
+      "policyInputsMount": "read-only",
+      "phaseRootMount": "read-write",
+      "kubeconfigMounted": false,
+      "gatewayManagementCredentialsPassed": false,
+      "inferenceCredentialEnvironmentNameOnly": "OPENAI_API_KEY"
+    },
+    "qualificationArtifactStoreRelativePath": "normal-engine-qualification-store",
+    "transportPreflightDeadlineMs": 15000,
+    "childAbortDrainGraceMs": 10000,
+    "phaseWallLimitMs": 1800000,
+    "exactLogCaptureReserveMs": 300000,
+    "coveragePreflightReserveMs": 15000,
+    "requiredHistoryPreflightReserveMs": 15000,
+    "orchestrationAndTeardownReserveMs": 180000,
+    "reservationLedgerMs": {
+      "fiveNormalArms": 1200000,
+      "providerFailureControl": 30000,
+      "resourceExhaustionControl": 60000,
+      "coveragePreflight": 15000,
+      "requiredHistoryPreflight": 15000,
+      "exactLogCaptureOutsideChild": 300000,
+      "orchestrationAndTeardown": 180000,
+      "total": 1800000
+    },
+    "providerFailurePhysicalRequestLimit": 1,
+    "resourceExhaustionPhysicalRequestLimit": 1,
+    "automaticRetries": 0,
+    "concurrency": 1,
+    "noNewCaseUnlessFullReservationFits": true,
+    "onPhaseCapOrExhaustion": "stop with incomplete/ABSTAIN and no eligible Gate",
+    "billedUsd": "reported only when present in an exact matched gateway row; otherwise unknown, never fabricated"
+  },
+  "physicalAttemptAccounting": {
+    "historicalConsumedAttempts": 150,
+    "newPhaseMaximum": 300,
+    "overallCeiling": 2700,
+    "newAttemptsDoNotResetHistoricalConsumption": true
+  },
+  "runs": [
+    {
+      "stepId": "v2-p2-first",
+      "caseId": "ws5-current-1dd-v2-p2",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json",
+      "inputSha256": "4f476e36aa78b6788bb37c02ba5b2fae899c99eeba7d43dae399507cd93ed216",
+      "arm": "p2-only",
+      "historyMode": "complete empty context",
+      "targetRepositoryId": 73004
+    },
+    {
+      "stepId": "v2-p2-repeat",
+      "caseId": "ws5-current-1dd-v2-p2",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json",
+      "inputSha256": "4f476e36aa78b6788bb37c02ba5b2fae899c99eeba7d43dae399507cd93ed216",
+      "arm": "p2-only",
+      "repeatOfStepId": "v2-p2-first",
+      "historyMode": "complete empty context",
+      "targetRepositoryId": 73004
+    },
+    {
+      "stepId": "v2-sequence-a",
+      "caseId": "ws5-current-1dd-v2-sequence-a",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_a.json",
+      "inputSha256": "0e3bade3d6d7a148a2a36515ed1b40b9c1ab3f4cc2b2d92343176f2069ca0da9",
+      "arm": "repair-introduction",
+      "historySequenceId": "ws5-current-source-external-v2",
+      "historyMode": "disabled initial run; persist complete receipt to isolated store",
+      "targetRepositoryId": 73002
+    },
+    {
+      "stepId": "v2-sequence-b-history",
+      "caseId": "ws5-current-1dd-v2-sequence-b",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_b.json",
+      "inputSha256": "52cdd6d19fc5dd042412a85df5b4effe8c9793c43cea3104ab5b35d036b1d1aa",
+      "arm": "repair-head-history",
+      "historySequenceId": "ws5-current-source-external-v2",
+      "historySourceStepId": "v2-sequence-a",
+      "historyMode": "load only the completed v2 sequence-A receipt from the isolated store",
+      "targetRepositoryId": 73002
+    },
+    {
+      "stepId": "v2-sequence-b-full-source",
+      "caseId": "ws5-current-1dd-v2-sequence-b",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_b.json",
+      "inputSha256": "52cdd6d19fc5dd042412a85df5b4effe8c9793c43cea3104ab5b35d036b1d1aa",
+      "arm": "repair-head-empty-history",
+      "historySequenceId": "ws5-current-source-external-v2",
+      "historyMode": "complete empty history with full-source review",
+      "pairedStepId": "v2-sequence-b-history",
+      "targetRepositoryId": 73002
+    },
+    {
+      "stepId": "v2-coverage-hole-control",
+      "caseId": "ws5-current-1dd-v2-coverage-hole",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/coverage_hole.json",
+      "inputSha256": "6cf9a5f6c493f1db2f91f8abc907e9d4f9f9ad1d3c62296298326cb18f78897c",
+      "arm": "preflight-source-coverage-control",
+      "fault": { "withholdHeadPath": "src/modules/module-01.ts", "clientCalls": 0 },
+      "targetRepositoryId": 73003
+    },
+    {
+      "stepId": "v2-required-history-unavailable-control",
+      "caseId": "ws5-current-1dd-v2-sequence-b",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_b.json",
+      "inputSha256": "52cdd6d19fc5dd042412a85df5b4effe8c9793c43cea3104ab5b35d036b1d1aa",
+      "arm": "repair-head-history-unavailable",
+      "historySequenceId": "ws5-current-source-external-v2",
+      "historySourceStepId": "v2-sequence-a",
+      "historyMode": "required history transport failure before task planning; zero provider calls",
+      "fault": { "status": "unavailable", "failureClass": "transport", "clientCalls": 0 },
+      "targetRepositoryId": 73002
+    },
+    {
+      "stepId": "v2-provider-failure-control",
+      "caseId": "ws5-current-1dd-v2-provider-failure",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/provider_failure.json",
+      "inputSha256": "76278ffbbb439e4e4d7b77dabe6022c01cf2c33d61753127cc82c542a9d1e2bd",
+      "arm": "provider-failure",
+      "historyMode": "complete empty context",
+      "maxPhysicalRequests": 1,
+      "targetRepositoryId": 73004
+    },
+    {
+      "stepId": "v2-resource-exhaustion-control",
+      "caseId": "ws5-current-1dd-v2-resource-exhaustion",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/resource_exhaustion.json",
+      "inputSha256": "015efdfc7c5253cb52e4ec99f22bfc354ea51ae54667f161993a98b1566cd1bc",
+      "arm": "resource-exhaustion",
+      "historyMode": "complete empty context",
+      "maxPhysicalRequests": 1,
+      "testDeadlineSeconds": 60,
+      "targetRepositoryId": 73004
+    }
+  ]
+}
