@@ -751,7 +751,7 @@ describe('composed engine wiring', () => {
       providers: [{ id: 'codex', enabled: true, model: 'codex/model', effort: 'high', review_timeout_s: 15, arbiter_timeout_s: 15 }],
       arbiter: { order: ['codex'] },
     },
-    composed: { max_tasks: 1, max_turns_total: 4, max_turns_per_task: 2, swarm_context_isolation: true },
+    composed: { max_tasks: 1, max_turns_total: 4, max_turns_per_task: 2, swarm_context_isolation: false },
   });
 
   // Capture both plan context and task source delivery. The planner sees a structured whole-PR
@@ -802,7 +802,7 @@ describe('composed engine wiring', () => {
 
   it('keeps full original WORK source and a complete receipt when shrinking is disabled', async () => {
     const { plan, work, result } = await composedRun();
-    expect(plan).toContain('=== PULL REQUEST AST & FILE-TREE OUTLINE ===');
+    expect(plan).not.toContain('=== PULL REQUEST AST & FILE-TREE OUTLINE ===');
     expect(plan).toContain('=== PR CHANGED FILES INDEX');
     expect(plan).toContain('src/app.ts');
     expect(plan).toContain('src/other.ts');
@@ -816,7 +816,7 @@ describe('composed engine wiring', () => {
 
   it('keeps full original WORK source and a complete receipt when shrinking is enabled', async () => {
     const { plan, work, result } = await composedRun(ON, { enabled: true });
-    expect(plan).toContain('=== PULL REQUEST AST & FILE-TREE OUTLINE ===');
+    expect(plan).not.toContain('=== PULL REQUEST AST & FILE-TREE OUTLINE ===');
     expect(plan).toContain('=== PR CHANGED FILES INDEX');
     expect(plan).toContain('src/app.ts');
     expect(plan).toContain('src/other.ts');

@@ -306,10 +306,19 @@ describe('WorkerReviewCompletion.v1', () => {
       path: 'policy/review.json', contentDigest: sha256(servicePolicyContent) };
     const prepared = preparePublishingPolicy({ content: servicePolicyContent, source },
       { baseUrl: 'https://gateway.example.invalid', model: 'test-model' });
+    expect(prepared.config.swarm_context_isolation).toBe(true);
+    expect(prepared.config.composed?.swarm_context_isolation).toBe(true);
+    expect(prepared.config.composed?.quorum_policy).toMatchObject({ mode: 'file_coverage',
+      blocker_fast_path_enabled: true });
+    expect(prepared.config.review_configuration_receipt?.effective.composed_budget.configured_overrides)
+      .toMatchObject({ swarm_context_isolation: true, quorum_policy: { mode: 'file_coverage', blocker_fast_path_enabled: true } });
     const legacyConfig = structuredClone(prepared.config);
     delete (legacyConfig as unknown as Record<string, unknown>).swarm_context_isolation;
     delete (legacyConfig.composed as unknown as Record<string, unknown>).swarm_context_isolation;
     delete (legacyConfig.composed as unknown as Record<string, unknown>).quorum_policy;
+    const legacyOverrides = legacyConfig.review_configuration_receipt!.effective.composed_budget.configured_overrides as Record<string, unknown>;
+    delete legacyOverrides.swarm_context_isolation;
+    delete legacyOverrides.quorum_policy;
     const legacyConfigDigest = fingerprintEffectiveReviewConfig({ config: legacyConfig, transport: prepared.transport });
     const admitted = parsePreparedReviewExecution(JSON.stringify({ version: 'PreparedReviewExecution.v1',
       config: legacyConfig, transport: prepared.transport }), legacyConfigDigest, prepared.transport);

@@ -939,7 +939,9 @@ function buildStaticPrefix(input: {
 
   if (input.phase === 'plan') {
     const range = input.baseSha && input.headSha ? `${input.baseSha}...${input.headSha}` : input.headSha || 'HEAD';
-    const diffSection = buildDiffSection(input.effectiveFiles, {
+    // Swarm-isolated planning receives only the structural outline; raw patch text is
+    // reserved for non-isolated planning and the task-scoped WORK phase.
+    const diffSection = input.astOutline ? undefined : buildDiffSection(input.effectiveFiles, {
       ...(input.inlineTokenBudget ? { tokenBudget: input.inlineTokenBudget } : {}),
       baseSha: input.baseSha || '',
       headSha: input.headSha,
@@ -955,7 +957,7 @@ function buildStaticPrefix(input: {
       `Head SHA: ${input.headSha}`,
       ``,
       ...(input.astOutline ? [`=== PULL REQUEST AST & FILE-TREE OUTLINE ===`, input.astOutline.summaryText, ''] : []),
-      diffSection,
+      ...(diffSection ? [diffSection] : []),
     ].join('\n');
   } else {
     const diffSection = buildDiffSection(input.effectiveFiles, {

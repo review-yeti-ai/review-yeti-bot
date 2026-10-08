@@ -116,19 +116,24 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
       expect(found.strictnessProfile).toBe('assertive');
     });
 
-    it('keeps a fresh PVC file free of demo repositories and review history', () => {
+    it('keeps a fresh production PVC store free of synthesized repositories and review history', () => {
       delete process.env.DATABASE_URL;
       delete process.env.POSTGRES_URL;
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('VITEST', '');
 
-      const store = new DashboardStore(tempStorePath);
-      const repos = store.getRepositories();
-      expect(repos).toEqual([]);
-      expect(store.getReviewLogs()).toEqual([]);
-      expect(store.getAnalyticsSummary('30d')).toMatchObject({
-        totalReviews: 0,
-        totalSpendUsd: 0,
-        totalTokens: 0,
-      });
+      try {
+        const store = new DashboardStore(tempStorePath);
+        expect(store.getRepositories()).toEqual([]);
+        expect(store.getReviewLogs()).toEqual([]);
+        expect(store.getAnalyticsSummary('30d')).toMatchObject({
+          totalReviews: 0,
+          totalSpendUsd: 0,
+          totalTokens: 0,
+        });
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
   });
 
@@ -280,7 +285,7 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
   });
 
   describe('4. Automatic Disk Seeding Behavior', () => {
-    it('seeds configuration but no demo repositories or review history into an empty database', async () => {
+    it('does not infer repositories or review history when the caller seed is empty', async () => {
       process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/mockdb';
       const store = new PostgresStore();
 
@@ -302,9 +307,7 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
       vi.spyOn(store, 'getPool').mockReturnValue({ connect: async () => mockClient } as any);
 
       const seedData: DashboardData = {
-        repositories: [
-          { id: 'repo-1', owner: 'synthetic', repo: 'sample-repo-1', full_name: 'synthetic/sample-repo-1', automationEnabled: true, updatedAt: '2026-01-01T00:00:00Z' },
-        ],
+        repositories: [],
         settings: {
           defaultModelOverrides: { security: 'synthetic/v1' },
           personaSettings: {
@@ -316,32 +319,82 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
           memoryEngineSettings: { autoSuppressNits: true, learningConfidenceThreshold: 80, maxLearningsPerRepo: 100 },
           providerCostCaps: { monthlyBudgetUSD: 100, dailyBudgetUSD: 10, alertThresholdPercent: 80, actionOnCapBreach: 'fail_closed' },
         },
-        reviewLogs: [
-          {
-            id: 'log-1',
-            prRun: 'synthetic/sample-repo-1 #1',
-            repo: 'synthetic/sample-repo-1',
-            prNumber: 1,
-            headSha: 'abc1234',
-            personas: ['security'],
-            quorum: '1/1',
-            arbiterVerdict: 'SHIP',
-            timestamp: '2026-01-01T00:00:00Z',
-          },
-        ],
+        reviewLogs: [],
         apiKeys: [],
-        reviewCounter: 1,
+        reviewCounter: 0,
         totalCostUSD: 0,
       };
 
       await store.initialize(seedData);
 
-      // Fresh startup seeds configuration only; user repositories and review history are not demo defaults.
+      // Empty caller data may seed configuration but must not synthesize repository or review-history rows.
       expect(insertedQueries.some((q) => q.text.includes('INSERT INTO dashboard_settings'))).toBe(true);
       expect(insertedQueries.some((q) => q.text.includes('INSERT INTO repositories'))).toBe(false);
       expect(insertedQueries.some((q) => q.text.includes('INSERT INTO personas'))).toBe(true);
       expect(insertedQueries.some((q) => q.text.includes('INSERT INTO providers'))).toBe(true);
       expect(insertedQueries.some((q) => q.text.includes('INSERT INTO review_logs'))).toBe(false);
+    });
+
+    it('persists repositories and review history explicitly present in the caller seed', async () => {
+      process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/mockdb';
+      const store = new PostgresStore();
+      const insertedQueries: Array<{ text: string; params: any[] }> = [];
+
+      const mockClient = {
+        query: vi.fn(async (text: string, params?: any[]) => {
+          if (text.startsWith('INSERT INTO')) {
+            insertedQueries.push({ text, params: params || [] });
+          }
+          if (text.includes('COUNT(*)')) {
+            return { rows: [{ count: 0 }] };
+          }
+          return { rows: [] };
+        }),
+        release: vi.fn(),
+      };
+
+      vi.spyOn(store, 'getPool').mockReturnValue({ connect: async () => mockClient } as any);
+
+      await store.initialize({
+        repositories: [{
+          id: 'caller-repo',
+          owner: 'synthetic',
+          repo: 'caller-seeded',
+          full_name: 'synthetic/caller-seeded',
+          automationEnabled: true,
+          updatedAt: '2026-10-08T00:00:00.000Z',
+        }],
+        settings: {
+          defaultModelOverrides: {},
+          memoryEngineSettings: { autoSuppressNits: true, learningConfidenceThreshold: 80, maxLearningsPerRepo: 100 },
+          providerCostCaps: { monthlyBudgetUSD: 100, dailyBudgetUSD: 10, alertThresholdPercent: 80, actionOnCapBreach: 'fail_closed' },
+        },
+        reviewLogs: [{
+          id: 'caller-log',
+          prRun: 'synthetic/caller-seeded #1',
+          repo: 'synthetic/caller-seeded',
+          prNumber: 1,
+          headSha: 'synthetic-head',
+          personas: ['security'],
+          quorum: '1/1',
+          arbiterVerdict: 'SHIP',
+          timestamp: '2026-10-08T00:00:00.000Z',
+        }],
+        apiKeys: [],
+        reviewCounter: 1,
+        totalCostUSD: 0,
+      });
+
+      const repositoryInsert = insertedQueries.find((query) => query.text.includes('INSERT INTO repositories'));
+      expect(repositoryInsert?.params).toEqual(expect.arrayContaining([
+        'caller-repo',
+        'synthetic',
+        'caller-seeded',
+        'synthetic/caller-seeded',
+      ]));
+      const reviewLogInsert = insertedQueries.find((query) => query.text.includes('INSERT INTO review_logs'));
+      expect(reviewLogInsert?.params[0]).toBe('caller-log');
+      expect(reviewLogInsert?.params[5]).toBe('SHIP');
     });
 
     it('skips seeding when database tables already contain entries (count > 0)', async () => {

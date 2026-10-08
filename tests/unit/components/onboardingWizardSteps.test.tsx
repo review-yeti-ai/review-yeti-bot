@@ -3,6 +3,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { OnboardingWizard } from '@/components/github-app/onboarding-wizard';
+import { Step2ReposPicker } from '@/components/onboarding/steps/step-2-repos-picker';
 import { RepoTable } from '@/components/repos/repo-table';
 import ReposPage from '@/app/repos/page';
 import { ProviderSettings } from '@/components/settings/provider-settings';
@@ -355,7 +356,7 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
       const dialog = screen.getByRole('dialog');
       const [ownerInput, repoInput] = within(dialog).getAllByRole('textbox');
       fireEvent.change(ownerInput, { target: { value: 'synthetic' } });
-      expect(repoInput).toHaveAttribute('placeholder', 'e.g. backend-api');
+      expect(repoInput).toHaveAttribute('placeholder', 'e.g. example-api');
       fireEvent.change(repoInput, { target: { value: 'new-microservice' } });
 
       const onboardBtn = screen.getByRole('button', { name: /onboard repo/i });
@@ -369,6 +370,30 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
           customProfile: 'balanced',
         });
       });
+    });
+
+    it('adds an explicitly named repository through the Step 2 picker', () => {
+      const onAddRepo = vi.fn();
+      const repoInputValue = 'synthetic/new-microservice';
+
+      render(
+        <Step2ReposPicker
+          repositories={mockRepos}
+          onUpdateRepo={vi.fn()}
+          onAddRepo={onAddRepo}
+        />
+      );
+
+      const repoInput = screen.getByPlaceholderText('org/repository-name');
+      const addRepoButton = screen.getByRole('button', { name: /add repo/i });
+      expect(addRepoButton).toBeDisabled();
+
+      fireEvent.change(repoInput, { target: { value: repoInputValue } });
+      expect(addRepoButton).toBeEnabled();
+      fireEvent.click(addRepoButton);
+
+      expect(onAddRepo).toHaveBeenCalledWith('synthetic', 'new-microservice');
+      expect(repoInput).toHaveValue('');
     });
 
     it('2.9 opens Scan Stack modal and triggers repository stack scanner', async () => {
