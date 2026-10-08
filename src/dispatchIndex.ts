@@ -26,7 +26,7 @@ import { createAuthoritativeReviewService } from './review/authoritativeReviewSe
 import { githubWebhookConfigFromEnv } from './auth/githubWebhookConfig';
 import { createGitHubWebhookAdmissionHandler } from './review/githubWebhookAdmission';
 import { PostgresMergeGroupGateRepository } from './persistence/mergeGroupGateRepository';
-import { createMergeGroupGate } from './review/mergeGroupGate';
+import { createMergeGroupGate, mergeGroupOperatorWaitMsFromEnv } from './review/mergeGroupGate';
 import { reviewCiConfigFromEnv } from './auth/reviewCiConfig';
 import { createReviewCiRuntime } from './reviewCiRuntime';
 import { findReviewCiEnrollment } from './review/reviewCi';
@@ -238,6 +238,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       mergeGroupGate: createMergeGroupGate({
         config: webhookConfig,
         repository: new PostgresMergeGroupGateRepository(pool),
+        operatorPassthroughWaitMs: mergeGroupOperatorWaitMsFromEnv(environment),
         baseUrl,
         tokenFor: async (owner, repo) => (await getBoundedRepositoryToken({
           appId, privateKey, owner, repo, baseUrl,
