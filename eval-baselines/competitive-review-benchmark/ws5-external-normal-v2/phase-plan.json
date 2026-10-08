@@ -56,7 +56,8 @@
     "executionUser": "container runs as the nonroot host uid that owns the private phaseRoot",
     "executionOriginReadiness": "read-only DNS and certificate-verified TLS proof inside the exact worker image is required before the first model request",
     "artifactStoreBinding": "canonical private phaseRoot/normal-engine-qualification-store",
-    "status": "host configuration is independently accepted; do not dispatch or claim optimized behavior until integrated source/image/runtime manifest pins and exact host-tailnet DNS/TLS readiness evidence are frozen and reviewed"
+    "status": "host configuration is independently accepted; do not dispatch or claim optimized behavior until integrated source/image/runtime manifest pins and exact host-tailnet DNS/TLS readiness evidence are frozen and reviewed",
+    "publicationAttestationSha256": null
   },
   "policy": {
     "candidateRawSha256": null,

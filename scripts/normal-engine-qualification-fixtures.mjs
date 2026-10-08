@@ -26,7 +26,7 @@ export const NORMAL_ENGINE_QUALIFICATION_FIXTURE_ALLOWLIST = Object.freeze([
   { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json',
     sha256: '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1' },
   { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json',
-    sha256: '9e3c025779c199af8e02805aca8534f916c9f1d984a411bf0d1d4671b77425ab' },
+    sha256: '0b7650472ee57c906b7a022cb3ee213644acc80cca72c44ab171ed4f72d96733' },
   { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json',
     sha256: '4f476e36aa78b6788bb37c02ba5b2fae899c99eeba7d43dae399507cd93ed216' },
   { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_a.json',

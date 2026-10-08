@@ -38,7 +38,7 @@ function privateBinding(canonicalPath = path.join(tmpdir(), 'ws5-private-phase-r
         effectivePolicySha256: 'f'.repeat(64), preparedExecutionFile: `prepared-host/prepared-${repositoryId}-default.json` })),
     },
     runtime: { finalSourceRevision: 'f'.repeat(40), workerImageDigest: `sha256:${'1'.repeat(64)}`,
-      runtimeManifestSha256: '2'.repeat(64) },
+      runtimeManifestSha256: '2'.repeat(64), publicationAttestationSha256: '3'.repeat(64) },
   };
 }
 
@@ -65,6 +65,7 @@ test('public phase plan is a non-dispatchable template and requires a private ro
   const bundle = JSON.parse(await readFile(path.join(root, 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json')));
   assert.equal(plan.status, 'template-awaiting-private-root-binding');
   assert.equal(plan.dispatchAuthorization, false);
+  assert.equal(plan.runtime.publicationAttestationSha256, null);
   assert.equal(Object.hasOwn(plan.policy, 'policySource'), false);
   assert.equal(Object.hasOwn(plan.policy, 'inferenceBaseUrl'), false);
   assert.equal(plan.policy.routeAlias, null);
@@ -99,7 +100,7 @@ test('ships only the exact new synthetic v2 source inputs into the worker image'
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json']);
   const expected = new Map([
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json',
-      '9e3c025779c199af8e02805aca8534f916c9f1d984a411bf0d1d4671b77425ab'],
+      '0b7650472ee57c906b7a022cb3ee213644acc80cca72c44ab171ed4f72d96733'],
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json',
       '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1'],
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json',
@@ -162,6 +163,19 @@ test('ROOTGO binds phase, exact plan, output root, runtime and policy tuple and 
   const pinnedRootSha = createHash('sha256').update(binding.phaseRoot.canonicalPath).digest('hex');
   const tuple = runner.buildExternalNormalV2AuthorizationTuple(plan, '5'.repeat(64), pinnedRootSha,
     '0'.repeat(64), pinnedRootSha, binding);
+  assert.throws(() => runner.validateExternalNormalV2PrivateBinding({
+    ...binding, runtime: { finalSourceRevision: binding.runtime.finalSourceRevision,
+      workerImageDigest: binding.runtime.workerImageDigest, runtimeManifestSha256: binding.runtime.runtimeManifestSha256 },
+  }), /private_binding_invalid/u);
+  assert.throws(() => runner.validateExternalNormalV2PrivateBinding({
+    ...binding, runtime: { ...binding.runtime, publicationAttestationSha256: 'invalid' },
+  }), /private_binding_invalid/u);
+  const changedAttestationBinding = { ...binding,
+    runtime: { ...binding.runtime, publicationAttestationSha256: '4'.repeat(64) } };
+  const changedAttestationPlan = runner.bindExternalNormalV2PrivateInputs(template, changedAttestationBinding);
+  const changedAttestationTuple = runner.buildExternalNormalV2AuthorizationTuple(changedAttestationPlan,
+    '5'.repeat(64), pinnedRootSha, '0'.repeat(64), pinnedRootSha, changedAttestationBinding);
+  assert.notEqual(changedAttestationTuple.privateBindingSha256, tuple.privateBindingSha256);
   assert.throws(() => runner.buildExternalNormalV2AuthorizationTuple({
     ...plan, policy: { ...plan.policy, effectiveConfigSha256: '0'.repeat(64) },
   }, '5'.repeat(64), pinnedRootSha, '0'.repeat(64), pinnedRootSha, binding), /private_binding_plan_mismatch/u);

@@ -81,7 +81,7 @@ const privateBinding = {
       preparedExecutionFile: `prepared-host/prepared-${repositoryId}-default.json` })),
   },
   runtime: { finalSourceRevision: runtime.sourceRevision, workerImageDigest: runtime.workerImageDigest,
-    runtimeManifestSha256: runtime.runtimeManifestSha256 },
+    runtimeManifestSha256: runtime.runtimeManifestSha256, publicationAttestationSha256: '1'.repeat(64) },
 };
 
 async function persistFakeReceipt(root: string, receipt: Record<string, any>): Promise<void> {
@@ -120,6 +120,15 @@ describe('current-source external v2 worker adapter', () => {
     expect(() => validateExternalNormalV2PrivateBinding({
       ...privateBinding, sourceDescriptor: { ...privateBinding.sourceDescriptor, repositoryId: 73012 },
     }, bindings())).toThrow(/private_binding_environment_mismatch/u);
+    const runtimeWithoutAttestation = { finalSourceRevision: privateBinding.runtime.finalSourceRevision,
+      workerImageDigest: privateBinding.runtime.workerImageDigest,
+      runtimeManifestSha256: privateBinding.runtime.runtimeManifestSha256 };
+    expect(() => validateExternalNormalV2PrivateBinding({
+      ...privateBinding, runtime: runtimeWithoutAttestation,
+    }, bindings())).toThrow(/private_binding_invalid/u);
+    expect(() => validateExternalNormalV2PrivateBinding({
+      ...privateBinding, runtime: { ...privateBinding.runtime, publicationAttestationSha256: 'invalid' },
+    }, bindings())).toThrow(/private_binding_invalid/u);
     expect(() => validateExternalNormalV2PrivateBinding({ ...privateBinding, unexpectedSecretSelector: 'should-reject' }, bindings()))
       .toThrow(/private_binding_invalid/u);
   });

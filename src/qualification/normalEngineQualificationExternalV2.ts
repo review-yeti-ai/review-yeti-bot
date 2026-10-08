@@ -85,7 +85,8 @@ export interface ExternalNormalV2PrivateBinding {
       centralEffectiveConfigProjectionSha256: string; preparedExecutionSha256: string;
       effectiveConfigSha256: string; effectivePolicySha256: string; preparedExecutionFile: string }>;
   };
-  runtime: { finalSourceRevision: string; workerImageDigest: string; runtimeManifestSha256: string };
+  runtime: { finalSourceRevision: string; workerImageDigest: string; runtimeManifestSha256: string;
+    publicationAttestationSha256: string };
 }
 
 const WORKER_IMAGE_REPOSITORY = 'ghcr.io/review-yeti-ai/review-yeti-worker';
@@ -143,7 +144,7 @@ export function validateExternalNormalV2PrivateBinding(value: unknown, env?: Env
     'centralEffectiveConfigProjectionSha256', 'effectiveConfigSha256', 'effectivePolicySha256'] as const;
   const targetDigestKeys = ['normalizedPlanSha256', 'centralEffectiveConfigProjectionSha256',
     'preparedExecutionSha256', 'effectiveConfigSha256', 'effectivePolicySha256'] as const;
-  const runtimeKeys = ['finalSourceRevision', 'workerImageDigest', 'runtimeManifestSha256'];
+  const runtimeKeys = ['finalSourceRevision', 'workerImageDigest', 'runtimeManifestSha256', 'publicationAttestationSha256'];
   if (!hasExactKeys(value, bindingKeys) || binding.schemaVersion !== 'ReviewYetiExternalNormalQualificationPrivateBinding.v1'
     || typeof binding.credentialBindingSha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(binding.credentialBindingSha256)
     || !hasExactKeys(binding.phaseRoot, phaseRootKeys) || typeof binding.phaseRoot.canonicalPath !== 'string'
@@ -188,7 +189,9 @@ export function validateExternalNormalV2PrivateBinding(value: unknown, env?: Env
     || !hasExactKeys(binding.runtime, runtimeKeys)
     || typeof binding.runtime.finalSourceRevision !== 'string' || !/^[a-f0-9]{40}$/iu.test(binding.runtime.finalSourceRevision)
     || typeof binding.runtime.workerImageDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/iu.test(binding.runtime.workerImageDigest)
-    || typeof binding.runtime.runtimeManifestSha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(binding.runtime.runtimeManifestSha256)) {
+    || typeof binding.runtime.runtimeManifestSha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(binding.runtime.runtimeManifestSha256)
+    || typeof binding.runtime.publicationAttestationSha256 !== 'string'
+    || !/^[a-f0-9]{64}$/iu.test(binding.runtime.publicationAttestationSha256)) {
     throw new Error('external_normal_v2_private_binding_invalid');
   }
   let selectedBase: URL; let managementBase: URL;

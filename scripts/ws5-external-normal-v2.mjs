@@ -7,7 +7,7 @@ import path from 'node:path';
 
 export const EXTERNAL_NORMAL_V2_PLAN_PATH = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json';
 export const EXTERNAL_NORMAL_V2_BUNDLE_PATH = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json';
-export const EXTERNAL_NORMAL_V2_PLAN_SHA256 = '9e3c025779c199af8e02805aca8534f916c9f1d984a411bf0d1d4671b77425ab';
+export const EXTERNAL_NORMAL_V2_PLAN_SHA256 = '0b7650472ee57c906b7a022cb3ee213644acc80cca72c44ab171ed4f72d96733';
 export const EXTERNAL_NORMAL_V2_BUNDLE_SHA256 = '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1';
 export const EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA = 'ReviewYetiExternalNormalQualificationRootGo.v1';
 export const EXTERNAL_NORMAL_V2_PRIVATE_BINDING_SCHEMA = 'ReviewYetiExternalNormalQualificationPrivateBinding.v1';
@@ -169,7 +169,7 @@ export function validateExternalNormalV2PrivateBinding(binding) {
     'preparedExecutionSha256', 'effectiveConfigSha256', 'effectivePolicySha256', 'preparedExecutionFile'];
   const policyInputKeys = ['candidatePath', 'executionPlanFixturePath', 'preparedExecutionFixturePath',
     'syntheticProjectionPath', 'preparedExecutionManifestPath'];
-  const runtimeKeys = ['finalSourceRevision', 'workerImageDigest', 'runtimeManifestSha256'];
+  const runtimeKeys = ['finalSourceRevision', 'workerImageDigest', 'runtimeManifestSha256', 'publicationAttestationSha256'];
   if (!hasExactKeys(binding, keys) || binding.schemaVersion !== EXTERNAL_NORMAL_V2_PRIVATE_BINDING_SCHEMA
     || !/^[a-f0-9]{64}$/iu.test(binding.credentialBindingSha256 || '')
     || !hasExactKeys(binding.phaseRoot, phaseRootKeys)
@@ -213,7 +213,8 @@ export function validateExternalNormalV2PrivateBinding(binding) {
     || !hasExactKeys(binding.runtime, runtimeKeys)
     || !/^[a-f0-9]{40}$/iu.test(binding.runtime.finalSourceRevision || '')
     || !/^sha256:[a-f0-9]{64}$/iu.test(binding.runtime.workerImageDigest || '')
-    || !/^[a-f0-9]{64}$/iu.test(binding.runtime.runtimeManifestSha256 || '')) {
+    || !/^[a-f0-9]{64}$/iu.test(binding.runtime.runtimeManifestSha256 || '')
+    || !/^[a-f0-9]{64}$/iu.test(binding.runtime.publicationAttestationSha256 || '')) {
     throw new Error('external_normal_v2_private_binding_invalid');
   }
   let selectedUrl;
@@ -306,6 +307,7 @@ export function assertExternalNormalV2PlanMatchesPrivateBinding(plan, binding) {
     || canonicalJson(plan.runtime?.finalSourceRevision) !== canonicalJson(binding.runtime.finalSourceRevision)
     || canonicalJson(plan.runtime?.workerImageDigest) !== canonicalJson(binding.runtime.workerImageDigest)
     || canonicalJson(plan.runtime?.runtimeManifestSha256) !== canonicalJson(binding.runtime.runtimeManifestSha256)
+    || canonicalJson(plan.runtime?.publicationAttestationSha256) !== canonicalJson(binding.runtime.publicationAttestationSha256)
     || canonicalJson(plan.artifactRoots?.phaseRoot) !== canonicalJson(binding.phaseRoot)) {
     throw new Error('external_normal_v2_private_binding_plan_mismatch');
   }
@@ -396,6 +398,7 @@ export function validateExternalNormalV2Plan(plan, bundle) {
     || plan.runtime?.preparedConfigHelperSourceRevision !== '1917204826d9a145dc7db8217b01978dad679e2b'
     || plan.runtime?.executionMode !== 'host-coordinator-with-pinned-worker-image-children'
     || plan.runtime?.executionNetwork !== 'docker-bridge-to-configured-https-origin'
+    || plan.runtime?.publicationAttestationSha256 !== null
     || plan.runtime?.executionUser !== 'container runs as the nonroot host uid that owns the private phaseRoot'
     || plan.runtime?.executionOriginReadiness !== 'read-only DNS and certificate-verified TLS proof inside the exact worker image is required before the first model request'
     || plan.runtime?.workerImageRepository !== 'ghcr.io/review-yeti-ai/review-yeti-worker'
