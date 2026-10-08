@@ -15,7 +15,7 @@ export const getCheckpointMetricsDefinition: ToolDefinition = {
   inputSchema: {
     type: 'object',
     properties: {
-      repo: { type: 'string', description: 'Repository name filter (e.g. calltelemetry/core)' },
+      repo: { type: 'string', description: 'Repository name filter (e.g. reviewyeti-ai/review-yeti-bot)' },
       window_hours: { type: 'number', description: 'Evaluation window in hours (default: 168 / 7d)' },
     },
     additionalProperties: false,

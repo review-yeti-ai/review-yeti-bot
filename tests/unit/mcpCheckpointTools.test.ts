@@ -33,9 +33,9 @@ describe('Next-Gen MCP Tools: Checkpoints, Compaction, and Job Telemetry', () =>
     });
 
     it('filters by repo and window_hours', async () => {
-      const result = await tool.execute({ repo: 'calltelemetry/core', window_hours: 24 });
+      const result = await tool.execute({ repo: 'acme/core', window_hours: 24 });
       const data = JSON.parse((result.content[0] as any).text);
-      expect(data.repo).toBe('calltelemetry/core');
+      expect(data.repo).toBe('acme/core');
       expect(data.window_hours).toBe(24);
     });
 
@@ -77,7 +77,7 @@ describe('Next-Gen MCP Tools: Checkpoints, Compaction, and Job Telemetry', () =>
           rows: [
             {
               run_id: 'run-nextgen-1',
-              owner: 'calltelemetry',
+              owner: 'acme',
               repo: 'core',
               pr_number: 42,
               head_sha: 'abc12345',

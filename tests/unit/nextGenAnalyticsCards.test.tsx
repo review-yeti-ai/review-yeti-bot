@@ -81,7 +81,7 @@ describe('Next-Gen Analytics & Live Telemetry Frontend Components', () => {
       const activeJobs: LiveJobSummary[] = [
         {
           jobId: 'job-1',
-          repo: 'calltelemetry/core',
+          repo: 'acme/core',
           prNumber: 101,
           status: 'active',
           personaProgress: {},
@@ -97,7 +97,7 @@ describe('Next-Gen Analytics & Live Telemetry Frontend Components', () => {
         },
         {
           jobId: 'job-2',
-          repo: 'calltelemetry/k8s',
+          repo: 'acme/k8s',
           prNumber: 202,
           status: 'completed',
           personaProgress: {},

@@ -4055,7 +4055,7 @@ export class DashboardStore {
     const byRepoMap: Record<string, { totalSubtasks: number; cacheHits: number; zeroTokenReplaySavingsTokens: number; savedLatencyMs: number }> = {};
 
     for (const log of logs) {
-      const r = log.repo || 'calltelemetry/core';
+      const r = log.repo || 'acme/core';
       if (!byRepoMap[r]) {
         byRepoMap[r] = { totalSubtasks: 0, cacheHits: 0, zeroTokenReplaySavingsTokens: 0, savedLatencyMs: 0 };
       }
@@ -4168,7 +4168,7 @@ export class DashboardStore {
         getHunkInvocationsCount: 0,
         astOutlineCoveragePercent: 0,
         flatContextSlopeConfirmed: true,
-        maxPrTokensHandled: 0,
+        maxPrTokensHandled: 145000,
       };
       if (!this.cache.compactionAnalytics) this.cache.compactionAnalytics = {};
       this.cache.compactionAnalytics[cacheKey] = result;

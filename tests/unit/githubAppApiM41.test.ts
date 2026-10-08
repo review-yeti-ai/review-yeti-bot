@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createGitHubAppApiRouter } from '../../src/api/githubAppApi';
@@ -12,6 +12,10 @@ describe('Milestone 41: GitHub App & OAuth Onboarding API Suite', () => {
     app = express();
     app.use(express.json());
     app.use('/api/github', createGitHubAppApiRouter());
+    dashboardStore.updateRepository('acme', 'core-api', {
+      automationEnabled: true,
+      customProfile: 'balanced',
+    });
   });
 
   it('GET /api/github/app-config returns default/stored app configuration and monitored repos count', async () => {
@@ -102,7 +106,7 @@ describe('Milestone 41: GitHub App & OAuth Onboarding API Suite', () => {
 
   it('PATCH /api/github/app-config/monitored-repos/:owner/:repo updates 1-click review toggle', async () => {
     const patchRes = await request(app)
-      .patch('/api/github/app-config/monitored-repos/exampleorg/example-api')
+      .patch('/api/github/app-config/monitored-repos/acme/core-api')
       .send({ automationEnabled: false, customProfile: 'assertive' });
 
     expect(patchRes.status).toBe(200);
@@ -112,7 +116,11 @@ describe('Milestone 41: GitHub App & OAuth Onboarding API Suite', () => {
 
     // Re-enable for clean state
     await request(app)
-      .patch('/api/github/app-config/monitored-repos/exampleorg/example-api')
+      .patch('/api/github/app-config/monitored-repos/acme/core-api')
       .send({ automationEnabled: true, customProfile: 'balanced' });
+  });
+
+  afterAll(() => {
+    dashboardStore.reset();
   });
 });
