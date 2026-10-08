@@ -5,6 +5,7 @@ import path from 'node:path';
 import { MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT } from '../../src/review/incompleteP2RecoveryLimits';
 
 const modulePath = path.resolve(__dirname, '../../scripts/dispatch-doks-action.mjs');
+const QUALIFICATION_ORIGIN_SHA256 = 'adb20508cacbfb8b288d51036d97e0571e165120098dbacbf5e1eb971331080c';
 
 function environment(overrides: Record<string, string> = {}) {
   return {
@@ -100,9 +101,12 @@ describe('DOKS Action dispatch client', () => {
       REPOSITORY_ID: '1409547157', REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
       GITHUB_EVENT_NAME: 'repository_dispatch', DOKS_PUBLISH_MODE: 'app-gate',
       QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest,
+      QUALIFICATION_DISPATCH_ORIGIN_SHA256: QUALIFICATION_ORIGIN_SHA256,
     }));
     expect(request.qualificationRuntimeImageDigest).toBe(digest);
+    expect(request.qualificationDispatchOriginSha256).toBe(QUALIFICATION_ORIGIN_SHA256);
     expect(buildDispatchRequest(environment())).not.toHaveProperty('qualificationRuntimeImageDigest');
+    expect(buildDispatchRequest(environment())).not.toHaveProperty('qualificationDispatchOriginSha256');
     expect(() => buildDispatchRequest(environment({
       REPOSITORY_ID: '1409547157', REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
       QUALIFICATION_RUNTIME_IMAGE_DIGEST: 'a'.repeat(64),
@@ -118,14 +122,22 @@ describe('DOKS Action dispatch client', () => {
       DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
       QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest,
     }))).toThrow(/exact qualification target/u);
+    expect(() => buildDispatchRequest(environment({
+      REPOSITORY_ID: '1409547157', REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
+      DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
+      QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest,
+    }))).toThrow(/qualification target requires a central dispatch origin digest/u);
+    expect(() => buildDispatchRequest(environment({ QUALIFICATION_DISPATCH_ORIGIN_SHA256: QUALIFICATION_ORIGIN_SHA256 })))
+      .toThrow(/exact qualification target/u);
   });
 
   it('accepts the qualification endpoint only with the exact target and trusted digest context', async () => {
     const { validateDispatchEndpoint } = await import(modulePath);
-    const url = 'https://review-bot.calltelemetry.com/api/qualification/dispatch/action';
+    const url = 'https://qualification.example.invalid/api/qualification/dispatch/action';
     const context = { repositoryId: 1_409_547_157, owner: 'review-yeti-ai',
       repo: 'review-yeti-qualification', publishMode: 'app-gate',
-      qualificationRuntimeImageDigest: `sha256:${'a'.repeat(64)}` };
+      qualificationRuntimeImageDigest: `sha256:${'a'.repeat(64)}`,
+      qualificationDispatchOriginSha256: QUALIFICATION_ORIGIN_SHA256 };
 
     expect(validateDispatchEndpoint(url, context).href).toBe(url);
     expect(() => validateDispatchEndpoint(url)).toThrow(/qualification endpoint/i);
@@ -133,21 +145,36 @@ describe('DOKS Action dispatch client', () => {
       .toThrow(/qualification target/i);
     expect(() => validateDispatchEndpoint(url, { ...context, qualificationRuntimeImageDigest: undefined }))
       .toThrow(/qualification runtime image digest/i);
-    expect(() => validateDispatchEndpoint(url.replace('review-bot.calltelemetry.com', 'dispatch.internal.example.org'), context))
-      .toThrow(/qualification endpoint host/i);
-    expect(() => validateDispatchEndpoint('https://review-bot.calltelemetry.com/api/dispatch/action', context))
+    expect(() => validateDispatchEndpoint(url.replace('qualification.example.invalid', 'dispatch.example.invalid'), context))
+      .toThrow(/qualification endpoint origin digest/i);
+    expect(() => validateDispatchEndpoint('https://qualification.example.invalid/api/dispatch/action', context))
       .toThrow(/qualification target must use/i);
+  });
+
+  it('rejects a qualification URL whose origin digest differs from the trusted validator output', async () => {
+    const { validateDispatchEndpoint } = await import(modulePath);
+    const origin = 'https://qualification.example.invalid';
+    const url = `${origin}/api/qualification/dispatch/action`;
+    const context = { repositoryId: 1_409_547_157, owner: 'review-yeti-ai',
+      repo: 'review-yeti-qualification', publishMode: 'app-gate',
+      qualificationRuntimeImageDigest: `sha256:${'a'.repeat(64)}`,
+      qualificationDispatchOriginSha256: QUALIFICATION_ORIGIN_SHA256 };
+
+    expect(validateDispatchEndpoint(url, context).href).toBe(url);
+    expect(() => validateDispatchEndpoint(url, { ...context, qualificationDispatchOriginSha256: 'c'.repeat(64) }))
+      .toThrow(/origin digest/iu);
   });
 
   it('posts the exact qualification request to the isolated endpoint only with its image claim', async () => {
     const { dispatchAction } = await import(modulePath);
     const digest = `sha256:${'a'.repeat(64)}`;
-    const endpoint = 'https://review-bot.calltelemetry.com/api/qualification/dispatch/action';
+    const endpoint = 'https://qualification.example.invalid/api/qualification/dispatch/action';
     const dispatchEnvironment = environment({
       DOKS_DISPATCH_URL: endpoint, REPOSITORY_ID: '1409547157',
       REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
       DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
       QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest,
+      QUALIFICATION_DISPATCH_ORIGIN_SHA256: QUALIFICATION_ORIGIN_SHA256,
     });
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
@@ -159,12 +186,44 @@ describe('DOKS Action dispatch client', () => {
     expect(fetchMock.mock.calls[1]?.[0]).toBe(endpoint);
     expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)))
       .toMatchObject({ repositoryId: 1_409_547_157, owner: 'review-yeti-ai',
-        repo: 'review-yeti-qualification', qualificationRuntimeImageDigest: digest });
+        repo: 'review-yeti-qualification', qualificationRuntimeImageDigest: digest,
+        qualificationDispatchOriginSha256: QUALIFICATION_ORIGIN_SHA256 });
+  });
+
+  it('binds the qualification request to the central validator origin digest before OIDC', async () => {
+    const { dispatchAction } = await import(modulePath);
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const endpoint = 'https://qualification.example.invalid/api/qualification/dispatch/action';
+    const originHash = 'adb20508cacbfb8b288d51036d97e0571e165120098dbacbf5e1eb971331080c';
+    const dispatchEnvironment = environment({
+      DOKS_DISPATCH_URL: endpoint, REPOSITORY_ID: '1409547157',
+      REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
+      DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
+      QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest,
+      QUALIFICATION_DISPATCH_ORIGIN_SHA256: originHash,
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: 'ActionDispatchAccepted.v1',
+        status: 'accepted', runId: `run_${'1'.repeat(32)}` }), { status: 202 }));
+
+    await expect(dispatchAction(dispatchEnvironment, fetchMock)).resolves.toMatchObject({ status: 'accepted' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)))
+      .toMatchObject({ qualificationDispatchOriginSha256: originHash,
+        qualificationRuntimeImageDigest: digest, repositoryId: 1_409_547_157 });
+
+    const wrongOriginFetch = vi.fn();
+    await expect(dispatchAction({ ...dispatchEnvironment,
+      QUALIFICATION_DISPATCH_ORIGIN_SHA256: 'c'.repeat(64) }, wrongOriginFetch))
+      .rejects.toThrow(/origin digest/iu);
+    expect(wrongOriginFetch).not.toHaveBeenCalled();
   });
 
   it.each([
-    ['ordinary endpoint', 'https://review-bot.calltelemetry.com/api/dispatch/action'],
-    ['another host', 'https://dispatch.internal.example.org/api/qualification/dispatch/action'],
+    ['ordinary endpoint', 'https://qualification.example.invalid/api/dispatch/action'],
+    ['another host', 'https://dispatch.example.invalid/api/qualification/dispatch/action'],
   ])('refuses the qualification request through %s before fetching an OIDC token', async (_label, url) => {
     const { dispatchAction } = await import(modulePath);
     const fetchMock = vi.fn();
@@ -173,6 +232,7 @@ describe('DOKS Action dispatch client', () => {
       REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
       DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
       QUALIFICATION_RUNTIME_IMAGE_DIGEST: `sha256:${'a'.repeat(64)}`,
+      QUALIFICATION_DISPATCH_ORIGIN_SHA256: QUALIFICATION_ORIGIN_SHA256,
     });
 
     await expect(dispatchAction(env, fetchMock)).rejects.toThrow(/qualification (?:target|endpoint)/iu);

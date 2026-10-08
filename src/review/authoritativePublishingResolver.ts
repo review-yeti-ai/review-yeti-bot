@@ -6,6 +6,7 @@ import { buildAuthoritativeReviewIdentity, reviewPolicySourceSchema,
   type AuthoritativeReviewRunIdentity, type CurrentReviewCandidate } from './authoritativeReviewIdentity';
 import { preparePublishingPolicy, type PreparedPublishingPolicy } from './preparedPublishingPolicy';
 import { QUALIFICATION_RUNTIME_IMAGE_DIGEST_PATTERN } from '../config/qualificationRuntimeImage';
+import { QUALIFICATION_DISPATCH_ORIGIN_SHA256_PATTERN } from '../config/qualificationDispatchOrigin';
 
 const name = z.string().min(1).max(100).regex(/^[A-Za-z0-9_.-]+$/u)
   .refine((value) => value !== '.' && value !== '..');
@@ -34,6 +35,8 @@ export interface AuthoritativePublishingResolverOptions {
   composedEngineMaxTurns?: string;
   /** Service-owned pinned worker identity for the isolated qualification instance only. */
   qualificationRuntimeImageDigest?: string;
+  /** Digest of the service-owned private qualification action origin. */
+  qualificationDispatchOriginSha256?: string;
   /** Mint repository-scoped credentials in these factories, not in request data.
    * Honor signal when possible; even an uncooperative factory is deadline-bound. */
   candidateReaderFactory: (repository: ReviewRepositoryIdentity, signal: AbortSignal) =>
@@ -71,6 +74,7 @@ export class AuthoritativePublishingResolver {
   private readonly transport: PreparedPublishingPolicy['transport'];
   private readonly composedEngineMaxTurns?: string;
   private readonly qualificationRuntimeImageDigest?: string;
+  private readonly qualificationDispatchOriginSha256?: string;
   private readonly candidateReaderFactory: AuthoritativePublishingResolverOptions['candidateReaderFactory'];
   private readonly policyReaderFactory: AuthoritativePublishingResolverOptions['policyReaderFactory'];
   private readonly timeoutMs: number;
@@ -96,6 +100,13 @@ export class AuthoritativePublishingResolver {
       if (options.qualificationRuntimeImageDigest !== undefined) {
         if (!QUALIFICATION_RUNTIME_IMAGE_DIGEST_PATTERN.test(options.qualificationRuntimeImageDigest)) throw unavailable();
         this.qualificationRuntimeImageDigest = options.qualificationRuntimeImageDigest;
+      }
+      if (options.qualificationDispatchOriginSha256 !== undefined) {
+        if (!QUALIFICATION_DISPATCH_ORIGIN_SHA256_PATTERN.test(options.qualificationDispatchOriginSha256)) throw unavailable();
+        this.qualificationDispatchOriginSha256 = options.qualificationDispatchOriginSha256;
+      }
+      if ((this.qualificationRuntimeImageDigest === undefined) !== (this.qualificationDispatchOriginSha256 === undefined)) {
+        throw unavailable();
       }
       this.timeoutMs = z.number().int().min(250).max(30_000).parse(options.timeoutMs ?? 30_000);
       if (typeof options.candidateReaderFactory !== 'function' || typeof options.policyReaderFactory !== 'function') throw unavailable();
@@ -165,6 +176,9 @@ export class AuthoritativePublishingResolver {
         ...(this.composedEngineMaxTurns === undefined ? {} : { composedEngineMaxTurns: this.composedEngineMaxTurns }),
         ...(this.qualificationRuntimeImageDigest === undefined ? {} : {
           qualificationRuntimeImageDigest: this.qualificationRuntimeImageDigest,
+        }),
+        ...(this.qualificationDispatchOriginSha256 === undefined ? {} : {
+          qualificationDispatchOriginSha256: this.qualificationDispatchOriginSha256,
         }),
       });
       const identity = buildAuthoritativeReviewIdentity({ requested: target, current: first, policy: prepared.policy });

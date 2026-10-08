@@ -83,6 +83,7 @@ describe('actionDispatchConfig', () => {
       REVIEW_YETI_PASSTHROUGH: 'false',
       ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: qualificationRepository,
       REVIEW_JOB_WORKER_IMAGE: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'a'.repeat(64)}`,
+      REVIEW_QUALIFICATION_DISPATCH_ORIGIN: 'https://qualification.example.invalid',
       GITHUB_APP_WEBHOOK_ENABLED: 'false',
       REVIEW_YETI_MCP_ENABLED: 'false',
       REVIEW_YETI_PUBLIC_TARGET_APP_ID: '4552718',
@@ -94,6 +95,8 @@ describe('actionDispatchConfig', () => {
 
       expect(config).toMatchObject({ qualificationInstance: true, passthroughEnabled: false });
       expect(config.qualificationRuntimeImageDigest).toBe(`sha256:${'a'.repeat(64)}`);
+      expect(config.qualificationDispatchOriginSha256)
+        .toBe('adb20508cacbfb8b288d51036d97e0571e165120098dbacbf5e1eb971331080c');
       expect([...config.centralExternalRepositories]).toEqual([[qualificationRepository, 1_409_547_157]]);
       expect(config.centralExternalAppCredentials).toBeUndefined();
       expect(config.mcp.enabled).toBe(false);
@@ -107,11 +110,24 @@ describe('actionDispatchConfig', () => {
       ['multiple targets', { ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES:
         `${qualificationRepository},review-yeti-ai/review-yeti-bot` }],
       ['missing worker image pin', { REVIEW_JOB_WORKER_IMAGE: undefined }],
+      ['missing trusted dispatch origin', { REVIEW_QUALIFICATION_DISPATCH_ORIGIN: undefined }],
       ['mutable worker image', { REVIEW_JOB_WORKER_IMAGE: 'ghcr.io/review-yeti-ai/review-yeti-worker:latest' }],
+      ['path-bearing dispatch origin', { REVIEW_QUALIFICATION_DISPATCH_ORIGIN: 'https://qualification.example.invalid/api/dispatch/action' }],
+      ['non-HTTPS dispatch origin', { REVIEW_QUALIFICATION_DISPATCH_ORIGIN: 'http://qualification.example.invalid' }],
+      ['credential-bearing dispatch origin', { REVIEW_QUALIFICATION_DISPATCH_ORIGIN: 'https://user:pass@qualification.example.invalid' }],
+      ['query-bearing dispatch origin', { REVIEW_QUALIFICATION_DISPATCH_ORIGIN: 'https://qualification.example.invalid?token=x' }],
+      ['localhost dispatch origin', { REVIEW_QUALIFICATION_DISPATCH_ORIGIN: 'https://localhost' }],
+      ['IP-literal dispatch origin', { REVIEW_QUALIFICATION_DISPATCH_ORIGIN: 'https://127.0.0.1' }],
       ['MCP surface enabled', { REVIEW_YETI_MCP_ENABLED: 'true', REVIEW_YETI_MCP_AUTH_TOKEN: 'synthetic-mcp-token' }],
       ['App webhook surface enabled', { GITHUB_APP_WEBHOOK_ENABLED: 'true' }],
     ])('rejects qualification instance configuration with %s', (_caseName, override) => {
       expect(() => actionDispatchConfigFromEnv({ ...qualificationEnvironment, ...override })).toThrow();
+    });
+
+    it('rejects the qualification origin configuration on a normal service', () => {
+      expect(() => actionDispatchConfigFromEnv({
+        REVIEW_QUALIFICATION_DISPATCH_ORIGIN: 'https://qualification.example.invalid',
+      })).toThrow();
     });
   });
 

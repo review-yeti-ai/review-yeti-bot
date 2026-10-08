@@ -480,6 +480,7 @@ describe('ReviewJobDispatchEngine authoritative prepared-policy lookup', () => {
       contentDigest: createHash('sha256').update(content).digest('hex'),
     } }, transport, undefined, preparedRuntimeImageDigest === undefined ? undefined : {
       qualificationRuntimeImageDigest: preparedRuntimeImageDigest,
+      qualificationDispatchOriginSha256: 'd'.repeat(64),
     });
     const envelope = { version: 'PreparedReviewExecution.v1', config: prepared.config, transport,
       ...(prepared.qualificationRuntimeImageDigest === undefined ? {} : {

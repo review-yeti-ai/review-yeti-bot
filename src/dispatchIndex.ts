@@ -111,7 +111,8 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const configuredCiConfig = reviewCiConfigFromEnv(environment, authoritativeConfig);
   if (dispatchConfig.qualificationInstance && (!authoritativeConfig || webhookConfig !== undefined
     || dispatchConfig.mcp.enabled || configuredCiConfig !== undefined
-    || authoritativeConfig.qualificationRuntimeImageDigest !== dispatchConfig.qualificationRuntimeImageDigest)) {
+    || authoritativeConfig.qualificationRuntimeImageDigest !== dispatchConfig.qualificationRuntimeImageDigest
+    || authoritativeConfig.qualificationDispatchOriginSha256 !== dispatchConfig.qualificationDispatchOriginSha256)) {
     throw new Error('Qualification instance cannot enable auxiliary review routes');
   }
   if (dispatchConfig.passthroughEnabled === true && !authoritativeConfig) {
@@ -329,6 +330,9 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     qualificationInstance: dispatchConfig.qualificationInstance,
     ...(dispatchConfig.qualificationRuntimeImageDigest === undefined ? {} : {
       qualificationRuntimeImageDigest: dispatchConfig.qualificationRuntimeImageDigest,
+    }),
+    ...(dispatchConfig.qualificationDispatchOriginSha256 === undefined ? {} : {
+      qualificationDispatchOriginSha256: dispatchConfig.qualificationDispatchOriginSha256,
     }),
     storageInitialized: storageIsInitialized,
     operatorPauseReadinessEnabled: dispatchConfig.passthroughEnabled === true,

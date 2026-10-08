@@ -467,13 +467,32 @@ describe('service-owned authoritative completion context', () => {
   it('revalidates a persisted qualification runtime capability during completion context resolution', async () => {
     const base = policyFile();
     const imageDigest = `sha256:${'e'.repeat(64)}`;
+    const originDigest = 'f'.repeat(64);
     const stored = preparePublishingPolicy(base,
       { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' }, undefined,
-      { qualificationRuntimeImageDigest: imageDigest });
+      { qualificationRuntimeImageDigest: imageDigest, qualificationDispatchOriginSha256: originDigest });
     const f = fixture({}, stored);
 
     await expect(f.context(f.gate)).resolves.toMatchObject({ coverage: { coverageComplete: true, quorumSatisfied: true } });
     expect(f.getStoredPrepared).toHaveBeenCalledExactlyOnceWith(stored.policy.effectivePolicyDigest, expect.any(AbortSignal));
+  });
+
+  it('does not accept a refreshed policy with a different qualification origin binding', async () => {
+    const base = policyFile();
+    const imageDigest = `sha256:${'e'.repeat(64)}`;
+    const stored = preparePublishingPolicy(base,
+      { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' }, undefined,
+      { qualificationRuntimeImageDigest: imageDigest, qualificationDispatchOriginSha256: 'f'.repeat(64) });
+    const foreign = preparePublishingPolicy(base,
+      { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' }, undefined,
+      { qualificationRuntimeImageDigest: imageDigest, qualificationDispatchOriginSha256: 'a'.repeat(64) });
+    const f = fixture({}, stored);
+    f.resolve.mockResolvedValue(resolution(foreign));
+
+    const result = await f.context(f.gate);
+
+    expect(result.current.policyDigest).toBe(foreign.policy.effectivePolicyDigest);
+    expect(result.coverage).toMatchObject({ changedFiles: [], coverageComplete: false, quorumSatisfied: false });
   });
 
   it('derives the authoritative roster from immutable persona paths and the exact current diff', async () => {

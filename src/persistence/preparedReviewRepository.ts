@@ -15,6 +15,9 @@ export const PREPARED_REVIEW_SCHEMA_SQL = `
     qualification_runtime_image_digest VARCHAR(71) CHECK (
       qualification_runtime_image_digest IS NULL OR qualification_runtime_image_digest ~ '^sha256:[a-f0-9]{64}$'
     ),
+    qualification_dispatch_origin_sha256 VARCHAR(64) CHECK (
+      qualification_dispatch_origin_sha256 IS NULL OR qualification_dispatch_origin_sha256 ~ '^[a-f0-9]{64}$'
+    ),
     sources JSONB NOT NULL CHECK (jsonb_typeof(sources) = 'array'),
     expected_persona_ids JSONB NOT NULL CHECK (jsonb_typeof(expected_persona_ids) = 'array'),
     prepared_content_digest VARCHAR(64) NOT NULL CHECK (prepared_content_digest ~ '^[a-f0-9]{64}$'),
@@ -22,6 +25,10 @@ export const PREPARED_REVIEW_SCHEMA_SQL = `
   );
   ALTER TABLE prepared_review_policies
     ADD COLUMN IF NOT EXISTS qualification_runtime_image_digest VARCHAR(71);
+  ALTER TABLE prepared_review_policies
+    ADD COLUMN IF NOT EXISTS qualification_dispatch_origin_sha256 VARCHAR(64) CHECK (
+      qualification_dispatch_origin_sha256 IS NULL OR qualification_dispatch_origin_sha256 ~ '^[a-f0-9]{64}$'
+    );
 `;
 
 export interface PreparedReviewQueryable {
@@ -45,6 +52,7 @@ const preparedSchema = z.object({
   // The shared verifier enforces HTTPS, no userinfo/query/fragment, and bounds.
   transport: z.object({ baseUrl: z.string(), model: z.string() }).strict(),
   qualificationRuntimeImageDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),
+  qualificationDispatchOriginSha256: digestSchema.optional(),
   expectedPersonaIds: z.array(personaIdSchema).min(1).max(64),
 }).strict();
 
@@ -55,6 +63,7 @@ const storedSchema = z.object({
   config: z.record(z.unknown()),
   transport: z.record(z.unknown()),
   qualification_runtime_image_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u).nullable().optional(),
+  qualification_dispatch_origin_sha256: digestSchema.nullable().optional(),
   sources: z.array(z.unknown()),
   expected_persona_ids: z.array(z.unknown()),
   prepared_content_digest: digestSchema,
@@ -108,6 +117,7 @@ function requireSafeBoundedJson(input: unknown, maxBytes = MAX_PREPARED_REVIEW_B
 function validatePrepared(input: unknown): PreparedPublishingPolicy {
   requireSafeBoundedJson(input);
   const parsed = preparedSchema.parse(input);
+  if ((parsed.qualificationDispatchOriginSha256 === undefined) !== (parsed.qualificationRuntimeImageDigest === undefined)) throw new Error();
   // The shared config schema is intentionally permissive for other consumers.
   // Storage rejects unknown root fields and rejects nested stripping/defaults:
   // only an already-normalized config may cross this persistence boundary.
@@ -144,7 +154,8 @@ export async function getPreparedPublishingPolicy(
   try {
     digestSchema.parse(effectivePolicyDigest);
     const result = await queryable.query(`SELECT effective_policy_digest, version, effective_config_digest,
-      config, transport, qualification_runtime_image_digest, sources, expected_persona_ids, prepared_content_digest
+      config, transport, qualification_runtime_image_digest, qualification_dispatch_origin_sha256,
+      sources, expected_persona_ids, prepared_content_digest
       FROM prepared_review_policies WHERE effective_policy_digest = $1`, [effectivePolicyDigest]);
     if (result.rows.length === 0) return null;
     if (result.rows.length !== 1) throw new Error();
@@ -163,6 +174,8 @@ export async function getPreparedPublishingPolicy(
       config: row.config, transport: row.transport,
       ...(row.qualification_runtime_image_digest === null || row.qualification_runtime_image_digest === undefined
         ? {} : { qualificationRuntimeImageDigest: row.qualification_runtime_image_digest }),
+      ...(row.qualification_dispatch_origin_sha256 === null || row.qualification_dispatch_origin_sha256 === undefined
+        ? {} : { qualificationDispatchOriginSha256: row.qualification_dispatch_origin_sha256 }),
       expectedPersonaIds: row.expected_persona_ids,
     });
     if (row.prepared_content_digest !== contentDigest(prepared)) throw new Error();
@@ -189,11 +202,13 @@ export async function savePreparedPublishingPolicy(
     const normalized = validatePrepared(prepared);
     await queryable.query(`INSERT INTO prepared_review_policies (
       effective_policy_digest, version, effective_config_digest, config, transport,
-      qualification_runtime_image_digest, sources, expected_persona_ids, prepared_content_digest
-    ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7::jsonb, $8::jsonb, $9)
+      qualification_runtime_image_digest, qualification_dispatch_origin_sha256,
+      sources, expected_persona_ids, prepared_content_digest
+    ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8::jsonb, $9::jsonb, $10)
       ON CONFLICT (effective_policy_digest) DO NOTHING`, [
       normalized.policy.effectivePolicyDigest, normalized.version, normalized.policy.effectiveConfigDigest,
       canonicalJson(normalized.config), canonicalJson(normalized.transport), normalized.qualificationRuntimeImageDigest ?? null,
+      normalized.qualificationDispatchOriginSha256 ?? null,
       canonicalJson(normalized.policy.sources), canonicalJson(normalized.expectedPersonaIds), contentDigest(normalized),
     ]);
     const stored = await getPreparedPublishingPolicy(queryable, normalized.policy.effectivePolicyDigest);

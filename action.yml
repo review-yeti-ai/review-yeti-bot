@@ -123,6 +123,12 @@ inputs:
       trusted central workflow should set this; the Action cannot choose the target service image.
     required: false
     default: ''
+  qualification-dispatch-origin-sha256:
+    description: >-
+      SHA-256 of the canonical qualification dispatch origin emitted by the trusted central validator.
+      Required only for the exact qualification target; it contains no host value and grants no authority.
+    required: false
+    default: ''
   doks-publish-mode:
     description: >-
       DOKS publication policy: app-gate is the standard gate-checked publication mode for
@@ -516,6 +522,7 @@ runs:
         DOKS_OIDC_AUDIENCE: review-yeti-doks-dispatch
         DOKS_PUBLISH_MODE: ${{ inputs.doks-publish-mode }}
         QUALIFICATION_RUNTIME_IMAGE_DIGEST: ${{ inputs.qualification-runtime-image-digest }}
+        QUALIFICATION_DISPATCH_ORIGIN_SHA256: ${{ inputs.qualification-dispatch-origin-sha256 }}
         REFRESH_REQUESTED: ${{ inputs.refresh-requested }}
         REFRESH_EXECUTION_ATTEMPT: ${{ inputs.refresh-execution-attempt }}
         INCOMPLETE_P2_RECOVERY: ${{ inputs.incomplete-p2-recovery }}

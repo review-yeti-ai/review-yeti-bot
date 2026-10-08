@@ -1,5 +1,6 @@
 import { reviewYetiPassthroughEnabledFromEnv } from './reviewYetiPassthrough';
 import { qualificationRuntimeImageDigestFromReference } from './qualificationRuntimeImage';
+import { qualificationDispatchOriginSha256FromEnv } from './qualificationDispatchOrigin';
 import {
   PUBLIC_REVIEW_REPOSITORY,
   PUBLIC_REVIEW_REPOSITORY_ID,
@@ -34,6 +35,8 @@ export interface ActionDispatchConfig {
   qualificationInstance: boolean;
   /** Digest derived from the service-owned worker image reference; present only in qualification. */
   qualificationRuntimeImageDigest?: string;
+  /** Digest of the service-owned qualification action origin; the raw origin is never returned. */
+  qualificationDispatchOriginSha256?: string;
   requireExpectedGeneration: boolean;
   centralExternalRepositories: ReadonlyMap<string, number>;
   centralExternalAppCredentials?: {
@@ -63,6 +66,7 @@ interface ActionDispatchEnvironment {
   ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES?: string;
   GITHUB_APP_WEBHOOK_ENABLED?: string;
   REVIEW_JOB_WORKER_IMAGE?: string;
+  REVIEW_QUALIFICATION_DISPATCH_ORIGIN?: string;
   REVIEW_YETI_PUBLIC_TARGET_APP_ID?: string;
   REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY?: string;
   REVIEW_YETI_MCP_ENABLED?: string;
@@ -154,6 +158,15 @@ export function actionDispatchConfigFromEnv(
   if (qualificationInstance && !qualificationRuntimeImageDigest) {
     throw new Error('Qualification instance requires a digest-pinned REVIEW_JOB_WORKER_IMAGE');
   }
+  const qualificationDispatchOriginSha256 = qualificationInstance
+    ? qualificationDispatchOriginSha256FromEnv(environment.REVIEW_QUALIFICATION_DISPATCH_ORIGIN)
+    : undefined;
+  if (qualificationInstance && !qualificationDispatchOriginSha256) {
+    throw new Error('Qualification instance requires a canonical trusted HTTPS dispatch origin');
+  }
+  if (!qualificationInstance && environment.REVIEW_QUALIFICATION_DISPATCH_ORIGIN?.trim()) {
+    throw new Error('REVIEW_QUALIFICATION_DISPATCH_ORIGIN is allowed only for the qualification instance');
+  }
 
   const mcpEnabledVal = environment.REVIEW_YETI_MCP_ENABLED;
   let mcpEnabled = false;
@@ -211,6 +224,7 @@ export function actionDispatchConfigFromEnv(
     passthroughEnabled,
     qualificationInstance,
     ...(qualificationRuntimeImageDigest ? { qualificationRuntimeImageDigest } : {}),
+    ...(qualificationDispatchOriginSha256 ? { qualificationDispatchOriginSha256 } : {}),
     requireExpectedGeneration,
     centralExternalRepositories,
     ...(centralExternalAppCredentials ? { centralExternalAppCredentials } : {}),

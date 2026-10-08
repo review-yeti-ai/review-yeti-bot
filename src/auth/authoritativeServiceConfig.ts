@@ -33,6 +33,8 @@ export interface AuthoritativeServiceConfig {
   qualificationInstance?: true;
   /** Digest derived from the service-owned worker image reference. */
   qualificationRuntimeImageDigest?: string;
+  /** Digest of the service-owned private qualification dispatch origin. */
+  qualificationDispatchOriginSha256?: string;
   repositoryIds: number[];
   /** Optional name-to-ID bindings for authenticated transports that carry no repository ID. */
   repositoryIdentities?: Array<{ repositoryId: number; owner: string; repo: string }>;
@@ -57,7 +59,7 @@ export function authoritativeServiceConfigFromEnv(
   env: Readonly<Record<string, string | undefined>>,
   oidcPolicy: Pick<GitHubActionsOidcPolicy, 'allowAppGate' | 'repositoryIds'>,
   dispatchConfig: Pick<ActionDispatchConfig,
-    'passthroughEnabled' | 'qualificationInstance' | 'qualificationRuntimeImageDigest'
+    'passthroughEnabled' | 'qualificationInstance' | 'qualificationRuntimeImageDigest' | 'qualificationDispatchOriginSha256'
     | 'centralExternalRepositories' | 'centralExternalAppCredentials'>,
 ): AuthoritativeServiceConfig | undefined {
   try {
@@ -80,7 +82,7 @@ export function authoritativeServiceConfigFromEnv(
     if (dispatchConfig.qualificationInstance && (dispatchConfig.passthroughEnabled
       || admit !== 'true'
       || repositoryIds.length !== 1 || repositoryIds[0] !== QUALIFICATION_REVIEW_REPOSITORY_ID
-      || !dispatchConfig.qualificationRuntimeImageDigest)) throw new Error();
+      || !dispatchConfig.qualificationRuntimeImageDigest || !dispatchConfig.qualificationDispatchOriginSha256)) throw new Error();
     let repositoryIdentities: AuthoritativeServiceConfig['repositoryIdentities'];
     const rawIdentities = env.AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES;
     if (rawIdentities !== undefined) {
@@ -137,6 +139,8 @@ export function authoritativeServiceConfigFromEnv(
       ...(dispatchConfig.qualificationInstance ? { qualificationInstance: true as const } : {}),
       ...(dispatchConfig.qualificationInstance
         ? { qualificationRuntimeImageDigest: dispatchConfig.qualificationRuntimeImageDigest! } : {}),
+      ...(dispatchConfig.qualificationInstance
+        ? { qualificationDispatchOriginSha256: dispatchConfig.qualificationDispatchOriginSha256! } : {}),
       ...(repositoryIdentities ? { repositoryIdentities } : {}),
       ...(publicRepository ? { publicRepository } : {}),
       policyRepository: { repositoryId: source.repositoryId, owner: source.owner, repo: source.repo },

@@ -260,6 +260,7 @@ describe('POST /finding-threads (service)', () => {
 
   async function v2App(options: { existing?: unknown[]; liveHead?: string; blockers?: string[]; blockerFindings?: unknown[];
     p1Count?: number; failResolveOn?: number; qualificationRuntimeImageDigest?: string;
+    qualificationDispatchOriginSha256?: string;
     workerEvidence?: (coordinates: any) => any } = {}) {
     const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
       personas: 'security,testing', budget: { max_investigation_turns: 20 },
@@ -271,6 +272,7 @@ describe('POST /finding-threads (service)', () => {
     } }, { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' }, undefined,
     options.qualificationRuntimeImageDigest === undefined ? undefined : {
       qualificationRuntimeImageDigest: options.qualificationRuntimeImageDigest,
+      qualificationDispatchOriginSha256: options.qualificationDispatchOriginSha256,
     });
     const coordinates = { runId: RUN, repositoryId: 123, owner: 'o', repo: 'r', prNumber: 7,
       headSha: HEAD, baseSha: 'c'.repeat(40), policyDigest: prepared.policy.effectivePolicyDigest,
@@ -298,8 +300,9 @@ describe('POST /finding-threads (service)', () => {
           effective_policy_digest: values?.[0], version: values?.[1], effective_config_digest: values?.[2],
           config: JSON.parse(String(values?.[3])), transport: JSON.parse(String(values?.[4])),
           qualification_runtime_image_digest: values?.[5] ?? null,
-          sources: JSON.parse(String(values?.[6])), expected_persona_ids: JSON.parse(String(values?.[7])),
-          prepared_content_digest: values?.[8],
+          qualification_dispatch_origin_sha256: values?.[6] ?? null,
+          sources: JSON.parse(String(values?.[7])), expected_persona_ids: JSON.parse(String(values?.[8])),
+          prepared_content_digest: values?.[9],
         };
         return { rows: [] };
       }
@@ -366,15 +369,19 @@ describe('POST /finding-threads (service)', () => {
     return { server, db, calls, fetchImplementation, decision, v2Body, prepared, readStoredPrepared: () => storedPolicy };
   }
 
-  it('round-trips legacy-null and qualification-image capability columns with prepared provenance', async () => {
-    const imageDigests: Array<string | undefined> = [undefined, `sha256:${'e'.repeat(64)}`];
-    for (const qualificationRuntimeImageDigest of imageDigests) {
-      const fixture = await v2App({ qualificationRuntimeImageDigest });
+  it('round-trips legacy-null and qualification image/origin capability columns with prepared provenance', async () => {
+    const cases = [
+      { qualificationRuntimeImageDigest: undefined, qualificationDispatchOriginSha256: undefined },
+      { qualificationRuntimeImageDigest: `sha256:${'e'.repeat(64)}`, qualificationDispatchOriginSha256: 'f'.repeat(64) },
+    ];
+    for (const capability of cases) {
+      const fixture = await v2App(capability);
       const stored = fixture.readStoredPrepared();
       expect(stored).toMatchObject({
         effective_policy_digest: fixture.prepared.policy.effectivePolicyDigest,
         effective_config_digest: fixture.prepared.policy.effectiveConfigDigest,
-        qualification_runtime_image_digest: qualificationRuntimeImageDigest ?? null,
+        qualification_runtime_image_digest: capability.qualificationRuntimeImageDigest ?? null,
+        qualification_dispatch_origin_sha256: capability.qualificationDispatchOriginSha256 ?? null,
         sources: fixture.prepared.policy.sources,
         expected_persona_ids: fixture.prepared.expectedPersonaIds,
         prepared_content_digest: sha256({ version: 'PreparedReviewContent.v1', prepared: fixture.prepared }),

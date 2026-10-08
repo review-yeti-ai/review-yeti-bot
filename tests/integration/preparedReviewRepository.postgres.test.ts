@@ -24,7 +24,8 @@ const RAW_SECRET = 'synthetic-policy-credential-do-not-retain';
 const SAVE_ERROR = 'Prepared review policy could not be saved';
 const READ_ERROR = 'Prepared review policy is invalid or unavailable';
 
-function preparedPolicy(turns = 20, qualificationRuntimeImageDigest?: string): PreparedPublishingPolicy {
+function preparedPolicy(turns = 20, qualificationRuntimeImageDigest?: string,
+  qualificationDispatchOriginSha256?: string): PreparedPublishingPolicy {
   const content = JSON.stringify({
     schema: 'exampleorg.review-policy.v1',
     review_yeti: { personas: 'security,testing', budget: { max_investigation_turns: turns }, api_key: RAW_SECRET },
@@ -36,14 +37,18 @@ function preparedPolicy(turns = 20, qualificationRuntimeImageDigest?: string): P
       path: 'policy/review-yeti.json', contentDigest: createHash('sha256').update(content).digest('hex'),
     },
   }, { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' }, undefined,
-  qualificationRuntimeImageDigest === undefined ? undefined : { qualificationRuntimeImageDigest });
+  qualificationRuntimeImageDigest === undefined ? undefined : { qualificationRuntimeImageDigest,
+    ...(qualificationDispatchOriginSha256 === undefined ? {} : { qualificationDispatchOriginSha256 }) });
 }
 
 // Deliberately compute even for malformed fixtures: rehashing a malicious
 // prepared object must not bypass semantic/schema checks in the repository.
 function rehashConfig(prepared: PreparedPublishingPolicy): void {
   prepared.policy.effectiveConfigDigest = sha256({
-    version: 'ReviewConfigFingerprint.v1', config: { config: prepared.config, transport: prepared.transport },
+    version: 'ReviewConfigFingerprint.v1', config: { config: prepared.config, transport: prepared.transport,
+      ...(prepared.qualificationRuntimeImageDigest === undefined ? {} : {
+        qualificationRuntimeImageDigest: prepared.qualificationRuntimeImageDigest,
+      }) },
   });
 }
 
@@ -85,10 +90,10 @@ describeWithPostgres('prepared review policy immutable Postgres storage', () => 
   async function overwriteStored(prepared: PreparedPublishingPolicy): Promise<void> {
     await pool!.query(`UPDATE prepared_review_policies SET config = $2::jsonb, transport = $3::jsonb,
       sources = $4::jsonb, expected_persona_ids = $5::jsonb, effective_config_digest = $6,
-      prepared_content_digest = $7 WHERE effective_policy_digest = $1`, [
+      qualification_dispatch_origin_sha256 = $7, prepared_content_digest = $8 WHERE effective_policy_digest = $1`, [
       prepared.policy.effectivePolicyDigest, JSON.stringify(prepared.config), JSON.stringify(prepared.transport),
       JSON.stringify(prepared.policy.sources), JSON.stringify(prepared.expectedPersonaIds),
-      prepared.policy.effectiveConfigDigest, preparedDigest(prepared),
+      prepared.policy.effectiveConfigDigest, prepared.qualificationDispatchOriginSha256 ?? null, preparedDigest(prepared),
     ]);
   }
 
@@ -114,17 +119,29 @@ describeWithPostgres('prepared review policy immutable Postgres storage', () => 
 
   it('persists a qualification runtime capability and detects a forged capability rewrite', async () => {
     const imageDigest = `sha256:${'a'.repeat(64)}`;
-    const prepared = preparedPolicy(20, imageDigest);
+    const originDigest = 'b'.repeat(64);
+    const prepared = preparedPolicy(20, imageDigest, originDigest);
     await savePreparedPublishingPolicy(pool!, prepared);
 
     expect(await getPreparedPublishingPolicy(pool!, prepared.policy.effectivePolicyDigest))
       .toEqual(prepared);
     expect((await rows())[0]).toMatchObject({ qualification_runtime_image_digest: imageDigest,
+      qualification_dispatch_origin_sha256: originDigest,
       prepared_content_digest: preparedDigest(prepared) });
 
     const forged = structuredClone(prepared);
     forged.qualificationRuntimeImageDigest = `sha256:${'b'.repeat(64)}`;
     await expect(savePreparedPublishingPolicy(pool!, forged)).rejects.toThrow(SAVE_ERROR);
+
+    const forgedOrigin = structuredClone(prepared);
+    forgedOrigin.qualificationDispatchOriginSha256 = 'c'.repeat(64);
+    await expect(savePreparedPublishingPolicy(pool!, forgedOrigin)).rejects.toThrow(SAVE_ERROR);
+    await pool!.query('UPDATE prepared_review_policies SET qualification_dispatch_origin_sha256 = $2 WHERE effective_policy_digest = $1',
+      [prepared.policy.effectivePolicyDigest, 'c'.repeat(64)]);
+    await expect(getPreparedPublishingPolicy(pool!, prepared.policy.effectivePolicyDigest)).rejects.toThrow(READ_ERROR);
+    await pool!.query('UPDATE prepared_review_policies SET qualification_dispatch_origin_sha256 = NULL WHERE effective_policy_digest = $1',
+      [prepared.policy.effectivePolicyDigest]);
+    await expect(getPreparedPublishingPolicy(pool!, prepared.policy.effectivePolicyDigest)).rejects.toThrow(READ_ERROR);
   });
 
   it('preserves exact immutable rows across concurrent identical saves and reordered object keys', async () => {
@@ -236,7 +253,8 @@ describeWithPostgres('prepared review policy immutable Postgres storage', () => 
     await expect(getPreparedPublishingPolicy(pool!, prepared.policy.effectivePolicyDigest)).rejects.toThrow(READ_ERROR);
   });
 
-  it.each(['config', 'transport', 'sources', 'expected_persona_ids', 'prepared_content_digest'] as const)(
+  it.each(['config', 'transport', 'sources', 'expected_persona_ids',
+    'qualification_dispatch_origin_sha256', 'prepared_content_digest'] as const)(
     'detects tampering in stored %s before returning evidence', async (column) => {
       const prepared = preparedPolicy();
       await savePreparedPublishingPolicy(pool!, prepared);
@@ -245,11 +263,13 @@ describeWithPostgres('prepared review policy immutable Postgres storage', () => 
         transport: { ...prepared.transport, model: 'other-model' },
         sources: [{ ...prepared.policy.sources[0], sha: 'f'.repeat(40) }],
         expected_persona_ids: ['sec-lane'],
+        qualification_dispatch_origin_sha256: 'e'.repeat(64),
         prepared_content_digest: 'f'.repeat(64),
       };
       // Column names come only from this fixed test-case list.
       await pool!.query(`UPDATE prepared_review_policies SET ${column} = $1`, [
-        column === 'prepared_content_digest' ? values[column] : JSON.stringify(values[column]),
+        column === 'prepared_content_digest' || column === 'qualification_dispatch_origin_sha256'
+          ? values[column] : JSON.stringify(values[column]),
       ]);
       await expect(getPreparedPublishingPolicy(pool!, prepared.policy.effectivePolicyDigest)).rejects.toThrow(READ_ERROR);
       await expect(savePreparedPublishingPolicy(pool!, prepared)).rejects.toThrow(SAVE_ERROR);

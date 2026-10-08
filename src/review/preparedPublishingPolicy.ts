@@ -23,6 +23,7 @@ const transportSchema = z.object({
   model: z.string().min(1).max(256).refine((value) => !/[\u0000-\u001f\u007f]/u.test(value)),
 }).strict();
 const qualificationRuntimeImageDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
+const qualificationDispatchOriginSha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
 const centralPolicySchema = z.object({
   // The schema id is a version marker, not an authority: accept `<producer>.review-policy.v1` from any
   // trusted producer. Authority comes from the policy digest and central provenance, not from this prefix.
@@ -54,12 +55,14 @@ export interface PreparedPublishingPolicy {
   transport: z.infer<typeof transportSchema>;
   /** Service-owned immutable worker-image capability; absent on legacy/general receipts. */
   qualificationRuntimeImageDigest?: string;
+  /** Service-owned qualification action-origin binding; never contains the raw origin. */
+  qualificationDispatchOriginSha256?: string;
 }
 
 /** The only config envelope permitted across the service/operator/worker seam. */
 export function parsePreparedReviewExecution(json: string, expectedDigest: string,
   actualTransport?: PreparedPublishingPolicy['transport']): {
-    version: 'PreparedReviewExecution.v1'; config: CtReviewConfigV3;
+  version: 'PreparedReviewExecution.v1'; config: CtReviewConfigV3;
     transport: PreparedPublishingPolicy['transport'];
     qualificationRuntimeImageDigest?: string;
   } {
@@ -87,11 +90,15 @@ export function parsePreparedReviewExecution(json: string, expectedDigest: strin
 export function preparePublishingPolicy(file: ImmutableReviewPolicyFile,
   transport: PreparedPublishingPolicy['transport'],
   trustedTarget?: { owner: string; repo: string },
-  trustedRuntime?: { composedEngineMaxTurns?: string; qualificationRuntimeImageDigest?: string }): PreparedPublishingPolicy {
+  trustedRuntime?: { composedEngineMaxTurns?: string; qualificationRuntimeImageDigest?: string;
+    qualificationDispatchOriginSha256?: string }): PreparedPublishingPolicy {
   try {
     const resolvedTransport = transportSchema.parse(transport);
     const qualificationRuntimeImageDigest = trustedRuntime?.qualificationRuntimeImageDigest === undefined
       ? undefined : qualificationRuntimeImageDigestSchema.parse(trustedRuntime.qualificationRuntimeImageDigest);
+    const qualificationDispatchOriginSha256 = trustedRuntime?.qualificationDispatchOriginSha256 === undefined
+      ? undefined : qualificationDispatchOriginSha256Schema.parse(trustedRuntime.qualificationDispatchOriginSha256);
+    if ((qualificationDispatchOriginSha256 === undefined) !== (qualificationRuntimeImageDigest === undefined)) throw new Error();
     const source = reviewPolicySourceSchema.parse(file.source);
     if (typeof file.content !== 'string' || Buffer.byteLength(file.content, 'utf8') > 256 * 1024
       || createHash('sha256').update(file.content).digest('hex') !== source.contentDigest) throw new Error();
@@ -123,18 +130,21 @@ export function preparePublishingPolicy(file: ImmutableReviewPolicyFile,
     if (expectedPersonaIds.length === 0 || expectedPersonaIds.length > 64
       || new Set(expectedPersonaIds).size !== expectedPersonaIds.length
       || expectedPersonaIds.some((id) => !/^[a-z][a-z0-9_-]{0,127}$/u.test(id))) throw new Error();
+    const effectiveConfig = { config, transport: resolvedTransport,
+      ...(qualificationRuntimeImageDigest === undefined ? {} : { qualificationRuntimeImageDigest }) };
     return {
       version: 'PreparedPublishingPolicy.v1', config, expectedPersonaIds, transport: resolvedTransport,
       ...(qualificationRuntimeImageDigest === undefined ? {} : { qualificationRuntimeImageDigest }),
+      ...(qualificationDispatchOriginSha256 === undefined ? {} : { qualificationDispatchOriginSha256 }),
       policy: fingerprintTrustedReviewPolicy({
-        effectiveConfig: { config, transport: resolvedTransport,
-          ...(qualificationRuntimeImageDigest === undefined ? {} : { qualificationRuntimeImageDigest }) },
+        effectiveConfig,
         effectivePolicy: {
           central: raw,
           targetRepository: selectedOverride === undefined ? null : trustedRepository?.toLowerCase() ?? null,
           selectedRepositoryOverride: selectedOverride ?? null,
           execution: { provider: 'bifrost', ...resolvedTransport,
-            ...(qualificationRuntimeImageDigest === undefined ? {} : { qualificationRuntimeImageDigest }) },
+            ...(qualificationRuntimeImageDigest === undefined ? {} : { qualificationRuntimeImageDigest }),
+            ...(qualificationDispatchOriginSha256 === undefined ? {} : { qualificationDispatchOriginSha256 }) },
         },
         sources: [source],
       }),

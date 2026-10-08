@@ -105,7 +105,7 @@ describe('prepared review projection transport', () => {
       repositoryId: 456, repository: 'example/central-policy', sha: 'c'.repeat(40),
       path: 'policy/review.json', contentDigest: sha256(content),
     } }, { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' }, undefined,
-    { qualificationRuntimeImageDigest: digest });
+    { qualificationRuntimeImageDigest: digest, qualificationDispatchOriginSha256: 'd'.repeat(64) });
     const preparedReview = JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config,
       transport: prepared.transport, qualificationRuntimeImageDigest: digest });
     const boundInput = { ...input, publicationMode: 'app-gate' as const,
