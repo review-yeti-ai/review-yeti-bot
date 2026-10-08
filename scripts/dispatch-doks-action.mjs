@@ -11,6 +11,8 @@ const GITHUB_ACTIONS_OIDC_REQUEST_HOST_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
 const RUN_ID_PATTERN = /^run_[a-f0-9]{16,64}$/u;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
+const QUALIFICATION_REPOSITORY = 'review-yeti-ai/review-yeti-qualification';
+const QUALIFICATION_RUNTIME_IMAGE_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const SUPPORTED_EVENTS = new Set(['pull_request', 'pull_request_target', 'workflow_dispatch', 'repository_dispatch']);
 const DISPATCH_RETRY_DELAYS_MS = Object.freeze([1_000, 2_000]);
 const RETRYABLE_DISPATCH_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -92,6 +94,16 @@ export function buildDispatchRequest(environment) {
   const repository = required(environment, 'REPOSITORY');
   if (!REPOSITORY_PATTERN.test(repository)) throw new Error('REPOSITORY must be owner/name');
   const [owner, repo] = repository.split('/');
+  const qualificationRuntimeImageDigestRaw = String(environment.QUALIFICATION_RUNTIME_IMAGE_DIGEST ?? '');
+  const qualificationRuntimeImageDigest = qualificationRuntimeImageDigestRaw.trim();
+  if (qualificationRuntimeImageDigestRaw !== qualificationRuntimeImageDigest
+    || (qualificationRuntimeImageDigest && !QUALIFICATION_RUNTIME_IMAGE_DIGEST_PATTERN.test(qualificationRuntimeImageDigest))) {
+    throw new Error('Qualification runtime image digest must be exactly sha256:<64 lowercase hex>');
+  }
+  if (qualificationRuntimeImageDigest && (repository !== QUALIFICATION_REPOSITORY
+    || String(environment.DOKS_PUBLISH_MODE || 'disabled').trim() !== 'app-gate')) {
+    throw new Error('Qualification runtime image digest is allowed only for the exact qualification target in app-gate mode');
+  }
   const publishMode = String(environment.DOKS_PUBLISH_MODE || 'disabled').trim();
   if (publishMode !== 'disabled' && publishMode !== 'app-gate') {
     throw new Error('DOKS publish mode must be disabled or app-gate');
@@ -220,6 +232,7 @@ export function buildDispatchRequest(environment) {
     } : {}),
     ...(expectedGeneration === undefined ? {} : { expectedGeneration }),
     ...(incompleteP2Recovery ? { incompleteP2Recovery: true } : {}),
+    ...(qualificationRuntimeImageDigest ? { qualificationRuntimeImageDigest } : {}),
     requestedAt: new Date().toISOString(),
     caller: {
       runId,

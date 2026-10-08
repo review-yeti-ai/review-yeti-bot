@@ -3,6 +3,7 @@ import { KubernetesReviewJobProjector } from './k8s/kubernetesReviewJobProjector
 import { ReviewJobDispatchEngine } from './k8s/reviewJobDispatchEngine';
 import { KubernetesRunSecretProvisioner } from './k8s/kubernetesRunSecretProvisioner';
 import {
+  assertQualificationReviewClaim,
   reviewJobDispatcherConfigFromEnv,
   runReviewJobDispatcherLoop,
 } from './k8s/reviewJobDispatcherRuntime';
@@ -107,6 +108,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     repository,
     projector: new KubernetesReviewJobProjector(customObjects),
     currentPullRequestFor: async (claim) => {
+      assertQualificationReviewClaim(config.qualificationInstance === true, claim);
       const [owner, repo] = claim.repo.split('/');
       const credentials = credentialsForRepository(owner, repo);
       const minted = await getBoundedRepositoryToken({ ...credentials, owner, repo, baseUrl }, 'read');
@@ -119,6 +121,9 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     workerId: config.workerId,
     workerImage: config.workerImage,
     namespace: config.namespace,
+    ...(config.qualificationRuntimeImageDigest === undefined ? {} : {
+      qualificationRuntimeImageDigest: config.qualificationRuntimeImageDigest,
+    }),
     runnerMode: config.runnerMode,
     isDispatchPaused: () => passthroughEnabled,
     preparedReviewFor: async (claim) => {
@@ -127,7 +132,10 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
         throw new Error('Admitted prepared review policy is unavailable');
       }
       const json = JSON.stringify({ version: 'PreparedReviewExecution.v1',
-        config: prepared.config, transport: prepared.transport });
+        config: prepared.config, transport: prepared.transport,
+        ...(prepared.qualificationRuntimeImageDigest === undefined ? {} : {
+          qualificationRuntimeImageDigest: prepared.qualificationRuntimeImageDigest,
+        }) });
       parsePreparedReviewExecution(json, claim.configDigest);
       return json;
     },

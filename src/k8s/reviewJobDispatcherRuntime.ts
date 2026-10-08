@@ -9,6 +9,10 @@ import {
   WORKER_IMAGE_PATTERN,
   type RunnerMode,
 } from './reviewJobProjection';
+import type { ReviewDispatchClaim } from '../review/reviewRun';
+import { QUALIFICATION_REVIEW_INSTALLATION_ID, QUALIFICATION_REVIEW_REPOSITORY,
+  QUALIFICATION_REVIEW_REPOSITORY_ID } from '../config/repositoryReviewAuthorityConstants';
+import { qualificationRuntimeImageDigestFromReference } from '../config/qualificationRuntimeImage';
 
 const hostnamePattern = /^[a-z0-9](?:[a-z0-9.-]{0,198}[a-z0-9])?$/u;
 
@@ -26,7 +30,9 @@ const hostnamePattern = /^[a-z0-9](?:[a-z0-9.-]{0,198}[a-z0-9])?$/u;
  * pins the resulting behavior (1 / 1 / 100 and 15000 / 5000).
  */
 export interface ReviewJobDispatcherConfig {
-  namespace: 'ct-review-system';
+  namespace: 'ct-review-system' | 'ct-review-qualification';
+  qualificationInstance?: true;
+  qualificationRuntimeImageDigest?: string;
   workerImage: string;
   workerId: string;
   runnerMode: RunnerMode;
@@ -51,8 +57,19 @@ export function reviewJobDispatcherConfigFromEnv(
   if (environment.REVIEW_JOB_DISPATCH_ENABLED !== 'true') {
     throw new Error('REVIEW_JOB_DISPATCH_ENABLED must be true for the dedicated queue consumer');
   }
-  if (environment.REVIEW_JOB_NAMESPACE !== 'ct-review-system') {
-    throw new Error('REVIEW_JOB_NAMESPACE must remain ct-review-system during qualification');
+  const qualificationMarker = environment.REVIEW_YETI_QUALIFICATION_INSTANCE;
+  if (qualificationMarker !== undefined && qualificationMarker !== 'true' && qualificationMarker !== 'false') {
+    throw new Error('REVIEW_YETI_QUALIFICATION_INSTANCE must be exactly true or false');
+  }
+  const qualificationInstance = qualificationMarker === 'true';
+  if (qualificationInstance) {
+    if (environment.REVIEW_YETI_PASSTHROUGH !== 'false'
+      || environment.REVIEW_JOB_NAMESPACE !== 'ct-review-qualification'
+      || environment.ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES !== 'review-yeti-ai/review-yeti-qualification') {
+      throw new Error('Qualification dispatcher identity or isolated namespace is invalid');
+    }
+  } else if (environment.REVIEW_JOB_NAMESPACE !== 'ct-review-system') {
+    throw new Error('REVIEW_JOB_NAMESPACE must remain ct-review-system outside the isolated qualification instance');
   }
   const runnerModeRaw = environment.REVIEW_JOB_RUNNER_MODE?.trim() || environment.RUNNER_MODE?.trim() || 'prebaked';
   if (runnerModeRaw !== 'prebaked' && runnerModeRaw !== 'generic') {
@@ -75,6 +92,12 @@ export function reviewJobDispatcherConfigFromEnv(
       );
     }
   }
+  const qualificationRuntimeImageDigest = qualificationInstance
+    ? qualificationRuntimeImageDigestFromReference(workerImage)
+    : undefined;
+  if (qualificationInstance && (runnerMode !== 'prebaked' || !qualificationRuntimeImageDigest)) {
+    throw new Error('Qualification dispatcher requires a digest-pinned prebaked worker image');
+  }
   const hostname = environment.HOSTNAME?.trim() || '';
   if (!hostnamePattern.test(hostname)) {
     throw new Error('HOSTNAME must be a valid dispatcher pod identity');
@@ -96,7 +119,9 @@ export function reviewJobDispatcherConfigFromEnv(
     environment.REVIEW_DELEGATED_FAILURE_POLL_MS, 15_000, 5_000, Number.MAX_SAFE_INTEGER,
   );
   return {
-    namespace: 'ct-review-system',
+    namespace: qualificationInstance ? 'ct-review-qualification' : 'ct-review-system',
+    ...(qualificationInstance ? { qualificationInstance: true as const } : {}),
+    ...(qualificationRuntimeImageDigest ? { qualificationRuntimeImageDigest } : {}),
     workerImage,
     workerId: `review-job-dispatcher:${hostname}`,
     runnerMode,
@@ -106,6 +131,17 @@ export function reviewJobDispatcherConfigFromEnv(
     abandonedReaperLimit,
     delegatedFailurePollMs,
   };
+}
+
+/** Refuse to project any durable row other than the one explicitly enrolled qualification target. */
+export function assertQualificationReviewClaim(qualificationInstance: boolean,
+  claim: Pick<ReviewDispatchClaim, 'repositoryId' | 'installationId' | 'repo'>): void {
+  if (!qualificationInstance) return;
+  if (claim.repositoryId !== QUALIFICATION_REVIEW_REPOSITORY_ID
+    || claim.installationId !== QUALIFICATION_REVIEW_INSTALLATION_ID
+    || claim.repo !== QUALIFICATION_REVIEW_REPOSITORY) {
+    throw new Error('Qualification dispatcher claim is outside its source-owned repository/App installation');
+  }
 }
 
 type DispatcherEngine = Pick<ReviewJobDispatchEngine, 'runOnce'>;

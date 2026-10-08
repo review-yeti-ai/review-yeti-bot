@@ -96,6 +96,28 @@ describe('prepared review projection transport', () => {
     expect(() => buildReviewJobProjection({ ...request, preparedReview: JSON.stringify(envelope) }, receivedAt + 60_000)).toThrow(/Prepared review execution/u);
   });
 
+  it('rejects a worker image that differs from the service-prepared qualification runtime', () => {
+    const digest = `sha256:${'e'.repeat(64)}`;
+    const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', budget: { max_investigation_turns: 3 },
+    } });
+    const prepared = preparePublishingPolicy({ content, source: {
+      repositoryId: 456, repository: 'example/central-policy', sha: 'c'.repeat(40),
+      path: 'policy/review.json', contentDigest: sha256(content),
+    } }, { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' }, undefined,
+    { qualificationRuntimeImageDigest: digest });
+    const preparedReview = JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config,
+      transport: prepared.transport, qualificationRuntimeImageDigest: digest });
+    const boundInput = { ...input, publicationMode: 'app-gate' as const,
+      workerImage: `registry.digitalocean.com/exampleorg/review-yeti-worker@${digest}`,
+      configDigest: prepared.policy.effectiveConfigDigest, preparedReview };
+
+    expect(buildReviewJobProjection(boundInput, receivedAt + 60_000).spec.workerImage).toBe(boundInput.workerImage);
+    expect(() => buildReviewJobProjection({ ...boundInput,
+      workerImage: `registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:${'f'.repeat(64)}` }, receivedAt + 60_000))
+      .toThrow('Prepared review execution does not match its admitted identity');
+  });
+
   it('rejects nonpublishing and generic prepared workers', () => {
     const request = preparedInput();
     expect(() => buildReviewJobProjection({ ...request, publicationMode: 'disabled' }, receivedAt + 60_000)).toThrow(/prebaked app-gate/u);

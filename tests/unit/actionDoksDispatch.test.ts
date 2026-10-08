@@ -93,6 +93,24 @@ describe('DOKS Action dispatch client', () => {
     expect(buildDispatchRequest(environment({ INCOMPLETE_P2_RECOVERY: 'false' }))).not.toHaveProperty('incompleteP2Recovery');
   });
 
+  it('carries the central qualification image digest only for the exact qualification target', async () => {
+    const { buildDispatchRequest } = await import(modulePath);
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const request = buildDispatchRequest(environment({
+      REPOSITORY_ID: '1409547157', REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
+      GITHUB_EVENT_NAME: 'repository_dispatch', DOKS_PUBLISH_MODE: 'app-gate',
+      QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest,
+    }));
+    expect(request.qualificationRuntimeImageDigest).toBe(digest);
+    expect(buildDispatchRequest(environment())).not.toHaveProperty('qualificationRuntimeImageDigest');
+    expect(() => buildDispatchRequest(environment({
+      REPOSITORY_ID: '1409547157', REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
+      QUALIFICATION_RUNTIME_IMAGE_DIGEST: 'a'.repeat(64),
+    }))).toThrow(/qualification runtime image digest/iu);
+    expect(() => buildDispatchRequest(environment({ QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest })))
+      .toThrow(/exact qualification target/u);
+  });
+
   it('accepts candidate-unavailable SHIP only with null current coordinates and no durable receipt claims', async () => {
     const { buildDispatchRequest, dispatchAction, writeDispatchOutputs } = await import(modulePath);
     const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });

@@ -54,6 +54,9 @@ function fixture(overrides: Record<string, any> = {}) {
     workerId: 'dispatcher-a',
     workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`,
     namespace: 'ct-review-qualification',
+    ...(overrides.qualificationRuntimeImageDigest === undefined ? {} : {
+      qualificationRuntimeImageDigest: overrides.qualificationRuntimeImageDigest,
+    }),
     now: overrides.now || (() => now),
     leaseMs: 30_000,
     retryDelayMs: 5_000,
@@ -467,6 +470,7 @@ describe('ReviewJobDispatchEngine authoritative prepared-policy lookup', () => {
   afterEach(() => { vi.useRealTimers(); });
 
   function authoritativeFixture(overrides: Record<string, any> = {}) {
+    const { preparedRuntimeImageDigest, dispatcherRuntimeImageDigest, ...fixtureOverrides } = overrides;
     const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
       personas: 'security,testing', budget: { max_investigation_turns: 1 },
     } });
@@ -474,16 +478,22 @@ describe('ReviewJobDispatchEngine authoritative prepared-policy lookup', () => {
     const prepared = preparePublishingPolicy({ content, source: {
       repositoryId: 987, repository: 'central/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
       contentDigest: createHash('sha256').update(content).digest('hex'),
-    } }, transport);
-    const envelope = { version: 'PreparedReviewExecution.v1', config: prepared.config, transport };
+    } }, transport, undefined, preparedRuntimeImageDigest === undefined ? undefined : {
+      qualificationRuntimeImageDigest: preparedRuntimeImageDigest,
+    });
+    const envelope = { version: 'PreparedReviewExecution.v1', config: prepared.config, transport,
+      ...(prepared.qualificationRuntimeImageDigest === undefined ? {} : {
+        qualificationRuntimeImageDigest: prepared.qualificationRuntimeImageDigest,
+      }) };
     const serialized = JSON.stringify(envelope);
     const authoritativeClaim: ReviewDispatchClaim = { ...claim, publicationMode: 'app-gate',
       authoritativeGateAppId: 4385771, policyDigest: prepared.policy.effectivePolicyDigest,
       configDigest: prepared.policy.effectiveConfigDigest };
     const preparedReviewFor = vi.fn<(claim: ReviewDispatchClaim) => Promise<string>>().mockResolvedValue(serialized);
-    const f = fixture({ preparedReviewFor, ...overrides, repository: {
-      claimNext: vi.fn(async () => authoritativeClaim), ...overrides.repository,
-    } });
+    const f = fixture({ preparedReviewFor, ...fixtureOverrides,
+      ...(dispatcherRuntimeImageDigest === undefined ? {} : { qualificationRuntimeImageDigest: dispatcherRuntimeImageDigest }),
+      repository: { claimNext: vi.fn(async () => authoritativeClaim), ...fixtureOverrides.repository },
+    });
     return { ...f, authoritativeClaim, preparedReviewFor, prepared, envelope, serialized };
   }
 
@@ -519,6 +529,24 @@ describe('ReviewJobDispatchEngine authoritative prepared-policy lookup', () => {
     expect(f.runSecretProvisioner!.provision.mock.invocationCallOrder[0]).toBeLessThan(f.repository.bindWorkerTokenDigest.mock.invocationCallOrder[0]);
     expect(f.repository.bindWorkerTokenDigest.mock.invocationCallOrder[0]).toBeLessThan(f.projector.ensure.mock.invocationCallOrder[0]);
     expect(f.repository.markTerminal).not.toHaveBeenCalled();
+  });
+
+  it('projects a capability-bearing prepared receipt only when the configured image digest matches', async () => {
+    const imageDigest = `sha256:${'e'.repeat(64)}`;
+    const f = authoritativeFixture({ preparedRuntimeImageDigest: imageDigest, dispatcherRuntimeImageDigest: imageDigest });
+
+    await expect(f.engine.runOnce()).resolves.toMatchObject({ status: 'projected', runId: claim.runId });
+    expect(f.projector.ensure).toHaveBeenCalledWith(expect.objectContaining({
+      spec: expect.objectContaining({ workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@${imageDigest}`,
+        preparedReview: expect.stringContaining(imageDigest) }),
+    }));
+  });
+
+  it('refuses an admitted runtime image when dispatcher configuration drifted before projection', async () => {
+    const f = authoritativeFixture({ preparedRuntimeImageDigest: `sha256:${'f'.repeat(64)}`,
+      dispatcherRuntimeImageDigest: `sha256:${'e'.repeat(64)}` });
+
+    await expectRejectedProjection(f);
   });
 
   it('fails closed when the authoritative callback is absent instead of falling back to legacy publishing', async () => {

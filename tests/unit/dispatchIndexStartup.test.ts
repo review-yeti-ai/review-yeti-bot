@@ -99,6 +99,15 @@ function authoritativeConfig(): AuthoritativeServiceConfig {
     policyRef: 'refs/heads/main', policyPath: 'policy.json',
     transport: { baseUrl: 'https://gateway.example.invalid/v1', model: 'configured-model' } };
 }
+function qualificationAuthoritativeConfig(): AuthoritativeServiceConfig {
+  return { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, admissionEnabled: true, qualificationInstance: true,
+    qualificationRuntimeImageDigest: `sha256:${'a'.repeat(64)}`,
+    repositoryIds: [1_409_547_157],
+    repositoryIdentities: [{ repositoryId: 1_409_547_157, owner: 'review-yeti-ai', repo: 'review-yeti-qualification' }],
+    tickMs: 1_000, policyRepository: { repositoryId: 987, owner: 'central', repo: 'policy' },
+    policyRef: 'refs/heads/main', policyPath: 'policy.json',
+    transport: { baseUrl: 'https://gateway.example.invalid/v1', model: 'configured-model' } };
+}
 function enableCi() {
   const config = authoritativeConfig(); mocks.serviceConfig.mockReturnValue(config);
   const repository = { repositoryId: 123, ownerId: 99, owner: 'exampleorg', repo: 'example-meta',
@@ -234,6 +243,85 @@ describe('Action dispatch startup transport and admission wiring', () => {
       requireExpectedGeneration: true,
     }));
     expect(mocks.listen).toHaveBeenCalledOnce();
+  });
+
+  it('starts only the exact isolated qualification instance and primary-App installation', async () => {
+    const config = qualificationAuthoritativeConfig();
+    mocks.serviceConfig.mockReturnValue(config);
+    mocks.lookup.mockResolvedValue(152_783_031);
+    vi.stubEnv('REVIEW_YETI_QUALIFICATION_INSTANCE', 'true');
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'false');
+    vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-qualification');
+    vi.stubEnv('REVIEW_JOB_WORKER_IMAGE', `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'a'.repeat(64)}`);
+    vi.stubEnv('GITHUB_APP_WEBHOOK_ENABLED', 'false');
+    vi.stubEnv('REVIEW_YETI_MCP_ENABLED', 'false');
+    vi.stubEnv('AUTHORITATIVE_REVIEW_ADMISSION_ENABLED', 'true');
+
+    await start();
+
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(mocks.authoritative).toHaveBeenCalledWith(expect.objectContaining({ config, passthroughEnabled: false }));
+    expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({ passthroughEnabled: false,
+      qualificationRuntimeImageDigest: `sha256:${'a'.repeat(64)}`,
+      centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-qualification', 1_409_547_157]]) }));
+    expect(mocks.remoteMcpRouter).not.toHaveBeenCalled();
+    const options = mocks.createApp.mock.calls[0]![0] as unknown as {
+      resolveInstallationId(owner: string, repo: string): Promise<number>;
+    };
+    await expect(options.resolveInstallationId('review-yeti-ai', 'review-yeti-qualification')).resolves.toBe(152_783_031);
+    expect(mocks.lookup).toHaveBeenCalledWith({ appId: String(AUTHORITATIVE_REVIEW_APP_ID),
+      privateKey: 'synthetic-startup-private-key', owner: 'review-yeti-ai', repo: 'review-yeti-qualification',
+      baseUrl: 'https://api.github.com' });
+  });
+
+  it('refuses the qualification instance when the primary App installation ID changes', async () => {
+    mocks.serviceConfig.mockReturnValue(qualificationAuthoritativeConfig());
+    mocks.lookup.mockResolvedValue(987);
+    vi.stubEnv('REVIEW_YETI_QUALIFICATION_INSTANCE', 'true');
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'false');
+    vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-qualification');
+    vi.stubEnv('REVIEW_JOB_WORKER_IMAGE', `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'a'.repeat(64)}`);
+    vi.stubEnv('GITHUB_APP_WEBHOOK_ENABLED', 'false');
+    vi.stubEnv('REVIEW_YETI_MCP_ENABLED', 'false');
+    vi.stubEnv('AUTHORITATIVE_REVIEW_ADMISSION_ENABLED', 'true');
+
+    await start();
+
+    const options = mocks.createApp.mock.calls[0]![0] as unknown as {
+      resolveInstallationId(owner: string, repo: string): Promise<number>;
+    };
+    await expect(options.resolveInstallationId('review-yeti-ai', 'review-yeti-qualification')).rejects.toThrow();
+  });
+
+  it('does not expose the separate qualification instance to auxiliary Review CI routes', async () => {
+    const config = qualificationAuthoritativeConfig();
+    mocks.serviceConfig.mockReturnValue(config);
+    vi.stubEnv('REVIEW_YETI_QUALIFICATION_INSTANCE', 'true');
+    vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'false');
+    vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-qualification');
+    vi.stubEnv('REVIEW_JOB_WORKER_IMAGE', `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'a'.repeat(64)}`);
+    vi.stubEnv('GITHUB_APP_WEBHOOK_ENABLED', 'false');
+    vi.stubEnv('REVIEW_YETI_MCP_ENABLED', 'false');
+    vi.stubEnv('AUTHORITATIVE_REVIEW_ADMISSION_ENABLED', 'true');
+    vi.stubEnv('REVIEW_CI_ENABLED', 'true');
+    vi.stubEnv('REVIEW_CI_REPOSITORIES', JSON.stringify([{
+      repositoryId: 1_409_547_157, ownerId: 314_096_169,
+      owner: 'review-yeti-ai', repo: 'review-yeti-qualification',
+      relay: { workflowId: 100, workflowPath: '.github/workflows/relay.yml',
+        workflowRef: 'refs/heads/main', workflowSha: 'a'.repeat(40) },
+      validation: { workflowId: 101, workflowPath: '.github/workflows/validate.yml',
+        workflowRef: 'refs/heads/main', workflowSha: 'b'.repeat(40) },
+      lanePlan: createReviewCiLanePlan(['core'], ['validate']),
+    }]));
+
+    await start();
+
+    expect(mocks.initialize).not.toHaveBeenCalled();
+    expect(mocks.createApp).not.toHaveBeenCalled();
+    expect(mocks.listen).not.toHaveBeenCalled();
+    expect(mocks.error).toHaveBeenCalledWith('Action dispatch service failed to start', {
+      error: 'Qualification instance cannot enable auxiliary review routes',
+    });
   });
 
   it('wires only the exact configured self-hosted central-dispatch target', async () => {

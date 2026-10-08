@@ -6,6 +6,7 @@ import {
   type PRReviewJobProjection,
   type RunnerMode,
 } from './reviewJobProjection';
+import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
 
 import type { CancellationPatchResult, ReviewJobProjector } from './reviewJobProjector';
 export type { CancellationPatchResult, ReviewJobProjector };
@@ -68,6 +69,8 @@ export interface ReviewJobDispatchEngineOptions {
   workerId: string;
   workerImage: string;
   namespace: string;
+  /** Present only in the marked instance; requires matching stored prepared capability. */
+  qualificationRuntimeImageDigest?: string;
   runnerMode?: RunnerMode;
   /** Service-owned immutable policy read; absence must not fall back to legacy publishing. */
   preparedReviewFor?(claim: ReviewDispatchClaim): Promise<string>;
@@ -155,6 +158,14 @@ export class ReviewJobDispatchEngine {
           ]);
         } finally { if (timer !== undefined) clearTimeout(timer); }
         if (!preparedReview) throw new Error('Prepared policy is required for authoritative review');
+        const prepared = parsePreparedReviewExecution(preparedReview, claim.configDigest);
+        if (this.options.qualificationRuntimeImageDigest !== undefined) {
+          if (prepared.qualificationRuntimeImageDigest !== this.options.qualificationRuntimeImageDigest) {
+            throw new Error('Prepared qualification runtime does not match the dispatcher image configuration');
+          }
+        } else if (prepared.qualificationRuntimeImageDigest !== undefined) {
+          throw new Error('Qualification runtime capability is not enabled on this dispatcher');
+        }
       }
       projection = buildReviewJobProjection({
         runId: claim.runId,

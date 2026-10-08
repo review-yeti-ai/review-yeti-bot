@@ -16,6 +16,13 @@
       "typescriptAccepted": true
     },
     {
+      "name": "qualification runtime image digest matches worker image",
+      "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"},\"qualificationRuntimeImageDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}",
+      "envelopeAccepted": true,
+      "typescriptAccepted": true,
+      "workerImage": "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    {
       "name": "formatted envelope",
       "json": " \n{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"}}\n ",
       "envelopeAccepted": true,

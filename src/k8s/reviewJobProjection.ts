@@ -159,7 +159,13 @@ export function buildReviewJobProjection(
     if (input.publicationMode !== 'app-gate' || runnerMode !== 'prebaked') {
       throw new Error('prepared review requires the prebaked app-gate lane');
     }
-    parsePreparedReviewExecution(input.preparedReview, input.configDigest);
+    const prepared = parsePreparedReviewExecution(input.preparedReview, input.configDigest);
+    if (prepared.qualificationRuntimeImageDigest !== undefined) {
+      const imageDigest = /@sha256:([a-f0-9]{64})$/u.exec(input.workerImage)?.[1];
+      if (imageDigest === undefined || `sha256:${imageDigest}` !== prepared.qualificationRuntimeImageDigest) {
+        throw new Error('Prepared review execution does not match its admitted identity');
+      }
+    }
   }
   if (runnerMode === 'generic') {
     if (!GENERIC_RUNNER_IMAGE_PATTERN.test(input.workerImage) && !isTrustedWorkerImage(input.workerImage)) {

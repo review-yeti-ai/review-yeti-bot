@@ -24,7 +24,7 @@ const RAW_SECRET = 'synthetic-policy-credential-do-not-retain';
 const SAVE_ERROR = 'Prepared review policy could not be saved';
 const READ_ERROR = 'Prepared review policy is invalid or unavailable';
 
-function preparedPolicy(turns = 20): PreparedPublishingPolicy {
+function preparedPolicy(turns = 20, qualificationRuntimeImageDigest?: string): PreparedPublishingPolicy {
   const content = JSON.stringify({
     schema: 'exampleorg.review-policy.v1',
     review_yeti: { personas: 'security,testing', budget: { max_investigation_turns: turns }, api_key: RAW_SECRET },
@@ -35,7 +35,8 @@ function preparedPolicy(turns = 20): PreparedPublishingPolicy {
       repositoryId: 123, repository: 'example/central-policy', sha: 'a'.repeat(40),
       path: 'policy/review-yeti.json', contentDigest: createHash('sha256').update(content).digest('hex'),
     },
-  }, { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' });
+  }, { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' }, undefined,
+  qualificationRuntimeImageDigest === undefined ? undefined : { qualificationRuntimeImageDigest });
 }
 
 // Deliberately compute even for malformed fixtures: rehashing a malicious
@@ -109,6 +110,21 @@ describeWithPostgres('prepared review policy immutable Postgres storage', () => 
     expect(JSON.stringify(stored)).not.toContain(RAW_SECRET);
     expect(JSON.stringify(stored)).not.toContain('api_key');
     expect(stored[0]).not.toHaveProperty('raw_policy');
+  });
+
+  it('persists a qualification runtime capability and detects a forged capability rewrite', async () => {
+    const imageDigest = `sha256:${'a'.repeat(64)}`;
+    const prepared = preparedPolicy(20, imageDigest);
+    await savePreparedPublishingPolicy(pool!, prepared);
+
+    expect(await getPreparedPublishingPolicy(pool!, prepared.policy.effectivePolicyDigest))
+      .toEqual(prepared);
+    expect((await rows())[0]).toMatchObject({ qualification_runtime_image_digest: imageDigest,
+      prepared_content_digest: preparedDigest(prepared) });
+
+    const forged = structuredClone(prepared);
+    forged.qualificationRuntimeImageDigest = `sha256:${'b'.repeat(64)}`;
+    await expect(savePreparedPublishingPolicy(pool!, forged)).rejects.toThrow(SAVE_ERROR);
   });
 
   it('preserves exact immutable rows across concurrent identical saves and reordered object keys', async () => {

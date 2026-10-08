@@ -4,6 +4,8 @@ import {
   PUBLIC_REVIEW_REPOSITORY,
   PUBLIC_REVIEW_REPOSITORY_ID,
   PUBLIC_REVIEW_APP_ID,
+  QUALIFICATION_REVIEW_REPOSITORY,
+  QUALIFICATION_REVIEW_REPOSITORY_ID,
 } from '../config/repositoryReviewAuthorityConstants';
 import type { GitHubActionsOidcPolicy } from './githubActionsOidc';
 import { reviewPolicySourceSchema } from '../review/authoritativeReviewIdentity';
@@ -27,6 +29,10 @@ const repositoryIdentitySchema = z.object({
 export interface AuthoritativeServiceConfig {
   expectedAppId: number;
   admissionEnabled: boolean;
+  /** Present only for the separately deployed qualification service instance. */
+  qualificationInstance?: true;
+  /** Digest derived from the service-owned worker image reference. */
+  qualificationRuntimeImageDigest?: string;
   repositoryIds: number[];
   /** Optional name-to-ID bindings for authenticated transports that carry no repository ID. */
   repositoryIdentities?: Array<{ repositoryId: number; owner: string; repo: string }>;
@@ -51,7 +57,8 @@ export function authoritativeServiceConfigFromEnv(
   env: Readonly<Record<string, string | undefined>>,
   oidcPolicy: Pick<GitHubActionsOidcPolicy, 'allowAppGate' | 'repositoryIds'>,
   dispatchConfig: Pick<ActionDispatchConfig,
-    'passthroughEnabled' | 'centralExternalRepositories' | 'centralExternalAppCredentials'>,
+    'passthroughEnabled' | 'qualificationInstance' | 'qualificationRuntimeImageDigest'
+    | 'centralExternalRepositories' | 'centralExternalAppCredentials'>,
 ): AuthoritativeServiceConfig | undefined {
   try {
     const enabled = env.AUTHORITATIVE_REVIEW_ENABLED;
@@ -70,6 +77,10 @@ export function authoritativeServiceConfigFromEnv(
     // The primary allowlist cannot accidentally grant the public repository
     // primary-App authority. Its existing dedicated App is an exact opt-in.
     if (repositoryIds.includes(PUBLIC_REVIEW_REPOSITORY_ID)) throw new Error();
+    if (dispatchConfig.qualificationInstance && (dispatchConfig.passthroughEnabled
+      || admit !== 'true'
+      || repositoryIds.length !== 1 || repositoryIds[0] !== QUALIFICATION_REVIEW_REPOSITORY_ID
+      || !dispatchConfig.qualificationRuntimeImageDigest)) throw new Error();
     let repositoryIdentities: AuthoritativeServiceConfig['repositoryIdentities'];
     const rawIdentities = env.AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES;
     if (rawIdentities !== undefined) {
@@ -89,7 +100,15 @@ export function authoritativeServiceConfigFromEnv(
     let publicRepository: AuthoritativeServiceConfig['publicRepository'];
     const externalRepositories = dispatchConfig.centralExternalRepositories;
     const externalCredentials = dispatchConfig.centralExternalAppCredentials;
-    if (externalRepositories.size > 0) {
+    if (dispatchConfig.qualificationInstance) {
+      if (externalRepositories.size !== 1
+        || externalRepositories.get(QUALIFICATION_REVIEW_REPOSITORY) !== QUALIFICATION_REVIEW_REPOSITORY_ID
+        || externalCredentials !== undefined
+        || !repositoryIdentities || repositoryIdentities.length !== 1
+        || repositoryIdentities[0]!.repositoryId !== QUALIFICATION_REVIEW_REPOSITORY_ID
+        || repositoryIdentities[0]!.owner !== 'review-yeti-ai'
+        || repositoryIdentities[0]!.repo !== 'review-yeti-qualification') throw new Error();
+    } else if (externalRepositories.size > 0) {
       if (externalRepositories.size !== 1
         || externalRepositories.get(PUBLIC_REVIEW_REPOSITORY) !== PUBLIC_REVIEW_REPOSITORY_ID
         || externalCredentials?.appId !== String(PUBLIC_REVIEW_APP_ID)
@@ -115,6 +134,9 @@ export function authoritativeServiceConfigFromEnv(
     if (tickMs < 1_000 || tickMs > 60_000) throw new Error();
     return {
       expectedAppId, admissionEnabled: admit === 'true', repositoryIds,
+      ...(dispatchConfig.qualificationInstance ? { qualificationInstance: true as const } : {}),
+      ...(dispatchConfig.qualificationInstance
+        ? { qualificationRuntimeImageDigest: dispatchConfig.qualificationRuntimeImageDigest! } : {}),
       ...(repositoryIdentities ? { repositoryIdentities } : {}),
       ...(publicRepository ? { publicRepository } : {}),
       policyRepository: { repositoryId: source.repositoryId, owner: source.owner, repo: source.repo },

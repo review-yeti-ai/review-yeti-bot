@@ -1,4 +1,5 @@
 import { expectedReviewAppIdFor, matchesConfiguredReviewRepositoryIdentity } from '../auth/repositoryReviewAuthority';
+import { AUTHORITATIVE_REVIEW_APP_ID } from '../auth/authoritativeServiceConfig';
 import type { PreparedPublishingPolicy } from '../review/preparedPublishingPolicy';
 import { constantTimeDigestEqual } from '../utils/constantTimeDigest';
 import { Router, type Request, type Response } from 'express';
@@ -48,6 +49,8 @@ import { createReviewExecutionCheckpointHandler, type CheckpointDatabase } from 
 import { createFindingThreadsHandler, type FindingThreadsRouteOptions } from './findingThreadsRoute';
 import { createPrLifecycleHistoryHandler } from './prLifecycleHistoryRoute';
 import type { ReviewLifecycleQueryable } from '../persistence/reviewPrLifecycleRepository';
+import { QUALIFICATION_REVIEW_REPOSITORY, QUALIFICATION_REVIEW_REPOSITORY_ID } from '../config/repositoryReviewAuthorityConstants';
+import { QUALIFICATION_RUNTIME_IMAGE_DIGEST_PATTERN } from '../config/qualificationRuntimeImage';
 
 
 export interface ActionOidcVerifier {
@@ -65,6 +68,10 @@ export interface ActionDispatchRouterOptions {
   requireExpectedGeneration?: boolean;
   /** Operator-owned no-op for new reviews; auth, schema, freshness and recovery gates still apply. */
   passthroughEnabled?: boolean;
+  /** Service-owned marker for the isolated normal-review qualification instance. */
+  qualificationInstance?: boolean;
+  /** Actual digest derived at startup from this service's configured worker image. */
+  qualificationRuntimeImageDigest?: string;
   /** False until the process has completed the schema bootstrap required by normal dispatch. */
   storageInitialized?: () => boolean;
   /** Exact service-owned external targets admitted through the trusted central workflow. */
@@ -146,6 +153,18 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     || [...authoritativeRepositories].some((id) => !Number.isSafeInteger(id) || id <= 0))) {
     throw new Error('Invalid authoritative review admission configuration');
   }
+  if (options.qualificationInstance === true) {
+    if (options.passthroughEnabled !== false
+      || !QUALIFICATION_RUNTIME_IMAGE_DIGEST_PATTERN.test(options.qualificationRuntimeImageDigest || '')
+      || options.centralExternalRepositories?.size !== 1
+      || options.centralExternalRepositories.get(QUALIFICATION_REVIEW_REPOSITORY) !== QUALIFICATION_REVIEW_REPOSITORY_ID
+      || !authoritative || authoritative.expectedAppId !== AUTHORITATIVE_REVIEW_APP_ID
+      || authoritative.repositoryIds.length !== 1 || authoritative.repositoryIds[0] !== QUALIFICATION_REVIEW_REPOSITORY_ID) {
+      throw new Error('Invalid isolated qualification dispatch configuration');
+    }
+  } else if (options.qualificationRuntimeImageDigest !== undefined) {
+    throw new Error('Qualification runtime image binding requires the service-owned qualification marker');
+  }
 
   router.post('/action', async (request: Request, response: Response) => {
     const token = bearerToken(request);
@@ -190,6 +209,15 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     }
     if (configuredExternalTarget && (!authoritative || !authoritativeRepositories.has(dispatch.repositoryId))) {
       return response.status(503).json({ error: 'External target authoritative review admission is unavailable' });
+    }
+    const requestIsQualification = `${dispatch.owner}/${dispatch.repo}` === QUALIFICATION_REVIEW_REPOSITORY;
+    if (options.qualificationInstance === true) {
+      if (!requestIsQualification || callerKind !== 'central'
+        || dispatch.qualificationRuntimeImageDigest !== options.qualificationRuntimeImageDigest) {
+        return response.status(403).json({ error: 'Qualification runtime image binding is not authorized' });
+      }
+    } else if (dispatch.qualificationRuntimeImageDigest !== undefined) {
+      return response.status(403).json({ error: 'Qualification runtime image binding is not authorized' });
     }
     if (options.requireExpectedGeneration === true
       && callerKind === 'central'
@@ -311,6 +339,10 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
       let authoritativeGate: { expectedAppId: number; prepared: PreparedPublishingPolicy } | undefined;
       if (resolved && authoritative) {
         try {
+          if (options.qualificationInstance === true
+            && resolved.prepared.qualificationRuntimeImageDigest !== options.qualificationRuntimeImageDigest) {
+            return response.status(503).json({ error: 'Qualification runtime image preparation is unavailable' });
+          }
           authoritativeGate = {
             expectedAppId: expectedReviewAppIdFor(authoritative, {
               repositoryId: dispatch.repositoryId,

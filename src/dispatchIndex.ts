@@ -31,6 +31,7 @@ import { reviewCiConfigFromEnv } from './auth/reviewCiConfig';
 import { createReviewCiRuntime } from './reviewCiRuntime';
 import { findReviewCiEnrollment } from './review/reviewCi';
 import { actionDispatchConfigFromEnv } from './config/actionDispatchConfig';
+import { QUALIFICATION_REVIEW_INSTALLATION_ID, QUALIFICATION_REVIEW_REPOSITORY } from './config/repositoryReviewAuthorityConstants';
 import { initTelemetry } from './telemetry';
 import { deriveReviewRunId } from './review/reviewAdmission';
 import { PostgresIncrementalBaseLookup } from './persistence/incrementalPriorReview';
@@ -108,6 +109,11 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   // Validate any configured CI enrollment/workflow identity even when pause
   // prevents creating its runtime, routes, completion hook, or reconciliation timer.
   const configuredCiConfig = reviewCiConfigFromEnv(environment, authoritativeConfig);
+  if (dispatchConfig.qualificationInstance && (!authoritativeConfig || webhookConfig !== undefined
+    || dispatchConfig.mcp.enabled || configuredCiConfig !== undefined
+    || authoritativeConfig.qualificationRuntimeImageDigest !== dispatchConfig.qualificationRuntimeImageDigest)) {
+    throw new Error('Qualification instance cannot enable auxiliary review routes');
+  }
   if (dispatchConfig.passthroughEnabled === true && !authoritativeConfig) {
     throw new Error('Operator pause requires valid authoritative review configuration');
   }
@@ -320,6 +326,10 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     admission: repository,
     allowAppGate: policy.allowAppGate,
     passthroughEnabled: dispatchConfig.passthroughEnabled,
+    qualificationInstance: dispatchConfig.qualificationInstance,
+    ...(dispatchConfig.qualificationRuntimeImageDigest === undefined ? {} : {
+      qualificationRuntimeImageDigest: dispatchConfig.qualificationRuntimeImageDigest,
+    }),
     storageInitialized: storageIsInitialized,
     operatorPauseReadinessEnabled: dispatchConfig.passthroughEnabled === true,
     pauseDatabaseProbe: () => pauseDatabaseProbe,
@@ -356,8 +366,17 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     verdictCacheBase: new PostgresVerdictCacheBaseLookup(pool, { maxAgeMs: verdictCacheMaxAgeMs }),
     ...(providerLease ? { providerLease } : {}),
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,
-    resolveInstallationId: (owner, repo) => getBoundedRepositoryInstallationId(
-      installationCredentialsForRepository(owner, repo)),
+    resolveInstallationId: async (owner, repo) => {
+      if (dispatchConfig.qualificationInstance && `${owner}/${repo}` !== QUALIFICATION_REVIEW_REPOSITORY) {
+        throw new Error('Qualification target repository identity is invalid');
+      }
+      const installationId = await getBoundedRepositoryInstallationId(
+        installationCredentialsForRepository(owner, repo));
+      if (dispatchConfig.qualificationInstance && installationId !== QUALIFICATION_REVIEW_INSTALLATION_ID) {
+        throw new Error('Qualification target App installation identity is invalid');
+      }
+      return installationId;
+    },
     metricsAuthToken: environment.ACTION_DISPATCH_METRICS_TOKEN?.trim() || undefined,
     ...(githubWebhook ? { githubWebhook } : {}),
   });

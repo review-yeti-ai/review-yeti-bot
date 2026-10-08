@@ -119,6 +119,18 @@ describe('AuthoritativePublishingResolver', () => {
         { composedEngineMaxTurns: '200' }).policy.effectiveConfigDigest);
   });
 
+  it('binds only the service-owned qualification image digest into the prepared identity', async () => {
+    const imageDigest = `sha256:${'e'.repeat(64)}`;
+    const f = fixture({ qualificationRuntimeImageDigest: imageDigest });
+
+    const result = await f.resolver.resolve(requested);
+
+    expect(result.prepared.qualificationRuntimeImageDigest).toBe(imageDigest);
+    expect(result.prepared.policy.effectiveConfigDigest).toBe(preparePublishingPolicy(file(), transport,
+      { owner: requested.owner, repo: requested.repo }, { qualificationRuntimeImageDigest: imageDigest })
+      .policy.effectiveConfigDigest);
+  });
+
   it.each(['candidateFactory', 'candidateRead', 'policyFactory', 'policyRevision', 'policyFile', 'finalCandidateRead'] as const)(
     'preserves only a typed transient source failure from %s', async (stage) => {
       const f = fixture();

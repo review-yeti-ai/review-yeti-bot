@@ -29,6 +29,8 @@ export const actionDispatchRequestSchema = z.object({
   expectedGeneration: positiveInteger.optional(),
   /** REL-1198: candidate only; the service requires its own retained finding archive. */
   incompleteP2Recovery: z.literal(true).optional(),
+  /** Central qualification claim; the service compares this with its own prepared runtime capability. */
+  qualificationRuntimeImageDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),
   checkId: positiveInteger.optional(),
   requestedAt: z.string().datetime({ offset: true }),
   caller: z.object({
