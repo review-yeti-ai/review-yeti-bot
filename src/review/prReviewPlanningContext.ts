@@ -1,6 +1,6 @@
 import { canonicalJson, sha256 } from './reviewCore';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from './groundedEvidenceV2';
-import { classifyBudgetCategory, pathRiskRank } from './pathRiskPolicy';
+import { classifyBudgetCategory, isDocumentationOrAssetPath, pathRiskRank } from './pathRiskPolicy';
 import type { PriorFindingThread } from './findingConvergence';
 import type { GroundedCoverageManifest, GroundedSourceRegion } from './groundedReviewEngine';
 import type { PrLifecycleHistoryLoad, PrLifecycleHistoryEvent, PrLifecycleHistoryFinding } from './prLifecycleHistoryHttp';
@@ -334,14 +334,19 @@ function lineIntersects(region: GroundedSourceRegion, line: number): boolean {
   return region.startLine === null || region.endLine === null || (line >= region.startLine && line <= region.endLine);
 }
 
-function analyzerState(tool: string, summary: PreCheckSummary | undefined): ReviewPlanningAnalyzerStatus {
+function analyzerState(tool: string, path: string, summary: PreCheckSummary | undefined): ReviewPlanningAnalyzerStatus {
   if (!summary) return { tool, status: 'unavailable', hypothesisIds: [] };
   if (!summary.enabled || summary.status === 'disabled') return { tool, status: 'disabled', hypothesisIds: [] };
   const receipt = summary.receipts.find((candidate) => candidate.tool === tool);
   if (!receipt) return { tool, status: 'not_reported', hypothesisIds: [] };
   if (!receipt.available || receipt.exitStatus === 'error' || receipt.exitStatus === 'timeout'
     || receipt.exitStatus === 'not_installed') return { tool, status: 'unavailable', hypothesisIds: [] };
-  const hypothesisIds = [...new Set(receipt.hypotheses.map((hypothesis) => hypothesis.id))].sort();
+  const normalized = normalizePath(path);
+  const hypothesisIds = [...new Set(receipt.hypotheses.filter((hypothesis) => normalizePath(hypothesis.path) === normalized)
+    .map((hypothesis) => hypothesis.id))].sort();
+  if (!receipt.scannedPaths?.some((scannedPath) => normalizePath(scannedPath) === normalized)) {
+    return { tool, status: 'not_reported', hypothesisIds };
+  }
   return { tool, status: hypothesisIds.length > 0 ? 'hypotheses' : 'clean', hypothesisIds };
 }
 
@@ -359,12 +364,13 @@ export function buildDeterministicReviewPlanningContext(input: {
     const path = normalizePath(region.path);
     const file = changed.get(path);
     const expectedAnalyzers = file ? getApplicableAnalyzers(path) : [];
-    const analyzerCoverage = expectedAnalyzers.map((tool) => analyzerState(tool, input.analyzers));
+    const analyzerCoverage = expectedAnalyzers.map((tool) => analyzerState(tool, path, input.analyzers));
+    const pathHypothesisIds = new Set(analyzerCoverage.flatMap((coverage) => coverage.hypothesisIds));
     // A task reviews the changed file, not just its hunk lines. A new static-analysis
     // hypothesis elsewhere in that same file can describe the caller or invariant affected
     // by the change; include it so current task charters and checkpoint qualification move.
     const analyzerHypotheses = (input.analyzers?.hypotheses ?? []).filter((hypothesis) =>
-      normalizePath(hypothesis.path) === path).map((hypothesis) => ({
+      normalizePath(hypothesis.path) === path && pathHypothesisIds.has(hypothesis.id)).map((hypothesis) => ({
       id: hypothesis.id, analyzer: hypothesis.analyzer, ruleId: hypothesis.ruleId,
       path: normalizePath(hypothesis.path), line: hypothesis.line, message: hypothesis.message,
       severity: hypothesis.severity, confidence: hypothesis.confidence,
@@ -388,6 +394,9 @@ export function buildDeterministicReviewPlanningContext(input: {
       .map((entry) => ({ symbol: entry.symbol, status: entry.status, sourceLine: entry.sourceLine,
         targetPaths: [...new Set(entry.candidates.map((candidate) => normalizePath(candidate.path)))].sort() }))
       .sort((left, right) => left.sourceLine - right.sourceLine || left.symbol.localeCompare(right.symbol)) : [];
+    if (!isDocumentationOrAssetPath(path) && !expectedAnalyzers.some((tool) => tool !== 'gitleaks')) {
+      omissions.push(`language-specific static analyzer unsupported for ${path}`);
+    }
     const riskCategory = classifyBudgetCategory(path);
     const contextRequirements = new Set<string>();
     if (region.applicableRules.includes('interface-contract') || dependencies.length > 0) {

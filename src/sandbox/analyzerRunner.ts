@@ -43,6 +43,8 @@ export interface PreCheckAnalyzerReceipt {
   hypotheses: CandidateHypothesis[];
   error?: string;
   filesScanned?: number;
+  /** Canonical repository-relative paths that the tool's output explicitly reports as scanned. */
+  scannedPaths?: string[];
   hypothesesCount?: number;
   command?: string;
 }
@@ -111,6 +113,135 @@ export function normalizeRepoPath(filePath: string, workspaceRoot: string = ''):
     }
   }
   return p.replace(/^\.?\/+/, '');
+}
+
+function canonicalRepoRelativePath(filePath: unknown, workspaceRoot: string): string | null {
+  if (typeof filePath !== 'string' || filePath.trim().length === 0) return null;
+  const input = filePath.trim().replaceAll('\\', '/');
+  const rawRoot = workspaceRoot.replaceAll('\\', '/');
+  const root = rawRoot === '/' ? rawRoot : rawRoot.replace(/\/+$/u, '');
+  const hasDrive = /^[a-z]:\//iu.test(input);
+  let relative = input;
+  if (path.posix.isAbsolute(input) || hasDrive) {
+    const isWithinRoot = root === '/' ? input.startsWith('/') && input !== '/' : input === root || input.startsWith(`${root}/`);
+    if (!root || !isWithinRoot) return null;
+    relative = root === '/' ? input.slice(1) : input.slice(root.length).replace(/^\/+/, '');
+  }
+  const canonical = path.posix.normalize(relative.replace(/^\.\//u, ''));
+  if (!canonical || canonical === '.' || canonical === '..' || canonical.startsWith('../')
+    || path.posix.isAbsolute(canonical) || /^[a-z]:\//iu.test(canonical)) return null;
+  return canonical;
+}
+
+function requestedRepoPaths(files: readonly string[], workspaceRoot: string): { paths: Set<string>; error?: string } {
+  const paths = new Set<string>();
+  for (const file of files) {
+    const canonical = canonicalRepoRelativePath(file, workspaceRoot);
+    if (!canonical) return { paths, error: 'requested analyzer path is not a canonical repository-relative path' };
+    paths.add(canonical);
+  }
+  return { paths };
+}
+
+function validateReportedRepoPaths(input: { reported: readonly unknown[]; requested: Set<string>; workspaceRoot: string;
+  source: string }): { paths: string[]; error?: string } {
+  const paths = new Set<string>();
+  for (const reportedPath of input.reported) {
+    const canonical = canonicalRepoRelativePath(reportedPath, input.workspaceRoot);
+    if (!canonical || !input.requested.has(canonical)) {
+      return { paths: [], error: `${input.source} reported a path outside the requested file set` };
+    }
+    paths.add(canonical);
+  }
+  return { paths: [...paths].sort() };
+}
+
+interface AnalyzerPathEvidence {
+  scannedPaths: string[];
+  error?: string;
+}
+
+function eslintPathEvidence(rawOutput: string, workspaceRoot: string, files: readonly string[]): AnalyzerPathEvidence {
+  let reports: unknown;
+  try { reports = JSON.parse(rawOutput); } catch { return { scannedPaths: [] }; }
+  if (!Array.isArray(reports)) return { scannedPaths: [] };
+  const requested = requestedRepoPaths(files, workspaceRoot);
+  if (requested.error) return { scannedPaths: [], error: requested.error };
+  const reported: unknown[] = [];
+  for (const report of reports) {
+    if (!report || typeof report !== 'object' || !Array.isArray((report as { messages?: unknown }).messages)) continue;
+    const row = report as { filePath?: unknown; ignored?: unknown; messages: unknown[] };
+    const ignoredMessage = row.messages.some((message) => message && typeof message === 'object'
+      && typeof (message as { message?: unknown }).message === 'string'
+      && /file ignored because/i.test((message as { message: string }).message));
+    if (row.ignored === true || ignoredMessage || typeof row.filePath !== 'string') continue;
+    reported.push(row.filePath);
+  }
+  const validated = validateReportedRepoPaths({ reported, requested: requested.paths, workspaceRoot, source: 'ESLint' });
+  return { scannedPaths: validated.paths, ...(validated.error ? { error: validated.error } : {}) };
+}
+
+function semgrepPathEvidence(rawOutput: string, workspaceRoot: string, files: readonly string[]): AnalyzerPathEvidence {
+  let data: unknown;
+  try { data = JSON.parse(rawOutput); } catch { return { scannedPaths: [] }; }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return { scannedPaths: [] };
+  const requested = requestedRepoPaths(files, workspaceRoot);
+  if (requested.error) return { scannedPaths: [], error: requested.error };
+  const errors = (data as { errors?: unknown }).errors;
+  if (errors !== undefined && !Array.isArray(errors)) {
+    return { scannedPaths: [], error: 'Semgrep scan metadata had an invalid errors list' };
+  }
+  if (Array.isArray(errors) && errors.length > 0) {
+    return { scannedPaths: [], error: 'Semgrep reported scan errors' };
+  }
+  const results = (data as { results?: unknown }).results;
+  const rawPaths = (data as { paths?: unknown }).paths;
+  if (rawPaths !== undefined && rawPaths !== null && !Array.isArray(rawPaths)
+    && (typeof rawPaths === 'object') && !Array.isArray(results)) {
+    return { scannedPaths: [], error: 'Semgrep scan metadata was present without a valid results list' };
+  }
+  const resultPaths: string[] = [];
+  if (Array.isArray(results)) {
+    for (const result of results) {
+      if (!result || typeof result !== 'object') continue;
+      const resultPath = canonicalRepoRelativePath((result as { path?: unknown }).path, workspaceRoot);
+      if (!resultPath || !requested.paths.has(resultPath)) {
+        return { scannedPaths: [], error: 'Semgrep result reported a path outside the requested file set' };
+      }
+      resultPaths.push(resultPath);
+    }
+  }
+  const paths = rawPaths;
+  if (paths === undefined || paths === null) return { scannedPaths: [] };
+  if (typeof paths !== 'object' || Array.isArray(paths)) {
+    return { scannedPaths: [], error: 'Semgrep scan metadata had an invalid paths object' };
+  }
+  const manifest = paths as { scanned?: unknown; skipped?: unknown };
+  const skippedRows = manifest.skipped === undefined ? [] : manifest.skipped;
+  if (!Array.isArray(skippedRows)) return { scannedPaths: [], error: 'Semgrep scan metadata had an invalid skipped-path list' };
+  const skipped = skippedRows.map((row) => typeof row === 'string' ? row
+    : row && typeof row === 'object' && typeof (row as { path?: unknown }).path === 'string'
+      ? (row as { path: string }).path : null);
+  if (skipped.some((filePath) => filePath === null)) {
+    return { scannedPaths: [], error: 'Semgrep scan metadata had a skipped entry without a path' };
+  }
+  const skippedPaths = validateReportedRepoPaths({ reported: skipped, requested: requested.paths,
+    workspaceRoot, source: 'Semgrep skipped-path metadata' });
+  if (skippedPaths.error) return { scannedPaths: [], error: skippedPaths.error };
+  if (manifest.scanned === undefined) return { scannedPaths: [] };
+  if (!Array.isArray(manifest.scanned)) return { scannedPaths: [], error: 'Semgrep scan metadata had an invalid scanned-path list' };
+  const scannedPaths = validateReportedRepoPaths({ reported: manifest.scanned, requested: requested.paths,
+    workspaceRoot, source: 'Semgrep scan metadata' });
+  if (scannedPaths.error) return { scannedPaths: [], error: scannedPaths.error };
+
+  const scanned = new Set(scannedPaths.paths);
+  const skippedSet = new Set(skippedPaths.paths);
+  for (const resultPath of resultPaths) {
+    if (!scanned.has(resultPath) || skippedSet.has(resultPath)) {
+      return { scannedPaths: [], error: 'Semgrep result path was not reported as scanned' };
+    }
+  }
+  return { scannedPaths: [...scanned].filter((filePath) => !skippedSet.has(filePath)).sort() };
 }
 
 export function maskSecret(secret?: string): string {
@@ -485,7 +616,10 @@ export async function runEslint(files: string[], options: AnalyzerExecutionOptio
     signal: options.signal,
   });
 
-  return buildReceipt('eslint', 'linter', res, options.workspaceRoot, files.length, parseEslintOutput);
+  const pathEvidence = res.exitStatus === 0 || res.exitStatus === 1
+    ? eslintPathEvidence(res.stdout, options.workspaceRoot, files) : { scannedPaths: [] };
+  const receipt = buildReceipt('eslint', 'linter', res, options.workspaceRoot, pathEvidence.scannedPaths, parseEslintOutput);
+  return pathEvidence.error ? rejectAnalyzerPathEvidence(receipt, pathEvidence.error) : receipt;
 }
 
 export async function runSemgrep(files: string[], options: AnalyzerExecutionOptions): Promise<PreCheckAnalyzerReceipt> {
@@ -500,7 +634,10 @@ export async function runSemgrep(files: string[], options: AnalyzerExecutionOpti
     signal: options.signal,
   });
 
-  return buildReceipt('semgrep', 'security', res, options.workspaceRoot, files.length, parseSemgrepOutput);
+  const pathEvidence = res.exitStatus === 0 || res.exitStatus === 1
+    ? semgrepPathEvidence(res.stdout, options.workspaceRoot, files) : { scannedPaths: [] };
+  const receipt = buildReceipt('semgrep', 'security', res, options.workspaceRoot, pathEvidence.scannedPaths, parseSemgrepOutput);
+  return pathEvidence.error ? rejectAnalyzerPathEvidence(receipt, pathEvidence.error) : receipt;
 }
 
 export async function runGitleaks(files: string[], options: AnalyzerExecutionOptions): Promise<PreCheckAnalyzerReceipt> {
@@ -513,6 +650,7 @@ export async function runGitleaks(files: string[], options: AnalyzerExecutionOpt
       exitStatus: 0,
       durationMs: 0,
       filesScanned: 0,
+      scannedPaths: [],
       hypothesesCount: 0,
       hypotheses: [],
       command: cmd,
@@ -530,7 +668,7 @@ export async function runGitleaks(files: string[], options: AnalyzerExecutionOpt
       signal: options.signal,
     });
 
-    return buildReceipt('gitleaks', 'secrets', res, options.workspaceRoot, 1, parseGitleaksOutput);
+    return buildReceipt('gitleaks', 'secrets', res, options.workspaceRoot, [], parseGitleaksOutput);
   }
 
   const receipts = await Promise.all(files.map((file) => runGitleaks([file], options)));
@@ -555,7 +693,8 @@ export async function runGitleaks(files: string[], options: AnalyzerExecutionOpt
     available: true,
     exitStatus: anyError ? 'error' : (anyTimeout ? 'timeout' : 0),
     durationMs: totalDuration,
-    filesScanned: files.length,
+    filesScanned: 0,
+    scannedPaths: [],
     hypothesesCount: combinedHypotheses.length,
     hypotheses: combinedHypotheses,
     error: anyError?.error || anyTimeout?.error,
@@ -568,7 +707,7 @@ function buildReceipt(
   category: AnalyzerCategory,
   res: CommandExecutionResult,
   workspaceRoot: string,
-  filesScanned: number,
+  scannedPaths: readonly string[],
   parser: (output: string, root?: string) => CandidateHypothesis[]
 ): PreCheckAnalyzerReceipt {
   let exitStatus = res.exitStatus;
@@ -606,12 +745,17 @@ function buildReceipt(
     available,
     exitStatus,
     durationMs: res.durationMs,
-    filesScanned,
+    filesScanned: exitStatus === 0 || exitStatus === 1 ? new Set(scannedPaths).size : 0,
+    scannedPaths: exitStatus === 0 || exitStatus === 1 ? [...new Set(scannedPaths)].sort() : [],
     hypothesesCount: hypotheses.length,
     hypotheses,
     error,
     command: res.command,
   };
+}
+
+function rejectAnalyzerPathEvidence(receipt: PreCheckAnalyzerReceipt, error: string): PreCheckAnalyzerReceipt {
+  return { ...receipt, exitStatus: 'error', error, filesScanned: 0, scannedPaths: [], hypothesesCount: 0, hypotheses: [] };
 }
 
 // ============================================================================

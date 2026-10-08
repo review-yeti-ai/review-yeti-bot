@@ -16,6 +16,8 @@ import {
 } from '../../src/sandbox/analyzerRunner';
 import { SandboxRunner, SandboxCommandResult } from '../../src/fix/sandboxRunner';
 import { PreChecksAnalyzersConfig } from '../../src/config/schema';
+import { buildDeterministicCoverageManifest } from '../../src/review/groundedReviewEngine';
+import { buildDeterministicReviewPlanningContext } from '../../src/review/prReviewPlanningContext';
 
 // =============================================================================
 // IN-MEMORY MOCK SANDBOX RUNNER
@@ -270,6 +272,112 @@ describe('analyzerRunner.test.ts — Milestone 4 Unit Test Suite', () => {
   // SUITE 3: BOUNDARY & FAIL-SOFT RESILIENCE
   // ===========================================================================
   describe('Suite 3: Robustness & Boundary Fail-Soft Mechanics', () => {
+    it('3.0: reports only Semgrep paths proven scanned and leaves a skipped file unreported', async () => {
+      const changedFiles = [
+        { path: 'pkg/alpha.go', patch: '@@ -1 +1 @@\n+alpha();' },
+        { path: 'pkg/beta.go', patch: '@@ -1 +1 @@\n+beta();' },
+      ];
+      mockRunner.onCommand('semgrep', {
+        exitStatus: 0,
+        stdout: JSON.stringify({ results: [{ check_id: 'auth-bypass', path: 'pkg/alpha.go',
+          start: { line: 1 }, end: { line: 1 },
+          extra: { message: 'Authorization can be bypassed.', severity: 'ERROR', metadata: { category: 'security' } } }],
+          paths: { scanned: ['pkg/alpha.go'],
+          skipped: [{ path: 'pkg/beta.go', reason: 'unsupported language' }] } }),
+      });
+      const summary = await runPreCheckAnalyzers({
+        workspaceRoot: defaultWorkspace,
+        changedFiles: changedFiles.map((file) => file.path),
+        config: { ...fullConfig, linters: false, secrets: false },
+        sandboxRunner: mockRunner,
+      });
+
+      const receipt = summary.receipts.find((candidate) => candidate.tool === 'semgrep');
+      expect(receipt?.scannedPaths).toEqual(['pkg/alpha.go']);
+      expect(receipt?.filesScanned).toBe(1);
+      const planning = buildDeterministicReviewPlanningContext({
+        coverage: buildDeterministicCoverageManifest(changedFiles), changedFiles, analyzers: summary,
+      });
+      expect(planning.assignments.find((assignment) => assignment.path === 'pkg/alpha.go')?.analyzerCoverage)
+        .toContainEqual({ tool: 'semgrep', status: 'hypotheses',
+          hypothesisIds: ['hyp:semgrep:auth-bypass:pkg/alpha.go:1'] });
+      expect(planning.assignments.find((assignment) => assignment.path === 'pkg/beta.go')?.analyzerCoverage)
+        .toContainEqual({ tool: 'semgrep', status: 'not_reported', hypothesisIds: [] });
+      expect(planning.omissions).toContain('semgrep not_reported for pkg/beta.go');
+    });
+
+    it.each([
+      { label: 'exit zero without scan metadata', exitStatus: 0, stdout: JSON.stringify({ results: [] }),
+        expectedStatus: 0, expectedCoverageStatus: 'not_reported' },
+      { label: 'exit one without scan metadata', exitStatus: 1, stdout: JSON.stringify({ results: [] }),
+        expectedStatus: 1, expectedCoverageStatus: 'not_reported' },
+      { label: 'exit zero with Semgrep scan errors', exitStatus: 0,
+        stdout: JSON.stringify({ results: [], paths: { scanned: ['pkg/alpha.go'], skipped: [] }, errors: [{ message: 'parse error' }] }),
+        expectedStatus: 'error', expectedCoverageStatus: 'unavailable' },
+      { label: 'exit one with Semgrep scan errors', exitStatus: 1,
+        stdout: JSON.stringify({ results: [], paths: { scanned: ['pkg/alpha.go'], skipped: [] }, errors: [{ message: 'parse error' }] }),
+        expectedStatus: 'error', expectedCoverageStatus: 'unavailable' },
+    ])('3.0a: treats $label as a coverage gap', async ({ exitStatus, stdout, expectedStatus, expectedCoverageStatus }) => {
+      const changedFiles = [{ path: 'pkg/alpha.go', patch: '@@ -1 +1 @@\n+alpha();' }];
+      mockRunner.onCommand('semgrep', { exitStatus, stdout });
+      const summary = await runPreCheckAnalyzers({ workspaceRoot: defaultWorkspace,
+        changedFiles: changedFiles.map((file) => file.path),
+        config: { ...fullConfig, linters: false, secrets: false }, sandboxRunner: mockRunner });
+      const receipt = summary.receipts.find((candidate) => candidate.tool === 'semgrep');
+      expect(receipt?.exitStatus).toBe(expectedStatus);
+      expect(receipt?.scannedPaths).toEqual([]);
+      const planning = buildDeterministicReviewPlanningContext({
+        coverage: buildDeterministicCoverageManifest(changedFiles), changedFiles, analyzers: summary,
+      });
+      expect(planning.assignments[0]?.analyzerCoverage)
+        .toContainEqual({ tool: 'semgrep', status: expectedCoverageStatus, hypothesisIds: [] });
+    });
+
+    it('3.0b: rejects canonical Semgrep paths outside the requested file set', async () => {
+      mockRunner.onCommand('semgrep', {
+        exitStatus: 1,
+        stdout: JSON.stringify({ results: [], paths: { scanned: ['../outside.go'], skipped: [] } }),
+      });
+      const summary = await runPreCheckAnalyzers({ workspaceRoot: defaultWorkspace,
+        changedFiles: ['pkg/alpha.go'], config: { ...fullConfig, linters: false, secrets: false },
+        sandboxRunner: mockRunner });
+      const receipt = summary.receipts.find((candidate) => candidate.tool === 'semgrep');
+      expect(receipt?.exitStatus).toBe('error');
+      expect(receipt?.error).toContain('outside the requested file set');
+      expect(receipt?.scannedPaths).toEqual([]);
+      expect(receipt?.filesScanned).toBe(0);
+    });
+
+    it('3.0c: uses ESLint per-file reports as path evidence', async () => {
+      mockRunner.onCommand('eslint', {
+        exitStatus: 0,
+        stdout: JSON.stringify([{ filePath: `${defaultWorkspace}/src/app.ts`, messages: [] }]),
+      });
+      const summary = await runPreCheckAnalyzers({ workspaceRoot: defaultWorkspace,
+        changedFiles: ['src/app.ts'], config: { ...fullConfig, security: false, secrets: false },
+        sandboxRunner: mockRunner });
+      const receipt = summary.receipts.find((candidate) => candidate.tool === 'eslint');
+      expect(receipt?.scannedPaths, JSON.stringify(receipt)).toEqual(['src/app.ts']);
+      expect(receipt?.filesScanned).toBe(1);
+    });
+
+    it('3.0d: does not infer a clean Gitleaks scan from an empty findings array', async () => {
+      mockRunner.onCommand('gitleaks', { exitStatus: 0, stdout: '[]' });
+      const changedFiles = [{ path: 'pkg/alpha.go', patch: '@@ -1 +1 @@\n+alpha();' }];
+      const summary = await runPreCheckAnalyzers({ workspaceRoot: defaultWorkspace,
+        changedFiles: changedFiles.map((file) => file.path),
+        config: { ...fullConfig, linters: false, security: false, secrets: true }, sandboxRunner: mockRunner });
+      const receipt = summary.receipts.find((candidate) => candidate.tool === 'gitleaks');
+      expect(receipt?.scannedPaths).toEqual([]);
+      expect(receipt?.filesScanned).toBe(0);
+      const planning = buildDeterministicReviewPlanningContext({
+        coverage: buildDeterministicCoverageManifest(changedFiles), changedFiles, analyzers: summary,
+      });
+      expect(planning.assignments[0]?.analyzerCoverage)
+        .toContainEqual({ tool: 'gitleaks', status: 'not_reported', hypothesisIds: [] });
+      expect(planning.omissions).toContain('gitleaks not_reported for pkg/alpha.go');
+    });
+
     it('3.1: records available: false and exitStatus: "not_installed" when binary returns ENOENT', async () => {
       mockRunner.onCommand('eslint', {
         exitStatus: 'error',

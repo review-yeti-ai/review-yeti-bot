@@ -19,6 +19,7 @@ const analyzerSummary: PreCheckSummary = {
   hypothesesCount: 1,
   status: 'ok',
   receipts: [{ tool: 'semgrep', category: 'security', available: true, exitStatus: 0, durationMs: 12,
+    scannedPaths: ['src/auth/guard.ts'],
     hypotheses: [{ id: 'hyp:semgrep:auth-bypass:src/auth/guard.ts:4', analyzer: 'semgrep', category: 'security',
       ruleId: 'auth-bypass', path: 'src/auth/guard.ts', line: 4, message: 'Authorization check is bypassable.',
       severity: 'error', confidence: 'high' }] }],
@@ -72,7 +73,8 @@ describe('preplanning review context', () => {
         question: 'Review formatting.', rationale: 'It changes formatting behavior.' },
     ];
     const clean: PreCheckSummary = { enabled: true, analyzersExecuted: 1, hypothesesCount: 0, status: 'ok',
-      receipts: [{ tool: 'semgrep', category: 'security', available: true, exitStatus: 0, durationMs: 1, hypotheses: [] }],
+      receipts: [{ tool: 'semgrep', category: 'security', available: true, exitStatus: 0, durationMs: 1,
+        scannedPaths: files.map((file) => file.path), hypotheses: [] }],
       hypotheses: [] };
     const hypothesis = { id: 'hyp:semgrep:auth-bypass:src/auth/guard.ts:120', analyzer: 'semgrep', category: 'security' as const,
       ruleId: 'auth-bypass', path: 'src/auth/guard.ts', line: 120, message: 'Current auth binding can be bypassed.',
@@ -143,6 +145,65 @@ describe('preplanning review context', () => {
     expect(planning.omissions).toContain('static analyzers disabled');
     expect(planning.omissions).toContain('caller and contract symbol context unavailable: no_index');
     expect(planning.assignments[0]?.analyzerCoverage).toContainEqual(expect.objectContaining({ tool: 'semgrep', status: 'disabled' }));
+  });
+
+  it('binds analyzer status to the exact scanned path and names unsupported language coverage', () => {
+    const files = [
+      { path: 'src/auth/guard.ts', patch: '@@ -1 +1 @@\n+authorizeRequest(token);' },
+      { path: 'src/format.ts', patch: '@@ -1 +1 @@\n+format(value);' },
+      { path: 'src/native/Feature.swift', patch: '@@ -1 +1 @@\n+authorizeRequest(token)' },
+    ];
+    const hypothesis = { id: 'hyp:semgrep:auth-bypass:src/auth/guard.ts:1', analyzer: 'semgrep', category: 'security' as const,
+      ruleId: 'auth-bypass', path: 'src/auth/guard.ts', line: 1, message: 'Authorization check is bypassable.',
+      severity: 'error' as const, confidence: 'high' as const };
+    const analyzers: PreCheckSummary = {
+      enabled: true, analyzersExecuted: 3, hypothesesCount: 1, status: 'ok' as const,
+      receipts: [
+        { tool: 'eslint', category: 'linter' as const, available: true, exitStatus: 0 as const, durationMs: 1,
+          filesScanned: 2, scannedPaths: ['src/auth/guard.ts', 'src/format.ts'], hypotheses: [] },
+        { tool: 'semgrep', category: 'security' as const, available: true, exitStatus: 0 as const, durationMs: 1,
+          filesScanned: 1, scannedPaths: ['src/auth/guard.ts'], hypotheses: [hypothesis] },
+        { tool: 'gitleaks', category: 'secrets' as const, available: true, exitStatus: 0 as const, durationMs: 1,
+          filesScanned: 0, scannedPaths: [], hypotheses: [] },
+      ],
+      hypotheses: [hypothesis],
+    };
+    const planning = buildDeterministicReviewPlanningContext({ coverage: buildDeterministicCoverageManifest(files),
+      changedFiles: files, analyzers, symbolAppendix: { status: 'unavailable', reason: 'no_index', entries: [], omittedSymbols: [],
+        receipt: { symbolsConsidered: 0, symbolsResolved: 0, symbolsAmbiguous: 0, symbolsNotFound: 0,
+          queriesRun: 0, durationMs: 0, totalChars: 0 } } });
+
+    const auth = planning.assignments.find((assignment) => assignment.path === 'src/auth/guard.ts')!;
+    const format = planning.assignments.find((assignment) => assignment.path === 'src/format.ts')!;
+    const swift = planning.assignments.find((assignment) => assignment.path === 'src/native/Feature.swift')!;
+    expect(auth.analyzerCoverage).toContainEqual({ tool: 'semgrep', status: 'hypotheses',
+      hypothesisIds: [hypothesis.id] });
+    expect(format.analyzerCoverage).toContainEqual({ tool: 'semgrep', status: 'not_reported', hypothesisIds: [] });
+    expect(format.analyzerHypotheses).toEqual([]);
+    expect(swift.analyzerCoverage).toEqual([{ tool: 'gitleaks', status: 'not_reported', hypothesisIds: [] }]);
+    expect(planning.omissions).toContain('semgrep not_reported for src/format.ts');
+    expect(planning.omissions).toContain('language-specific static analyzer unsupported for src/native/Feature.swift');
+  });
+
+  it('keeps legacy analyzer receipts readable while marking unproven path coverage', () => {
+    const files = [{ path: 'src/auth/guard.ts', patch: '@@ -1 +1 @@\n+authorizeRequest(token);' }];
+    const legacySummary: PreCheckSummary = {
+      enabled: true, analyzersExecuted: 1, hypothesesCount: 1, status: 'ok',
+      receipts: [{ tool: 'semgrep', category: 'security', available: true, exitStatus: 0, durationMs: 1,
+        hypotheses: [{ id: 'hyp:semgrep:auth-bypass:src/auth/guard.ts:1', analyzer: 'semgrep', category: 'security',
+          ruleId: 'auth-bypass', path: 'src/auth/guard.ts', line: 1, message: 'Authorization check is bypassable.',
+          severity: 'error', confidence: 'high' }] }],
+      hypotheses: [{ id: 'hyp:semgrep:auth-bypass:src/auth/guard.ts:1', analyzer: 'semgrep', category: 'security',
+        ruleId: 'auth-bypass', path: 'src/auth/guard.ts', line: 1, message: 'Authorization check is bypassable.',
+        severity: 'error', confidence: 'high' }],
+    };
+    const planning = buildDeterministicReviewPlanningContext({ coverage: buildDeterministicCoverageManifest(files),
+      changedFiles: files, analyzers: legacySummary });
+
+    expect(planning.assignments[0]?.analyzerCoverage).toContainEqual({ tool: 'semgrep', status: 'not_reported',
+      hypothesisIds: ['hyp:semgrep:auth-bypass:src/auth/guard.ts:1'] });
+    expect(planning.assignments[0]?.analyzerHypotheses).toHaveLength(1);
+    expect(planning.omissions).toContain('semgrep not_reported for src/auth/guard.ts');
   });
 
   it('loads only complete exact-head history and keeps author text untrusted against new P1s', () => {
