@@ -1111,11 +1111,12 @@ export class GitHubInstallationClient {
     return comparison.merge_base_commit.sha;
   }
 
-  async getFileContentEvidence(owner: string, repo: string, path: string, ref?: string): Promise<PinnedFileContentEvidence> {
+  async getFileContentEvidence(owner: string, repo: string, path: string, ref?: string,
+    signal?: AbortSignal): Promise<PinnedFileContentEvidence> {
     const encodedPath = path.split('/').map(encodeURIComponent).join('/');
     const url = `/repos/${owner}/${repo}/contents/${encodedPath}` + (ref ? `?ref=${encodeURIComponent(ref)}` : '');
     let data: any;
-    try { data = await this.request(url); }
+    try { data = await (signal ? this.request(url, { signal }) : this.request(url)); }
     catch (error) {
       if (error instanceof GitHubApiResponseError && error.status === 404) return { presence: 'absent', content: null };
       throw error;
@@ -1130,7 +1131,8 @@ export class GitHubInstallationClient {
     // its empty placeholder as verified source.
     if (data.encoding === 'none' && /^[0-9a-f]{40}$/u.test(data.sha || '')
       && Number.isSafeInteger(data.size) && data.size <= MAX_PINNED_SOURCE_BYTES) {
-      const blob = await this.request(`/repos/${owner}/${repo}/git/blobs/${data.sha}`);
+      const blobPath = `/repos/${owner}/${repo}/git/blobs/${data.sha}`;
+      const blob = await (signal ? this.request(blobPath, { signal }) : this.request(blobPath));
       if (blob.sha !== data.sha || blob.encoding !== 'base64' || typeof blob.content !== 'string') {
         throw new Error('Source blob identity mismatch');
       }
@@ -1147,9 +1149,10 @@ export class GitHubInstallationClient {
     return { presence: 'unavailable', content: null };
   }
 
-  async getFileContent(owner: string, repo: string, path: string, ref?: string, options: { notFoundIsEmpty?: boolean } = {}): Promise<string | null> {
+  async getFileContent(owner: string, repo: string, path: string, ref?: string,
+    options: { notFoundIsEmpty?: boolean } = {}, signal?: AbortSignal): Promise<string | null> {
     try {
-      const result = await this.getFileContentEvidence(owner, repo, path, ref);
+      const result = await this.getFileContentEvidence(owner, repo, path, ref, signal);
       return result.presence === 'present' ? result.content : null;
     } catch (error) {
       if (options.notFoundIsEmpty && !(error instanceof GitHubApiResponseError && error.status === 404)) {

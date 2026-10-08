@@ -59,6 +59,22 @@ describe('createRepoFileProvider', () => {
     expect(args[4]).toEqual({ notFoundIsEmpty: true });
   });
 
+  it('passes an optional abort signal through an uncached pinned source read', async () => {
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    const github = { getFileContentEvidence: vi.fn(async (_owner: string, _repo: string, _path: string,
+      _ref: string, signal?: AbortSignal) => {
+      receivedSignal = signal;
+      return { presence: 'present' as const, content: 'pinned source' };
+    }) } as unknown as GitHubInstallationClient;
+    const provider = createRepoFileProvider(github, 'o', 'r', 'a'.repeat(40));
+
+    const result = await provider.readFileAt!('src/signal.ts', 'head', { signal: controller.signal });
+
+    expect(result?.content).toBe('pinned source');
+    expect(receivedSignal).toBe(controller.signal);
+  });
+
   it('returns revision-pinned reverse-reference candidates but keeps a truncated scan non-exhaustive', async () => {
     const headSha = 'a'.repeat(40), baseSha = 'b'.repeat(40);
     const sources = new Map([
@@ -119,6 +135,21 @@ describe('GitHubInstallationClient.getFileTree', () => {
 });
 
 describe('GitHubInstallationClient.getFileContentEvidence', () => {
+  it('passes an abort signal to the GitHub fetch implementation', async () => {
+    const controller = new AbortController();
+    let receivedSignal: AbortSignal | null | undefined;
+    const client = new GitHubInstallationClient({ token: 'ghs_test', baseUrl: 'https://api.example.test',
+      fetchImplementation: async (_input, init) => {
+        receivedSignal = init?.signal;
+        return new Response(JSON.stringify({ encoding: 'base64', content: Buffer.from('source').toString('base64') }),
+          { status: 200 });
+      } });
+
+    await client.getFileContentEvidence('o', 'r', 'src/signal.ts', 'a'.repeat(40), controller.signal);
+
+    expect(receivedSignal).toBe(controller.signal);
+  });
+
   it('returns absent only for an exact contents 404 and unavailable for oversized bytes', async () => {
     const missing = new GitHubInstallationClient({ token: 'ghs_test', baseUrl: 'https://api.example.test',
       fetchImplementation: async () => new Response('not found', { status: 404 }) });

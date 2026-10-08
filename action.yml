@@ -113,7 +113,8 @@ inputs:
   doks-dispatch-url:
     description: >-
       Review Yeti DOKS admission endpoint, supplied by the calling workflow (required when execution-backend is
-      doks or mars). It must be an https URL with a DNS hostname and the exact path /api/dispatch/action.
+      doks or mars). Ordinary dispatch uses /api/dispatch/action. The isolated qualification endpoint is
+      accepted only for the exact qualification repository when its runtime image digest is also supplied.
     required: false
     default: ''
   qualification-runtime-image-digest:
