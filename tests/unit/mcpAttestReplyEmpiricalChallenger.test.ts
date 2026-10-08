@@ -67,6 +67,8 @@ describe('Empirical Challenger Suite: attest_pr_gate & reply_review_thread (test
     'get_runtime_metrics',
     'get_analytics_dashboard',
     'purge_cache',
+    'get_checkpoint_metrics',
+    'get_compaction_analytics',
   ];
 
   function createMockCaller(options: {
@@ -1098,7 +1100,7 @@ describe('Empirical Challenger Suite: attest_pr_gate & reply_review_thread (test
       router.destroy();
     });
 
-    it.each(['registration', 'reversed'] as const)('CHALLENGE: tools/list returns the complete 18-tool catalog in %s listing order', async (order) => {
+    it.each(['registration', 'reversed'] as const)('CHALLENGE: tools/list returns the complete 20-tool catalog in %s listing order', async (order) => {
       if (order === 'reversed') {
         const registered = router.toolRegistry.listTools();
         vi.spyOn(router.toolRegistry, 'listTools').mockImplementation(() => [...registered].reverse());
@@ -1116,8 +1118,8 @@ describe('Empirical Challenger Suite: attest_pr_gate & reply_review_thread (test
       expect(res.status).toBe(200);
       expect(res.body.error).toBeUndefined();
       const toolNames = res.body.result.tools.map((t: any) => t.name);
-      expect(toolNames).toHaveLength(18);
-      expect(new Set(toolNames).size).toBe(18);
+      expect(toolNames).toHaveLength(EXPECTED_MCP_TOOL_NAMES.length);
+      expect(new Set(toolNames).size).toBe(EXPECTED_MCP_TOOL_NAMES.length);
       expect([...toolNames].sort()).toEqual([...EXPECTED_MCP_TOOL_NAMES].sort());
     });
 

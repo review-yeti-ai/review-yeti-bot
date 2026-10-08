@@ -793,7 +793,7 @@ export function validateFileCoverageQuorum(
       mode: 'file_coverage',
       verdict: hasP1 ? 'FIX_FIRST' : 'SHIP',
       status: 'COMPLETE',
-      rationale: 'All changed files are documentation or assets. Coverage satisfied automatically.',
+      rationale: 'All changed files are documentation, assets, or bypass lockfiles; documentation or assets coverage satisfied automatically.',
       coveragePct: 100,
       coveredPaths: [],
       uncoveredPaths: [],
@@ -805,7 +805,7 @@ export function validateFileCoverageQuorum(
   }
 
   const reviewableCodePaths = changedFiles.filter(
-    (p) => domainMap[p] !== 'docs_assets'
+    (p) => domainMap[p] !== 'docs_assets' && (plan && plan.tasks && plan.tasks.length > 0 ? !isBypassDiffOnlyPath(p) : true)
   );
 
   // 3. Collect covered paths from completed tasks only
