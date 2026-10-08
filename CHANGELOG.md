@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.122.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.1...v1.122.2) (2026-10-08)
+
+
+### Bug Fixes
+
+* **ci:** validate frontend artifact coherence ([#1450](https://github.com/review-yeti-ai/review-yeti-bot/issues/1450)) ([a755abe](https://github.com/review-yeti-ai/review-yeti-bot/commit/a755abe90455b2b729c3f2eeaa5367481a90f7f3))
+* **review:** preserve safe retry, coverage, and plan evidence ([#1446](https://github.com/review-yeti-ai/review-yeti-bot/issues/1446)) ([846ea48](https://github.com/review-yeti-ai/review-yeti-bot/commit/846ea48bfcbe2608ee01355e62a3c429159872f0))
+
 ## [1.122.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.0...v1.122.1) (2026-10-08)
 
 
