@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -134,5 +134,25 @@ describe('this public repository ships no internal infrastructure identifiers', 
       if (status !== 1) throw error;
     }
     expect(hits).toBe('');
+  });
+
+  it('keeps external qualification host bindings out of the public runner and descriptor', () => {
+    const files = [
+      'src/qualification/normalEngineQualificationExternalV2.ts',
+      'scripts/ws5-external-normal-v2.mjs',
+      'scripts/ws5-external-bifrost-log-collector.mjs',
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json',
+    ];
+    for (const file of files) {
+      const body = readFileSync(path.join(root, file), 'utf8');
+      expect(body, file).not.toMatch(/https?:\/\/[^/\s"'`]+\.ts\.net/iu);
+    }
+  });
+
+  it('leaves Kubernetes secret selection to the parent credential callback', () => {
+    const adapter = readFileSync(path.join(root, 'src/qualification/normalEngineQualificationExternalV2.ts'), 'utf8');
+    expect(adapter).not.toMatch(/\bkubectl\b|--context\s+[^\s]+|get\s+secret/iu);
+    expect(adapter).toContain('readInferenceKeyInMemory');
+    expect(adapter).toContain('readManagementAuthInMemory');
   });
 });

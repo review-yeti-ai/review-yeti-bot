@@ -11,6 +11,22 @@ import { pathToFileURL } from 'node:url';
 const runnerUrl = pathToFileURL(new URL('../../scripts/ws5-external-normal-v2.mjs', import.meta.url).pathname);
 const runner = await import(runnerUrl.href).catch(() => null);
 
+function privateBinding(canonicalPath = path.join(tmpdir(), 'ws5-private-phase-root')) {
+  return {
+    schemaVersion: runner.EXTERNAL_NORMAL_V2_PRIVATE_BINDING_SCHEMA,
+    credentialBindingSha256: 'a'.repeat(64),
+    phaseRoot: { canonicalPath, uid: process.getuid?.() ?? 1, gid: process.getgid?.() ?? 1,
+      mode: 0o700, initialEntryCount: 0 },
+    sourceDescriptor: { repository: 'exampleorg/review-policy-fixture', repositoryId: 73,
+      sourceRef: 'b'.repeat(40), path: 'policy/candidate.json', contentSha256: 'c'.repeat(64),
+      candidateHead: 'd'.repeat(40), preparedFixtureReviewHead: 'e'.repeat(40) },
+    transport: { selectedBaseUrl: 'https://gateway.example.invalid/v1', modelAlias: 'pr-reviewer' },
+    managementBaseUrl: 'https://management.example.invalid',
+    runtime: { finalSourceRevision: 'f'.repeat(40), workerImageDigest: `sha256:${'1'.repeat(64)}`,
+      runtimeManifestSha256: '2'.repeat(64) },
+  };
+}
+
 test('does not invoke a worker without a root-go receipt bound to the exact phase', async () => {
   assert.ok(runner, 'the current-source external v2 runner module must exist');
   assert.equal(typeof runner.runExternalNormalQualificationV2, 'function');
@@ -28,6 +44,32 @@ test('does not invoke a worker without a root-go receipt bound to the exact phas
   assert.equal(result.clientCalls, 0);
 });
 
+test('public phase plan is a non-dispatchable template and requires a private root binding', async () => {
+  const root = new URL('../../', import.meta.url).pathname;
+  const plan = JSON.parse(await readFile(path.join(root, 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json')));
+  const bundle = JSON.parse(await readFile(path.join(root, 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json')));
+  assert.equal(plan.status, 'template-awaiting-private-root-binding');
+  assert.equal(plan.dispatchAuthorization, false);
+  assert.equal(Object.hasOwn(plan.policy, 'policySource'), false);
+  assert.equal(Object.hasOwn(plan.policy, 'inferenceBaseUrl'), false);
+  assert.equal(Object.hasOwn(plan.artifactRoots.phaseRoot, 'canonicalPath'), false);
+  assert.equal(Object.hasOwn(plan.artifactRoots.phaseRoot, 'uid'), false);
+  assert.equal(Object.hasOwn(plan.artifactRoots.phaseRoot, 'gid'), false);
+  assert.doesNotThrow(() => runner.validateExternalNormalV2PrivateBinding(privateBinding()));
+  assert.throws(() => runner.validateExternalNormalV2PrivateBinding({}), /private_binding_invalid/u);
+
+  const result = await runner.runExternalNormalQualificationV2({
+    repositoryRoot: root,
+    phaseRoot: '/tmp/not-created-without-private-binding',
+    authorization: { schemaVersion: runner.EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA, rootGo: true },
+    executeCase: async () => { throw new Error('must not dispatch'); },
+    captureExactLogs: async () => ({ ok: true }),
+    preflightExecution: async () => ({ status: 'ready' }),
+  });
+  assert.equal(result.status, 'private_binding_required');
+  runner.validateExternalNormalV2Plan(plan, bundle);
+});
+
 test('ships only the exact new synthetic v2 source inputs into the worker image', async () => {
   const root = new URL('../../', import.meta.url).pathname;
   const rows = await verifyQualificationFixtureAllowlist(root);
@@ -35,7 +77,7 @@ test('ships only the exact new synthetic v2 source inputs into the worker image'
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json']);
   const expected = new Map([
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json',
-      '42ebbe56627c38a3f781acf1a5e4ed4301b14b546bf04139d6a05c2951ebb8ee'],
+      '31eedf8e86f5e2bfa18ad55413c6d1653b0b610bf80eda76d7d15a0c12fed107'],
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json',
       '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1'],
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json',
@@ -91,16 +133,18 @@ test('uses the five-by-58 review allocations plus one-call fault controls and ke
 });
 
 test('ROOTGO binds phase, exact plan, output root, runtime and policy tuple and rejects stale or replayed grants', async () => {
+  const binding = privateBinding();
   const plan = { phaseId: 'ws5-current-source-external-v2', sourceBundle: { sha256: 'a'.repeat(64) },
-    runtime: { finalSourceRevision: 'b'.repeat(40), workerImageDigest: `sha256:${'c'.repeat(64)}`,
-      runtimeManifestSha256: 'd'.repeat(64), currentBudgetFixCandidate: 'e'.repeat(40) },
-    policy: { candidateHead: 'f'.repeat(40), candidateRawSha256: '1'.repeat(64), effectiveConfigSha256: '2'.repeat(64) },
+    runtime: { ...binding.runtime, currentBudgetFixCandidate: '3'.repeat(40) },
+    policy: { candidateHead: binding.sourceDescriptor.candidateHead, candidateRawSha256: binding.sourceDescriptor.contentSha256,
+      effectiveConfigSha256: '4'.repeat(64) },
     targetProjections: [{ effectiveConfigSha256: '2'.repeat(64) }],
-    artifactRoots: { phaseRoot: { canonicalPath: runner.EXTERNAL_NORMAL_V2_PHASE_ROOT_PATH,
-      uid: 501, gid: 20, mode: 0o700, initialEntryCount: 0 },
+    artifactRoots: { phaseRoot: binding.phaseRoot,
     normalEngineQualificationStore: { relativePath: 'normal-engine-qualification-store', mode: 0o700 } } };
-  const pinnedRootSha = createHash('sha256').update(runner.EXTERNAL_NORMAL_V2_PHASE_ROOT_PATH).digest('hex');
-  const tuple = runner.buildExternalNormalV2AuthorizationTuple(plan, '3'.repeat(64), pinnedRootSha);
+  plan.targetProjections[0].effectiveConfigSha256 = plan.policy.effectiveConfigSha256;
+  const pinnedRootSha = createHash('sha256').update(binding.phaseRoot.canonicalPath).digest('hex');
+  const tuple = runner.buildExternalNormalV2AuthorizationTuple(plan, '5'.repeat(64), pinnedRootSha,
+    '0'.repeat(64), pinnedRootSha, binding);
   assert.equal(tuple.qualificationArtifactStoreRootSha256, pinnedRootSha);
   assert.equal(tuple.qualificationArtifactStoreIdentitySha256, pinnedRootSha);
   assert.equal(tuple.launcherSourceTupleSha256, '0'.repeat(64));
@@ -110,15 +154,16 @@ test('ROOTGO binds phase, exact plan, output root, runtime and policy tuple and 
   assert.equal(runner.validateRootGoGrant(plan, grant, tuple, now), true);
   assert.equal(runner.validateRootGoGrant({ ...plan, artifactRoots: undefined }, grant, tuple, now), false);
   assert.equal(runner.validateRootGoGrant(plan, { ...grant, binding: { ...tuple, phaseId: 'wrong-phase' } }, tuple, now), false);
-  assert.equal(runner.validateRootGoGrant(plan, { ...grant, binding: { ...tuple, phasePlanSha256: '5'.repeat(64) } }, tuple, now), false);
+  assert.equal(runner.validateRootGoGrant(plan, { ...grant, binding: { ...tuple, phasePlanSha256: '4'.repeat(64) } }, tuple, now), false);
   assert.equal(runner.validateRootGoGrant(plan, { ...grant, expiresAt: new Date(now - 1).toISOString() }, tuple, now), false);
-  const freshRootGrantTuple = runner.buildExternalNormalV2AuthorizationTuple(plan, '3'.repeat(64), '5'.repeat(64));
+  const freshRootGrantTuple = runner.buildExternalNormalV2AuthorizationTuple(plan, '5'.repeat(64), '6'.repeat(64),
+    '0'.repeat(64), '6'.repeat(64), binding);
   assert.equal(runner.validateRootGoGrant(plan, { ...grant, grantId: randomUUID(), binding: freshRootGrantTuple },
     freshRootGrantTuple, now), false);
-  assert.equal(runner.validateExternalNormalV2PhaseRootIdentity(plan, runner.EXTERNAL_NORMAL_V2_PHASE_ROOT_PATH,
-    { uid: 501, gid: 20, mode: 0o700 }), true);
-  assert.equal(runner.validateExternalNormalV2PhaseRootIdentity(plan, `${runner.EXTERNAL_NORMAL_V2_PHASE_ROOT_PATH}-replay`,
-    { uid: 501, gid: 20, mode: 0o700 }), false);
+  assert.equal(runner.validateExternalNormalV2PhaseRootIdentity(plan, binding.phaseRoot.canonicalPath,
+    { uid: binding.phaseRoot.uid, gid: binding.phaseRoot.gid, mode: 0o700 }), true);
+  assert.equal(runner.validateExternalNormalV2PhaseRootIdentity(plan, `${binding.phaseRoot.canonicalPath}-replay`,
+    { uid: binding.phaseRoot.uid, gid: binding.phaseRoot.gid, mode: 0o700 }), false);
 
   const root = await mkdtemp(path.join(tmpdir(), 'ws5-v2-once-'));
   try {
@@ -129,7 +174,7 @@ test('ROOTGO binds phase, exact plan, output root, runtime and policy tuple and 
 });
 
 test('accepts only an in-image DNS plus verified TLS preflight bound to the route and runtime', async () => {
-  const plan = { policy: { inferenceBaseUrl: 'https://llm-gateway.tailebe851.ts.net/v1' },
+  const plan = { policy: { inferenceBaseUrl: 'https://gateway.example.invalid/v1' },
     runtime: { finalSourceRevision: 'b'.repeat(40), workerImageDigest: `sha256:${'c'.repeat(64)}`,
       runtimeManifestSha256: 'd'.repeat(64) } };
   const proof = { status: 'ready', mode: 'dns_tls_only', originSha256: createHash('sha256')
@@ -265,6 +310,7 @@ test('recovers only digest-checked private IDs and bounds them to the arm alloca
     assert.equal(recovered.calls[0].clientRequestIdSha256, createHash('sha256').update(rows[0].callerRequestId).digest('hex'));
     assert.equal(JSON.stringify(recovered).includes(rows[0].callerRequestId), false);
     const collector = createExternalNormalV2ExactLogCollector({ storeRoot: root,
+      managementBaseUrl: 'https://management.example.invalid',
       readManagementAuthInMemory: () => ({ username: 'u', password: 'p' }),
       fetchImpl: async () => new Response(JSON.stringify({ data: [{ id: rows[0].callerRequestId,
         provider: 'provider-a', alias: 'pr-reviewer', model: 'model-a', status: 'success' }] }),
@@ -407,7 +453,7 @@ test('does not mutate an output root before an exact phase-bound grant is valid'
   try {
     const result = await runner.runExternalNormalQualificationV2({ repositoryRoot, phaseRoot,
       authorization: { rootGo: true, phaseId: 'wrong' }, executeCase: async () => { workerInvocations += 1; } });
-    assert.equal(result.status, 'candidate_not_frozen');
+    assert.equal(result.status, 'private_binding_required');
     assert.equal(workerInvocations, 0);
     assert.deepEqual(await (await import('node:fs/promises')).readdir(phaseRoot), []);
   } finally { await rm(phaseRoot, { recursive: true, force: true }); }

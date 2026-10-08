@@ -7,10 +7,10 @@ import path from 'node:path';
 
 export const EXTERNAL_NORMAL_V2_PLAN_PATH = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json';
 export const EXTERNAL_NORMAL_V2_BUNDLE_PATH = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json';
-export const EXTERNAL_NORMAL_V2_PLAN_SHA256 = '42ebbe56627c38a3f781acf1a5e4ed4301b14b546bf04139d6a05c2951ebb8ee';
+export const EXTERNAL_NORMAL_V2_PLAN_SHA256 = '31eedf8e86f5e2bfa18ad55413c6d1653b0b610bf80eda76d7d15a0c12fed107';
 export const EXTERNAL_NORMAL_V2_BUNDLE_SHA256 = '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1';
 export const EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA = 'ReviewYetiExternalNormalQualificationRootGo.v1';
-export const EXTERNAL_NORMAL_V2_PHASE_ROOT_PATH = '/private/tmp/ws5-current-source-external-v2-phase-root';
+export const EXTERNAL_NORMAL_V2_PRIVATE_BINDING_SCHEMA = 'ReviewYetiExternalNormalQualificationPrivateBinding.v1';
 
 const PHASE_WALL_LIMIT_MS = 1_800_000;
 const CLIENT_CALL_LIMIT = 300;
@@ -156,6 +156,78 @@ function object(value, name) {
   return value;
 }
 
+function hasExactKeys(value, keys) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join('|') === [...keys].sort().join('|');
+}
+
+export function validateExternalNormalV2PrivateBinding(binding) {
+  const keys = ['schemaVersion', 'credentialBindingSha256', 'phaseRoot', 'sourceDescriptor', 'transport', 'managementBaseUrl', 'runtime'];
+  const phaseRootKeys = ['canonicalPath', 'uid', 'gid', 'mode', 'initialEntryCount'];
+  const sourceKeys = ['repository', 'repositoryId', 'sourceRef', 'path', 'contentSha256', 'candidateHead', 'preparedFixtureReviewHead'];
+  const transportKeys = ['selectedBaseUrl', 'modelAlias'];
+  const runtimeKeys = ['finalSourceRevision', 'workerImageDigest', 'runtimeManifestSha256'];
+  if (!hasExactKeys(binding, keys) || binding.schemaVersion !== EXTERNAL_NORMAL_V2_PRIVATE_BINDING_SCHEMA
+    || !/^[a-f0-9]{64}$/iu.test(binding.credentialBindingSha256 || '')
+    || !hasExactKeys(binding.phaseRoot, phaseRootKeys)
+    || typeof binding.phaseRoot.canonicalPath !== 'string' || !path.isAbsolute(binding.phaseRoot.canonicalPath)
+    || path.resolve(binding.phaseRoot.canonicalPath) !== binding.phaseRoot.canonicalPath
+    || !Number.isSafeInteger(binding.phaseRoot.uid) || binding.phaseRoot.uid < 0
+    || !Number.isSafeInteger(binding.phaseRoot.gid) || binding.phaseRoot.gid < 0
+    || binding.phaseRoot.mode !== 0o700 || binding.phaseRoot.initialEntryCount !== 0
+    || !hasExactKeys(binding.sourceDescriptor, sourceKeys)
+    || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(binding.sourceDescriptor.repository || '')
+    || !Number.isSafeInteger(binding.sourceDescriptor.repositoryId) || binding.sourceDescriptor.repositoryId < 1
+    || binding.sourceDescriptor.repository.split('/').some((part) => part === '.' || part === '..')
+    || !/^[a-f0-9]{40}$/iu.test(binding.sourceDescriptor.sourceRef || '')
+    || typeof binding.sourceDescriptor.path !== 'string' || !binding.sourceDescriptor.path
+    || path.posix.isAbsolute(binding.sourceDescriptor.path) || binding.sourceDescriptor.path.includes('\\')
+    || binding.sourceDescriptor.path.split('/').some((segment) => !segment || segment === '.' || segment === '..')
+    || !/^[a-f0-9]{64}$/iu.test(binding.sourceDescriptor.contentSha256 || '')
+    || !/^[a-f0-9]{40}$/iu.test(binding.sourceDescriptor.candidateHead || '')
+    || !/^[a-f0-9]{40}$/iu.test(binding.sourceDescriptor.preparedFixtureReviewHead || '')
+    || !hasExactKeys(binding.transport, transportKeys)
+    || typeof binding.transport.selectedBaseUrl !== 'string'
+    || !/^[A-Za-z0-9._/-]+$/u.test(binding.transport.modelAlias || '')
+    || typeof binding.managementBaseUrl !== 'string'
+    || !hasExactKeys(binding.runtime, runtimeKeys)
+    || !/^[a-f0-9]{40}$/iu.test(binding.runtime.finalSourceRevision || '')
+    || !/^sha256:[a-f0-9]{64}$/iu.test(binding.runtime.workerImageDigest || '')
+    || !/^[a-f0-9]{64}$/iu.test(binding.runtime.runtimeManifestSha256 || '')) {
+    throw new Error('external_normal_v2_private_binding_invalid');
+  }
+  let selectedUrl;
+  let managementUrl;
+  try {
+    selectedUrl = new URL(binding.transport.selectedBaseUrl);
+    managementUrl = new URL(binding.managementBaseUrl);
+  } catch { throw new Error('external_normal_v2_private_binding_invalid'); }
+  if (selectedUrl.protocol !== 'https:' || selectedUrl.username || selectedUrl.password || selectedUrl.search || selectedUrl.hash
+    || selectedUrl.pathname === '/' || selectedUrl.pathname.endsWith('/')
+    || managementUrl.protocol !== 'https:' || managementUrl.username || managementUrl.password
+    || managementUrl.search || managementUrl.hash || managementUrl.pathname !== '/') {
+    throw new Error('external_normal_v2_private_binding_invalid');
+  }
+  return binding;
+}
+
+export function bindExternalNormalV2PrivateInputs(template, binding) {
+  validateExternalNormalV2PrivateBinding(binding);
+  return {
+    ...template,
+    status: 'frozen-ready-awaiting-root-go',
+    runtime: { ...template.runtime, ...binding.runtime },
+    policy: { ...template.policy, inferenceBaseUrl: binding.transport.selectedBaseUrl,
+      routeAlias: binding.transport.modelAlias,
+      candidateHead: binding.sourceDescriptor.candidateHead,
+      preparedFixtureReviewHead: binding.sourceDescriptor.preparedFixtureReviewHead,
+      policySource: { repository: binding.sourceDescriptor.repository,
+        repositoryId: binding.sourceDescriptor.repositoryId, sourceRef: binding.sourceDescriptor.sourceRef,
+        path: binding.sourceDescriptor.path, contentSha256: binding.sourceDescriptor.contentSha256 } },
+    artifactRoots: { ...template.artifactRoots, phaseRoot: { ...binding.phaseRoot } },
+  };
+}
+
 function validateStep(step, index, bundleByCase) {
   object(step, 'step');
   if (!SAFE_STEP_IDS.has(step.stepId)) throw new Error('external_normal_v2_step_id_invalid');
@@ -194,9 +266,13 @@ export function validateExternalNormalV2Plan(plan, bundle) {
   assertNoOutcomeLabels(plan);
   if (plan.schemaVersion !== 'ReviewYetiExternalNormalQualificationPlan.v2'
     || plan.phaseId !== 'ws5-current-source-external-v2'
+    || plan.status !== 'template-awaiting-private-root-binding'
+    || plan.dispatchAuthorization !== false
     || plan.scope?.targetMode !== 'standalone-synthetic-source-snapshots'
-    || plan.artifactRoots?.phaseRoot?.canonicalPath !== EXTERNAL_NORMAL_V2_PHASE_ROOT_PATH
-    || plan.artifactRoots?.phaseRoot?.uid !== 501 || plan.artifactRoots?.phaseRoot?.gid !== 20
+    || plan.artifactRoots?.phaseRoot?.privateBindingRequired !== true
+    || Object.hasOwn(plan.artifactRoots?.phaseRoot ?? {}, 'canonicalPath')
+    || Object.hasOwn(plan.artifactRoots?.phaseRoot ?? {}, 'uid')
+    || Object.hasOwn(plan.artifactRoots?.phaseRoot ?? {}, 'gid')
     || plan.artifactRoots?.phaseRoot?.mode !== 0o700 || plan.artifactRoots?.phaseRoot?.initialEntryCount !== 0
     || plan.artifactRoots?.normalEngineQualificationStore?.relativePath !== 'normal-engine-qualification-store'
     || plan.artifactRoots?.normalEngineQualificationStore?.mode !== 0o700
@@ -209,25 +285,23 @@ export function validateExternalNormalV2Plan(plan, bundle) {
     || bundle.schemaVersion !== 'WS5ExternalNormalBundle.v2'
     || plan.policy?.routeAlias !== 'pr-reviewer'
     || plan.policy?.requestedEffort !== 'medium'
-    || plan.policy?.inferenceBaseUrl !== 'https://llm-gateway.tailebe851.ts.net/v1'
+    || Object.hasOwn(plan.policy ?? {}, 'inferenceBaseUrl')
+    || Object.hasOwn(plan.policy ?? {}, 'policySource')
+    || Object.hasOwn(plan.policy ?? {}, 'candidateHead')
+    || Object.hasOwn(plan.policy ?? {}, 'preparedFixtureReviewHead')
+    || Object.hasOwn(plan.policy ?? {}, 'candidatePath')
     || plan.policy?.effectiveConfigSha256 !== '0933fc3afc3f57133845a9f7aa87678bb5502a87211dcb90dbe84babdbc40e3e'
     || plan.policy?.centralEffectiveConfigProjectionSha256 !== 'f737fbef64a7336614e441d092e3899d0c2b674f04ea197c610aaf7db9050df1'
     || plan.policy?.effectivePolicySha256 !== 'f707fd3481c13d9d84bea2d7b70a3e5f1dbca99f349e1eb0032b6c424363cd25'
     || plan.policy?.preparedExecutionSha256 !== '618916ab3bfd1d03ec4dfb7ab32abac424fdc397b31da9545a126ab433611c5d'
     || plan.policy?.preparedExecutionManifestSha256 !== 'ecacf5d532de24292f9fb27dc91b92ac426f469165799b0431a2e952027140dd'
-    || plan.policy?.preparedFixtureReviewHead !== '91207aebbacd6133d5ef1b99a24ca0903144308f'
     || plan.runtime?.preparedConfigHelperSourceRevision !== '1917204826d9a145dc7db8217b01978dad679e2b'
     || plan.runtime?.executionMode !== 'host-coordinator-with-pinned-worker-image-children'
-    || plan.runtime?.executionNetwork !== 'docker-bridge-to-tailnet-origin'
+    || plan.runtime?.executionNetwork !== 'docker-bridge-to-configured-https-origin'
     || plan.runtime?.executionUser !== 'container runs as the nonroot host uid that owns the private phaseRoot'
     || plan.runtime?.executionOriginReadiness !== 'read-only DNS and certificate-verified TLS proof inside the exact worker image is required before the first model request'
     || plan.runtime?.workerImageRepository !== 'ghcr.io/review-yeti-ai/review-yeti-worker'
     || plan.runtime?.artifactStoreBinding !== 'canonical private phaseRoot/normal-engine-qualification-store'
-    || plan.policy?.policySource?.repository !== 'calltelemetry/ct-review-actions'
-    || plan.policy?.policySource?.repositoryId !== 1_339_040_553
-    || plan.policy?.policySource?.sourceRef !== '14b84c17daaa1ae8da7d4f1cfa53385e756fe544'
-    || plan.policy?.policySource?.path !== 'policy/review-yeti-v2-candidate.json'
-    || plan.policy?.policySource?.contentSha256 !== plan.policy?.candidateRawSha256
     || plan.executionEnvelope?.maxPhaseClientCalls !== CLIENT_CALL_LIMIT
     || plan.executionEnvelope?.perArmClientHttpAttemptAllocation?.normalArms !== 58
     || plan.executionEnvelope?.perArmClientHttpAttemptAllocation?.providerFailureControl !== 1
@@ -317,7 +391,8 @@ export function validateExternalNormalV2Plan(plan, bundle) {
   return plan;
 }
 
-export async function verifyPolicyInputFiles(policyInputRoot, plan) {
+export async function verifyPolicyInputFiles(policyInputRoot, plan, privateBinding) {
+  validateExternalNormalV2PrivateBinding(privateBinding);
   const root = await canonicalExistingDirectoryWithoutSymlinks(policyInputRoot, { allowTmpAlias: true });
   const rootInfo = await lstat(root);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || (rootInfo.mode & 0o077) !== 0) {
@@ -334,40 +409,43 @@ export async function verifyPolicyInputFiles(policyInputRoot, plan) {
     actualHashes.push(sha256(bytes));
   }
   const [candidate, execution, preparedFixture, projections, preparedManifest] = parsed;
-  if (candidate.schema !== 'calltelemetry.review-policy.v1'
+  const source = privateBinding.sourceDescriptor;
+  const sourceOwner = source.repository.split('/')[0];
+  if (source.contentSha256 !== plan.policy.candidateRawSha256
+    || candidate.schema !== `${sourceOwner}.review-policy.v1`
     || actualHashes[0] !== plan.policy.candidateRawSha256
     || actualHashes[1] !== plan.policy.executionPlanFixtureSha256
     || actualHashes[2] !== plan.policy.preparedExecutionFixtureSha256
     || actualHashes[3] !== plan.policy.syntheticProjectionFixtureSha256
     || actualHashes[4] !== plan.policy.preparedExecutionManifestSha256
-    || preparedFixture.schema !== 'calltelemetry.review-yeti-prepared-execution-host-fixture.v1'
+    || preparedFixture.schema !== `${sourceOwner}.review-yeti-prepared-execution-host-fixture.v1`
     || preparedFixture.preparation_only !== true || preparedFixture.review_posting_enabled !== false
-    || preparedFixture.candidate_policy.repository !== plan.policy.policySource.repository
-    || preparedFixture.candidate_policy.repository_id !== plan.policy.policySource.repositoryId
-    || preparedFixture.candidate_policy.source_sha !== plan.policy.policySource.sourceRef
-    || preparedFixture.candidate_policy.path !== plan.policy.policySource.path
-    || preparedFixture.candidate_policy.content_sha256 !== plan.policy.policySource.contentSha256
+    || preparedFixture.candidate_policy.repository !== source.repository
+    || preparedFixture.candidate_policy.repository_id !== source.repositoryId
+    || preparedFixture.candidate_policy.source_sha !== source.sourceRef
+    || preparedFixture.candidate_policy.path !== source.path
+    || preparedFixture.candidate_policy.content_sha256 !== source.contentSha256
     || preparedFixture.prepared_by.repository !== 'review-yeti-ai/review-yeti-bot'
     || preparedFixture.prepared_by.source_sha !== plan.runtime.preparedConfigHelperSourceRevision
     || preparedFixture.prepared_by.helper !== 'preparePublishingPolicy'
-    || preparedFixture.transport.baseUrl !== plan.policy.inferenceBaseUrl
-    || preparedFixture.transport.model !== plan.policy.routeAlias
-    || preparedManifest.schema !== 'calltelemetry.review-yeti-prepared-execution-host-bundle.v1'
+    || preparedFixture.transport.baseUrl !== privateBinding.transport.selectedBaseUrl
+    || preparedFixture.transport.model !== privateBinding.transport.modelAlias
+    || preparedManifest.schema !== `${sourceOwner}.review-yeti-prepared-execution-host-bundle.v1`
     || preparedManifest.fixture_path !== 'review-yeti-v2-prepared-execution-host.fixture.json'
     || preparedManifest.fixture_sha256 !== actualHashes[2]
-    || preparedManifest.prepared_from.repository !== plan.policy.policySource.repository
-    || preparedManifest.prepared_from.repository_id !== plan.policy.policySource.repositoryId
-    || preparedManifest.prepared_from.source_sha !== plan.policy.policySource.sourceRef
-    || preparedManifest.prepared_from.content_sha256 !== plan.policy.policySource.contentSha256
+    || preparedManifest.prepared_from.repository !== source.repository
+    || preparedManifest.prepared_from.repository_id !== source.repositoryId
+    || preparedManifest.prepared_from.source_sha !== source.sourceRef
+    || preparedManifest.prepared_from.content_sha256 !== source.contentSha256
     || preparedManifest.helper.source_sha !== plan.runtime.preparedConfigHelperSourceRevision
     || preparedManifest.helper.source_file_sha256 !== '54f90267c4e97ae5ec50d77e7241151e0d81f156305ad031326cea1c34535bb0'
-    || preparedManifest.transport.provider !== 'bifrost' || preparedManifest.transport.baseUrl !== plan.policy.inferenceBaseUrl
-    || preparedManifest.transport.model !== plan.policy.routeAlias
+    || preparedManifest.transport.provider !== 'bifrost' || preparedManifest.transport.baseUrl !== privateBinding.transport.selectedBaseUrl
+    || preparedManifest.transport.model !== privateBinding.transport.modelAlias
     || preparedManifest.samples.length !== 6
     || projections.prepared_execution_fixture_sha256 !== actualHashes[2]
     || projections.prepared_execution_fixture_path !== 'review-yeti-v2-prepared-execution-host.fixture.json'
-    || projections.source_revision !== plan.policy.policySource.sourceRef
-    || projections.schema !== 'calltelemetry.review-yeti-offline-candidate-projections.v2'
+    || projections.source_revision !== source.sourceRef
+    || projections.schema !== `${sourceOwner}.review-yeti-offline-candidate-projections.v2`
     || projections.review_posting_enabled !== false
     || projections.policy_sha256 !== expectedPolicyHash(plan)
     || projections.cases.length !== plan.targetProjections.length) {
@@ -418,7 +496,8 @@ export async function verifyPolicyInputFiles(policyInputRoot, plan) {
     const prepared = JSON.parse(preparedBytes.toString('utf8'));
     const attemptBudget = prepared.config?.review_configuration_receipt?.effective?.composed_budget?.provider_attempt_budget;
     if (prepared.version !== 'PreparedReviewExecution.v1'
-      || prepared.transport?.baseUrl !== plan.policy.inferenceBaseUrl || prepared.transport?.model !== plan.policy.routeAlias
+      || prepared.transport?.baseUrl !== privateBinding.transport.selectedBaseUrl
+      || prepared.transport?.model !== privateBinding.transport.modelAlias
       || prepared.config?.review_configuration_receipt?.effective?.composed_budget?.central_policy_max_tasks !== plan.executionEnvelope.maxTasksPerNormalReview
       || prepared.config?.review_configuration_receipt?.effective?.composed_budget?.central_policy_total_turns !== 100
       || attemptBudget?.capability_version !== 'ReviewProviderAttemptBudget.v1' || attemptBudget.total_limit !== 100
@@ -481,7 +560,8 @@ export async function readFrozenExternalNormalV2Plan(repositoryRoot) {
 }
 
 export function buildExternalNormalV2AuthorizationTuple(plan, planSha256, outputRootSha256,
-  launcherSourceTupleSha256 = '0'.repeat(64), artifactStoreIdentitySha256 = outputRootSha256) {
+  launcherSourceTupleSha256 = '0'.repeat(64), artifactStoreIdentitySha256 = outputRootSha256, privateBinding) {
+  validateExternalNormalV2PrivateBinding(privateBinding);
   const inputs = Object.entries(INPUTS).map(([caseId, input]) => ({ caseId, inputSha256: input.sha256 })).sort((a, b) => a.caseId.localeCompare(b.caseId));
   const runtime = plan.runtime || {};
   const policy = plan.policy || {};
@@ -519,6 +599,7 @@ export function buildExternalNormalV2AuthorizationTuple(plan, planSha256, output
       ? sha256(plan.artifactRoots.phaseRoot.canonicalPath) : null,
     phaseRootIdentitySpecSha256: plan.artifactRoots?.phaseRoot
       ? sha256(canonicalJson(plan.artifactRoots.phaseRoot)) : null,
+    privateBindingSha256: sha256(canonicalJson(privateBinding)),
     effectiveConfigSha256: policy.effectiveConfigSha256,
     outputRootSha256,
     qualificationArtifactStoreRootSha256: outputRootSha256,
@@ -555,7 +636,8 @@ export function validateRootGoGrant(plan, grant, tuple, nowMs = Date.now()) {
     && /^[a-f0-9]{64}$/u.test(runtime.runtimeManifestSha256 || '')
     && /^[a-f0-9]{64}$/u.test(policy.effectiveConfigSha256 || '')
     && policy.effectiveConfigSha256 === plan.targetProjections?.[0]?.effectiveConfigSha256
-    && phaseRootPin?.canonicalPath === EXTERNAL_NORMAL_V2_PHASE_ROOT_PATH
+    && /^[a-f0-9]{64}$/u.test(tuple.privateBindingSha256 || '')
+    && typeof phaseRootPin?.canonicalPath === 'string'
     && tuple.phaseRootCanonicalPathSha256 === sha256(phaseRootPin.canonicalPath)
     && tuple.phaseRootIdentitySpecSha256 === sha256(canonicalJson(phaseRootPin))
     && tuple.outputRootSha256 === sha256(phaseRootPin.canonicalPath);
@@ -563,8 +645,8 @@ export function validateRootGoGrant(plan, grant, tuple, nowMs = Date.now()) {
 
 export function validateExternalNormalV2PhaseRootIdentity(plan, canonicalPath, identity) {
   const pin = plan?.artifactRoots?.phaseRoot;
-  return Boolean(pin && pin.canonicalPath === EXTERNAL_NORMAL_V2_PHASE_ROOT_PATH
-    && canonicalPath === pin.canonicalPath && identity?.uid === pin.uid && identity?.gid === pin.gid
+  return Boolean(pin && canonicalPath === pin.canonicalPath
+    && identity?.uid === pin.uid && identity?.gid === pin.gid
     && (identity?.mode & 0o777) === pin.mode);
 }
 
@@ -1260,12 +1342,17 @@ export function validateExactLogLedger(calls, capture) {
 
 /** Serial bounded executor. `executeCase` must invoke `recordClientCall` at the actual fetch boundary. */
 export async function runExternalNormalQualificationV2({
-  repositoryRoot, policyInputRoot, phaseRoot, authorization, executeCase, captureExactLogs, preflightExecution, now = Date.now,
+  repositoryRoot, policyInputRoot, phaseRoot, privateBinding, authorization, executeCase, captureExactLogs, preflightExecution, now = Date.now,
 } = {}) {
   if (typeof executeCase !== 'function') throw new Error('external_normal_v2_case_executor_required');
   const frozen = await readFrozenExternalNormalV2Plan(repositoryRoot || process.cwd());
-  const { plan, bundle, planSha256 } = frozen;
-  if (!authorization) return { status: 'authorization_required', phaseId: plan.phaseId, clientCalls: 0, planSha256 };
+  const { bundle, planSha256 } = frozen;
+  const template = frozen.plan;
+  if (!authorization) return { status: 'authorization_required', phaseId: template.phaseId, clientCalls: 0, planSha256 };
+  if (!privateBinding) return { status: 'private_binding_required', phaseId: template.phaseId, clientCalls: 0, planSha256 };
+  try { validateExternalNormalV2PrivateBinding(privateBinding); }
+  catch { return { status: 'private_binding_rejected', phaseId: template.phaseId, clientCalls: 0, planSha256 }; }
+  const plan = bindExternalNormalV2PrivateInputs(template, privateBinding);
   if (plan.status !== 'frozen-ready-awaiting-root-go' || plan.dispatchAuthorization !== false
     || !plan.runtime?.finalSourceRevision || !plan.runtime?.workerImageDigest || !plan.runtime?.runtimeManifestSha256
     || !plan.policy?.effectiveConfigSha256 || !plan.targetProjections?.every((row) =>
@@ -1278,8 +1365,11 @@ export async function runExternalNormalQualificationV2({
   if (typeof preflightExecution !== 'function') {
     return { status: 'execution_preflight_required', phaseId: plan.phaseId, clientCalls: 0, planSha256 };
   }
-  const verifiedPolicyInputs = await verifyPolicyInputFiles(policyInputRoot, plan);
-  const canonicalRoot = await canonicalizePhaseRoot(phaseRoot);
+  const verifiedPolicyInputs = await verifyPolicyInputFiles(policyInputRoot, plan, privateBinding);
+  if (phaseRoot && phaseRoot !== privateBinding.phaseRoot.canonicalPath) {
+    return { status: 'private_binding_rejected', phaseId: plan.phaseId, clientCalls: 0, planSha256 };
+  }
+  const canonicalRoot = await canonicalizePhaseRoot(privateBinding.phaseRoot.canonicalPath);
   const outputRootSha256 = sha256(canonicalRoot);
   const rootInfo = await lstat(canonicalRoot);
   if (!validateExternalNormalV2PhaseRootIdentity(plan, canonicalRoot, rootInfo)) {
@@ -1289,7 +1379,7 @@ export async function runExternalNormalQualificationV2({
     uid: rootInfo.uid, gid: rootInfo.gid, mode: rootInfo.mode & 0o777 }));
   const launcherSourceDigests = await readExternalNormalV2LauncherSourceDigests(repositoryRoot || process.cwd());
   const tuple = buildExternalNormalV2AuthorizationTuple(plan, planSha256, outputRootSha256,
-    launcherSourceDigests.tupleSha256, artifactStoreIdentitySha256);
+    launcherSourceDigests.tupleSha256, artifactStoreIdentitySha256, privateBinding);
   if (!validateRootGoGrant(plan, authorization, tuple, now())) {
     return { status: 'authorization_rejected', phaseId: plan.phaseId, clientCalls: 0, planSha256 };
   }

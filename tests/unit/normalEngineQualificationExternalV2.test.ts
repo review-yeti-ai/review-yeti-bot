@@ -8,7 +8,7 @@ import { PassThrough } from 'node:stream';
 import { canonicalJson } from '../../src/review/reviewCore';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { createBoundExternalNormalV2CaseExecutor, createPinnedWorkerImageExternalNormalV2Adapter,
-  trustedPreparedBudget } from '../../src/qualification/normalEngineQualificationExternalV2';
+  trustedPreparedBudget, validateExternalNormalV2PrivateBinding } from '../../src/qualification/normalEngineQualificationExternalV2';
 
 const policyContent = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
   personas: 'security', profile: 'balanced', review_engine: 'composed', severity_policy: 'review-yeti-severity.v2',
@@ -17,18 +17,29 @@ const policyContent = JSON.stringify({ schema: 'exampleorg.review-policy.v1', re
 const candidateSha = createHash('sha256').update(policyContent).digest('hex');
 const configSha = '0933fc3afc3f57133845a9f7aa87678bb5502a87211dcb90dbe84babdbc40e3e';
 const centralConfigProjectionSha = 'f737fbef64a7336614e441d092e3899d0c2b674f04ea197c610aaf7db9050df1';
-const inferenceBaseUrl = 'https://llm-gateway.tailebe851.ts.net/v1';
-const policySource = { repository: 'calltelemetry/ct-review-actions', repositoryId: 1339040553,
-  sourceRef: '14b84c17daaa1ae8da7d4f1cfa53385e756fe544', path: 'policy/review-yeti-v2-candidate.json',
+const inferenceBaseUrl = 'https://gateway.example.invalid/v1';
+const policySource = { repository: 'exampleorg/review-yeti-policy-fixture', repositoryId: 73011,
+  sourceRef: 'a'.repeat(40), path: 'policy/review-yeti-v2-candidate.json',
   contentSha256: candidateSha };
 const runtime = { sourceRevision: 'a'.repeat(40), workerImageDigest: `sha256:${'b'.repeat(64)}`, runtimeManifestSha256: 'c'.repeat(64) };
+const privateBinding = {
+  schemaVersion: 'ReviewYetiExternalNormalQualificationPrivateBinding.v1' as const,
+  credentialBindingSha256: 'd'.repeat(64),
+  phaseRoot: { canonicalPath: path.resolve(tmpdir(), 'ws5-test-phase-root'),
+    uid: process.getuid?.() ?? 1, gid: process.getgid?.() ?? 1, mode: 0o700 as const, initialEntryCount: 0 as const },
+  sourceDescriptor: { ...policySource, candidateHead: 'e'.repeat(40), preparedFixtureReviewHead: 'f'.repeat(40) },
+  transport: { selectedBaseUrl: inferenceBaseUrl, modelAlias: 'pr-reviewer' },
+  managementBaseUrl: 'https://management.example.invalid',
+  runtime: { finalSourceRevision: runtime.sourceRevision, workerImageDigest: runtime.workerImageDigest,
+    runtimeManifestSha256: runtime.runtimeManifestSha256 },
+};
 
 function bindings(overrides: Partial<NodeJS.ProcessEnv> = {}): NodeJS.ProcessEnv {
   const source = { repositoryId: policySource.repositoryId, repository: policySource.repository, sha: policySource.sourceRef,
     path: policySource.path, contentDigest: candidateSha };
   const transport = { baseUrl: inferenceBaseUrl, model: 'pr-reviewer' };
   const prepared = preparePublishingPolicy({ source, content: policyContent }, transport,
-    { owner: 'calltelemetry', repo: 'ct-review-actions' });
+    { owner: 'exampleorg', repo: 'review-yeti-policy-fixture' });
   const config = prepared.config as unknown as Record<string, any>;
   config.review_configuration_receipt.effective.composed_budget = {
     central_policy_total_turns: 100,
@@ -48,8 +59,8 @@ function bindings(overrides: Partial<NodeJS.ProcessEnv> = {}): NodeJS.ProcessEnv
     REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: policySource.repository,
     REVIEW_NORMAL_ENGINE_QUALIFICATION_SELECTION_PURPOSE: 'qualification-only-target-binding',
     REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID: String(policySource.repositoryId),
-    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER: 'calltelemetry',
-    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO: 'ct-review-actions',
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER: 'exampleorg',
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO: 'review-yeti-policy-fixture',
     REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF: source.sha,
     REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH: source.path,
     REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256: candidateSha,
@@ -84,6 +95,18 @@ const projection = {
 };
 
 describe('current-source external v2 worker adapter', () => {
+  it('rejects private binding source or transport that differs from the trusted prepared environment', () => {
+    expect(() => validateExternalNormalV2PrivateBinding(privateBinding, bindings())).not.toThrow();
+    expect(() => validateExternalNormalV2PrivateBinding({
+      ...privateBinding, transport: { ...privateBinding.transport, selectedBaseUrl: 'https://attacker.example.invalid/v1' },
+    }, bindings())).toThrow(/private_binding_environment_mismatch/u);
+    expect(() => validateExternalNormalV2PrivateBinding({
+      ...privateBinding, sourceDescriptor: { ...privateBinding.sourceDescriptor, repositoryId: 73012 },
+    }, bindings())).toThrow(/private_binding_environment_mismatch/u);
+    expect(() => validateExternalNormalV2PrivateBinding({ ...privateBinding, unexpectedSecretSelector: 'should-reject' }, bindings()))
+      .toThrow(/private_binding_invalid/u);
+  });
+
   it('binds the real single-case worker call and counts every fetch attempt at the fetch boundary', async () => {
     const storeRoot = await mkdtemp(path.join(tmpdir(), 'external-v2-worker-store-'));
     await chmod(storeRoot, 0o700);
@@ -114,6 +137,7 @@ describe('current-source external v2 worker adapter', () => {
     });
     const executor = createBoundExternalNormalV2CaseExecutor({ baseEnv: bindings({ GH_TOKEN: 'must-not-forward',
       REVIEW_NORMAL_ENGINE_QUALIFICATION_EXPECTED_VERDICT: 'must-not-forward' }), fetchImplementation: fakeFetch as never,
+      readInferenceKeyInMemory: () => 'qualification-test-key',
       runCase: runCase as never });
     let clientCallCount = 0;
     let blockedClientCallCount = 0;
@@ -202,6 +226,7 @@ describe('current-source external v2 worker adapter', () => {
     });
     const fetcher = vi.fn(async () => new Response('{}', { status: 200 }));
     const executor = createBoundExternalNormalV2CaseExecutor({ baseEnv: bindings(), fetchImplementation: fetcher as never,
+      readInferenceKeyInMemory: () => 'qualification-test-key',
       runCase: runCase as never });
     let clientCallCount = 0; let blockedClientCallCount = 0;
     const receipt = await executor(projection, { signal: new AbortController().signal, deadlineAt: Date.now() + 240_000,
@@ -261,7 +286,7 @@ describe('current-source external v2 worker adapter', () => {
       return child;
     }) as never;
     try {
-      const adapter = createPinnedWorkerImageExternalNormalV2Adapter({ policyInputRoot: policyRoot, baseEnv: bindings(),
+      const adapter = createPinnedWorkerImageExternalNormalV2Adapter({ policyInputRoot: policyRoot, baseEnv: bindings(), privateBinding,
         assertImageAvailable(ref) { inspected.push(ref); },
         readInferenceKeyInMemory() { throw new Error('auth-control must not read the inference key'); },
         spawnImplementation });
@@ -291,7 +316,7 @@ describe('current-source external v2 worker adapter', () => {
       expect(dockerCalls[1].env).not.toHaveProperty('KUBECONFIG');
       expect(dockerCalls[1].env.OPENAI_API_KEY).toBeUndefined();
       expect(dockerCalls[1].stdin).not.toContain('qualification-test-key');
-      const normalAdapter = createPinnedWorkerImageExternalNormalV2Adapter({ policyInputRoot: policyRoot, baseEnv: bindings(),
+      const normalAdapter = createPinnedWorkerImageExternalNormalV2Adapter({ policyInputRoot: policyRoot, baseEnv: bindings(), privateBinding,
         assertImageAvailable() {}, readInferenceKeyInMemory() { return 'private-test-key'; }, spawnImplementation });
       const normalResult = await normalAdapter.executeCase(projection, { signal: new AbortController().signal,
         deadlineAt: Date.now() + 240_000, captureOutsideChild: true, artifactStoreRoot: phaseRoot,
@@ -303,6 +328,8 @@ describe('current-source external v2 worker adapter', () => {
       expect(normalChild.args).toContain('OPENAI_API_KEY');
       expect(normalChild.args).not.toContain('private-test-key');
       expect(normalChild.env.OPENAI_API_KEY).toBe('private-test-key');
+      expect(normalChild.env).not.toHaveProperty('credentialBindingSha256');
+      expect(normalChild.stdin).not.toContain(privateBinding.credentialBindingSha256);
       expect(normalChild.stdin).not.toContain('private-test-key');
     } finally {
       await Promise.all([rm(policyRoot, { recursive: true, force: true }), rm(phaseRoot, { recursive: true, force: true })]);
@@ -326,7 +353,7 @@ describe('current-source external v2 worker adapter', () => {
       return child;
     }) as never;
     try {
-      const adapter = createPinnedWorkerImageExternalNormalV2Adapter({ policyInputRoot: policyRoot,
+      const adapter = createPinnedWorkerImageExternalNormalV2Adapter({ policyInputRoot: policyRoot, privateBinding,
         baseEnv: bindings(), assertImageAvailable() {}, readInferenceKeyInMemory() { return 'private-test-key'; },
         spawnImplementation });
       await expect(adapter.executeCase(projection, { signal: new AbortController().signal,

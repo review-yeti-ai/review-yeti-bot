@@ -32,7 +32,6 @@ const CONTENT_FIELDS = new Set([
 ]);
 const REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const SAFE_ROUTE_RE = /^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,119}$/u;
-const MANAGEMENT_ORIGIN = 'https://llm-gateway.tailebe851.ts.net';
 const STORE_ROOT = '/workspace/.review-yeti';
 const LOG_TIMEOUT_MS = 10_000;
 const MAX_CONCURRENCY = 8;
@@ -422,12 +421,12 @@ async function readCallerIdBindings(root, stepReceipts, calls) {
   return matches;
 }
 
-async function collectOneExactLog({ fetchImpl, auth, binding, signal, deadlineAt }) {
+async function collectOneExactLog({ fetchImpl, auth, binding, managementOrigin, signal, deadlineAt }) {
   const { callerRequestId, bifrostLogRequestId, upstreamResponseRequestIdSha256 } = binding;
   if (!REQUEST_ID_RE.test(callerRequestId) || !REQUEST_ID_RE.test(bifrostLogRequestId)) {
     throw new Error('external_normal_v2_caller_cid_invalid');
   }
-  const url = new URL('/api/logs', MANAGEMENT_ORIGIN);
+  const url = new URL('/api/logs', managementOrigin);
   url.searchParams.set('request_id', callerRequestId);
   url.searchParams.set('limit', '1');
   const basic = Buffer.from(`${auth.username}:${auth.password}`, 'utf8').toString('base64');
@@ -481,11 +480,20 @@ async function collectOneExactLog({ fetchImpl, auth, binding, signal, deadlineAt
 
 /** Parent-side log join. Raw CIDs and Basic credentials are callback-local and never returned. */
 export function createExternalNormalV2ExactLogCollector({
-  readManagementAuthInMemory, fetchImpl = globalThis.fetch, storeRoot = STORE_ROOT,
+  managementBaseUrl, readManagementAuthInMemory, fetchImpl = globalThis.fetch, storeRoot = STORE_ROOT,
 } = {}) {
   if (typeof readManagementAuthInMemory !== 'function' || typeof fetchImpl !== 'function') {
     throw new Error('external_normal_v2_exact_log_collector_bindings_missing');
   }
+  let managementOrigin;
+  try {
+    const parsedOrigin = new URL(managementBaseUrl);
+    if (parsedOrigin.protocol !== 'https:' || parsedOrigin.username || parsedOrigin.password
+      || parsedOrigin.search || parsedOrigin.hash || parsedOrigin.pathname !== '/') {
+      throw new Error('invalid');
+    }
+    managementOrigin = parsedOrigin.origin;
+  } catch { throw new Error('external_normal_v2_management_origin_invalid'); }
   return async ({ phaseId, planSha256, artifactStoreRoot, calls, stepReceipts, signal, deadlineAt } = {}) => {
     if (phaseId !== 'ws5-current-source-external-v2' || !SHA256_RE.test(planSha256 || '')
       || typeof artifactStoreRoot !== 'string' || !path.isAbsolute(artifactStoreRoot)
@@ -528,7 +536,7 @@ export function createExternalNormalV2ExactLogCollector({
         const callerRequestId = work[index].callerRequestId;
         queriedCids.add(digest(callerRequestId.toLowerCase()));
         try {
-          rows.push(await collectOneExactLog({ fetchImpl, auth, binding: work[index], signal: stopSignal, deadlineAt }));
+          rows.push(await collectOneExactLog({ fetchImpl, auth, binding: work[index], managementOrigin, signal: stopSignal, deadlineAt }));
         } catch (error) {
           if (!failureCode) {
             const message = String(error?.message || '');

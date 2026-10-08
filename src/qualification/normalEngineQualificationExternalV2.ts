@@ -60,9 +60,17 @@ interface ExternalNormalV2CollectorModule {
 
 type Env = NodeJS.ProcessEnv;
 
-const CURRENT_KUBE_CONTEXT = 'do-nyc1-cluster-ny1';
-const INFERENCE_SECRET = { namespace: 'ct-review-system', name: 'review-yeti-gateway-credentials', field: 'REVIEW_YETI_BIFROST_API_KEY' };
-const MANAGEMENT_SECRET = { namespace: 'ct-llm-gateway', name: 'bifrost-runtime' };
+export interface ExternalNormalV2PrivateBinding {
+  schemaVersion: 'ReviewYetiExternalNormalQualificationPrivateBinding.v1';
+  credentialBindingSha256: string;
+  phaseRoot: { canonicalPath: string; uid: number; gid: number; mode: 0o700; initialEntryCount: 0 };
+  sourceDescriptor: { repository: string; repositoryId: number; sourceRef: string; path: string;
+    contentSha256: string; candidateHead: string; preparedFixtureReviewHead: string };
+  transport: { selectedBaseUrl: string; modelAlias: string };
+  managementBaseUrl: string;
+  runtime: { finalSourceRevision: string; workerImageDigest: string; runtimeManifestSha256: string };
+}
+
 const WORKER_IMAGE_REPOSITORY = 'ghcr.io/review-yeti-ai/review-yeti-worker';
 const IMAGE_RESULT_MARKER = '__EXTERNAL_NORMAL_V2_RESULT__';
 const MAX_IMAGE_STDOUT_BYTES = 512 * 1024;
@@ -94,46 +102,80 @@ function requiredEnv(env: Env, key: string): string {
   return value;
 }
 
-function assertCurrentKubeContext(): void {
-  let context: string;
-  try {
-    context = execFileSync('kubectl', ['config', 'current-context'], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000,
-    }).trim();
-  } catch { throw new Error('external_normal_v2_kubectl_identity_unavailable'); }
-  if (context !== CURRENT_KUBE_CONTEXT) throw new Error('external_normal_v2_kubectl_context_mismatch');
+function hasExactKeys(value: unknown, keys: string[]): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join('|') === [...keys].sort().join('|'));
 }
 
-function readScopedKubeSecretFieldInMemory(namespace: string, secret: string, field: string, signal?: AbortSignal): string {
-  if (signal?.aborted) throw new Error('external_normal_v2_parent_credential_unavailable');
-  assertCurrentKubeContext();
-  let encodedBytes: Buffer;
-  try {
-    encodedBytes = execFileSync('kubectl', ['--context', CURRENT_KUBE_CONTEXT, '-n', namespace, 'get', 'secret', secret,
-      `-o=go-template={{index .data "${field}"}}`], {
-      encoding: null, stdio: ['ignore', 'pipe', 'ignore'], timeout: 20_000, maxBuffer: 64 * 1024,
-    }) as Buffer;
-  } catch { throw new Error('external_normal_v2_parent_credential_unavailable'); }
-  const encoded = encodedBytes.toString('ascii').trim();
-  encodedBytes.fill(0);
-  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(encoded) || encoded.length === 0) {
-    throw new Error('external_normal_v2_parent_credential_unavailable');
+export function validateExternalNormalV2PrivateBinding(value: unknown, env?: Env): ExternalNormalV2PrivateBinding {
+  const bindingKeys = ['schemaVersion', 'credentialBindingSha256', 'phaseRoot', 'sourceDescriptor', 'transport', 'managementBaseUrl', 'runtime'];
+  const phaseRootKeys = ['canonicalPath', 'uid', 'gid', 'mode', 'initialEntryCount'];
+  const sourceKeys = ['repository', 'repositoryId', 'sourceRef', 'path', 'contentSha256', 'candidateHead', 'preparedFixtureReviewHead'];
+  const transportKeys = ['selectedBaseUrl', 'modelAlias'];
+  const runtimeKeys = ['finalSourceRevision', 'workerImageDigest', 'runtimeManifestSha256'];
+  if (!hasExactKeys(value, bindingKeys) || value.schemaVersion !== 'ReviewYetiExternalNormalQualificationPrivateBinding.v1'
+    || typeof value.credentialBindingSha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(value.credentialBindingSha256)
+    || !hasExactKeys(value.phaseRoot, phaseRootKeys) || typeof value.phaseRoot.canonicalPath !== 'string'
+    || !resolve(value.phaseRoot.canonicalPath).startsWith('/') || resolve(value.phaseRoot.canonicalPath) !== value.phaseRoot.canonicalPath
+    || !Number.isSafeInteger(value.phaseRoot.uid) || (value.phaseRoot.uid as number) < 0
+    || !Number.isSafeInteger(value.phaseRoot.gid) || (value.phaseRoot.gid as number) < 0
+    || value.phaseRoot.mode !== 0o700 || value.phaseRoot.initialEntryCount !== 0
+    || !hasExactKeys(value.sourceDescriptor, sourceKeys)
+    || typeof value.sourceDescriptor.repository !== 'string' || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(value.sourceDescriptor.repository)
+    || value.sourceDescriptor.repository.split('/').some((part) => part === '.' || part === '..')
+    || !Number.isSafeInteger(value.sourceDescriptor.repositoryId) || (value.sourceDescriptor.repositoryId as number) < 1
+    || typeof value.sourceDescriptor.sourceRef !== 'string' || !/^[a-f0-9]{40}$/iu.test(value.sourceDescriptor.sourceRef)
+    || typeof value.sourceDescriptor.path !== 'string' || !value.sourceDescriptor.path
+    || value.sourceDescriptor.path.startsWith('/') || value.sourceDescriptor.path.includes('\\')
+    || value.sourceDescriptor.path.split('/').some((segment) => !segment || segment === '.' || segment === '..')
+    || typeof value.sourceDescriptor.contentSha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(value.sourceDescriptor.contentSha256)
+    || typeof value.sourceDescriptor.candidateHead !== 'string' || !/^[a-f0-9]{40}$/iu.test(value.sourceDescriptor.candidateHead)
+    || typeof value.sourceDescriptor.preparedFixtureReviewHead !== 'string'
+    || !/^[a-f0-9]{40}$/iu.test(value.sourceDescriptor.preparedFixtureReviewHead)
+    || !hasExactKeys(value.transport, transportKeys) || typeof value.transport.selectedBaseUrl !== 'string'
+    || typeof value.transport.modelAlias !== 'string' || !/^[A-Za-z0-9._/-]+$/u.test(value.transport.modelAlias)
+    || typeof value.managementBaseUrl !== 'string'
+    || !hasExactKeys(value.runtime, runtimeKeys)
+    || typeof value.runtime.finalSourceRevision !== 'string' || !/^[a-f0-9]{40}$/iu.test(value.runtime.finalSourceRevision)
+    || typeof value.runtime.workerImageDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/iu.test(value.runtime.workerImageDigest)
+    || typeof value.runtime.runtimeManifestSha256 !== 'string' || !/^[a-f0-9]{64}$/iu.test(value.runtime.runtimeManifestSha256)) {
+    throw new Error('external_normal_v2_private_binding_invalid');
   }
-  const decoded = Buffer.from(encoded, 'base64');
-  const value = decoded.toString('utf8');
-  decoded.fill(0);
-  if (signal?.aborted || !value || /[\r\n]/u.test(value)) throw new Error('external_normal_v2_parent_credential_unavailable');
-  return value;
-}
-
-function readInferenceKeyInMemory(signal?: AbortSignal): string {
-  return readScopedKubeSecretFieldInMemory(INFERENCE_SECRET.namespace, INFERENCE_SECRET.name, INFERENCE_SECRET.field, signal);
-}
-
-function readManagementAuthInMemory(signal?: AbortSignal): { username: string; password: string } {
-  const username = readScopedKubeSecretFieldInMemory(MANAGEMENT_SECRET.namespace, MANAGEMENT_SECRET.name, 'admin-username', signal);
-  const password = readScopedKubeSecretFieldInMemory(MANAGEMENT_SECRET.namespace, MANAGEMENT_SECRET.name, 'admin-password', signal);
-  return { username, password };
+  let selectedBase: URL; let managementBase: URL;
+  try {
+    selectedBase = new URL(value.transport.selectedBaseUrl);
+    managementBase = new URL(value.managementBaseUrl);
+  } catch { throw new Error('external_normal_v2_private_binding_invalid'); }
+  if (selectedBase.protocol !== 'https:' || selectedBase.username || selectedBase.password || selectedBase.search || selectedBase.hash
+    || selectedBase.pathname === '/' || selectedBase.pathname.endsWith('/')
+    || managementBase.protocol !== 'https:' || managementBase.username || managementBase.password
+    || managementBase.search || managementBase.hash || managementBase.pathname !== '/') {
+    throw new Error('external_normal_v2_private_binding_invalid');
+  }
+  if (env) {
+    const [owner, repository] = value.sourceDescriptor.repository.split('/');
+    if (requiredEnv(env, 'OPENAI_BASE_URL') !== value.transport.selectedBaseUrl
+      || requiredEnv(env, 'REVIEW_MODEL') !== value.transport.modelAlias
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET') !== value.sourceDescriptor.repository
+      || Number(requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID')) !== value.sourceDescriptor.repositoryId
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER') !== owner
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO') !== repository
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF') !== value.sourceDescriptor.sourceRef
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH') !== value.sourceDescriptor.path
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256') !== value.sourceDescriptor.contentSha256
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_SOURCE_REVISION') !== value.runtime.finalSourceRevision
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_WORKER_IMAGE_DIGEST') !== value.runtime.workerImageDigest
+      || requiredEnv(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256') !== value.runtime.runtimeManifestSha256) {
+      throw new Error('external_normal_v2_private_binding_environment_mismatch');
+    }
+    let prepared: { transport?: { baseUrl?: unknown; model?: unknown } };
+    try { prepared = JSON.parse(requiredEnv(env, 'REVIEW_PREPARED_CONFIG_JSON')) as typeof prepared; }
+    catch { throw new Error('external_normal_v2_private_binding_prepared_config_invalid'); }
+    if (prepared.transport?.baseUrl !== value.transport.selectedBaseUrl || prepared.transport?.model !== value.transport.modelAlias) {
+      throw new Error('external_normal_v2_private_binding_prepared_transport_mismatch');
+    }
+  }
+  return value as unknown as ExternalNormalV2PrivateBinding;
 }
 
 export function trustedPreparedBudget(env: Env): { total: number; investigation: number; verifier: number; maxTasks: number } {
@@ -203,7 +245,8 @@ async function validateArtifactStoreRoot(storeRoot: string): Promise<string> {
   return canonical;
 }
 
-function buildCaseEnvironment(baseEnv: Env, projection: ExternalNormalV2Projection, inferenceKey?: string,
+function buildCaseEnvironment(baseEnv: Env, projection: ExternalNormalV2Projection,
+  privateBinding: ExternalNormalV2PrivateBinding | undefined, inferenceKey?: string,
   preparedExecutionJson?: string): Env {
   if (!projection || Object.keys(projection).some((key) => ![
     'stepId', 'caseId', 'inputPath', 'inputSha256', 'arm', 'historyMode', 'targetRepositoryId',
@@ -229,11 +272,28 @@ function buildCaseEnvironment(baseEnv: Env, projection: ExternalNormalV2Projecti
   childEnv.REVIEW_PREPARED_CONFIG_JSON = preparedExecutionJson ?? requiredEnv(baseEnv, 'REVIEW_PREPARED_CONFIG_JSON');
   childEnv.REVIEW_POLICY_DIGEST = projection.policy.effectivePolicySha256;
   childEnv.REVIEW_CONFIG_DIGEST = projection.policy.effectiveConfigSha256;
+  if (privateBinding) validateExternalNormalV2PrivateBinding(privateBinding, baseEnv);
   const [policyOwner, policyRepo] = projection.policy.policySource.repository.split('/');
-  if (!policyOwner || !policyRepo || projection.policy.policySource.repositoryId !== 1_339_040_553
+  if (!policyOwner || !policyRepo
+    || (privateBinding && (projection.policy.policySource.repository !== privateBinding.sourceDescriptor.repository
+      || projection.policy.policySource.repositoryId !== privateBinding.sourceDescriptor.repositoryId
+      || projection.policy.policySource.sourceRef !== privateBinding.sourceDescriptor.sourceRef
+      || projection.policy.policySource.path !== privateBinding.sourceDescriptor.path
+      || projection.policy.policySource.contentSha256 !== privateBinding.sourceDescriptor.contentSha256))
+    || requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET') !== projection.policy.policySource.repository
+    || Number(requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID')) !== projection.policy.policySource.repositoryId
+    || requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER') !== policyOwner
+    || requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO') !== policyRepo
+    || requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF') !== projection.policy.policySource.sourceRef
+    || requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH') !== projection.policy.policySource.path
+    || requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256') !== projection.policy.policySource.contentSha256
+    || requiredEnv(baseEnv, 'OPENAI_BASE_URL') !== projection.policy.inferenceBaseUrl
+    || requiredEnv(baseEnv, 'REVIEW_MODEL') !== projection.policy.routeAlias
     || projection.policy.policySource.contentSha256 !== projection.policy.candidateRawSha256) {
     throw new Error('external_normal_v2_policy_source_binding_invalid');
   }
+  const selectedBaseUrl = privateBinding?.transport.selectedBaseUrl ?? projection.policy.inferenceBaseUrl;
+  const selectedModelAlias = privateBinding?.transport.modelAlias ?? projection.policy.routeAlias;
   const parentSourceId = Number(requiredEnv(baseEnv, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID'));
   if (parentSourceId !== projection.policy.policySource.repositoryId) {
     throw new Error('external_normal_v2_policy_source_id_mismatch');
@@ -246,8 +306,8 @@ function buildCaseEnvironment(baseEnv: Env, projection: ExternalNormalV2Projecti
   childEnv.REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH = projection.policy.policySource.path;
   childEnv.REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256 = projection.policy.policySource.contentSha256;
   childEnv.REVIEW_NORMAL_ENGINE_QUALIFICATION_SELECTION_PURPOSE = 'qualification-only-target-binding';
-  childEnv.OPENAI_BASE_URL = projection.policy.inferenceBaseUrl;
-  childEnv.REVIEW_MODEL = projection.policy.routeAlias;
+  childEnv.OPENAI_BASE_URL = selectedBaseUrl;
+  childEnv.REVIEW_MODEL = selectedModelAlias;
   if (projection.historyRunId) childEnv.REVIEW_NORMAL_ENGINE_QUALIFICATION_HISTORY_RUN_ID = projection.historyRunId;
   if (inferenceKey !== undefined && projection.arm !== 'provider-failure') childEnv.OPENAI_API_KEY = inferenceKey;
   else delete childEnv.OPENAI_API_KEY;
@@ -266,10 +326,10 @@ function buildCaseEnvironment(baseEnv: Env, projection: ExternalNormalV2Projecti
     || parsed.runtime.sourceRevision !== projection.runtime.sourceRevision
     || parsed.runtime.workerImageDigest !== projection.runtime.workerImageDigest
     || parsed.runtime.runtimeManifestSha256 !== projection.runtime.runtimeManifestSha256
-    || childEnv.OPENAI_BASE_URL !== projection.policy.inferenceBaseUrl
-    || childEnv.REVIEW_MODEL !== projection.policy.routeAlias
-    || prepared.transport?.baseUrl !== projection.policy.inferenceBaseUrl
-    || prepared.transport?.model !== projection.policy.routeAlias
+    || childEnv.OPENAI_BASE_URL !== selectedBaseUrl
+    || childEnv.REVIEW_MODEL !== selectedModelAlias
+    || prepared.transport?.baseUrl !== selectedBaseUrl
+    || prepared.transport?.model !== selectedModelAlias
     || parsed.historyRunId !== (projection.historyRunId ?? null)) {
     throw new Error('external_normal_v2_worker_binding_mismatch');
   }
@@ -301,9 +361,11 @@ export function createBoundExternalNormalV2CaseExecutor(input: {
   runCase?: typeof runNormalEngineQualificationCase;
   historyStore?: NormalEngineQualificationHistoryStore;
   policyInputRoot?: string;
+  privateBinding?: ExternalNormalV2PrivateBinding;
   readInferenceKeyInMemory?: (signal?: AbortSignal) => Promise<string> | string;
 } = {}): (projection: ExternalNormalV2Projection, context: ExternalNormalV2Context) => Promise<Record<string, unknown>> {
   const baseEnv = input.baseEnv ?? process.env;
+  const privateBinding = input.privateBinding ? validateExternalNormalV2PrivateBinding(input.privateBinding, baseEnv) : undefined;
   let historyStore = input.historyStore;
   let boundArtifactStoreRoot: string | undefined;
   const runCase = input.runCase ?? runNormalEngineQualificationCase;
@@ -321,13 +383,13 @@ export function createBoundExternalNormalV2CaseExecutor(input: {
     const preparedExecutionJson = input.policyInputRoot
       ? await readPreparedExecutionJson(input.policyInputRoot, projection)
       : requiredEnv(baseEnv, 'REVIEW_PREPARED_CONFIG_JSON');
-    const env = buildCaseEnvironment(baseEnv, projection, undefined, preparedExecutionJson);
+    const env = buildCaseEnvironment(baseEnv, projection, privateBinding, undefined, preparedExecutionJson);
     const serviceBudget = trustedPreparedBudget(env);
     if (serviceBudget.total !== 100 || serviceBudget.investigation !== 88 || serviceBudget.verifier !== 12
       || serviceBudget.maxTasks !== 8) throw new Error('external_normal_v2_prepared_budget_binding_mismatch');
     if (!['provider-failure', 'preflight-source-coverage-control', 'repair-head-history-unavailable'].includes(projection.arm)) {
-      env.OPENAI_API_KEY = await (input.readInferenceKeyInMemory ? input.readInferenceKeyInMemory(context.signal)
-        : requiredEnv(baseEnv, 'OPENAI_API_KEY'));
+      if (!input.readInferenceKeyInMemory) throw new Error('external_normal_v2_parent_credential_reader_required');
+      env.OPENAI_API_KEY = await input.readInferenceKeyInMemory(context.signal);
     }
     let actualFetchAttempts = 0;
     const actualRequestAttempts: Array<Record<string, unknown>> = [];
@@ -768,7 +830,8 @@ function runPinnedWorkerContainer(input: {
 export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
   policyInputRoot: string;
   baseEnv?: Env;
-  readInferenceKeyInMemory?: (signal?: AbortSignal) => Promise<string> | string;
+  privateBinding: ExternalNormalV2PrivateBinding;
+  readInferenceKeyInMemory: (signal?: AbortSignal) => Promise<string> | string;
   assertImageAvailable?: (imageRef: string) => void;
   spawnImplementation?: typeof spawn;
 }): {
@@ -776,6 +839,7 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
   preflight: (request: ImageTransportPreflightRequest) => Promise<Record<string, unknown>>;
 } {
   const baseEnv = input.baseEnv ?? process.env;
+  const privateBinding = validateExternalNormalV2PrivateBinding(input.privateBinding, baseEnv);
   let inspectedImageRef: string | undefined;
   const ensureImage = (digest: string) => {
     const imageRef = pinnedImageReference(digest);
@@ -786,6 +850,12 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
     return imageRef;
   };
   const preflight = async (request: ImageTransportPreflightRequest) => {
+    if (request.origin !== privateBinding.transport.selectedBaseUrl
+      || request.sourceRevision !== privateBinding.runtime.finalSourceRevision
+      || request.workerImageDigest !== privateBinding.runtime.workerImageDigest
+      || request.runtimeManifestSha256 !== privateBinding.runtime.runtimeManifestSha256) {
+      throw new Error('external_normal_v2_private_preflight_binding_mismatch');
+    }
     const imageRef = ensureImage(request.workerImageDigest);
     const workerEnv: Env = { NODE_ENV: 'production',
       REVIEW_NORMAL_ENGINE_QUALIFICATION_SOURCE_REVISION: request.sourceRevision,
@@ -798,6 +868,20 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
       deadlineAt: request.deadlineAt, spawnImplementation: input.spawnImplementation });
   };
   const executeCase = async (projection: ExternalNormalV2Projection, context: ExternalNormalV2Context) => {
+    validateExternalNormalV2PrivateBinding(privateBinding, baseEnv);
+    if (projection.runtime.sourceRevision !== privateBinding.runtime.finalSourceRevision
+      || projection.runtime.workerImageDigest !== privateBinding.runtime.workerImageDigest
+      || projection.runtime.runtimeManifestSha256 !== privateBinding.runtime.runtimeManifestSha256
+      || projection.policy.inferenceBaseUrl !== privateBinding.transport.selectedBaseUrl
+      || projection.policy.routeAlias !== privateBinding.transport.modelAlias
+      || projection.policy.candidateHead !== privateBinding.sourceDescriptor.candidateHead
+      || projection.policy.policySource.repository !== privateBinding.sourceDescriptor.repository
+      || projection.policy.policySource.repositoryId !== privateBinding.sourceDescriptor.repositoryId
+      || projection.policy.policySource.sourceRef !== privateBinding.sourceDescriptor.sourceRef
+      || projection.policy.policySource.path !== privateBinding.sourceDescriptor.path
+      || projection.policy.policySource.contentSha256 !== privateBinding.sourceDescriptor.contentSha256) {
+      throw new Error('external_normal_v2_private_case_binding_mismatch');
+    }
     const imageRef = ensureImage(projection.runtime.workerImageDigest);
     if (context.clientCallAllocation !== outerCallAllocationForArm(projection.arm)) {
       throw new Error('external_normal_v2_arm_execution_envelope_mismatch');
@@ -812,7 +896,7 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
     const workerEnv: Env = { NODE_ENV: 'production',
       REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID: String(projection.policy.policySource.repositoryId) };
     if (!['provider-failure', 'preflight-source-coverage-control', 'repair-head-history-unavailable'].includes(projection.arm)) {
-      const key = await (input.readInferenceKeyInMemory ?? readInferenceKeyInMemory)(context.signal);
+      const key = await input.readInferenceKeyInMemory(context.signal);
       if (!key || /[\r\n]/u.test(key)) throw new Error('external_normal_v2_parent_inference_credential_invalid');
       workerEnv.OPENAI_API_KEY = key;
     }
@@ -833,6 +917,7 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
 /** Production entrypoint: host coordinator, scoped secret/log callbacks, and pinned image case children. */
 export async function runCurrentSourceExternalNormalV2FromProcess(input: {
   captureExactLogs?: (request: Record<string, unknown>) => Promise<unknown>;
+  privateBinding?: ExternalNormalV2PrivateBinding;
   readInferenceKeyInMemory?: (signal?: AbortSignal) => Promise<string> | string;
   readManagementAuthInMemory?: (signal?: AbortSignal) => Promise<{ username: string; password: string }>
     | { username: string; password: string };
@@ -846,32 +931,41 @@ export async function runCurrentSourceExternalNormalV2FromProcess(input: {
   }
   const dynamicImport = new Function('specifier', 'return import(specifier)') as
     (specifier: string) => Promise<ExternalNormalV2MjsRunner>;
-  const phaseRoot = authorization ? requiredEnv(baseEnv, 'REVIEW_YETI_EXTERNAL_NORMAL_V2_PHASE_ROOT') : undefined;
+  const scriptUrl = pathToFileURL(resolve(__dirname, '../../scripts/ws5-external-normal-v2.mjs')).href;
+  const runner = await dynamicImport(scriptUrl);
+  if (!authorization) {
+    return runner.runExternalNormalQualificationV2({ repositoryRoot: process.cwd(), authorization,
+      executeCase: async () => { throw new Error('external_normal_v2_authorization_required'); } });
+  }
+  if (!input.privateBinding) return { status: 'private_binding_required', clientCalls: 0 };
+  let privateBinding: ExternalNormalV2PrivateBinding;
+  try { privateBinding = validateExternalNormalV2PrivateBinding(input.privateBinding, baseEnv); }
+  catch { return { status: 'private_binding_rejected', clientCalls: 0 }; }
+  if (!input.readInferenceKeyInMemory || (!input.captureExactLogs && !input.readManagementAuthInMemory)) {
+    return { status: 'private_parent_callbacks_required', clientCalls: 0 };
+  }
+  const phaseRoot = privateBinding.phaseRoot.canonicalPath;
   let captureExactLogs = input.captureExactLogs;
   if (!captureExactLogs) {
     const collectorUrl = pathToFileURL(resolve(__dirname, '../../scripts/ws5-external-bifrost-log-collector.mjs')).href;
     const collector = await dynamicImport(collectorUrl) as unknown as ExternalNormalV2CollectorModule;
     captureExactLogs = collector.createExternalNormalV2ExactLogCollector({
-      readManagementAuthInMemory: input.readManagementAuthInMemory
-        ?? (({ signal }: { signal?: AbortSignal } = {}) => readManagementAuthInMemory(signal)),
+      managementBaseUrl: privateBinding.managementBaseUrl,
+      readManagementAuthInMemory: input.readManagementAuthInMemory!,
       ...(phaseRoot ? { storeRoot: phaseRoot } : {}),
     });
   }
   const canCollectLogs = typeof captureExactLogs === 'function';
   const policyInputRoot = authorization && canCollectLogs ? requiredEnv(baseEnv, 'REVIEW_YETI_EXTERNAL_NORMAL_V2_POLICY_ROOT') : undefined;
   if (!policyInputRoot) {
-    const scriptUrl = pathToFileURL(resolve(__dirname, '../../scripts/ws5-external-normal-v2.mjs')).href;
-    const runner = await dynamicImport(scriptUrl);
-    return runner.runExternalNormalQualificationV2({ repositoryRoot: process.cwd(), authorization,
+    return runner.runExternalNormalQualificationV2({ repositoryRoot: process.cwd(), privateBinding, authorization,
       executeCase: async () => { throw new Error('external_normal_v2_authorized_policy_root_required'); }, captureExactLogs,
       preflightExecution: async () => { throw new Error('external_normal_v2_authorized_policy_root_required'); } });
   }
-  const scriptUrl = pathToFileURL(resolve(__dirname, '../../scripts/ws5-external-normal-v2.mjs')).href;
-  const runner = await dynamicImport(scriptUrl);
-  const adapter = createPinnedWorkerImageExternalNormalV2Adapter({ baseEnv, policyInputRoot,
-    readInferenceKeyInMemory: input.readInferenceKeyInMemory ?? readInferenceKeyInMemory });
+  const adapter = createPinnedWorkerImageExternalNormalV2Adapter({ baseEnv, policyInputRoot, privateBinding,
+    readInferenceKeyInMemory: input.readInferenceKeyInMemory });
   return runner.runExternalNormalQualificationV2({ repositoryRoot: process.cwd(), ...(policyInputRoot ? { policyInputRoot } : {}),
-    ...(phaseRoot ? { phaseRoot } : {}),
+    phaseRoot, privateBinding,
     authorization, executeCase: adapter.executeCase, captureExactLogs, preflightExecution: adapter.preflight });
 }
 

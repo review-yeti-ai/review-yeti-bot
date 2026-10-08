@@ -230,7 +230,7 @@ describe('isolated qualification service authority', () => {
       { ...identity, repo: 'review-yeti-bot' },
     ]) }],
     ['the repository owner binding is wrong', { AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES: JSON.stringify([
-      { ...identity, owner: 'calltelemetry' },
+      { ...identity, owner: 'wrong-owner' },
     ]) }],
     ['the repository identity is missing', { AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES: undefined }],
     ['the existing App is not configured', { GITHUB_APP_ID: '4552718' }],

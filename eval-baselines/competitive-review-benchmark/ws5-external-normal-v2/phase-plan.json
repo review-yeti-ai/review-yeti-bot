@@ -1,7 +1,7 @@
 {
   "schemaVersion": "ReviewYetiExternalNormalQualificationPlan.v2",
   "phaseId": "ws5-current-source-external-v2",
-  "status": "candidate-host-config-accepted-awaiting-integrated-source-image-attestation",
+  "status": "template-awaiting-private-root-binding",
   "dispatchAuthorization": false,
   "readiness": {
     "hostPreparedConfigReview": "accepted-by-independent-recomputation",
@@ -18,9 +18,7 @@
   },
   "artifactRoots": {
     "phaseRoot": {
-      "canonicalPath": "/private/tmp/ws5-current-source-external-v2-phase-root",
-      "uid": 501,
-      "gid": 20,
+      "privateBindingRequired": true,
       "mode": 448,
       "initialEntryCount": 0
     },
@@ -31,10 +29,17 @@
   },
   "scope": {
     "targetMode": "standalone-synthetic-source-snapshots",
-    "repositoryIds": [73002, 73003, 73004],
-    "callTelemetryPassthrough": true,
+    "repositoryIds": [
+      73002,
+      73003,
+      73004
+    ],
     "publicBotSelfEnabled": false,
-    "excludedTargets": ["ordinary CallTelemetry PRs", "ct-infrastructure PR #1298", "UAT-1740"]
+    "excludedTargets": [
+      "non-synthetic production targets",
+      "non-synthetic qualification targets"
+    ],
+    "syntheticTargetsOnly": true
   },
   "runtime": {
     "baseMain": "ab5183141397c55975d8fdd48243c4243a5909f7",
@@ -47,17 +52,13 @@
     "runtimeManifestSha256": null,
     "finalSourceRevision": null,
     "executionMode": "host-coordinator-with-pinned-worker-image-children",
-    "executionNetwork": "docker-bridge-to-tailnet-origin",
+    "executionNetwork": "docker-bridge-to-configured-https-origin",
     "executionUser": "container runs as the nonroot host uid that owns the private phaseRoot",
     "executionOriginReadiness": "read-only DNS and certificate-verified TLS proof inside the exact worker image is required before the first model request",
     "artifactStoreBinding": "canonical private phaseRoot/normal-engine-qualification-store",
     "status": "host configuration is independently accepted; do not dispatch or claim optimized behavior until integrated source/image/runtime manifest pins and exact host-tailnet DNS/TLS readiness evidence are frozen and reviewed"
   },
   "policy": {
-    "candidateHead": "53e8a9444997173d7a48d3679c79d2c33437f4d8",
-    "preparedFixtureReviewHead": "91207aebbacd6133d5ef1b99a24ca0903144308f",
-    "mergedMain": "14b84c17daaa1ae8da7d4f1cfa53385e756fe544",
-    "candidatePath": "policy/review-yeti-v2-candidate.json",
     "candidateRawSha256": "c7de3af7f4e5c98de86a4a2a8f962a1779d0195e7ab470b25332b0f6fbe0210b",
     "candidateGitBlob": "45220896683e76a7ddfc2475b2798a4112950040",
     "executionPlanFixtureSha256": "921237a89577ee13cee5fdfb48701bdf8bdeff49cfcb4551b124efaf2d1daccb",
@@ -69,15 +70,7 @@
     "centralEffectiveConfigProjectionSha256": "f737fbef64a7336614e441d092e3899d0c2b674f04ea197c610aaf7db9050df1",
     "effectiveConfigSha256": "0933fc3afc3f57133845a9f7aa87678bb5502a87211dcb90dbe84babdbc40e3e",
     "effectivePolicySha256": "f707fd3481c13d9d84bea2d7b70a3e5f1dbca99f349e1eb0032b6c424363cd25",
-    "policySource": {
-      "repository": "calltelemetry/ct-review-actions",
-      "repositoryId": 1339040553,
-      "sourceRef": "14b84c17daaa1ae8da7d4f1cfa53385e756fe544",
-      "path": "policy/review-yeti-v2-candidate.json",
-      "contentSha256": "c7de3af7f4e5c98de86a4a2a8f962a1779d0195e7ab470b25332b0f6fbe0210b"
-    },
     "routeAlias": "pr-reviewer",
-    "inferenceBaseUrl": "https://llm-gateway.tailebe851.ts.net/v1",
     "requestedEffort": "medium",
     "servedProviderModelEffort": "unknown_until_exact_caller_cid_log_join",
     "v1Promotion": "not changed by this phase"
@@ -134,7 +127,12 @@
   },
   "executionEnvelope": {
     "maxPhaseClientCalls": 300,
-    "clientCallCountIncludes": ["review", "verifier", "fault controls", "unsuccessful attempts"],
+    "clientCallCountIncludes": [
+      "review",
+      "verifier",
+      "fault controls",
+      "unsuccessful attempts"
+    ],
     "perArmClientHttpAttemptAllocation": {
       "normalArms": 58,
       "providerFailureControl": 1,
@@ -261,7 +259,10 @@
       "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/coverage_hole.json",
       "inputSha256": "6cf9a5f6c493f1db2f91f8abc907e9d4f9f9ad1d3c62296298326cb18f78897c",
       "arm": "preflight-source-coverage-control",
-      "fault": { "withholdHeadPath": "src/modules/module-01.ts", "clientCalls": 0 },
+      "fault": {
+        "withholdHeadPath": "src/modules/module-01.ts",
+        "clientCalls": 0
+      },
       "targetRepositoryId": 73003
     },
     {
@@ -273,7 +274,11 @@
       "historySequenceId": "ws5-current-source-external-v2",
       "historySourceStepId": "v2-sequence-a",
       "historyMode": "required history transport failure before task planning; zero provider calls",
-      "fault": { "status": "unavailable", "failureClass": "transport", "clientCalls": 0 },
+      "fault": {
+        "status": "unavailable",
+        "failureClass": "transport",
+        "clientCalls": 0
+      },
       "targetRepositoryId": 73002
     },
     {

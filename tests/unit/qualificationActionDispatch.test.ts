@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-const CENTRAL_REPOSITORY = 'calltelemetry/ct-review-actions';
+const CENTRAL_REPOSITORY = 'exampleorg/review-yeti-central';
 const TARGET_REPOSITORY = 'review-yeti-ai/review-yeti-qualification';
 const TARGET_ID = 1_409_547_157;
 const TARGET_INSTALLATION_ID = 152_783_031;
