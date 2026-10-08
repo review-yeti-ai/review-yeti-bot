@@ -6,12 +6,15 @@ import { pathToFileURL } from 'node:url';
 
 export const DOKS_OIDC_AUDIENCE = 'review-yeti-doks-dispatch';
 export const DOKS_DISPATCH_PATH = '/api/dispatch/action';
+export const QUALIFICATION_DOKS_DISPATCH_PATH = '/api/qualification/dispatch/action';
 const GITHUB_ACTIONS_OIDC_REQUEST_HOST_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.actions\.githubusercontent\.com$/u;
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
 const RUN_ID_PATTERN = /^run_[a-f0-9]{16,64}$/u;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const QUALIFICATION_REPOSITORY = 'review-yeti-ai/review-yeti-qualification';
+const QUALIFICATION_REPOSITORY_ID = 1_409_547_157;
+const QUALIFICATION_DOKS_DISPATCH_HOST = 'review-bot.calltelemetry.com';
 const QUALIFICATION_RUNTIME_IMAGE_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const SUPPORTED_EVENTS = new Set(['pull_request', 'pull_request_target', 'workflow_dispatch', 'repository_dispatch']);
 const DISPATCH_RETRY_DELAYS_MS = Object.freeze([1_000, 2_000]);
@@ -47,13 +50,15 @@ function sha(environment, name) {
 }
 
 /**
- * The admission endpoint is deployment configuration supplied by the (trusted, base-owned) calling workflow;
- * this repository names no hostname. It is validated structurally: HTTPS, a real DNS hostname (no IP
- * literal, no single-label or localhost name), the exact admission path, and no credentials, query or fragment.
- * Admission is separately bound by GitHub Actions OIDC to an allowlisted workflow identity on the service
- * side, so pointing the Action at another host does not grant access to anything.
+ * The admission endpoint is supplied by the trusted base-owned calling workflow.
+ * The ordinary route has no source-owned hostname, while qualification uses one
+ * isolated hostname. Both are validated structurally: HTTPS, a real DNS hostname
+ * (no IP literal, no single-label or localhost name), an exact path, and no credentials,
+ * query or fragment. The qualification path is additionally bound to the one source-owned
+ * repository, its image digest claim, and its isolated service hostname. Admission is still
+ * bound by GitHub Actions OIDC on the service side.
  */
-export function validateDispatchEndpoint(raw) {
+export function validateDispatchEndpoint(raw, requestContext) {
   let url;
   try {
     url = new URL(String(raw || ''));
@@ -62,13 +67,39 @@ export function validateDispatchEndpoint(raw) {
   }
   const host = url.hostname.toLowerCase();
   const isIpLiteral = /^\d{1,3}(?:\.\d{1,3}){3}$/u.test(host) || host.startsWith('[');
+  const qualificationIdentity = requestContext?.repositoryId === QUALIFICATION_REPOSITORY_ID
+    && requestContext.owner === 'review-yeti-ai'
+    && requestContext.repo === 'review-yeti-qualification'
+    && requestContext.publishMode === 'app-gate'
+    && QUALIFICATION_RUNTIME_IMAGE_DIGEST_PATTERN.test(requestContext.qualificationRuntimeImageDigest || '');
+  const qualificationNameClaimed = requestContext?.owner === 'review-yeti-ai'
+    && requestContext.repo === 'review-yeti-qualification';
+  const qualificationIdClaimed = requestContext?.repositoryId === QUALIFICATION_REPOSITORY_ID;
+  const qualificationClaimed = qualificationNameClaimed || qualificationIdClaimed;
+  if (qualificationClaimed
+    && !QUALIFICATION_RUNTIME_IMAGE_DIGEST_PATTERN.test(requestContext?.qualificationRuntimeImageDigest || '')) {
+    throw new Error('Qualification runtime image digest is required for the isolated endpoint');
+  }
+  const qualificationPath = url.pathname === QUALIFICATION_DOKS_DISPATCH_PATH;
+  if (qualificationClaimed && !qualificationIdentity) {
+    throw new Error('Qualification endpoint requires the exact qualification target and image digest');
+  }
+  if (qualificationIdentity && !qualificationPath) {
+    throw new Error(`Qualification target must use ${QUALIFICATION_DOKS_DISPATCH_PATH}`);
+  }
+  if (qualificationPath && !qualificationIdentity) {
+    throw new Error('Qualification endpoint requires the exact qualification target and image digest');
+  }
+  if (qualificationPath && host !== QUALIFICATION_DOKS_DISPATCH_HOST) {
+    throw new Error(`Qualification endpoint host must be ${QUALIFICATION_DOKS_DISPATCH_HOST}`);
+  }
   const valid = url.protocol === 'https:'
     && url.port === ''
     && host.includes('.')
     && !isIpLiteral
     && host !== 'localhost'
     && !host.endsWith('.localhost')
-    && url.pathname === DOKS_DISPATCH_PATH
+    && (qualificationPath || url.pathname === DOKS_DISPATCH_PATH)
     && url.username === ''
     && url.password === ''
     && url.search === ''
@@ -137,6 +168,11 @@ export function buildDispatchRequest(environment) {
   }
 
   const repositoryId = positiveInteger(environment, 'REPOSITORY_ID');
+  const isQualificationRepository = repository === QUALIFICATION_REPOSITORY;
+  if ((isQualificationRepository && (!qualificationRuntimeImageDigest || repositoryId !== QUALIFICATION_REPOSITORY_ID))
+    || (qualificationRuntimeImageDigest && repositoryId !== QUALIFICATION_REPOSITORY_ID)) {
+    throw new Error('The exact qualification target requires a qualification runtime image digest and repository ID 1409547157');
+  }
   const prNumber = positiveInteger(environment, 'PR_NUMBER');
   const runId = required(environment, 'GITHUB_RUN_ID');
   const runAttempt = positiveInteger(environment, 'GITHUB_RUN_ATTEMPT');
@@ -466,8 +502,8 @@ function retryWarning(operation, attempt, delayMs, reason) {
 }
 
 export async function dispatchAction(environment = process.env, fetchImpl = fetch, options = {}) {
-  const endpoint = validateDispatchEndpoint(required(environment, 'DOKS_DISPATCH_URL'));
   const request = buildDispatchRequest(environment);
+  const endpoint = validateDispatchEndpoint(required(environment, 'DOKS_DISPATCH_URL'), request);
   const sleepImpl = options.sleep || sleep;
   const oidcToken = await requestOidcToken(environment, fetchImpl, sleepImpl);
   const requestBody = JSON.stringify(request);

@@ -49,22 +49,37 @@ export function createRepoFileProvider(github: GitHubInstallationClient, owner: 
   type PinnedRead = { content: string | null; presence: 'present' | 'absent' | 'unavailable'; contentSha256?: string };
   const sourceCache = new Map<string, { promise: Promise<PinnedRead>; bytes: number }>();
   let sourceBytes = 0;
+  const loadPinned = async (path: string, sha: string, signal?: AbortSignal): Promise<PinnedRead> => {
+    const result: PinnedRead = typeof github.getFileContentEvidence === 'function'
+      ? await github.getFileContentEvidence(owner, repo, path, sha, signal)
+      : await (signal ? github.getFileContent(owner, repo, path, sha, { notFoundIsEmpty: true }, signal)
+        : github.getFileContent(owner, repo, path, sha, { notFoundIsEmpty: true })).then((content): PinnedRead => ({
+        content: typeof content === 'string' ? content : null,
+        // Legacy clients cannot prove whether null means absent or unavailable.
+        presence: typeof content === 'string' ? 'present' : 'unavailable',
+      }));
+    const contentBytes = Buffer.byteLength(result.content ?? '', 'utf8');
+    if (result.presence !== 'present' || typeof result.content !== 'string' || contentBytes > MAX_PINNED_SOURCE_BYTES) {
+      return { content: null, presence: result.presence === 'absent' ? 'absent' : 'unavailable' };
+    }
+    const contentSha256 = createHash('sha256').update(Buffer.from(result.content, 'utf8')).digest('hex');
+    return { ...result, contentSha256 };
+  };
   const provider: RepoFileProvider = {
-    async readFileAt(path, side) {
+    async readFileAt(path, side, options) {
       const sha = side === 'head' ? headSha : side === 'base'
         ? evidence?.baseSha ?? (() => { throw new Error('Old source identity unavailable'); })()
         : await mergeBase();
+      if (options?.signal) {
+        // Reproduction reads are deliberately uncached so their cancellation
+        // cannot abort a same-path source read shared by the review engine.
+        const result = await loadPinned(path, sha, options.signal);
+        return { sha, ...result, source: { repository: `${owner}/${repo}`, path, side } };
+      }
       const key = `${sha}:${path}`;
       let entry = sourceCache.get(key);
       if (!entry) {
-        const lookup: Promise<PinnedRead> = typeof github.getFileContentEvidence === 'function'
-          ? github.getFileContentEvidence(owner, repo, path, sha)
-          : github.getFileContent(owner, repo, path, sha, { notFoundIsEmpty: true }).then<PinnedRead>((content) => ({
-            content: typeof content === 'string' ? content : null,
-            // Legacy clients cannot prove whether null means absent or unavailable.
-            presence: typeof content === 'string' ? 'present' as const : 'unavailable' as const,
-          }));
-        entry = { bytes: 0, promise: lookup };
+        entry = { bytes: 0, promise: loadPinned(path, sha) };
         sourceCache.set(key, entry);
         const current = entry;
         current.promise = current.promise.then<PinnedRead>((result) => {
@@ -79,12 +94,7 @@ export function createRepoFileProvider(github: GitHubInstallationClient, owner: 
               sourceCache.delete(oldest);
             }
           }
-          if (result.presence !== 'present' || typeof result.content !== 'string'
-            || contentBytes > MAX_PINNED_SOURCE_BYTES) {
-            return { content: null, presence: result.presence === 'absent' ? 'absent' : 'unavailable' };
-          }
-          const contentSha256 = createHash('sha256').update(Buffer.from(result.content, 'utf8')).digest('hex');
-          return { ...result, contentSha256 };
+          return result;
         }).catch((error) => { if (sourceCache.get(key) === current) sourceCache.delete(key); throw error; });
       }
       const result = await entry.promise;

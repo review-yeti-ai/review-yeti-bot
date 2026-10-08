@@ -263,7 +263,7 @@ export interface RepoFileProvider {
   /** Full content of a single file at the reviewed head, or null if it does not exist there. */
   readFile(path: string): Promise<string | null>;
   /** Pinned source sides. Null content is absence only when `presence: 'absent'` and exact path/revision-side identity are returned; otherwise it is unavailable. */
-  readFileAt?(path: string, side: 'head' | 'base' | 'merge-base'): Promise<{ content: string | null; sha: string;
+  readFileAt?(path: string, side: 'head' | 'base' | 'merge-base', options?: { signal?: AbortSignal }): Promise<{ content: string | null; sha: string;
     presence?: 'present' | 'absent' | 'unavailable'; contentSha256?: string;
     source?: { repository: string; path: string; side: 'head' | 'base' | 'merge-base' } }>;
   /** Bounded reverse-reference path hints. Callers must independently fetch, AST-validate, and uniquely resolve each returned source. */

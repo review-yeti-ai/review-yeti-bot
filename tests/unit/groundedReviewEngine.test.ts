@@ -13,16 +13,130 @@ import { groundedRelativeImportCandidates } from '../../src/review/groundedContr
 import type { ReviewModelClient } from '../../src/gateway/openRouterClient';
 import { ProviderAttemptBudget } from '../../src/gateway/providerAttemptBudget';
 import type { RepoFileProvider } from '../../src/panel/panelEngine';
+import { canonicalJson, sha256 } from '../../src/review/reviewCore';
+import type { GroundedReproductionRequestV1, GroundedReproductionReceiptV1 } from '../../src/review/qualifiedReproduction';
 
 const head = 'a'.repeat(40);
 const base = 'b'.repeat(40);
 const repository = 'example-org/sample-project';
+const reviewId = `run_${'1'.repeat(32)}`;
 
 function patch(path: string, oldLine: string, newLine: string): string {
   return `@@ -1 +1 @@\n-${oldLine}\n+${newLine}`;
 }
 
 describe('grounded review engine', () => {
+  it('reports reproduction unavailable when no service-owned adapter is configured', async () => {
+    const result = await runIndependentGroundedVerification({
+      findings: [], changedFiles: [], repository, headSha: head, baseSha: base,
+      verificationVersion: GROUNDED_VERIFICATION_VERSION, model: 'unused',
+      client: { complete: vi.fn() } as unknown as ReviewModelClient,
+    });
+
+    expect(result.calls).toBe(0);
+    expect(result.reproduction).toMatchObject({
+      version: 'GroundedReproductionRun.v1', status: 'unavailable', attempted: 0,
+      reason: 'adapter_not_configured',
+    });
+  });
+
+  it('does not invoke a reproduction adapter without the trusted review identity', async () => {
+    const reproduce = vi.fn();
+    const result = await runIndependentGroundedVerification({
+      findings: [], changedFiles: [], repository, headSha: head, baseSha: base,
+      verificationVersion: GROUNDED_VERIFICATION_VERSION, model: 'unused',
+      client: { complete: vi.fn() } as unknown as ReviewModelClient,
+      reproductionAdapter: { reproduce } as any,
+    });
+
+    expect(reproduce).not.toHaveBeenCalled();
+    expect(result.reproduction).toMatchObject({ status: 'unavailable', attempted: 0,
+      durationActualMs: 0, reason: 'review_identity_missing' });
+  });
+
+  it('keeps the legacy verifier valid and reports reproduction unavailable explicitly', async () => {
+    const result = await runIndependentGroundedVerification({
+      findings: [], changedFiles: [], repository, headSha: head, baseSha: base,
+      model: 'unused', client: { complete: vi.fn() } as unknown as ReviewModelClient,
+    });
+
+    expect(result.version).not.toBe(GROUNDED_VERIFICATION_VERSION);
+    expect(result.reproduction).toMatchObject({ version: 'GroundedReproductionRun.v1',
+      status: 'unavailable', attempted: 0, completed: 0, timedOut: 0, durationActualMs: 0,
+      reason: 'adapter_not_configured' });
+  });
+
+  it('uses a service-owned reproduction as supplemental evidence without promoting an insufficient source review', async () => {
+    const path = 'src/guard.ts';
+    const previous = 'export function canRead(user: { admin: boolean }) { return user.admin; }\n';
+    const current = 'export function canRead(user: { admin: boolean }) { return true; }\n';
+    const diff = patch(path, previous.trim(), current.trim());
+    const finding = { severity: 'P1', path, line: 1, title: 'Non-admin caller can read protected data' };
+    const provider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (_path, side) => ({ content: side === 'head' ? current : previous,
+        sha: side === 'head' ? head : base, presence: 'present',
+        source: { repository, path, side } }),
+      readDiff: () => ({ patch: diff, identity: { repository, headSha: head, baseSha: base } }),
+    };
+    let reproductionRequest: GroundedReproductionRequestV1 | undefined;
+    const reproduce = vi.fn(async (request: GroundedReproductionRequestV1): Promise<GroundedReproductionReceiptV1> => {
+      reproductionRequest = request;
+      const files = [{ path, baseRevisionSha: base, headRevisionSha: head,
+        baseContentSha256: sha256(previous), headContentSha256: sha256(current) }];
+      const expectedBaseDigest = sha256(canonicalJson(false));
+      const expectedHeadDigest = sha256(canonicalJson(true));
+      const material = { version: 'GroundedSandboxReproduction.v1', status: 'observed',
+        identity: { reviewId: request.reviewId, repository: request.repository, baseSha: request.baseSha, headSha: request.headSha,
+          candidateFingerprint: request.candidate.fingerprint, path: request.candidate.path,
+          affectedContextDigest: request.affectedContextDigest, sourceWindowManifestDigest: request.sourceWindowManifestDigest },
+        recipe: { id: 'test-safe-guard-v1', digest: 'e'.repeat(64), expectedBaseDigest, expectedHeadDigest },
+        sourceManifest: { digest: sha256(canonicalJson({ version: 'GroundedReproductionSourceManifest.v1',
+          repository: request.repository, baseSha: request.baseSha, headSha: request.headSha, files })), files },
+        limits: { executionBudgetMs: 15_000, executionTimeoutMs: 2_500, maxOutputBytes: 8_192,
+          sourceReadTimeoutMs: 4_000, controlPlaneTimeoutMs: 12_000, cleanupTimeoutMs: 8_000 },
+        sandbox: { runtimeImageDigest: `node@sha256:${'1'.repeat(64)}`, runtimeImageId: '2'.repeat(64),
+          dockerServerVersion: '29.0.0', containerConfigDigests: ['3'.repeat(64), '4'.repeat(64)],
+          networkMode: 'none', readOnlyRootfs: true, capDropAll: true, noNewPrivileges: true,
+          hostSocketMounted: false, user: '1000:1000', pidsLimit: 16, memoryBytes: 268_435_456,
+          nanoCpus: 250_000_000, tmpfsBytes: 8_388_608, shmBytes: 8_388_608,
+          maxContainerLogBytes: 65_536 },
+        executions: [{ side: 'base', exitStatus: 0, durationActualMs: 10, outputDigest: '5'.repeat(64) },
+          { side: 'head', exitStatus: 0, durationActualMs: 10, outputDigest: '6'.repeat(64) }],
+        observations: { baseMatchesExpected: true, headMatchesExpected: true,
+          baseResultDigest: expectedBaseDigest, headResultDigest: expectedHeadDigest } };
+      return { ...material, receiptDigest: sha256(canonicalJson(material)) } as GroundedReproductionReceiptV1;
+    });
+    const reproductionAdapter = { reproduce };
+    let receivedMessages: Array<{ content: string }> = [];
+    const client = { complete: vi.fn(async (request: { messages: Array<{ content: string }> }) => {
+      receivedMessages = request.messages;
+      return { model: 'test-verifier',
+        content: JSON.stringify({ status: 'insufficient', citations: [] }), usage: null, costUSD: null };
+    }) };
+    const result = await runIndependentGroundedVerification({
+      findings: [finding], changedFiles: [{ path, patch: diff }], provider, repository, headSha: head, baseSha: base,
+      reproductionReviewId: reviewId,
+      verificationVersion: GROUNDED_VERIFICATION_VERSION, severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+      model: 'test-model', client: client as unknown as ReviewModelClient,
+      reproductionAdapter,
+    });
+
+    expect(reproductionAdapter.reproduce).toHaveBeenCalledOnce();
+    expect(reproductionRequest).toMatchObject({
+      reviewId, repository, baseSha: base, headSha: head, candidate: { path, fingerprint: findingFingerprint(finding) },
+    });
+    expect(result.outcomes[0]).toMatchObject({ status: 'insufficient' });
+    expect(result.outcomes[0]).not.toHaveProperty('reproduction');
+    expect(result.confirmed).toBe(0);
+    expect(result.unverifiedBlockerCount).toBe(1);
+    expect(result.calls).toBe(1);
+    expect(result.candidates).toBe(1);
+    expect(result.reproduction).toMatchObject({ status: 'complete', attempted: 1, completed: 1, timedOut: 0 });
+    expect(receivedMessages.map((message) => message.content).join('\n'))
+      .toContain('qualified reproduction observation');
+  });
+
   it('verifies a 444,656-byte changed source from bounded source windows and a compact alias response', async () => {
     const path = 'src/large.ts';
     const candidateLine = 3_000;

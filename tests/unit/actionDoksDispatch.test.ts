@@ -109,6 +109,74 @@ describe('DOKS Action dispatch client', () => {
     }))).toThrow(/qualification runtime image digest/iu);
     expect(() => buildDispatchRequest(environment({ QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest })))
       .toThrow(/exact qualification target/u);
+    expect(() => buildDispatchRequest(environment({
+      REPOSITORY_ID: '1409547157', REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
+      DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
+    }))).toThrow(/requires a qualification runtime image digest/u);
+    expect(() => buildDispatchRequest(environment({
+      REPOSITORY_ID: '1409547158', REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
+      DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
+      QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest,
+    }))).toThrow(/exact qualification target/u);
+  });
+
+  it('accepts the qualification endpoint only with the exact target and trusted digest context', async () => {
+    const { validateDispatchEndpoint } = await import(modulePath);
+    const url = 'https://review-bot.calltelemetry.com/api/qualification/dispatch/action';
+    const context = { repositoryId: 1_409_547_157, owner: 'review-yeti-ai',
+      repo: 'review-yeti-qualification', publishMode: 'app-gate',
+      qualificationRuntimeImageDigest: `sha256:${'a'.repeat(64)}` };
+
+    expect(validateDispatchEndpoint(url, context).href).toBe(url);
+    expect(() => validateDispatchEndpoint(url)).toThrow(/qualification endpoint/i);
+    expect(() => validateDispatchEndpoint(url, { ...context, repositoryId: 1_409_547_158 }))
+      .toThrow(/qualification target/i);
+    expect(() => validateDispatchEndpoint(url, { ...context, qualificationRuntimeImageDigest: undefined }))
+      .toThrow(/qualification runtime image digest/i);
+    expect(() => validateDispatchEndpoint(url.replace('review-bot.calltelemetry.com', 'dispatch.internal.example.org'), context))
+      .toThrow(/qualification endpoint host/i);
+    expect(() => validateDispatchEndpoint('https://review-bot.calltelemetry.com/api/dispatch/action', context))
+      .toThrow(/qualification target must use/i);
+  });
+
+  it('posts the exact qualification request to the isolated endpoint only with its image claim', async () => {
+    const { dispatchAction } = await import(modulePath);
+    const digest = `sha256:${'a'.repeat(64)}`;
+    const endpoint = 'https://review-bot.calltelemetry.com/api/qualification/dispatch/action';
+    const dispatchEnvironment = environment({
+      DOKS_DISPATCH_URL: endpoint, REPOSITORY_ID: '1409547157',
+      REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
+      DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
+      QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest,
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: 'ActionDispatchAccepted.v1',
+        status: 'accepted', runId: `run_${'1'.repeat(32)}` }), { status: 202 }));
+
+    await expect(dispatchAction(dispatchEnvironment, fetchMock)).resolves.toMatchObject({ status: 'accepted' });
+
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(endpoint);
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)))
+      .toMatchObject({ repositoryId: 1_409_547_157, owner: 'review-yeti-ai',
+        repo: 'review-yeti-qualification', qualificationRuntimeImageDigest: digest });
+  });
+
+  it.each([
+    ['ordinary endpoint', 'https://review-bot.calltelemetry.com/api/dispatch/action'],
+    ['another host', 'https://dispatch.internal.example.org/api/qualification/dispatch/action'],
+  ])('refuses the qualification request through %s before fetching an OIDC token', async (_label, url) => {
+    const { dispatchAction } = await import(modulePath);
+    const fetchMock = vi.fn();
+    const env = environment({
+      DOKS_DISPATCH_URL: url, REPOSITORY_ID: '1409547157',
+      REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
+      DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
+      QUALIFICATION_RUNTIME_IMAGE_DIGEST: `sha256:${'a'.repeat(64)}`,
+    });
+
+    await expect(dispatchAction(env, fetchMock)).rejects.toThrow(/qualification (?:target|endpoint)/iu);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('accepts candidate-unavailable SHIP only with null current coordinates and no durable receipt claims', async () => {

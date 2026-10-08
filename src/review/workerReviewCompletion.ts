@@ -117,6 +117,11 @@ const groundedVerificationV1Schema = z.object({ version: z.literal(GROUNDED_VERI
     confirmed: boundedInteger.max(MAX_TOTAL_FINDINGS), contradicted: boundedInteger.max(MAX_TOTAL_FINDINGS),
     insufficient: boundedInteger.max(MAX_TOTAL_FINDINGS), unverifiedBlockerCount: boundedInteger.max(MAX_TOTAL_FINDINGS),
     coverageComplete: z.boolean(), calls: boundedInteger.max(100),
+    /** Non-authoritative execution accounting; the complete sandbox receipt remains service-internal. */
+    reproduction: z.object({ version: z.literal('GroundedReproductionRun.v1'), status: z.enum(['complete', 'unavailable']),
+      attempted: boundedInteger.max(1), completed: boundedInteger.max(1), timedOut: boundedInteger.max(1),
+      /** Actual wall time includes source I/O, Docker control, container execution and cleanup. */
+      durationActualMs: boundedInteger.max(45_000), reason: z.string().min(1).max(240).optional() }).strict().optional(),
     budget: z.object({ totalCalls: boundedInteger.max(100), callsPerTask: boundedInteger.max(12),
       concurrency: boundedInteger.max(18), callTimeoutMs: boundedInteger.max(180_000), stageBudgetMs: boundedInteger.max(300_000) }).strict(),
     outcomes: z.array(groundedOutcomeSchema).max(MAX_TOTAL_FINDINGS),
@@ -132,6 +137,15 @@ const groundedVerificationV1Schema = z.object({ version: z.literal(GROUNDED_VERI
     }
     if (verification.calls > verification.budget.totalCalls) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['calls'], message: 'verifier calls exceeded the recorded budget' });
+    }
+    const reproduction = verification.reproduction;
+    if (reproduction && (reproduction.completed + reproduction.timedOut > reproduction.attempted
+      || reproduction.attempted === 0 && (reproduction.completed !== 0 || reproduction.timedOut !== 0 || reproduction.durationActualMs !== 0)
+      || reproduction.status === 'complete' && (reproduction.attempted !== 1 || reproduction.completed !== 1
+        || reproduction.timedOut !== 0 || reproduction.reason !== undefined)
+      || reproduction.status === 'unavailable' && (reproduction.completed !== 0 || !reproduction.reason))) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['reproduction'],
+        message: 'reproduction execution accounting is inconsistent' });
     }
   });
 const groundedReviewReceiptV1Schema = z.object({
@@ -449,6 +463,11 @@ const groundedVerificationV2Schema = z.object({
   /** New receipts report source API resolution probes separately; older v2 receipts remain readable. */
   sourceResolutionProbes: boundedInteger.max(100).optional(),
   sourceResolutionProbeManifest: z.array(groundedImportResolutionSourceV1Schema).max(100).optional(),
+  /** Non-authoritative execution accounting only; the full sandbox receipt stays service-internal. */
+  reproduction: z.object({ version: z.literal('GroundedReproductionRun.v1'), status: z.enum(['complete', 'unavailable']),
+    attempted: boundedInteger.max(1), completed: boundedInteger.max(1), timedOut: boundedInteger.max(1),
+    /** Actual wall time includes source I/O, Docker control, container execution and cleanup. */
+    durationActualMs: boundedInteger.max(45_000), reason: z.string().min(1).max(240).optional() }).strict().optional(),
   /** Original pre-filter engine candidate severities; optional only for historical v2 parsing. */
   candidateManifest: z.array(groundedFindingCandidateV2Schema).max(MAX_TOTAL_FINDINGS).optional(),
   budget: z.object({ totalCalls: boundedInteger.max(100), callsPerTask: boundedInteger.max(12),
@@ -471,6 +490,15 @@ const groundedVerificationV2Schema = z.object({
   }
   if (verification.calls > verification.budget.totalCalls) context.addIssue({ code: z.ZodIssueCode.custom,
     path: ['calls'], message: 'verifier calls exceeded the recorded budget' });
+  const reproduction = verification.reproduction;
+  if (reproduction && (reproduction.completed + reproduction.timedOut > reproduction.attempted
+    || reproduction.attempted === 0 && (reproduction.completed !== 0 || reproduction.timedOut !== 0 || reproduction.durationActualMs !== 0)
+    || reproduction.status === 'complete' && (reproduction.attempted !== 1 || reproduction.completed !== 1
+      || reproduction.timedOut !== 0 || reproduction.reason !== undefined)
+    || reproduction.status === 'unavailable' && (reproduction.completed !== 0 || !reproduction.reason))) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['reproduction'],
+      message: 'reproduction execution accounting is inconsistent' });
+  }
   const probeManifest = verification.sourceResolutionProbeManifest;
   if (probeManifest !== undefined && verification.sourceResolutionProbes !== probeManifest.length) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceResolutionProbeManifest'],
