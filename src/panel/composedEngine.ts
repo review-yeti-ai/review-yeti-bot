@@ -90,13 +90,11 @@ import {
 import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
 import { resolveMaxConcurrentLanes } from './laneConcurrency';
 import {
-  COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS,
-  COMPOSED_ENGINE_DEFAULT_MAX_TASKS,
-  COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP,
   COMPOSED_PLAN_MAX_TURNS,
   COMPOSED_TASK_CONCURRENCY_CEILING,
   COMPOSED_TASK_MAX_TURNS,
   COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+  resolveComposedEngineWorkBudget,
 } from './composedEngineBudget';
 export {
   COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS,
@@ -106,6 +104,8 @@ export {
   COMPOSED_TASK_CONCURRENCY_CEILING,
   COMPOSED_TASK_MAX_TURNS,
   COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+  resolveComposedEngineMaxTurns,
+  resolveComposedEngineWorkBudget,
 } from './composedEngineBudget';
 import {
   buildDiffSection,
@@ -321,43 +321,6 @@ export function resolveTaskTurnCeiling(
 }
 /** Turn-window compaction threshold inside one task's own branched sub-conversation. */
 const TASK_COMPACTION_ACTIVE_TURNS = 2;
-
-/**
- * Resolution order: `env.COMPOSED_ENGINE_MAX_TURNS` (manual operator override) wins when set,
- * then the base-policy-projected `composed.max_turns_total` (see `resolveWorkerConfig` in
- * `../config/publishingWorkerConfig.ts`) -- clamped to `COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS`,
- * so policy may only lower this engine's own total-turn ceiling, never raise it -- then the
- * default. This function owns that clamp; it must never be raised by a caller-supplied value.
- */
-export function resolveComposedEngineMaxTurns(
-  env: NodeJS.ProcessEnv = process.env,
-  configuredMaxTurnsTotal?: number,
-): number {
-  const raw = Number(env.COMPOSED_ENGINE_MAX_TURNS);
-  // The env override is an operator escape hatch, so unlike the policy value it MAY exceed the
-  // default -- but it must still be bounded. Previously it was returned raw, so a mistyped
-  // `COMPOSED_ENGINE_MAX_TURNS=4800` would have been honoured verbatim. 200 is the same ceiling
-  // `composedEngineConfigSchema.max_turns_total` already enforces, so the two agree.
-  if (Number.isSafeInteger(raw) && raw > 0) {
-    return Math.min(raw, COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP);
-  }
-  if (Number.isSafeInteger(configuredMaxTurnsTotal) && (configuredMaxTurnsTotal as number) > 0) {
-    return Math.min(configuredMaxTurnsTotal as number, COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS);
-  }
-  return COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS;
-}
-
-/** Keep one shared total-call ceiling while reserving a bounded tail for independent review. */
-export function resolveComposedEngineWorkBudget(
-  env: NodeJS.ProcessEnv = process.env,
-  configuredMaxTurnsTotal?: number,
-  verificationReserveTurns = 0,
-): { totalTurns: number; verificationReserveTurns: number } {
-  const configuredTotal = resolveComposedEngineMaxTurns(env, configuredMaxTurnsTotal);
-  const reserve = Number.isSafeInteger(verificationReserveTurns) && verificationReserveTurns > 0
-    ? Math.min(verificationReserveTurns, Math.max(0, configuredTotal - 1)) : 0;
-  return { totalTurns: configuredTotal - reserve, verificationReserveTurns: reserve };
-}
 
 /** Ceiling for total findings collected across composed tasks before early finalization. */
 export const COMPOSED_ENGINE_MAX_FINDINGS_HARD_CAP = 500;

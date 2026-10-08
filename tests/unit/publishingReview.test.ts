@@ -31,6 +31,7 @@ import {
 import { HttpWorkerCompletionAdapter } from '../../src/review/workerCompletion';
 import { HttpPrLifecycleHistorySource } from '../../src/review/prLifecycleHistoryHttp';
 import { ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
+import { ProviderAttemptBudget } from '../../src/gateway/providerAttemptBudget';
 import { TaskSourceDelivery } from '../../src/review/taskSourceDelivery';
 import { GitHubQualificationReadError } from '../../src/github/qualificationReader';
 import {
@@ -225,8 +226,11 @@ describe('qualification source arguments', () => {
         ranges: [[0, patch.length] as [number, number]], inline: true }] };
     const diff = `diff --git a/${sourcePath} b/${sourcePath}\n${patch}`;
     const composedReviewRunner = vi.fn(async (options: any) => {
-      const observer = new ComposedRuntimeResourceObserver({ configDigest: env().REVIEW_CONFIG_DIGEST });
-      observer.configureBudget({ configuredTotalTurns: 1, investigationTurns: 1, verificationReserveTurns: 0 });
+      const budget = options.providerAttemptBudget as ProviderAttemptBudget;
+      const observer = new ComposedRuntimeResourceObserver({ configDigest: options.effectiveConfigDigest,
+        configuration: options.config.review_configuration_receipt, providerAttemptBudget: budget });
+      observer.configureBudget({ configuredTotalTurns: budget.limits.totalLimit,
+        investigationTurns: budget.limits.investigationLimit, verificationReserveTurns: budget.limits.verificationLimit });
       observer.setPlan(taskPlan);
       observer.markTaskStarted(taskId);
       observer.markTaskOutcome(taskId, taskStatus, taskStatus === 'completed' ? sourceDelivery : undefined);
@@ -685,9 +689,11 @@ describe('grounded evidence call order', () => {
     });
     const composedReviewRunner = vi.fn(async (options: any) => {
       resumedTaskIds = options.checkpoint.resumed.completedTasks.map((row: { id: string }) => row.id);
+      const budget = options.providerAttemptBudget as ProviderAttemptBudget;
       const observer = new ComposedRuntimeResourceObserver({ configDigest: prepared.policy.effectiveConfigDigest,
-        configuration: prepared.config.review_configuration_receipt });
-      observer.configureBudget({ configuredTotalTurns: 1, investigationTurns: 1, verificationReserveTurns: 0 });
+        configuration: prepared.config.review_configuration_receipt, providerAttemptBudget: budget });
+      observer.configureBudget({ configuredTotalTurns: budget.limits.totalLimit,
+        investigationTurns: budget.limits.investigationLimit, verificationReserveTurns: budget.limits.verificationLimit });
       observer.setPlan(tasks);
       tasks.forEach((task, index) => { observer.markTaskStarted(task.id); observer.markTaskOutcome(task.id, 'completed', deliveries[index]); });
       const resources = observer.snapshot('terminal');

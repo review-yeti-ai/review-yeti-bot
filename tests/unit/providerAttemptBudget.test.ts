@@ -77,4 +77,21 @@ describe('physical provider-attempt budget', () => {
     expect(fetchImplementation).toHaveBeenCalledOnce();
     expect(budget.snapshot()).toMatchObject({ totalStarted: 1, investigationStarted: 1, deniedAttempts: 0 });
   });
+
+  it('keeps redirect behavior unchanged outside the budgeted worker path', async () => {
+    const budget = new ProviderAttemptBudget({ totalLimit: 2, investigationLimit: 2, verificationLimit: 0 });
+    const redirects: Array<RequestRedirect | undefined> = [];
+    const fetchImplementation = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      redirects.push(init?.redirect);
+      return successfulResponse();
+    });
+    const client = new OpenRouterClient({ baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'test',
+      fetchImplementation, maxRetries: 0 });
+
+    await client.complete(request);
+    await client.complete({ ...request, beforePhysicalAttempt: () => budget.beginAttempt('investigation') });
+
+    expect(redirects).toEqual([undefined, 'error']);
+    expect(budget.snapshot()).toMatchObject({ totalStarted: 1, investigationStarted: 1 });
+  });
 });

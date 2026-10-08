@@ -344,7 +344,22 @@ describe('WorkerReviewCompletion.v1', () => {
       investigationStarted: 0, verificationStarted: 0, deniedAttempts: 0,
       investigationDenied: 0, verificationDenied: 0,
     };
-    expect(derive(declaredOperatorAllowance, trusted)).toMatchObject({ valid: true,
+    expectInvalid(derive(declaredOperatorAllowance, trusted), /physical provider attempts disagree/u);
+
+    const legacyPrepared = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({
+      review_engine: 'composed', personas: ['security'],
+    }) }, { baseUrl: 'https://gateway.example.invalid', apiKey: 'test', model: 'test-model' });
+    const legacyConfiguration = structuredClone(legacyPrepared.review_configuration_receipt!);
+    delete (legacyConfiguration.effective.composed_budget as Record<string, unknown>).provider_attempt_budget;
+    const legacyGroundedPublisher = structuredClone(v2);
+    delete legacyGroundedPublisher.result.reviewDecision;
+    legacyGroundedPublisher.result.composedResources!.version = 'ComposedRuntimeResources.v1' as never;
+    delete legacyGroundedPublisher.result.composedResources!.providerAttempts;
+    legacyGroundedPublisher.result.composedResources!.configuration = { value: legacyConfiguration, unavailableReason: null };
+    const { reviewDecisionPolicy: _legacyPolicy, ...legacyTrustedContract } = trusted;
+    const legacyDerived = derive(legacyGroundedPublisher, { ...legacyTrustedContract,
+      composedEffectiveConfiguration: legacyConfiguration });
+    expect(legacyDerived, JSON.stringify(legacyDerived)).toMatchObject({ valid: true,
       evidence: { reviewEngine: 'composed', coverageComplete: true, verdict: 'SHIP' } });
 
     const missingPhysicalAttempts = structuredClone(v2);
@@ -402,6 +417,45 @@ describe('WorkerReviewCompletion.v1', () => {
     serviceCompletion.result.composedResources!.configDigest = { value: coordinates.configDigest, unavailableReason: null };
     serviceCompletion.result.composedResources!.configuration.value = frozen.config.review_configuration_receipt!;
     expect(derive(serviceCompletion, { ...serviceContext.coverage, expectedCoordinates: coordinates })).toMatchObject({
+      valid: true, evidence: { reviewEngine: 'composed', coverageComplete: true, verdict: 'SHIP' },
+    });
+
+    const operator200 = preparePublishingPolicy({ content, source: {
+      repositoryId: 4321, repository: 'exampleorg/central-policy', sha: 'f'.repeat(40),
+      path: 'policy/review.json', contentDigest: sha256(content),
+    } }, { baseUrl: 'https://gateway.example.invalid', model: 'test-model' }, undefined,
+    { composedEngineMaxTurns: '200' });
+    const operatorCoordinates = { ...expectedCoordinates, policyDigest: operator200.policy.effectivePolicyDigest,
+      configDigest: operator200.policy.effectiveConfigDigest };
+    const operatorCurrent = current;
+    const operatorContext = await createAuthoritativeCompletionContext({ getStoredPrepared: async () => operator200,
+      readerFactory: async () => ({ currentCandidate: async () => operatorCurrent,
+        exactCurrentDiff: async () => ({ current: operatorCurrent, diff: '', expectedFileCount: 1, changedFiles }) }),
+      publishingResolver: { resolve: async () => ({ current: operatorCurrent, prepared: operator200,
+        identity: buildAuthoritativeReviewIdentity({ requested: operatorCurrent, current: operatorCurrent,
+          policy: operator200.policy }) }) },
+    });
+    const operatorServiceContext = await operatorContext({ coordinates: { ...operatorCoordinates,
+      attemptId: `${operatorCoordinates.runId}-g0-e2` }, reviewGeneration: 0, expectedAppId: 1234,
+      externalId: 'service-gate', checkId: 456, creationState: 'bound', desiredState: 'in_progress',
+      desiredVersion: 1, publishedVersion: 1, current: true });
+    const operatorCompletion = structuredClone(serviceCompletion);
+    Object.assign(operatorCompletion, operatorCoordinates);
+    operatorCompletion.result.reviewDecision!.policyDigest = operatorCoordinates.policyDigest;
+    operatorCompletion.result.composedResources!.configDigest = {
+      value: operatorCoordinates.configDigest, unavailableReason: null,
+    };
+    operatorCompletion.result.composedResources!.configuration.value = operator200.config.review_configuration_receipt!;
+    operatorCompletion.result.composedResources!.budget = { configuredTotalTurns: 200,
+      investigationTurns: 188, verificationReserveTurns: 12 };
+    operatorCompletion.result.composedResources!.providerAttempts = {
+      version: 'ReviewProviderAttemptBudget.v1', totalLimit: 200,
+      investigationLimit: 188, verificationLimit: 12, totalStarted: 0,
+      investigationStarted: 0, verificationStarted: 0, deniedAttempts: 0,
+      investigationDenied: 0, verificationDenied: 0,
+    };
+    expect(derive(operatorCompletion, { ...operatorServiceContext.coverage,
+      expectedCoordinates: operatorCoordinates })).toMatchObject({
       valid: true, evidence: { reviewEngine: 'composed', coverageComplete: true, verdict: 'SHIP' },
     });
 

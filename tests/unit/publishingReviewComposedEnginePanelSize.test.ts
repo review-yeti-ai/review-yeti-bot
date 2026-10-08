@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 import { ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
+import { ProviderAttemptBudget } from '../../src/gateway/providerAttemptBudget';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { TaskSourceDelivery } from '../../src/review/taskSourceDelivery';
 import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
@@ -91,15 +92,20 @@ function makeFinding(path: string, line: number, id: string) {
 
 /** A 7-task composed roster with exactly 3 P1 findings, spread across 3 distinct tasks so
  * `clusterFindings` does not collapse them into one. */
-function sevenTaskComposedResult() {
+function sevenTaskComposedResult(input: { providerAttemptBudget?: ProviderAttemptBudget; config?: any; effectiveConfigDigest?: string }) {
   const taskIds = ['t1', 't2', 't3', 't4', 't5', 't6', 't7'];
   const taskPlan = taskIds.map((id) => ({ id, dimension: 'security' as const,
     paths: ACCESS_CONTROL_REGRESSIONS.map((regression) => regression.path),
     question: 'Did this change weaken the administrator-only access contract?',
     rationale: 'Each task owns the exact changed authorization gate source.' }));
   const changedFiles = parseChangedFiles(DIFF, { repository: 'exampleorg/example-meta', headSha: HEAD, baseSha: BASE }).files;
-  const observer = new ComposedRuntimeResourceObserver({ configDigest: 'd'.repeat(64) });
-  observer.configureBudget({ configuredTotalTurns: 10, investigationTurns: 10, verificationReserveTurns: 0 });
+  const providerAttemptBudget = input.providerAttemptBudget
+    ?? new ProviderAttemptBudget({ totalLimit: 100, investigationLimit: 88, verificationLimit: 12 });
+  const observer = new ComposedRuntimeResourceObserver({ configDigest: input.effectiveConfigDigest,
+    configuration: input.config?.review_configuration_receipt, providerAttemptBudget });
+  observer.configureBudget({ configuredTotalTurns: providerAttemptBudget.limits.totalLimit,
+    investigationTurns: providerAttemptBudget.limits.investigationLimit,
+    verificationReserveTurns: providerAttemptBudget.limits.verificationLimit });
   observer.setPlan(taskPlan);
   for (const task of taskPlan) {
     observer.markTaskStarted(task.id);
@@ -197,7 +203,7 @@ function deps(over: Record<string, unknown> = {}) {
     currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
-    composedReviewRunner: vi.fn(async () => sevenTaskComposedResult()) as never,
+    composedReviewRunner: vi.fn(async (options: any) => sevenTaskComposedResult(options)) as never,
     repoFileProviderFactory: (input: any) => groundedFixtureProvider(input),
     groundedVerifierClient: groundedFixtureClient as never,
     client: {} as never,

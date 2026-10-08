@@ -29,6 +29,8 @@ export interface AuthoritativePublishingResolverOptions {
   policyRef: string;
   policyPath: string;
   transport: PreparedPublishingPolicy['transport'];
+  /** Service-owned runtime override; never populated from a review request or repository content. */
+  composedEngineMaxTurns?: string;
   /** Mint repository-scoped credentials in these factories, not in request data.
    * Honor signal when possible; even an uncooperative factory is deadline-bound. */
   candidateReaderFactory: (repository: ReviewRepositoryIdentity, signal: AbortSignal) =>
@@ -64,6 +66,7 @@ export class AuthoritativePublishingResolver {
   private readonly policyRef: string;
   private readonly policyPath: string;
   private readonly transport: PreparedPublishingPolicy['transport'];
+  private readonly composedEngineMaxTurns?: string;
   private readonly candidateReaderFactory: AuthoritativePublishingResolverOptions['candidateReaderFactory'];
   private readonly policyReaderFactory: AuthoritativePublishingResolverOptions['policyReaderFactory'];
   private readonly timeoutMs: number;
@@ -82,6 +85,10 @@ export class AuthoritativePublishingResolver {
       const url = new URL(transport.baseUrl);
       if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw unavailable();
       this.transport = Object.freeze(transport);
+      this.composedEngineMaxTurns = typeof options.composedEngineMaxTurns === 'string'
+        && options.composedEngineMaxTurns.length <= 64
+        && !/[\x00-\x1f\x7f]/u.test(options.composedEngineMaxTurns)
+        ? options.composedEngineMaxTurns : undefined;
       this.timeoutMs = z.number().int().min(250).max(30_000).parse(options.timeoutMs ?? 30_000);
       if (typeof options.candidateReaderFactory !== 'function' || typeof options.policyReaderFactory !== 'function') throw unavailable();
       this.candidateReaderFactory = options.candidateReaderFactory;
@@ -146,7 +153,9 @@ export class AuthoritativePublishingResolver {
       // Repository-scoped policy overrides use only the identity the service just read from
       // GitHub and matched to the admitted target. PR text, caller policy JSON and mutable labels
       // are never inputs to this selection.
-      const prepared = preparePublishingPolicy(file, this.transport, { owner: first.owner, repo: first.repo });
+      const prepared = preparePublishingPolicy(file, this.transport, { owner: first.owner, repo: first.repo }, {
+        ...(this.composedEngineMaxTurns === undefined ? {} : { composedEngineMaxTurns: this.composedEngineMaxTurns }),
+      });
       const identity = buildAuthoritativeReviewIdentity({ requested: target, current: first, policy: prepared.policy });
       const current = matchingCandidate(target, await step(() => candidateReader.currentCandidate({ ...repository, prNumber: target.prNumber }, abort.signal)));
       checkDeadline();

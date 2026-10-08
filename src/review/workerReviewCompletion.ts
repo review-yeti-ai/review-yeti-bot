@@ -946,8 +946,7 @@ function groundedImportResolutionMatches(input: { edge: GroundedDependencyEdgeV1
 
 function composedRuntimeResourcesRefusal(input: { result: WorkerReviewResult; tasks: readonly ReviewTask[];
   changedFiles: readonly ReviewChangedFile[]; coordinates: TrustedWorkerReviewCoordinates;
-  expectedConfiguration?: ComposedRuntimeResources['configuration']['value'];
-  requirePhysicalAttempts: boolean }): string | null {
+  expectedConfiguration?: ComposedRuntimeResources['configuration']['value'] }): string | null {
   const receipt = input.result.composedResources;
   if (!receipt) return 'composed completion is missing its worker-stage runtime resource receipt';
   if (receipt.stage !== 'worker_completion' || receipt.discoveryScope !== 'composed_engine'
@@ -959,17 +958,23 @@ function composedRuntimeResourcesRefusal(input: { result: WorkerReviewResult; ta
     || canonicalJson(receipt.configuration.value) !== canonicalJson(input.expectedConfiguration)) {
     return 'composed runtime resource receipt is not bound to the service-prepared effective configuration';
   }
-  if (input.requirePhysicalAttempts && (receipt.version !== 'ComposedRuntimeResources.v2' || !receipt.providerAttempts)) {
+  const expectedAttemptBudget = input.expectedConfiguration.effective.composed_budget.provider_attempt_budget;
+  if (expectedAttemptBudget && (receipt.version !== 'ComposedRuntimeResources.v2' || !receipt.providerAttempts)) {
     return 'current composed review lacks physical provider attempt evidence';
   }
   if (receipt.providerAttempts) {
     const attempts = receipt.providerAttempts;
     const budget = receipt.budget;
     const hardCap = receipt.configuration.value.effective.composed_budget.total_turns_hard_cap;
+    const expectedTotal = expectedAttemptBudget?.total_limit
+      ?? receipt.configuration.value.effective.composed_budget.central_policy_total_turns;
     if (attempts.totalLimit !== budget.configuredTotalTurns
       || attempts.investigationLimit !== budget.investigationTurns
       || attempts.verificationLimit !== budget.verificationReserveTurns
       || attempts.totalLimit > hardCap
+      || attempts.totalLimit !== expectedTotal
+      || (expectedAttemptBudget && (attempts.investigationLimit !== expectedAttemptBudget.investigation_limit
+        || attempts.verificationLimit !== expectedAttemptBudget.verifier_reserve))
       || attempts.totalStarted !== attempts.investigationStarted + attempts.verificationStarted
       || attempts.totalStarted > attempts.totalLimit
       || attempts.investigationStarted > attempts.investigationLimit
@@ -2377,7 +2382,7 @@ export function deriveCanonicalWorkerReviewEvidence(
     if (currentComposedSemantics || completion.result.composedResources) {
       const resourceRefusal = composedRuntimeResourcesRefusal({ result: completion.result,
         tasks: validatedPlan.tasks, changedFiles, coordinates: expectedCoordinates,
-        expectedConfiguration: contract.composedEffectiveConfiguration, requirePhysicalAttempts: currentComposedSemantics });
+        expectedConfiguration: contract.composedEffectiveConfiguration });
       if (resourceRefusal) return invalidEvidence(resourceRefusal);
       const composedResources = completion.result.composedResources!;
       composedResourceCoverageComplete = composedResources.engineExecutionState === 'complete'

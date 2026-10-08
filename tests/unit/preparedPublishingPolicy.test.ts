@@ -45,6 +45,24 @@ describe('trusted prepared publishing policy', () => {
     expect(verifyPreparedPublishingConfig(activated.config, activated.policy.effectiveConfigDigest, transport))
       .toEqual(activated.config);
   });
+  it('binds the service-owned normalized composed attempt budget and operator value into config digest', () => {
+    const composed = file({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', budget: { max_investigation_turns: 20 }, review_engine: 'composed',
+    } });
+    const preparedDefault = preparePublishingPolicy(composed, transport);
+    const preparedOperator200 = preparePublishingPolicy(composed, transport, undefined, { composedEngineMaxTurns: '200' });
+    const defaultBudget = preparedDefault.config.review_configuration_receipt!.effective.composed_budget.provider_attempt_budget;
+    const operatorBudget = preparedOperator200.config.review_configuration_receipt!.effective.composed_budget.provider_attempt_budget;
+
+    expect(defaultBudget).toEqual({ capability_version: 'ReviewProviderAttemptBudget.v1', total_limit: 100,
+      investigation_limit: 88, verifier_reserve: 12, operator_override_value: null });
+    expect(operatorBudget).toEqual({ capability_version: 'ReviewProviderAttemptBudget.v1', total_limit: 200,
+      investigation_limit: 188, verifier_reserve: 12, operator_override_value: 200 });
+    expect(preparedOperator200.policy.effectiveConfigDigest).not.toBe(preparedDefault.policy.effectiveConfigDigest);
+    expect(parsePreparedReviewExecution(JSON.stringify({ version: 'PreparedReviewExecution.v1',
+      config: preparedOperator200.config, transport }), preparedOperator200.policy.effectiveConfigDigest, transport).config)
+      .toEqual(preparedOperator200.config);
+  });
   it('binds the current grounded V2 candidate-manifest capability while retaining historical config parsing', () => {
     const prepared = preparePublishingPolicy(file(), transport);
     const receipt = prepared.config.review_configuration_receipt!;
@@ -78,8 +96,12 @@ describe('trusted prepared publishing policy', () => {
     expect(selected.config.reviewers.providers[0]).toMatchObject({ model: transport.model, effort: 'medium' });
     expect(selected.config.review_configuration_receipt?.effective.confidence_threshold)
       .toEqual(base.config.review_configuration_receipt?.effective.confidence_threshold);
-    expect(selected.config.review_configuration_receipt?.effective.composed_budget)
-      .toEqual(base.config.review_configuration_receipt?.effective.composed_budget);
+    const selectedComposedBudget = selected.config.review_configuration_receipt!.effective.composed_budget;
+    const baseComposedBudget = base.config.review_configuration_receipt!.effective.composed_budget;
+    const { provider_attempt_budget: _selectedPhysicalBudget, ...selectedLegacyBudget } = selectedComposedBudget;
+    expect(selectedLegacyBudget).toEqual(baseComposedBudget);
+    expect(selectedComposedBudget.provider_attempt_budget).toEqual({ capability_version: 'ReviewProviderAttemptBudget.v1',
+      total_limit: 100, investigation_limit: 88, verifier_reserve: 12, operator_override_value: null });
     expect(selected.config.review_configuration_receipt?.effective.worker_limits)
       .toEqual(base.config.review_configuration_receipt?.effective.worker_limits);
     expect(JSON.stringify(selected.config)).not.toContain('PRIVATE_KEY_NAME_ONLY');

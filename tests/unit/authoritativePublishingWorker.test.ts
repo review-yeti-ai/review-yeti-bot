@@ -24,6 +24,7 @@ import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResul
 import { resolveComposedProviderId, unreportedLaneFailure } from '../../src/panel/composedEngine';
 import { ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
 import { ProviderAttemptBudget } from '../../src/gateway/providerAttemptBudget';
+import { OpenRouterClient } from '../../src/gateway/openRouterClient';
 import { TaskSourceDelivery } from '../../src/review/taskSourceDelivery';
 import type { OpenRouterRequest } from '../../src/gateway/openRouterClient';
 import { JevClient, type JevOutcome } from '../../src/gateway/jevClient';
@@ -1150,6 +1151,81 @@ function expectEvidenceOnlyCallback(payload: WorkerReviewCompletion) {
 }
 
 describe('authoritative prepared publishing worker', () => {
+  it('bounds real retrying HTTP attempts to the prepared 100-attempt budget when worker env says 200', async () => {
+    const f = fixture({ reviewEngine: 'composed' });
+    f.env.COMPOSED_ENGINE_MAX_TURNS = '200';
+    let fetchCount = 0;
+    const responseStatuses: number[] = [];
+    const attemptsByRequest = new Map<string, number>();
+    const fetchImplementation = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      fetchCount += 1;
+      const payload = JSON.parse(String(init?.body)) as { messages?: Array<{ content?: unknown }> };
+      const requestId = String(payload.messages?.[0]?.content ?? 'missing-request-id');
+      const requestAttempts = (attemptsByRequest.get(requestId) ?? 0) + 1;
+      attemptsByRequest.set(requestId, requestAttempts);
+      if (requestAttempts === 1) {
+        responseStatuses.push(503);
+        return new Response('{"error":{"message":"temporary"}}', { status: 503,
+          headers: { 'content-type': 'application/json' } });
+      }
+      responseStatuses.push(200);
+      return new Response(JSON.stringify({ id: 'chatcmpl-budget-boundary', object: 'chat.completion', created: 1_700_000_000,
+        model: transport.model, choices: [{ index: 0, finish_reason: 'stop',
+          message: { role: 'assistant', content: '{"status":"ok"}' } }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    f.deps.client = new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: 'test', fetchImplementation,
+      maxRetries: 1, initialRetryDelayMs: 0, maxRetryDelayMs: 0, sleep: async () => {}, random: () => 0 });
+
+    let physicalSnapshot: ReturnType<ProviderAttemptBudget['snapshot']> | undefined;
+    let investigationSettled: PromiseSettledResult<unknown>[] = [];
+    f.deps.composedReviewRunner = vi.fn(async (options: any) => {
+      const budget = options.providerAttemptBudget as ProviderAttemptBudget;
+      expect(budget.limits).toEqual({ totalLimit: 100, investigationLimit: 88, verificationLimit: 12 });
+      const request = { model: transport.model, messages: [{ role: 'user' as const, content: 'synthetic budget-boundary request' }],
+        timeoutMs: 10_000, inactivityTimeoutMs: 10_000, stream: false };
+      const invoke = (index: number) => options.client.complete({ ...request,
+        messages: [{ role: 'user' as const, content: `synthetic budget-boundary request ${index}` }],
+        beforePhysicalAttempt: () => budget.beginAttempt('investigation') });
+      investigationSettled = await Promise.allSettled(Array.from({ length: 60 }, (_, index) => invoke(index)));
+      physicalSnapshot = budget.snapshot();
+
+      const taskPlan = f.prepared.expectedPersonaIds.map((id) => ({ id, dimension: 'testing' as const,
+        paths: ['src/a.ts'], question: 'Can the change regress expected behavior?', rationale: 'Inspect the changed source.' }));
+      const observer = new ComposedRuntimeResourceObserver({ configDigest: options.effectiveConfigDigest,
+        configuration: options.config.review_configuration_receipt, providerAttemptBudget: budget });
+      observer.configureBudget({ configuredTotalTurns: budget.limits.totalLimit,
+        investigationTurns: budget.limits.investigationLimit, verificationReserveTurns: budget.limits.verificationLimit });
+      observer.setPlan(taskPlan);
+      for (const task of taskPlan) {
+        observer.markTaskStarted(task.id);
+        observer.markTaskOutcome(task.id, 'completed', completedTaskSourceDelivery(task.id, task.paths));
+      }
+      const observation = observer.snapshot('terminal');
+      if (!observation) throw new Error('Expected a composed resource observation for the physical budget test');
+      return { ...f.panel, taskPlan, composedResourceObservation: observation };
+    }) as never;
+
+    await runPublishingReviewWorker(f.env, f.deps);
+
+    expect(fetchImplementation).toHaveBeenCalledTimes(88);
+    expect(investigationSettled.some((result) => result.status === 'fulfilled')).toBe(true);
+    expect(investigationSettled.some((result) => result.status === 'rejected')).toBe(true);
+    expect(responseStatuses).toContain(503);
+    expect(responseStatuses).toContain(200);
+    expect([...attemptsByRequest.values()]).toContain(2);
+    expect(physicalSnapshot).toMatchObject({ totalLimit: 100, investigationLimit: 88, verificationLimit: 12,
+      totalStarted: 88, investigationStarted: 88, verificationStarted: 0,
+      verificationDenied: 0 });
+    expect(physicalSnapshot?.deniedAttempts).toBeGreaterThan(0);
+    expect(physicalSnapshot?.investigationDenied).toBe(physicalSnapshot?.deniedAttempts);
+    const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+    expect(completion.result.composedResources?.providerAttempts).toEqual(physicalSnapshot);
+    expect(completion.result.composedResources?.configuration.value?.effective.composed_budget.provider_attempt_budget)
+      .toMatchObject({ total_limit: 100, investigation_limit: 88, verifier_reserve: 12, operator_override_value: null });
+  });
+
   it('turns centrally verified documentation-only completion into audited gate eligibility', async () => {
     const f = fixture();
     const docsDiff = `diff --git a/docs/plan.md b/docs/plan.md\n--- a/docs/plan.md\n+++ b/docs/plan.md\n@@ -1 +1 @@\n-const value = 'old';\n+const value = 'new';\n`;

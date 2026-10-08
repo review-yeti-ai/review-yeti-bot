@@ -102,6 +102,23 @@ describe('AuthoritativePublishingResolver', () => {
     expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
+  it('binds the resolver service-owned composed attempt override into its prepared identity', async () => {
+    const f = fixture({ composedEngineMaxTurns: '200' });
+    const policyFile = file(JSON.stringify({ schema: 'exampleorg.review-policy.v1',
+      review_yeti: { personas: 'security,testing', budget: { max_investigation_turns: 20 },
+        review_engine: 'composed' } }));
+    f.immutablePolicyFile.mockResolvedValue(policyFile);
+
+    const result = await f.resolver.resolve(requested);
+
+    expect(result.prepared.config.review_configuration_receipt?.effective.composed_budget.provider_attempt_budget)
+      .toMatchObject({ capability_version: 'ReviewProviderAttemptBudget.v1', total_limit: 200,
+        investigation_limit: 188, verifier_reserve: 12, operator_override_value: 200 });
+    expect(result.prepared.policy.effectiveConfigDigest)
+      .toBe(preparePublishingPolicy(policyFile, transport, { owner: requested.owner, repo: requested.repo },
+        { composedEngineMaxTurns: '200' }).policy.effectiveConfigDigest);
+  });
+
   it.each(['candidateFactory', 'candidateRead', 'policyFactory', 'policyRevision', 'policyFile', 'finalCandidateRead'] as const)(
     'preserves only a typed transient source failure from %s', async (stage) => {
       const f = fixture();

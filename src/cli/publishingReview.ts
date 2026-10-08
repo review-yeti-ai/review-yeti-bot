@@ -31,7 +31,6 @@ import { githubRetryDeadlineFromEnv, type GitHubRetryOptions } from '../github/g
 import {
   buildGracefulComposedPanelResult,
   executeComposedReview,
-  resolveComposedEngineWorkBudget,
   resolveComposedProviderId,
   type ComposedCheckpointSnapshot,
 } from '../panel/composedEngine';
@@ -63,6 +62,7 @@ import {
 import type { ReviewModelClient } from '../gateway/openRouterClient';
 import { UpstreamCapacityRejectionError } from '../gateway/providerCapacityManager';
 import { ProviderAttemptBudget } from '../gateway/providerAttemptBudget';
+import { resolveComposedEngineWorkBudget } from '../panel/composedEngineBudget';
 import { withProviderConcurrencyLimit } from '../gateway/concurrencyLimitedModelClient';
 import { providerConcurrencyWorkerConfigFromEnv } from '../config/providerConcurrency';
 import type { ProviderLeaseCoordinator } from '../gateway/providerLeaseCoordinator';
@@ -2124,15 +2124,25 @@ export async function runPublishingReviewWorker(
     const modelClient = providerPublishingModelClient(boundedPublishingModelClient(
       deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey }),
     ), env, deps.providerLease, now);
-    const composedWorkBudget = reviewEngine === 'composed'
-      ? resolveComposedEngineWorkBudget(env, workerConfig.composed?.max_turns_total,
-        GROUNDED_DEFAULT_BUDGET.callsPerTask)
+    const preparedComposedBudget = workerConfig.review_configuration_receipt?.effective.composed_budget;
+    const preparedAttemptBudget = preparedComposedBudget?.provider_attempt_budget;
+    const legacyComposedWorkBudget = reviewEngine === 'composed' && !preparedAttemptBudget
+      ? resolveComposedEngineWorkBudget({}, preparedComposedBudget?.central_policy_total_turns
+        ?? workerConfig.composed?.max_turns_total, GROUNDED_DEFAULT_BUDGET.callsPerTask)
       : undefined;
-    const providerAttemptBudget = composedWorkBudget ? new ProviderAttemptBudget({
-      totalLimit: composedWorkBudget.totalTurns + composedWorkBudget.verificationReserveTurns,
-      investigationLimit: composedWorkBudget.totalTurns,
-      verificationLimit: composedWorkBudget.verificationReserveTurns,
-    }) : undefined;
+    const providerAttemptBudget = reviewEngine === 'composed'
+      ? new ProviderAttemptBudget(preparedAttemptBudget ? {
+        totalLimit: preparedAttemptBudget.total_limit,
+        investigationLimit: preparedAttemptBudget.investigation_limit,
+        verificationLimit: preparedAttemptBudget.verifier_reserve,
+      } : {
+        // Historical prepared configs did not bind an operator override. Keep those runs on the
+        // prepared central limit and let the Gate retain their explicit legacy receipt path.
+        totalLimit: legacyComposedWorkBudget!.totalTurns + legacyComposedWorkBudget!.verificationReserveTurns,
+        investigationLimit: legacyComposedWorkBudget!.totalTurns,
+        verificationLimit: legacyComposedWorkBudget!.verificationReserveTurns,
+      })
+      : undefined;
     // REL-1132: every call the engines make is metered into this run's ledger. The composed shadow
     // engine gets its own label so its cost never reads as panel cost.
     // Phase events describe only this gating publisher execution. Shadow review remains separate

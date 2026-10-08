@@ -7,6 +7,7 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from '../../src/review/groundedEvidenceV2';
 import { OpenRouterClient, type FetchImplementation, type GroundedVerifierRequestContextV1,
   type ReviewModelClient } from '../../src/gateway/openRouterClient';
+import { ProviderAttemptBudget } from '../../src/gateway/providerAttemptBudget';
 import { ComposedRuntimeResourceObserver, completeComposedRuntimeResources } from '../../src/panel/composedResourceReceipt';
 import { runIndependentGroundedVerification } from '../../src/review/groundedReviewEngine';
 import { GROUNDED_VERIFICATION_VERSION } from '../../src/review/groundedReviewEngine';
@@ -523,16 +524,19 @@ describe('normal engine qualification source and capture', () => {
       headSha: request.fixture.headSha, baseSha: request.fixture.baseSha, contextDigests: ['f'.repeat(64)], complete: true,
       files: [{ path: sourcePath, patchDigest: createHash('sha256').update(patch).digest('hex'), totalChars: patch.length,
         ranges: [[0, patch.length] as [number, number]], inline: true }] };
+    const providerAttemptBudget = new ProviderAttemptBudget({ totalLimit: 100, investigationLimit: 88, verificationLimit: 12 });
     const observer = new ComposedRuntimeResourceObserver({ configDigest: request.policy.configDigest,
-      configuration: prepared.config.review_configuration_receipt });
-    observer.configureBudget({ configuredTotalTurns: 1, investigationTurns: 1, verificationReserveTurns: 0 });
+      configuration: prepared.config.review_configuration_receipt, providerAttemptBudget });
+    observer.configureBudget({ configuredTotalTurns: providerAttemptBudget.limits.totalLimit,
+      investigationTurns: providerAttemptBudget.limits.investigationLimit,
+      verificationReserveTurns: providerAttemptBudget.limits.verificationLimit });
     observer.setPlan([task]);
     observer.markTaskStarted(task.id);
     observer.markTaskOutcome(task.id, 'completed', sourceDelivery);
     const observation = observer.snapshot('terminal');
     if (!observation) throw new Error('expected a qualification composed resource snapshot');
     const resources = completeComposedRuntimeResources({ observation,
-      configDigest: request.policy.configDigest, verifierCalls: 0 });
+      configDigest: request.policy.configDigest, verifierCalls: 0, providerAttemptBudget: providerAttemptBudget.snapshot() });
     if (!resources) throw new Error('expected worker-stage composed resources');
     const persistedResources = vi.fn(async () => ({
       path: normalEngineQualificationComposedResourcesRelativePath(request.runId, request.phase, request.fixture.caseId),

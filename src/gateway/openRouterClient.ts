@@ -2075,8 +2075,10 @@ export class OpenRouterClient implements ReviewModelClient {
         if (error instanceof ProviderAttemptBudgetExceededError) providerAttemptBudgetExceeded = error;
         throw error;
       }
-      // A followed redirect would create an HTTP request outside the attempt hook and its budget.
-      return this.fetchImplementation(input, { ...init, redirect: 'error' });
+      // A budgeted request cannot follow a redirect outside its attempt hook. Leave other clients'
+      // historical redirect behavior unchanged.
+      return this.fetchImplementation(input, request.beforePhysicalAttempt
+        ? { ...init, redirect: 'error' } : init);
     };
     let requestDeadlineExpired = false;
     let callerCancelled = false;
