@@ -17,7 +17,11 @@ import {
 } from '../../src/review/prReviewPlanningContext';
 import type { ReviewTask } from '../../src/panel/reviewTask';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
-import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
+import {
+  completeCurrentVersionLifecycleHistory,
+  groundedFixtureClient,
+  groundedFixtureProvider,
+} from '../support/groundedReviewFixture';
 
 const BASE = 'b'.repeat(40);
 const COMMIT_SHA_ORIGINAL = '1'.repeat(40);
@@ -48,6 +52,34 @@ function checkClient() {
   return {
     createCheck: vi.fn(async () => 4242),
     completeCheck: vi.fn(async () => {}),
+  };
+}
+
+function enableLifecycleHistory(policyDigest: string, configDigest: string) {
+  const source = completeCurrentVersionLifecycleHistory();
+  const read = source.read;
+  return {
+    prLifecycleHistory: {
+      ...source,
+      read: async () => {
+        const history = await read();
+        return {
+          ...history,
+          events: history.events.map((event) => ({
+            ...event,
+            policyDigest,
+            configDigest,
+          })),
+        };
+      },
+    } as never,
+    findingThreadReader: (async (_pr: any, expectedHeadSha: string) => ({
+      source: 'service' as const,
+      headSha: expectedHeadSha,
+      complete: true,
+      omittedCount: 0,
+      threads: [],
+    })) as never,
   };
 }
 
@@ -161,6 +193,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
+            ...enableLifecycleHistory(prepared.policy.effectivePolicyDigest, prepared.policy.effectiveConfigDigest),
             composedReviewRunner,
             reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
             reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
@@ -203,6 +236,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
+            ...enableLifecycleHistory(prepared.policy.effectivePolicyDigest, prepared.policy.effectiveConfigDigest),
             reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
             reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
             sourceLoader: vi.fn(async () => ({
@@ -258,6 +292,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
+            ...enableLifecycleHistory(prepared.policy.effectivePolicyDigest, prepared.policy.effectiveConfigDigest),
             reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
             reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
             sourceLoader: vi.fn(async () => ({
@@ -327,6 +362,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
+            ...enableLifecycleHistory(prepared.policy.effectivePolicyDigest, prepared.policy.effectiveConfigDigest),
             composedReviewRunner,
             reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
             reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
@@ -386,6 +422,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
+            ...enableLifecycleHistory(prepared.policy.effectivePolicyDigest, prepared.policy.effectiveConfigDigest),
             composedReviewRunner,
             reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
             reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
@@ -443,6 +480,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
+            ...enableLifecycleHistory(prepared.policy.effectivePolicyDigest, prepared.policy.effectiveConfigDigest),
             reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
             reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
             sourceLoader: vi.fn(async () => ({
