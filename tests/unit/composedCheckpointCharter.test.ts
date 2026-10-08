@@ -33,7 +33,8 @@ const plannerPlan: ReviewTask[] = [
 
 function summary(hypotheses: PreCheckSummary['hypotheses']): PreCheckSummary {
   return { enabled: true, analyzersExecuted: 1, hypothesesCount: hypotheses.length, status: 'ok',
-    receipts: [{ tool: 'semgrep', category: 'security', available: true, exitStatus: 0, durationMs: 1, hypotheses }],
+    receipts: [{ tool: 'semgrep', category: 'security', available: true, exitStatus: 0, durationMs: 1,
+      scannedPaths: changedFiles.map((file) => file.path), hypotheses }],
     hypotheses };
 }
 
