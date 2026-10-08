@@ -3,6 +3,8 @@ import {
   MAX_AUTHORITATIVE_CHANGED_FILES_BYTES, MAX_AUTHORITATIVE_DIFF_BYTES,
   MAX_GROUNDED_IMPORT_SOURCE_PROBES, type AuthoritativeReviewReader, type ReviewRepositoryIdentity,
 } from '../github/authoritativeReviewReader';
+import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError }
+  from '../github/authoritativeReadFailure';
 import type { StoredReviewGate, TrustedGateCompletionContext } from './reviewGateContracts';
 import type { AuthoritativePublishingResolver } from './authoritativePublishingResolver';
 import { buildAuthoritativeReviewIdentity, reviewPolicySourceSchema, type CurrentReviewCandidate } from './authoritativeReviewIdentity';
@@ -251,9 +253,19 @@ function classified(reason: TrustedCompletionResolutionReason): Error {
   return new ClassifiedCompletionError(reason);
 }
 
-/** Read the class off a classified failure, defaulting to the transient class. */
+/** Preserve only fixed, service-owned failure classes at the redaction boundary. */
 function reasonOf(error: unknown): TrustedCompletionResolutionReason {
-  return error instanceof ClassifiedCompletionError ? error.reason : 'unknown';
+  if (error instanceof ClassifiedCompletionError) return error.reason;
+  if (error instanceof TransientAuthoritativeReadError) {
+    switch (error.kind) {
+      case 'network': return 'reader-network-unavailable';
+      case 'deadline': return 'deadline';
+      case 'retryable_server': return 'reader-server-unavailable';
+      case 'rate_limit': return 'reader-rate-limited';
+    }
+  }
+  if (error instanceof InternalGitHubDependencyUnavailableError) return 'reader-app-unavailable';
+  return 'unknown';
 }
 
 function checkedPrepared(input: PreparedPublishingPolicy | null): PreparedPublishingPolicy {

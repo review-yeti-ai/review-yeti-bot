@@ -14,15 +14,26 @@ describe('commit metadata audit', () => {
   });
 
   it.each([
-    ['author name', { an: `${ORG} bot` }, 'author'],
-    ['author email', { ae: `ops@${ORG}.com` }, 'author'],
-    ['committer email', { ce: `x@users.noreply.github.com+${ORG}-jason` }, 'committer'],
-    ['message', { body: `fix: touches ${['cisco', 'cdr'].join('-')}\n` }, 'message'],
-    ['spaced name', { an: ['Call', 'Telemetry'].join(' ') }, 'author'],
-  ])('rejects an organization reference in the %s', (_label, override, field) => {
-    const findings = findViolations([{ ...clean, ...override }]);
+    ['author name', { an: `${ORG} bot` }],
+    ['author email', { ae: `ops@${ORG}.com` }],
+    ['committer email', { ce: `x@users.noreply.github.com+${ORG}-jason` }],
+    ['spaced name', { an: ['Call', 'Telemetry'].join(' ') }],
+  ])('accepts contributor identity in the %s', (_label, override) => {
+    expect(findViolations([{ ...clean, ...override }])).toEqual([]);
+  });
+
+  it('still rejects a private repository reference in the message', () => {
+    const findings = findViolations([{ ...clean, body: `fix: touches ${['cisco', 'cdr'].join('-')}\n` }]);
     expect(findings).toHaveLength(1);
-    expect(findings[0].fields).toContain(field);
+    expect(findings[0].fields).toEqual(['message']);
+  });
+
+  it('accepts contributor identity in a trailing co-author credit', () => {
+    expect(findViolations([{ ...clean, body: `fix: public behavior\n\nCo-authored-by: ${ORG} Bot <bot@${ORG}.example>\n` }])).toEqual([]);
+  });
+
+  it('does not exempt a co-author-shaped line inside the message body', () => {
+    expect(findViolations([{ ...clean, body: `Co-authored-by: ${ORG} Bot <bot@${ORG}.example>\n\nAdditional body text\n` }])).toHaveLength(1);
   });
 });
 
@@ -45,15 +56,14 @@ describe('commit metadata audit against a real git range', () => {
       const base = commit('chore: base', 'Review Yeti Maintainers', 'maintainers@users.noreply.github.com');
       const good = commit('fix: one\n\nbody line two\nCo-authored-by: Someone <someone@example.com>', 'Review Yeti Maintainers', 'maintainers@users.noreply.github.com');
       const bad = commit(`feat: two\n\nmentions ${['cisco', 'cdr'].join('-')} in the body`, 'Review Yeti Maintainers', 'maintainers@users.noreply.github.com');
-      const badAuthor = commit('docs: three', `${ORG} Bot`, `bot@${ORG}.example`);
+      const affiliatedAuthor = commit('docs: three', `${ORG} Bot`, `bot@${ORG}.example`);
 
       const records = readRange(`${base}..HEAD`, dir);
-      expect(records.map((r: { sha: string }) => r.sha)).toEqual([badAuthor, bad, good]);
+      expect(records.map((r: { sha: string }) => r.sha)).toEqual([affiliatedAuthor, bad, good]);
       expect(records[2].body).toContain('body line two');
       const findings = findViolations(records);
-      expect(findings.map((f: { sha: string }) => f.sha)).toEqual([badAuthor, bad]);
-      expect(findings[0].fields).toContain('author');
-      expect(findings[1].fields).toEqual(['message']);
+      expect(findings.map((f: { sha: string }) => f.sha)).toEqual([bad]);
+      expect(findings[0].fields).toEqual(['message']);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
