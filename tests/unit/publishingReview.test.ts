@@ -4022,9 +4022,17 @@ describe('telemetry integration with protected composed closeout', () => {
     let receivedResumedCompletedTasks: any[] = [];
     const composedReviewRunner = vi.fn(async (options: any) => {
       receivedResumedCompletedTasks = options.checkpoint?.resumed?.completedTasks ?? [];
-      const observer = new ComposedRuntimeResourceObserver({ configDigest: prepared.policy.effectiveConfigDigest,
-        configuration: prepared.config.review_configuration_receipt });
-      observer.configureBudget({ configuredTotalTurns: 1, investigationTurns: 1, verificationReserveTurns: 0 });
+      const budget = options.providerAttemptBudget as ProviderAttemptBudget;
+      const observer = new ComposedRuntimeResourceObserver({
+        configDigest: prepared.policy.effectiveConfigDigest,
+        configuration: prepared.config.review_configuration_receipt,
+        providerAttemptBudget: budget,
+      });
+      observer.configureBudget({
+        configuredTotalTurns: budget.limits.totalLimit,
+        investigationTurns: budget.limits.investigationLimit,
+        verificationReserveTurns: budget.limits.verificationLimit,
+      });
       observer.setPlan(plan);
       observer.markTaskStarted('task-a');
       observer.markTaskOutcome('task-a', 'completed', receipt);
@@ -4042,11 +4050,55 @@ describe('telemetry integration with protected composed closeout', () => {
     });
 
     const readCheckpoint = vi.fn(async () => ({ checkpoint, disputedFindingRechecks: [] }));
+    const history = {
+      read: vi.fn(async () => ({
+        version: 'PrLifecycleHistorySnapshot.v1' as const,
+        snapshotId: randomUUID(),
+        contextDigest: 'a'.repeat(64),
+        status: 'complete' as const,
+        groundedEvidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+        events: [{
+          eventId: `ev_${'1'.repeat(32)}`,
+          type: 'review.completion_recorded' as const,
+          eventType: 'review.completion_recorded' as const,
+          headSha: COMMIT_SHA_ORIGINAL,
+          recordedAt: new Date(1_000).toISOString(),
+          runId: `run_${'1'.repeat(32)}`,
+          findingFingerprint: 'f'.repeat(64),
+          evidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+          policyDigest: prepared.policy.effectivePolicyDigest,
+          configDigest: prepared.policy.effectiveConfigDigest,
+          coverageComplete: true,
+          quorumSatisfied: true,
+        }],
+        findings: [],
+        authenticatedDisputes: { status: 'complete' as const, disputes: [], paths: [] },
+        eventCount: 1,
+        findingCount: 0,
+        loadedEventCount: 1,
+        loadedFindingCount: 0,
+        eventOmittedCount: 0,
+        findingOmittedCount: 0,
+        legacyOmittedCount: 0,
+        eventsDigest: 'b'.repeat(64),
+        findingsDigest: 'c'.repeat(64),
+        omissions: [],
+      })),
+      recordVerification: vi.fn(async () => true),
+    };
 
     const result = await runPublishingReviewWorker(
       workerInput,
       deps({
         composedReviewRunner,
+        findingThreadReader: vi.fn(async (_pr: unknown, expectedHeadSha: string) => ({
+          source: 'service' as const,
+          headSha: expectedHeadSha,
+          complete: true,
+          omittedCount: 0,
+          threads: [],
+        })),
+        prLifecycleHistory: history as never,
         reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
         reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
         sourceLoader: vi.fn(async () => ({

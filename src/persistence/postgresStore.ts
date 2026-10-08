@@ -530,6 +530,46 @@ export class PostgresStore {
             );
           }
         }
+
+        // Seed Repositories
+        if (fallbackSeedData.repositories && fallbackSeedData.repositories.length > 0) {
+          for (const repoItem of fallbackSeedData.repositories) {
+            const repoId = repoItem.id || `repo-${repoItem.owner}-${repoItem.repo}`;
+            await client.query(
+              `INSERT INTO repositories (id, owner, repo, full_name, data, updated_at)
+               VALUES ($1, $2, $3, $4, $5, NOW())
+               ON CONFLICT (id) DO UPDATE SET owner = $2, repo = $3, full_name = $4, data = $5, updated_at = NOW()`,
+              [
+                repoId,
+                repoItem.owner,
+                repoItem.repo,
+                repoItem.full_name || `${repoItem.owner}/${repoItem.repo}`,
+                JSON.stringify(repoItem),
+              ]
+            );
+          }
+        }
+
+        // Seed Review Logs
+        if (fallbackSeedData.reviewLogs && fallbackSeedData.reviewLogs.length > 0) {
+          for (const log of fallbackSeedData.reviewLogs) {
+            await client.query(
+              `INSERT INTO review_logs (id, pr_run, repo, pr_number, head_sha, verdict, timestamp, data)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (id) DO UPDATE SET pr_run = $2, repo = $3, pr_number = $4, head_sha = $5, verdict = $6, timestamp = $7, data = $8`,
+              [
+                log.id,
+                log.prRun || '',
+                log.repo || '',
+                log.prNumber || null,
+                log.headSha || '',
+                log.arbiterVerdict || log.verdict || 'SHIP',
+                log.timestamp || new Date().toISOString(),
+                JSON.stringify(log),
+              ]
+            );
+          }
+        }
       }
 
       await client.query('COMMIT');

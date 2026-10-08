@@ -160,6 +160,12 @@ describe('Milestone 1 Stress & Edge Case Challenge Suite', () => {
     });
 
     it('resolves repository from id parameter', async () => {
+      dashboardStore.updateRepository('exampleorg', 'example-api', {
+        id: 'repo-example-api',
+        full_name: 'exampleorg/example-api',
+        automationEnabled: true,
+        strictnessProfile: 'balanced',
+      });
       const res = await request(app)
         .patch('/api/github/app-config/monitored-repos')
         .set(...authHeader)
