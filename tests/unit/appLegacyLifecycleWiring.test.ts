@@ -11,8 +11,11 @@ const fixture = vi.hoisted(() => ({
 
 vi.mock('../../src/persistence/postgresStore', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/persistence/postgresStore')>();
-  return { ...actual, postgresStore: { ...actual.postgresStore,
-    isConfigured: () => true, getPool: () => fixture.pool } };
+  const postgresStore = Object.assign(Object.create(actual.postgresStore), {
+    isConfigured: () => true,
+    getPool: () => fixture.pool,
+  });
+  return { ...actual, postgresStore };
 });
 vi.mock('../../src/persistence/reviewRunRepository', async importOriginal => {
   const actual = await importOriginal<typeof import('../../src/persistence/reviewRunRepository')>();
