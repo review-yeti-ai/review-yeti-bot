@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.120.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.120.3...v1.120.4) (2026-10-08)
+
+
+### Bug Fixes
+
+* **review:** trust actual analyzer scan coverage ([#1432](https://github.com/review-yeti-ai/review-yeti-bot/issues/1432)) ([b4b8254](https://github.com/review-yeti-ai/review-yeti-bot/commit/b4b8254ba52828bc9375882d964d0296f811a504))
+
 ## [1.120.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.120.2...v1.120.3) (2026-10-08)
 
 
