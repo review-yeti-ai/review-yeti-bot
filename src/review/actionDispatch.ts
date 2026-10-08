@@ -31,6 +31,8 @@ export const actionDispatchRequestSchema = z.object({
   incompleteP2Recovery: z.literal(true).optional(),
   /** Central qualification claim; the service compares this with its own prepared runtime capability. */
   qualificationRuntimeImageDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),
+  /** Consistency claim from the trusted central validator; the service compares it with its private origin. */
+  qualificationDispatchOriginSha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   checkId: positiveInteger.optional(),
   requestedAt: z.string().datetime({ offset: true }),
   caller: z.object({

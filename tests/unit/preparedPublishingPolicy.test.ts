@@ -157,14 +157,25 @@ describe('trusted prepared publishing policy', () => {
   });
   it('binds the service-owned qualification image digest into the prepared config identity and receipt', () => {
     const imageDigest = `sha256:${'a'.repeat(64)}`;
-    const prepared = preparePublishingPolicy(file(), transport, { owner: 'review-yeti-ai', repo: 'review-yeti-qualification' }, {
+    const originDigest = 'b'.repeat(64);
+    const trustedRuntime = {
       qualificationRuntimeImageDigest: imageDigest,
-    });
+      qualificationDispatchOriginSha256: originDigest,
+    };
+    const prepared = preparePublishingPolicy(file(), transport,
+      { owner: 'review-yeti-ai', repo: 'review-yeti-qualification' }, trustedRuntime);
+    const otherOrigin = preparePublishingPolicy(file(), transport,
+      { owner: 'review-yeti-ai', repo: 'review-yeti-qualification' }, {
+        qualificationRuntimeImageDigest: imageDigest, qualificationDispatchOriginSha256: 'c'.repeat(64),
+      });
     const legacy = preparePublishingPolicy(file(), transport, { owner: 'review-yeti-ai', repo: 'review-yeti-qualification' });
     const envelope = JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config,
       transport, qualificationRuntimeImageDigest: imageDigest });
 
     expect(prepared.qualificationRuntimeImageDigest).toBe(imageDigest);
+    expect(prepared.qualificationDispatchOriginSha256).toBe(originDigest);
+    expect(prepared.policy.effectiveConfigDigest).toBe(otherOrigin.policy.effectiveConfigDigest);
+    expect(prepared.policy.effectivePolicyDigest).not.toBe(otherOrigin.policy.effectivePolicyDigest);
     expect(prepared.policy.effectiveConfigDigest).not.toBe(legacy.policy.effectiveConfigDigest);
     expect(prepared.policy.effectivePolicyDigest).not.toBe(legacy.policy.effectivePolicyDigest);
     expect(parsePreparedReviewExecution(envelope, prepared.policy.effectiveConfigDigest, transport))

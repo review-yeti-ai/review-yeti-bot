@@ -1053,6 +1053,13 @@ export function createApp(): Express {
       admission: dispatchRepository,
       allowAppGate: oidcPolicy.allowAppGate,
       passthroughEnabled: dispatchConfig.passthroughEnabled,
+      qualificationInstance: dispatchConfig.qualificationInstance,
+      ...(dispatchConfig.qualificationRuntimeImageDigest === undefined ? {} : {
+        qualificationRuntimeImageDigest: dispatchConfig.qualificationRuntimeImageDigest,
+      }),
+      ...(dispatchConfig.qualificationDispatchOriginSha256 === undefined ? {} : {
+        qualificationDispatchOriginSha256: dispatchConfig.qualificationDispatchOriginSha256,
+      }),
       storageInitialized: legacyOperatorPause.requested ? () => false : undefined,
       authoritativePublishing: legacyOperatorPause.authority,
       requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,

@@ -120,6 +120,9 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
     ...(config.qualificationRuntimeImageDigest === undefined ? {} : {
       qualificationRuntimeImageDigest: config.qualificationRuntimeImageDigest,
     }),
+    ...(config.qualificationDispatchOriginSha256 === undefined ? {} : {
+      qualificationDispatchOriginSha256: config.qualificationDispatchOriginSha256,
+    }),
     ...(process.env.COMPOSED_ENGINE_MAX_TURNS === undefined ? {} : {
       composedEngineMaxTurns: process.env.COMPOSED_ENGINE_MAX_TURNS,
     }),

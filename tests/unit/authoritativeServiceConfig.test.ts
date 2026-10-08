@@ -205,6 +205,7 @@ describe('isolated qualification service authority', () => {
     REVIEW_YETI_PASSTHROUGH: 'false',
     ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: repository,
     REVIEW_JOB_WORKER_IMAGE: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'a'.repeat(64)}`,
+    REVIEW_QUALIFICATION_DISPATCH_ORIGIN: 'https://qualification.example.invalid',
     AUTHORITATIVE_REVIEW_ADMISSION_ENABLED: 'true',
     AUTHORITATIVE_REVIEW_REPOSITORY_IDS: String(repositoryId),
     AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES: JSON.stringify([identity]),
@@ -217,7 +218,8 @@ describe('isolated qualification service authority', () => {
 
     expect(config).toMatchObject({ expectedAppId: 4_385_771, admissionEnabled: true,
       repositoryIds: [repositoryId], repositoryIdentities: [identity],
-      qualificationRuntimeImageDigest: `sha256:${'a'.repeat(64)}` });
+      qualificationRuntimeImageDigest: `sha256:${'a'.repeat(64)}`,
+      qualificationDispatchOriginSha256: 'adb20508cacbfb8b288d51036d97e0571e165120098dbacbf5e1eb971331080c' });
     expect(config.publicRepository).toBeUndefined();
     expect(actionDispatchConfigFromEnv(configuredEnvironment as unknown as NodeJS.ProcessEnv))
       .toMatchObject({ qualificationInstance: true, passthroughEnabled: false });
@@ -233,6 +235,7 @@ describe('isolated qualification service authority', () => {
       { ...identity, owner: 'wrong-owner' },
     ]) }],
     ['the repository identity is missing', { AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES: undefined }],
+    ['the qualification dispatch origin is missing', { REVIEW_QUALIFICATION_DISPATCH_ORIGIN: undefined }],
     ['the existing App is not configured', { GITHUB_APP_ID: '4552718' }],
     ['the central target map is different', { ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: 'review-yeti-ai/review-yeti-bot' }],
   ])('rejects qualification service configuration when %s', (_reason, override) => {

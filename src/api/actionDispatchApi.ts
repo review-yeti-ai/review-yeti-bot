@@ -51,6 +51,7 @@ import { createPrLifecycleHistoryHandler } from './prLifecycleHistoryRoute';
 import type { ReviewLifecycleQueryable } from '../persistence/reviewPrLifecycleRepository';
 import { QUALIFICATION_REVIEW_REPOSITORY, QUALIFICATION_REVIEW_REPOSITORY_ID } from '../config/repositoryReviewAuthorityConstants';
 import { QUALIFICATION_RUNTIME_IMAGE_DIGEST_PATTERN } from '../config/qualificationRuntimeImage';
+import { QUALIFICATION_DISPATCH_ORIGIN_SHA256_PATTERN } from '../config/qualificationDispatchOrigin';
 
 
 export interface ActionOidcVerifier {
@@ -72,6 +73,8 @@ export interface ActionDispatchRouterOptions {
   qualificationInstance?: boolean;
   /** Actual digest derived at startup from this service's configured worker image. */
   qualificationRuntimeImageDigest?: string;
+  /** SHA-256 derived from the service-owned private qualification dispatch origin. */
+  qualificationDispatchOriginSha256?: string;
   /** False until the process has completed the schema bootstrap required by normal dispatch. */
   storageInitialized?: () => boolean;
   /** Exact service-owned external targets admitted through the trusted central workflow. */
@@ -154,6 +157,9 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     throw new Error('Invalid authoritative review admission configuration');
   }
   if (options.qualificationInstance === true) {
+    if (!QUALIFICATION_DISPATCH_ORIGIN_SHA256_PATTERN.test(options.qualificationDispatchOriginSha256 || '')) {
+      throw new Error('Qualification dispatch origin digest is required for the isolated service');
+    }
     if (options.passthroughEnabled !== false
       || !QUALIFICATION_RUNTIME_IMAGE_DIGEST_PATTERN.test(options.qualificationRuntimeImageDigest || '')
       || options.centralExternalRepositories?.size !== 1
@@ -164,6 +170,8 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     }
   } else if (options.qualificationRuntimeImageDigest !== undefined) {
     throw new Error('Qualification runtime image binding requires the service-owned qualification marker');
+  } else if (options.qualificationDispatchOriginSha256 !== undefined) {
+    throw new Error('Qualification dispatch origin binding requires the service-owned qualification marker');
   }
 
   router.post('/action', async (request: Request, response: Response) => {
@@ -213,11 +221,13 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     const requestIsQualification = `${dispatch.owner}/${dispatch.repo}` === QUALIFICATION_REVIEW_REPOSITORY;
     if (options.qualificationInstance === true) {
       if (!requestIsQualification || callerKind !== 'central'
-        || dispatch.qualificationRuntimeImageDigest !== options.qualificationRuntimeImageDigest) {
-        return response.status(403).json({ error: 'Qualification runtime image binding is not authorized' });
+        || dispatch.qualificationRuntimeImageDigest !== options.qualificationRuntimeImageDigest
+        || dispatch.qualificationDispatchOriginSha256 !== options.qualificationDispatchOriginSha256) {
+        return response.status(403).json({ error: 'Qualification dispatch binding is not authorized' });
       }
-    } else if (dispatch.qualificationRuntimeImageDigest !== undefined) {
-      return response.status(403).json({ error: 'Qualification runtime image binding is not authorized' });
+    } else if (dispatch.qualificationRuntimeImageDigest !== undefined
+      || dispatch.qualificationDispatchOriginSha256 !== undefined) {
+      return response.status(403).json({ error: 'Qualification dispatch binding is not authorized' });
     }
     if (options.requireExpectedGeneration === true
       && callerKind === 'central'
@@ -342,6 +352,10 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
           if (options.qualificationInstance === true
             && resolved.prepared.qualificationRuntimeImageDigest !== options.qualificationRuntimeImageDigest) {
             return response.status(503).json({ error: 'Qualification runtime image preparation is unavailable' });
+          }
+          if (options.qualificationInstance === true
+            && resolved.prepared.qualificationDispatchOriginSha256 !== options.qualificationDispatchOriginSha256) {
+            return response.status(503).json({ error: 'Qualification origin preparation is unavailable' });
           }
           authoritativeGate = {
             expectedAppId: expectedReviewAppIdFor(authoritative, {

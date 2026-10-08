@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { appendFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -14,8 +15,8 @@ const RUN_ID_PATTERN = /^run_[a-f0-9]{16,64}$/u;
 const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const QUALIFICATION_REPOSITORY = 'review-yeti-ai/review-yeti-qualification';
 const QUALIFICATION_REPOSITORY_ID = 1_409_547_157;
-const QUALIFICATION_DOKS_DISPATCH_HOST = 'review-bot.calltelemetry.com';
 const QUALIFICATION_RUNTIME_IMAGE_DIGEST_PATTERN = /^sha256:[a-f0-9]{64}$/u;
+const QUALIFICATION_DISPATCH_ORIGIN_SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const SUPPORTED_EVENTS = new Set(['pull_request', 'pull_request_target', 'workflow_dispatch', 'repository_dispatch']);
 const DISPATCH_RETRY_DELAYS_MS = Object.freeze([1_000, 2_000]);
 const RETRYABLE_DISPATCH_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -50,13 +51,12 @@ function sha(environment, name) {
 }
 
 /**
- * The admission endpoint is supplied by the trusted base-owned calling workflow.
- * The ordinary route has no source-owned hostname, while qualification uses one
- * isolated hostname. Both are validated structurally: HTTPS, a real DNS hostname
- * (no IP literal, no single-label or localhost name), an exact path, and no credentials,
- * query or fragment. The qualification path is additionally bound to the one source-owned
- * repository, its image digest claim, and its isolated service hostname. Admission is still
- * bound by GitHub Actions OIDC on the service side.
+ * The admission endpoint is supplied by a trusted base-owned workflow. Both routes
+ * are validated structurally: HTTPS, a DNS hostname (no IP literal, single-label
+ * name, or localhost), an exact path, and no credentials, query, or fragment. The
+ * qualification route additionally matches an origin digest emitted by the trusted
+ * central validator, the exact target repository, app-gate mode, and image digest.
+ * The service independently checks the same digest and OIDC identity.
  */
 export function validateDispatchEndpoint(raw, requestContext) {
   let url;
@@ -80,6 +80,10 @@ export function validateDispatchEndpoint(raw, requestContext) {
     && !QUALIFICATION_RUNTIME_IMAGE_DIGEST_PATTERN.test(requestContext?.qualificationRuntimeImageDigest || '')) {
     throw new Error('Qualification runtime image digest is required for the isolated endpoint');
   }
+  if (qualificationClaimed
+    && !QUALIFICATION_DISPATCH_ORIGIN_SHA256_PATTERN.test(requestContext?.qualificationDispatchOriginSha256 || '')) {
+    throw new Error('Qualification dispatch origin digest is required for the isolated endpoint');
+  }
   const qualificationPath = url.pathname === QUALIFICATION_DOKS_DISPATCH_PATH;
   if (qualificationClaimed && !qualificationIdentity) {
     throw new Error('Qualification endpoint requires the exact qualification target and image digest');
@@ -89,9 +93,6 @@ export function validateDispatchEndpoint(raw, requestContext) {
   }
   if (qualificationPath && !qualificationIdentity) {
     throw new Error('Qualification endpoint requires the exact qualification target and image digest');
-  }
-  if (qualificationPath && host !== QUALIFICATION_DOKS_DISPATCH_HOST) {
-    throw new Error(`Qualification endpoint host must be ${QUALIFICATION_DOKS_DISPATCH_HOST}`);
   }
   const valid = url.protocol === 'https:'
     && url.port === ''
@@ -105,6 +106,12 @@ export function validateDispatchEndpoint(raw, requestContext) {
     && url.search === ''
     && url.hash === '';
   if (!valid) throw new Error(`DOKS dispatch endpoint must be an https URL with a DNS hostname and the exact path ${DOKS_DISPATCH_PATH}`);
+  if (qualificationPath) {
+    const originSha256 = createHash('sha256').update(url.origin).digest('hex');
+    if (originSha256 !== requestContext.qualificationDispatchOriginSha256) {
+      throw new Error('Qualification endpoint origin digest does not match the trusted central origin');
+    }
+  }
   return url;
 }
 
@@ -125,6 +132,7 @@ export function buildDispatchRequest(environment) {
   const repository = required(environment, 'REPOSITORY');
   if (!REPOSITORY_PATTERN.test(repository)) throw new Error('REPOSITORY must be owner/name');
   const [owner, repo] = repository.split('/');
+  const publishMode = String(environment.DOKS_PUBLISH_MODE || 'disabled').trim();
   const qualificationRuntimeImageDigestRaw = String(environment.QUALIFICATION_RUNTIME_IMAGE_DIGEST ?? '');
   const qualificationRuntimeImageDigest = qualificationRuntimeImageDigestRaw.trim();
   if (qualificationRuntimeImageDigestRaw !== qualificationRuntimeImageDigest
@@ -132,12 +140,20 @@ export function buildDispatchRequest(environment) {
     throw new Error('Qualification runtime image digest must be exactly sha256:<64 lowercase hex>');
   }
   if (qualificationRuntimeImageDigest && (repository !== QUALIFICATION_REPOSITORY
-    || String(environment.DOKS_PUBLISH_MODE || 'disabled').trim() !== 'app-gate')) {
+    || publishMode !== 'app-gate')) {
     throw new Error('Qualification runtime image digest is allowed only for the exact qualification target in app-gate mode');
   }
-  const publishMode = String(environment.DOKS_PUBLISH_MODE || 'disabled').trim();
   if (publishMode !== 'disabled' && publishMode !== 'app-gate') {
     throw new Error('DOKS publish mode must be disabled or app-gate');
+  }
+  const qualificationDispatchOriginSha256Raw = String(environment.QUALIFICATION_DISPATCH_ORIGIN_SHA256 ?? '');
+  const qualificationDispatchOriginSha256 = qualificationDispatchOriginSha256Raw.trim();
+  if (qualificationDispatchOriginSha256Raw !== qualificationDispatchOriginSha256
+    || (qualificationDispatchOriginSha256 && !QUALIFICATION_DISPATCH_ORIGIN_SHA256_PATTERN.test(qualificationDispatchOriginSha256))) {
+    throw new Error('Qualification dispatch origin digest must be exactly 64 lowercase hex');
+  }
+  if (qualificationDispatchOriginSha256 && (repository !== QUALIFICATION_REPOSITORY || publishMode !== 'app-gate')) {
+    throw new Error('Qualification dispatch origin digest is allowed only for the exact qualification target in app-gate mode');
   }
   const refreshRequestedRaw = String(environment.REFRESH_REQUESTED ?? '').trim().toLowerCase();
   if (refreshRequestedRaw !== '' && refreshRequestedRaw !== 'false' && refreshRequestedRaw !== 'true') {
@@ -172,6 +188,10 @@ export function buildDispatchRequest(environment) {
   if ((isQualificationRepository && (!qualificationRuntimeImageDigest || repositoryId !== QUALIFICATION_REPOSITORY_ID))
     || (qualificationRuntimeImageDigest && repositoryId !== QUALIFICATION_REPOSITORY_ID)) {
     throw new Error('The exact qualification target requires a qualification runtime image digest and repository ID 1409547157');
+  }
+  if ((isQualificationRepository && !qualificationDispatchOriginSha256)
+    || (qualificationDispatchOriginSha256 && repositoryId !== QUALIFICATION_REPOSITORY_ID)) {
+    throw new Error('The exact qualification target requires a central dispatch origin digest and repository ID 1409547157');
   }
   const prNumber = positiveInteger(environment, 'PR_NUMBER');
   const runId = required(environment, 'GITHUB_RUN_ID');
@@ -269,6 +289,7 @@ export function buildDispatchRequest(environment) {
     ...(expectedGeneration === undefined ? {} : { expectedGeneration }),
     ...(incompleteP2Recovery ? { incompleteP2Recovery: true } : {}),
     ...(qualificationRuntimeImageDigest ? { qualificationRuntimeImageDigest } : {}),
+    ...(qualificationDispatchOriginSha256 ? { qualificationDispatchOriginSha256 } : {}),
     requestedAt: new Date().toISOString(),
     caller: {
       runId,

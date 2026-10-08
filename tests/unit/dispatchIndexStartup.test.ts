@@ -102,6 +102,7 @@ function authoritativeConfig(): AuthoritativeServiceConfig {
 function qualificationAuthoritativeConfig(): AuthoritativeServiceConfig {
   return { expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, admissionEnabled: true, qualificationInstance: true,
     qualificationRuntimeImageDigest: `sha256:${'a'.repeat(64)}`,
+    qualificationDispatchOriginSha256: 'adb20508cacbfb8b288d51036d97e0571e165120098dbacbf5e1eb971331080c',
     repositoryIds: [1_409_547_157],
     repositoryIdentities: [{ repositoryId: 1_409_547_157, owner: 'review-yeti-ai', repo: 'review-yeti-qualification' }],
     tickMs: 1_000, policyRepository: { repositoryId: 987, owner: 'central', repo: 'policy' },
@@ -253,6 +254,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'false');
     vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-qualification');
     vi.stubEnv('REVIEW_JOB_WORKER_IMAGE', `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'a'.repeat(64)}`);
+    vi.stubEnv('REVIEW_QUALIFICATION_DISPATCH_ORIGIN', 'https://qualification.example.invalid');
     vi.stubEnv('GITHUB_APP_WEBHOOK_ENABLED', 'false');
     vi.stubEnv('REVIEW_YETI_MCP_ENABLED', 'false');
     vi.stubEnv('AUTHORITATIVE_REVIEW_ADMISSION_ENABLED', 'true');
@@ -263,6 +265,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.authoritative).toHaveBeenCalledWith(expect.objectContaining({ config, passthroughEnabled: false }));
     expect(mocks.createApp).toHaveBeenCalledWith(expect.objectContaining({ passthroughEnabled: false,
       qualificationRuntimeImageDigest: `sha256:${'a'.repeat(64)}`,
+      qualificationDispatchOriginSha256: 'adb20508cacbfb8b288d51036d97e0571e165120098dbacbf5e1eb971331080c',
       centralExternalRepositories: new Map([['review-yeti-ai/review-yeti-qualification', 1_409_547_157]]) }));
     expect(mocks.remoteMcpRouter).not.toHaveBeenCalled();
     const options = mocks.createApp.mock.calls[0]![0] as unknown as {
@@ -281,6 +284,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'false');
     vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-qualification');
     vi.stubEnv('REVIEW_JOB_WORKER_IMAGE', `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'a'.repeat(64)}`);
+    vi.stubEnv('REVIEW_QUALIFICATION_DISPATCH_ORIGIN', 'https://qualification.example.invalid');
     vi.stubEnv('GITHUB_APP_WEBHOOK_ENABLED', 'false');
     vi.stubEnv('REVIEW_YETI_MCP_ENABLED', 'false');
     vi.stubEnv('AUTHORITATIVE_REVIEW_ADMISSION_ENABLED', 'true');
@@ -300,6 +304,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     vi.stubEnv('REVIEW_YETI_PASSTHROUGH', 'false');
     vi.stubEnv('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES', 'review-yeti-ai/review-yeti-qualification');
     vi.stubEnv('REVIEW_JOB_WORKER_IMAGE', `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'a'.repeat(64)}`);
+    vi.stubEnv('REVIEW_QUALIFICATION_DISPATCH_ORIGIN', 'https://qualification.example.invalid');
     vi.stubEnv('GITHUB_APP_WEBHOOK_ENABLED', 'false');
     vi.stubEnv('REVIEW_YETI_MCP_ENABLED', 'false');
     vi.stubEnv('AUTHORITATIVE_REVIEW_ADMISSION_ENABLED', 'true');

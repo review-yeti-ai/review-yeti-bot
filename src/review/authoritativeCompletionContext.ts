@@ -272,6 +272,9 @@ function checkedPrepared(input: PreparedPublishingPolicy | null): PreparedPublis
   if (!input || input.version !== 'PreparedPublishingPolicy.v1'
     || Buffer.byteLength(JSON.stringify(input), 'utf8') > 256 * 1024) throw unavailable();
   const policy = policySchema.parse(input.policy);
+  const qualificationDispatchOriginSha256 = input.qualificationDispatchOriginSha256 === undefined ? undefined
+    : digest.parse(input.qualificationDispatchOriginSha256);
+  if ((qualificationDispatchOriginSha256 === undefined) !== (input.qualificationRuntimeImageDigest === undefined)) throw unavailable();
   const config = verifyPreparedPublishingConfig(input.config, policy.effectiveConfigDigest, input.transport,
     input.qualificationRuntimeImageDigest);
   const expectedPersonaIds = personasSchema.parse(input.expectedPersonaIds);
@@ -283,6 +286,9 @@ function checkedPrepared(input: PreparedPublishingPolicy | null): PreparedPublis
     transport: { baseUrl: input.transport.baseUrl, model: input.transport.model },
     ...(input.qualificationRuntimeImageDigest === undefined ? {} : {
       qualificationRuntimeImageDigest: input.qualificationRuntimeImageDigest,
+    }),
+    ...(qualificationDispatchOriginSha256 === undefined ? {} : {
+      qualificationDispatchOriginSha256,
     }) };
 }
 
