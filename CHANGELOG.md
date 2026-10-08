@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.122.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.121.1...v1.122.0) (2026-10-08)
+
+
+### Features
+
+* **analytics:** expand api, mcp tooling, and ux dashboards for checkpoints, compaction, and finding lifecycle ([553f075](https://github.com/review-yeti-ai/review-yeti-bot/commit/553f0759c993e15b6481f8565f2f475477781919))
+* **review:** implement next-gen architecture with finding state machine, unbounded ast streaming, content-addressed checkpoints, blocker fast-path, and deterministic sast ([075043c](https://github.com/review-yeti-ai/review-yeti-bot/commit/075043cfd231a56b5da68481113b2697fd3577d2))
+
+
+### Bug Fixes
+
+* **analytics:** purge all synthetic demo data, mock repositories, and fabricated model ratios ([4baddef](https://github.com/review-yeti-ai/review-yeti-bot/commit/4baddef498cd3518f5a6bb91d1d3399cc7b82cf4))
+* **audit:** anonymize repository references and satisfy compaction capability contracts ([7ed61d3](https://github.com/review-yeti-ai/review-yeti-bot/commit/7ed61d30b2b7e98d7ed546e346c21fb67c419c3f))
+* **review:** align mcp tool counts and file coverage quorum rationale ([77b0af1](https://github.com/review-yeti-ai/review-yeti-bot/commit/77b0af17211687ad75e31360b389b3133bc323e0))
+* **review:** isolate plan ast context, enable delta incremental review, and gate test dashboard fixtures ([ad37350](https://github.com/review-yeti-ai/review-yeti-bot/commit/ad373503d9f3aff53fc003bf761d128dc6493a74))
+* **review:** preserve lockfile coverage obligation in mixed diffs and align schema defaults ([68d9499](https://github.com/review-yeti-ai/review-yeti-bot/commit/68d9499a0f4bbc1d194a83e03a7eb52939d06d01))
+* **review:** restore caller seed handling, preserve diff text in plan phase, and align checkpoint resource budgeting ([8cd0052](https://github.com/review-yeti-ai/review-yeti-bot/commit/8cd00523d2bb0657d7cc270e868ebc3b5944a7e4))
+* **review:** synchronize effective config schema parsing and wire lifecycle history in challenger tests ([871bc84](https://github.com/review-yeti-ai/review-yeti-bot/commit/871bc84d187d88197aa30a3eafe9c06e230ff165))
+
 ## [1.121.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.121.0...v1.121.1) (2026-10-08)
 
 
