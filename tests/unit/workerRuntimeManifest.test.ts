@@ -7,6 +7,11 @@ import { runWorkerSelfTest } from '../../src/cli/runLiveReview';
 import { WORKER_RUNTIME_MANIFEST_LIMITS } from '../../src/cli/workerRuntimeManifest';
 
 const ENTRYPOINT = 'dist/cli/runLiveReview.js';
+const REQUIRED_WORKER_SELF_TEST_MODULE_IDS = [
+  '../gateway/openRouterClient', '../panel/panelEngine', '../github/qualificationReader',
+  '../k8s/reviewJobProjection', '../k8s/reviewJobDispatchEngine', 'node:child_process',
+  '../qualification/normalEngineQualificationExternalV2',
+] as const;
 const sha256 = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 type Manifest = { version: string; entrypoint: string; files: Array<{ path: string; sha256: string }> };
 
@@ -154,7 +159,7 @@ describe('worker runtime manifest integrity through the production self-test', (
     expect(ioCalls.handles.every((handle) => handle.fd === -1)).toBe(true);
   }
 
-  it('accepts real listed bytes before loading the unchanged six module IDs and returns the raw manifest digest', async () => {
+  it('accepts real listed bytes before loading every required module ID and returns the raw manifest digest', async () => {
     await mkdir(join(root, 'node_modules/@example/worker'), { recursive: true });
     const dependencyBytes = Buffer.from([0, 1, 127, 128, 255]);
     await writeFile(join(root, 'node_modules/@example/worker/data.bin'), dependencyBytes);
@@ -165,12 +170,9 @@ describe('worker runtime manifest integrity through the production self-test', (
       ok: true,
       nodeVersion: process.versions.node,
       runtimeManifestDigest: sha256(bytes),
-      loadedModuleIds: [
-        '../gateway/openRouterClient', '../panel/panelEngine', '../github/qualificationReader',
-        '../k8s/reviewJobProjection', '../k8s/reviewJobDispatchEngine', 'node:child_process',
-      ],
+      loadedModuleIds: REQUIRED_WORKER_SELF_TEST_MODULE_IDS,
     });
-    expect(moduleLoader.mock.calls.flat()).toEqual(result.loadedModuleIds);
+    expect(moduleLoader.mock.calls.map(([moduleId]) => moduleId)).toEqual(REQUIRED_WORKER_SELF_TEST_MODULE_IDS);
   });
 
   it('rejects the formerly accepted header-only empty closure before any module is loaded', async () => {
@@ -302,8 +304,10 @@ describe('worker runtime manifest integrity through the production self-test', (
     manifest.files.push({ path: 'multi-chunk.bin', sha256: sha256(bytes) });
     manifest.files.push({ path: 'empty.bin', sha256: sha256('') });
     await save();
-    expect((await run()).ok).toBe(true);
-    expect(moduleLoader).toHaveBeenCalledTimes(6);
+    const result = await run();
+    expect(result.ok).toBe(true);
+    expect(result.loadedModuleIds).toEqual(REQUIRED_WORKER_SELF_TEST_MODULE_IDS);
+    expect(moduleLoader.mock.calls.map(([moduleId]) => moduleId)).toEqual(REQUIRED_WORKER_SELF_TEST_MODULE_IDS);
   });
 
   it('refuses corruption in the last partial read chunk before loading', async () => {
