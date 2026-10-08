@@ -524,10 +524,12 @@ describe('Empirical Challenger M4: Quorum Boundaries, Security Floor & Exclusion
   // Challenge 6: Configuration Schema Defaults & Robustness
   // =========================================================================
   describe('Challenge 6: Configuration Schema Defaults & Robustness', () => {
-    it('keeps absent quorum policy for legacy fallback and defaults explicit policy fields', () => {
-      // Absence keeps the legacy all-task behavior selected by the composed engine.
-      const legacy = composedEngineConfigSchema.parse({});
-      expect(legacy.quorum_policy).toBeUndefined();
+    it('defaults absent and explicit quorum policy fields and keeps strict validation', () => {
+      const absentDefaults = composedEngineConfigSchema.parse({});
+      expect(absentDefaults.quorum_policy?.mode).toBe('file_coverage');
+      expect(absentDefaults.quorum_policy?.min_file_coverage_pct).toBe(100);
+      expect(absentDefaults.quorum_policy?.enforce_security_floor).toBe(true);
+      expect(absentDefaults.quorum_policy?.blocker_fast_path_enabled).toBe(true);
 
       const explicitDefaults = composedEngineConfigSchema.parse({ quorum_policy: {} });
       expect(explicitDefaults.quorum_policy?.mode).toBe('file_coverage');
