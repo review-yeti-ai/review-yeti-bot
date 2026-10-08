@@ -699,7 +699,7 @@ describe('composed engine wiring', () => {
       providers: [{ id: 'codex', enabled: true, model: 'codex/model', effort: 'high', review_timeout_s: 15, arbiter_timeout_s: 15 }],
       arbiter: { order: ['codex'] },
     },
-    composed: { max_tasks: 1, max_turns_total: 4, max_turns_per_task: 2 },
+    composed: { max_tasks: 1, max_turns_total: 4, max_turns_per_task: 2, swarm_context_isolation: false },
   });
 
   // The first model call is the plan turn; its prompt carries the static diff prefix.

@@ -779,12 +779,13 @@ export function validateFileCoverageQuorum(
 
   // 2. Classify reviewable files (exempt pure docs and assets)
   const domainMap = classifyDomainLanesByHeuristic(changedFiles.map((p) => ({ path: p })));
-  const reviewableCodePaths = changedFiles.filter(
-    (p) => domainMap[p] !== 'docs_assets' && !isBypassDiffOnlyPath(p)
+
+  const allFilesDocsAssetsOrBypass = changedFiles.every(
+    (p) => domainMap[p] === 'docs_assets' || isBypassDiffOnlyPath(p)
   );
 
-  // If all files are documentation or assets, coverage is automatically satisfied
-  if (reviewableCodePaths.length === 0) {
+  // If all files are documentation, assets, or bypass lockfiles, coverage is automatically satisfied
+  if (allFilesDocsAssetsOrBypass) {
     const hasP1 = activeFindings.some((f) => f.severity === 'P1');
     return {
       satisfied: true,
@@ -802,6 +803,10 @@ export function validateFileCoverageQuorum(
       blockerFastPath: false,
     };
   }
+
+  const reviewableCodePaths = changedFiles.filter(
+    (p) => domainMap[p] !== 'docs_assets'
+  );
 
   // 3. Collect covered paths from completed tasks only
   const coveredSet = new Set<string>();

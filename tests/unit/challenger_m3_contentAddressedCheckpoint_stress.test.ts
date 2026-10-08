@@ -15,9 +15,41 @@ import {
 import { runPublishingReviewWorker, parseChangedFiles } from '../../src/cli/publishingReview';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
-import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
+import {
+  completeCurrentVersionLifecycleHistory,
+  groundedFixtureClient,
+  groundedFixtureProvider,
+} from '../support/groundedReviewFixture';
 import type { ReviewTask } from '../../src/panel/reviewTask';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
+
+function enableLifecycleHistory(policyDigest: string, configDigest: string) {
+  const source = completeCurrentVersionLifecycleHistory();
+  const read = source.read;
+  return {
+    prLifecycleHistory: {
+      ...source,
+      read: async () => {
+        const history = await read();
+        return {
+          ...history,
+          events: history.events.map((event) => ({
+            ...event,
+            policyDigest,
+            configDigest,
+          })),
+        };
+      },
+    } as never,
+    findingThreadReader: (async (_pr: any, expectedHeadSha: string) => ({
+      source: 'service' as const,
+      headSha: expectedHeadSha,
+      complete: true,
+      omittedCount: 0,
+      threads: [],
+    })) as never,
+  };
+}
 
 const COMMIT_SHA_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const COMMIT_SHA_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -609,6 +641,7 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
       groundedVerifierClient: groundedFixtureClient as never,
       repoFileProviderFactory: ((input: any) => groundedFixtureProvider(input)) as never,
       reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
+      ...enableLifecycleHistory(prepared.policy.effectivePolicyDigest, prepared.policy.effectiveConfigDigest),
       ...overrides,
     });
 
@@ -807,6 +840,7 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
             diffDigest: sha256(diff),
             githubReads: 0,
           })),
+          ...enableLifecycleHistory(prepared.policy.effectivePolicyDigest, prepared.policy.effectiveConfigDigest),
         } as any
       )
     ).rejects.toThrow('Exact-head checkpoint and disputed finding requests are required for a safe retry');
@@ -887,6 +921,7 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
             diffDigest: sha256(diff),
             githubReads: 0,
           })),
+          ...enableLifecycleHistory(prepared.policy.effectivePolicyDigest, prepared.policy.effectiveConfigDigest),
         } as any
       )
     ).rejects.toThrow('Review execution checkpoint does not match this exact-head review');
