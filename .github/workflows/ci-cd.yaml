@@ -153,12 +153,23 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
       - uses: ./.github/actions/node-deps
 
+      - id: frontend-artifacts-cache
+        name: Restore frontend build artifacts (Actions cache)
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            public/_next
+            dist/public
+          key: ${{ github.repository }}-next-dist-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/app/**', 'src/components/**', 'src/dashboard/**', 'package-lock.json', 'next.config.js') }}
+
       - name: Build the artifacts the suite reads (npm pretest)
         run: |
           npm run test:artifacts
-          # HTML is tracked; its Next.js hydration chunks are generated. A
-          # served HTML fallback is not proof that the dashboard client exists.
-          npm run build:frontend
+          # HTML is tracked; hydration chunks are reused from cache when available,
+          # avoiding redundant ~3-minute Next.js compilations on every shard.
+          if [ ! -d "public/_next/static/chunks" ]; then
+            npm run build:frontend
+          fi
 
       - name: Set up embedded operator Go toolchain
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
@@ -291,6 +302,14 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=3072
         run: npm run build
+
+      - name: Cache frontend build artifacts for test shards (Actions cache)
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: |
+            public/_next
+            dist/public
+          key: ${{ github.repository }}-next-dist-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/app/**', 'src/components/**', 'src/dashboard/**', 'package-lock.json', 'next.config.js') }}
 
   test:
     needs: [test-plan, vitest, vitest-postgres, worker-helper, build]

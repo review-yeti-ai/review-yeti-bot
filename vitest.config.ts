@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config';
 import path from 'path';
+import os from 'node:os';
 
 // Clear proxy environment variables to avoid Supertest routing to local proxy
 delete process.env.http_proxy;
@@ -71,8 +72,12 @@ export default (defineConfig as any)({
     ],
     pool: 'forks',
     forks: {
-      maxForks: process.env.VITEST_MAX_WORKERS ? Number(process.env.VITEST_MAX_WORKERS) : 4,
-      minForks: 1,
+      maxForks: process.env.VITEST_MAX_WORKERS
+        ? Number(process.env.VITEST_MAX_WORKERS)
+        : process.env.CI
+          ? Math.min(os.cpus().length, 2)
+          : 4,
+      minForks: process.env.CI ? Math.min(os.cpus().length, 2) : 1,
     },
     // REL-560: run test files in parallel. Serial execution left the runner idle -- measured 117%
     // CPU across a full run on a 16-core machine, versus 443% and a ~4x wall-clock win at four
