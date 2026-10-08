@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.121.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.120.5...v1.121.0) (2026-10-08)
+
+
+### Features
+
+* **qualification:** bind bounded WS5 runner to worker image ([#1435](https://github.com/review-yeti-ai/review-yeti-bot/issues/1435)) ([250cf0d](https://github.com/review-yeti-ai/review-yeti-bot/commit/250cf0dfadb0762796a86327078f1b07669811ce))
+
+
+### Bug Fixes
+
+* **qualification:** keep private runner bindings out of public source ([#1437](https://github.com/review-yeti-ai/review-yeti-bot/issues/1437)) ([9945e4e](https://github.com/review-yeti-ai/review-yeti-bot/commit/9945e4e5eddee6f80554bd74df0731285113f9ae))
+
 ## [1.120.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.120.4...v1.120.5) (2026-10-08)
 
 
