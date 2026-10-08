@@ -259,7 +259,8 @@ describe('POST /finding-threads (service)', () => {
   };
 
   async function v2App(options: { existing?: unknown[]; liveHead?: string; blockers?: string[]; blockerFindings?: unknown[];
-    p1Count?: number; failResolveOn?: number; workerEvidence?: (coordinates: any) => any } = {}) {
+    p1Count?: number; failResolveOn?: number; qualificationRuntimeImageDigest?: string;
+    workerEvidence?: (coordinates: any) => any } = {}) {
     const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
       personas: 'security,testing', budget: { max_investigation_turns: 20 },
       severity_policy: REVIEW_SEVERITY_POLICY_V2,
@@ -267,7 +268,10 @@ describe('POST /finding-threads (service)', () => {
     const prepared = preparePublishingPolicy({ content, source: {
       repositoryId: 123, repository: 'o/r', sha: 'a'.repeat(40), path: 'policy/review-yeti.json',
       contentDigest: sha256(content),
-    } }, { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' });
+    } }, { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' }, undefined,
+    options.qualificationRuntimeImageDigest === undefined ? undefined : {
+      qualificationRuntimeImageDigest: options.qualificationRuntimeImageDigest,
+    });
     const coordinates = { runId: RUN, repositoryId: 123, owner: 'o', repo: 'r', prNumber: 7,
       headSha: HEAD, baseSha: 'c'.repeat(40), policyDigest: prepared.policy.effectivePolicyDigest,
       configDigest: prepared.policy.effectiveConfigDigest, executionAttempt: 2 };
@@ -293,8 +297,9 @@ describe('POST /finding-threads (service)', () => {
         storedPolicy = {
           effective_policy_digest: values?.[0], version: values?.[1], effective_config_digest: values?.[2],
           config: JSON.parse(String(values?.[3])), transport: JSON.parse(String(values?.[4])),
-          sources: JSON.parse(String(values?.[5])), expected_persona_ids: JSON.parse(String(values?.[6])),
-          prepared_content_digest: values?.[7],
+          qualification_runtime_image_digest: values?.[5] ?? null,
+          sources: JSON.parse(String(values?.[6])), expected_persona_ids: JSON.parse(String(values?.[7])),
+          prepared_content_digest: values?.[8],
         };
         return { rows: [] };
       }
@@ -358,8 +363,24 @@ describe('POST /finding-threads (service)', () => {
       version: 'FindingThreadsRequest.v2', ...coordinates, reviewDecision: decision,
       ...overrides,
     });
-    return { server, db, calls, fetchImplementation, decision, v2Body };
+    return { server, db, calls, fetchImplementation, decision, v2Body, prepared, readStoredPrepared: () => storedPolicy };
   }
+
+  it('round-trips legacy-null and qualification-image capability columns with prepared provenance', async () => {
+    const imageDigests: Array<string | undefined> = [undefined, `sha256:${'e'.repeat(64)}`];
+    for (const qualificationRuntimeImageDigest of imageDigests) {
+      const fixture = await v2App({ qualificationRuntimeImageDigest });
+      const stored = fixture.readStoredPrepared();
+      expect(stored).toMatchObject({
+        effective_policy_digest: fixture.prepared.policy.effectivePolicyDigest,
+        effective_config_digest: fixture.prepared.policy.effectiveConfigDigest,
+        qualification_runtime_image_digest: qualificationRuntimeImageDigest ?? null,
+        sources: fixture.prepared.policy.sources,
+        expected_persona_ids: fixture.prepared.expectedPersonaIds,
+        prepared_content_digest: sha256({ version: 'PreparedReviewContent.v1', prepared: fixture.prepared }),
+      });
+    }
+  });
 
   it('refuses a missing bearer, a forged fingerprint, an unauthorized execution and a moved head', async () => {
     expect((await request(app().server).post('/finding-threads').send(body())).status).toBe(401);
