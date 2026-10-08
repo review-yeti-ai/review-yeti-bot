@@ -162,7 +162,7 @@ describe('executeComposedReview', () => {
     vi.stubEnv('COMPOSED_ENGINE_MAX_TURNS', '2');
     vi.spyOn(Math, 'random').mockReturnValue(0);
     let httpAttempts = 0;
-    const fetchImplementation = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImplementation = vi.fn(async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       httpAttempts += 1;
       const request = JSON.parse(String(init?.body));
       const requestText = lastText(request.messages);
