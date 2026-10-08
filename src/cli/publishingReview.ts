@@ -2020,7 +2020,9 @@ export async function runPublishingReviewWorker(
     const authenticatedDisputePaths = historySnapshotBound ? authenticatedDisputeProjection?.paths ?? [] : [];
     const historyAllowsCheckpointReuse = (planningHistoryContext.status === 'complete'
       && (planningHistoryContext.evidenceSemanticsCompatibility.compatibleForCheckpointReuse
-        || planningHistoryContext.evidenceSemanticsCompatibility.compatibleForContinuity));
+        || planningHistoryContext.evidenceSemanticsCompatibility.compatibleForContinuity))
+      || lifecycleHistory.status === 'unavailable'
+      || identity.executionAttempt > 1;
     const historyAllowsCoverageReuse = planningHistoryContext.status === 'complete'
       && planningHistoryContext.evidenceSemanticsCompatibility.compatibleForCoverageReuse;
     let historyAffectedPaths = [...new Set([

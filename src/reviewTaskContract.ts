@@ -25,7 +25,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { classifyDomainLanesByHeuristic } from './pathDomainContract';
+import { classifyDomainLanesByHeuristic, isBypassDiffOnlyPath } from './pathDomainContract';
 
 // ---------------------------------------------------------------------------
 // Task dimensions
@@ -780,7 +780,7 @@ export function validateFileCoverageQuorum(
   // 2. Classify reviewable files (exempt pure docs and assets)
   const domainMap = classifyDomainLanesByHeuristic(changedFiles.map((p) => ({ path: p })));
   const reviewableCodePaths = changedFiles.filter(
-    (p) => domainMap[p] !== 'docs_assets'
+    (p) => domainMap[p] !== 'docs_assets' && !isBypassDiffOnlyPath(p)
   );
 
   // If all files are documentation or assets, coverage is automatically satisfied

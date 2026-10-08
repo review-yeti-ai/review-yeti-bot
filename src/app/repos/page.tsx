@@ -281,7 +281,7 @@ export default function ReposPage() {
                   <Input
                     value={newRepo}
                     onChange={(e) => setNewRepo(e.target.value)}
-                    placeholder="e.g. backend-api"
+                    placeholder="e.g. example-api"
                     className="font-mono text-xs"
                   />
                 </div>

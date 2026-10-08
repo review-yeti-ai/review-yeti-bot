@@ -675,11 +675,21 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
     let receivedResumedCompletedTasks: any[] = [];
     const composedReviewRunner = vi.fn(async (options: any) => {
       receivedResumedCompletedTasks = options.checkpoint?.resumed?.completedTasks ?? [];
+      const budget = options.providerAttemptBudget;
       const observer = new ComposedRuntimeResourceObserver({
-        configDigest: prepared.policy.effectiveConfigDigest,
-        configuration: prepared.config.review_configuration_receipt,
+        configDigest: options.effectiveConfigDigest ?? prepared.policy.effectiveConfigDigest,
+        configuration: options.config?.review_configuration_receipt ?? prepared.config.review_configuration_receipt,
+        ...(budget ? { providerAttemptBudget: budget } : {}),
       });
-      observer.configureBudget({ configuredTotalTurns: 1, investigationTurns: 1, verificationReserveTurns: 0 });
+      if (budget) {
+        observer.configureBudget({
+          configuredTotalTurns: budget.limits.totalLimit,
+          investigationTurns: budget.limits.investigationLimit,
+          verificationReserveTurns: budget.limits.verificationLimit,
+        });
+      } else {
+        observer.configureBudget({ configuredTotalTurns: 1, investigationTurns: 1, verificationReserveTurns: 0 });
+      }
       observer.setPlan(plan);
       for (const t of plan) {
         observer.markTaskStarted(t.id);
