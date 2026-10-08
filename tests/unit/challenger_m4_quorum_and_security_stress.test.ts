@@ -286,9 +286,9 @@ describe('Empirical Challenger M4: Quorum Boundaries, Security Floor & Exclusion
   });
 
   // =========================================================================
-  // Challenge 4: Documentation, Asset, and Lockfile Bypass
+  // Challenge 4: Documentation and Asset Exclusion; Lockfile Coverage
   // =========================================================================
-  describe('Challenge 4: Documentation, Asset, and Lockfile Bypass', () => {
+  describe('Challenge 4: Documentation and Asset Exclusion; Lockfile Coverage', () => {
     it('isBypassDiffOnlyPath accurately recognizes lockfiles and non-config json', () => {
       expect(isBypassDiffOnlyPath('package-lock.json')).toBe(true);
       expect(isBypassDiffOnlyPath('yarn.lock')).toBe(true);
@@ -319,41 +319,72 @@ describe('Empirical Challenger M4: Quorum Boundaries, Security Floor & Exclusion
       expect(result.coveragePct).toBe(100);
       expect(result.verdict).toBe('SHIP');
       expect(result.status).toBe('COMPLETE');
-      expect(result.rationale).toContain('All changed files are documentation, assets, or bypass lockfiles');
+      expect(result.rationale).toContain('All changed files are documentation or assets');
     });
 
-    it('pure lockfile updates satisfy quorum with 0 tasks and SHIP verdict', () => {
+    it('pure lockfile updates require task coverage', () => {
       const pureLockfiles = ['package-lock.json', 'mix.lock', 'go.sum'];
-      const result = validateFileCoverageQuorum({ tasks: [] }, [], pureLockfiles);
-      expect(result.satisfied).toBe(true);
-      expect(result.coveragePct).toBe(100);
-      expect(result.verdict).toBe('SHIP');
+      const zeroTask = validateFileCoverageQuorum({ tasks: [] }, [], pureLockfiles);
+      expect(zeroTask.satisfied).toBe(false);
+      expect(zeroTask.coveragePct).toBe(0);
+      expect(zeroTask.verdict).toBe('BLOCK');
+      expect(zeroTask.status).toBe('INCOMPLETE_REVIEW');
+      expect(zeroTask.uncoveredPaths).toEqual(pureLockfiles);
+
+      const plan: ReviewTaskPlan = {
+        tasks: [
+          { id: 'task-lockfiles', dimension: 'dependencies', paths: pureLockfiles, question: 'lockfiles', rationale: 'lockfiles' },
+        ],
+      };
+      const covered = validateFileCoverageQuorum(
+        plan,
+        [{ nonce: 'n1', task: 'task-lockfiles', status: 'COMPLETE', findings: [] }],
+        pureLockfiles,
+      );
+      expect(covered.satisfied).toBe(true);
+      expect(covered.coveragePct).toBe(100);
+      expect(covered.verdict).toBe('SHIP');
+      expect(covered.coveredPaths).toEqual(pureLockfiles);
     });
 
-    it('mixed PR: docs and lockfiles are excluded from denominator, only code files counted', () => {
+    it('mixed PR: documentation is excluded while code and lockfiles require task coverage', () => {
       const mixedFiles = ['src/core.ts', 'README.md', 'package-lock.json', 'docs/api.md'];
-      const plan: ReviewTaskPlan = {
+      const codeOnlyPlan: ReviewTaskPlan = {
         tasks: [
           { id: 'task-core', dimension: 'architecture', paths: ['src/core.ts'], question: 'core', rationale: 'core' },
         ],
       };
 
-      // When src/core.ts is inspected:
+      // A task that only covers code leaves the lockfile unreviewed.
+      const codeOnlyRun = validateFileCoverageQuorum(
+        codeOnlyPlan,
+        [{ nonce: 'n1', task: 'task-core', status: 'COMPLETE', findings: [] }],
+        mixedFiles,
+      );
+      expect(codeOnlyRun.satisfied).toBe(false);
+      expect(codeOnlyRun.coveragePct).toBe(50);
+      expect(codeOnlyRun.coveredPaths).toEqual(['src/core.ts']);
+      expect(codeOnlyRun.uncoveredPaths).toEqual(['package-lock.json']);
+
+      const completePlan: ReviewTaskPlan = {
+        tasks: [
+          { id: 'task-core', dimension: 'architecture', paths: ['src/core.ts', 'package-lock.json'], question: 'core and lockfile', rationale: 'review both paths' },
+        ],
+      };
       const completeRun = validateFileCoverageQuorum(
-        plan,
+        completePlan,
         [{ nonce: 'n1', task: 'task-core', status: 'COMPLETE', findings: [] }],
         mixedFiles,
       );
       expect(completeRun.satisfied).toBe(true);
-      expect(completeRun.coveragePct).toBe(100); // 1 of 1 reviewable code files
-      expect(completeRun.coveredPaths).toEqual(['src/core.ts']);
+      expect(completeRun.coveragePct).toBe(100);
+      expect(completeRun.coveredPaths).toEqual(['src/core.ts', 'package-lock.json']);
       expect(completeRun.uncoveredPaths).toEqual([]);
 
-      // When src/core.ts is NOT inspected:
-      const incompleteRun = validateFileCoverageQuorum(plan, [], mixedFiles);
+      const incompleteRun = validateFileCoverageQuorum(codeOnlyPlan, [], mixedFiles);
       expect(incompleteRun.satisfied).toBe(false);
-      expect(incompleteRun.coveragePct).toBe(0); // 0 of 1 reviewable code files
-      expect(incompleteRun.uncoveredPaths).toEqual(['src/core.ts']);
+      expect(incompleteRun.coveragePct).toBe(0);
+      expect(incompleteRun.uncoveredPaths).toEqual(['src/core.ts', 'package-lock.json']);
     });
 
     it('pure docs PR with active P1 finding yields FIX_FIRST verdict while keeping quorum satisfied', () => {
@@ -493,12 +524,24 @@ describe('Empirical Challenger M4: Quorum Boundaries, Security Floor & Exclusion
   // Challenge 6: Configuration Schema Defaults & Robustness
   // =========================================================================
   describe('Challenge 6: Configuration Schema Defaults & Robustness', () => {
-    it('composedEngineConfigSchema defaults quorum_policy.mode to file_coverage and enforces strict validation', () => {
-      const defaulted = composedEngineConfigSchema.parse({});
-      expect(defaulted.quorum_policy?.mode).toBe('file_coverage');
-      expect(defaulted.quorum_policy?.min_file_coverage_pct).toBe(100);
-      expect(defaulted.quorum_policy?.enforce_security_floor).toBe(true);
-      expect(defaulted.quorum_policy?.blocker_fast_path_enabled).toBe(true);
+    it('defaults absent and explicit quorum policy fields and keeps strict validation', () => {
+      const absentDefaults = composedEngineConfigSchema.parse({});
+      expect(absentDefaults.quorum_policy?.mode).toBe('file_coverage');
+      expect(absentDefaults.quorum_policy?.min_file_coverage_pct).toBe(100);
+      expect(absentDefaults.quorum_policy?.enforce_security_floor).toBe(true);
+      expect(absentDefaults.quorum_policy?.blocker_fast_path_enabled).toBe(true);
+
+      const explicitDefaults = composedEngineConfigSchema.parse({ quorum_policy: {} });
+      expect(explicitDefaults.quorum_policy?.mode).toBe('file_coverage');
+      expect(explicitDefaults.quorum_policy?.min_file_coverage_pct).toBe(100);
+      expect(explicitDefaults.quorum_policy?.enforce_security_floor).toBe(true);
+      expect(explicitDefaults.quorum_policy?.blocker_fast_path_enabled).toBe(true);
+
+      const explicitMode = composedEngineConfigSchema.parse({ quorum_policy: { mode: 'all_tasks' } });
+      expect(explicitMode.quorum_policy?.mode).toBe('all_tasks');
+      expect(explicitMode.quorum_policy?.min_file_coverage_pct).toBe(100);
+      expect(explicitMode.quorum_policy?.enforce_security_floor).toBe(true);
+      expect(explicitMode.quorum_policy?.blocker_fast_path_enabled).toBe(true);
 
       // Rejects unknown property in strict schema
       expect(() =>

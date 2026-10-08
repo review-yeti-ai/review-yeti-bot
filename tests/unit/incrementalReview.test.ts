@@ -119,8 +119,8 @@ function mockReader(map: Record<string, CommitComparison>): CommitComparisonRead
 
 describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
 
-  describe('1. Incremental Qualification After Prior Failed Review With Blocking Findings', () => {
-    it('qualifies for incremental review when prior review failed with blocking P0/P1 findings but had complete coverage', () => {
+  describe('1. Prior Blocking Findings Require Full Review', () => {
+    it('requires a full review after prior blocking P0/P1 findings even with complete coverage', () => {
       const priorRecord: PriorReviewRecord = {
         runId: RUN_1,
         executionAttempt: 1,
@@ -160,15 +160,10 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
         delta: { maxChain: DEFAULT_INCREMENTAL_MAX_CHAIN },
       });
 
-      // Crucial: Must qualify as incremental rather than failing back to full review!
-      expect(decision.mode).toBe('incremental');
-      if (decision.mode === 'incremental') {
-        expect(decision.previous.headSha).toBe(HEAD_1);
-        expect(decision.deltaPaths).toContain(SINGLE_FILE);
-      }
+      expect(decision).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
     });
 
-    it('qualifies for incremental review when prior review had blocking P2 findings', () => {
+    it('requires a full review after prior blocking P2 findings', () => {
       const priorRecord: PriorReviewRecord = {
         runId: RUN_1,
         executionAttempt: 1,
@@ -208,7 +203,7 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
         delta: { maxChain: DEFAULT_INCREMENTAL_MAX_CHAIN },
       });
 
-      expect(decision.mode).toBe('incremental');
+      expect(decision).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
     });
 
     it('refuses incremental review when prior coverage is genuinely incomplete', () => {
@@ -283,8 +278,8 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
     });
   });
 
-  describe('2. Developer Pushes Fix in Single-File PR (Delta Scope Selected, No Abort)', () => {
-    it('selects incremental delta scope instead of aborting with nothing-carried-forward on single-file PR', () => {
+  describe('2. Developer Pushes Fix in Single-File PR (Full Findings Review, No Abort)', () => {
+    it('requires full review for a single-file fix to a prior finding', () => {
       const priorRecord: PriorReviewRecord = {
         runId: RUN_1,
         executionAttempt: 1,
@@ -315,12 +310,7 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
         delta: { maxChain: DEFAULT_INCREMENTAL_MAX_CHAIN },
       });
 
-      // Must NOT abort with nothing-carried-forward!
-      expect(decision.mode).toBe('incremental');
-      if (decision.mode === 'incremental') {
-        expect(decision.deltaPaths).toContain(SINGLE_FILE);
-        expect(decision.carriedForwardPaths).toEqual([]);
-      }
+      expect(decision).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
     });
 
     it('applies delta-scoped patch for single-file PR and generates disclosure', () => {
@@ -334,7 +324,7 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
           completionDigest: 'f'.repeat(64),
         },
         carriedForwardPaths: [],
-        openFindingPaths: [SINGLE_FILE],
+        openFindingPaths: [],
         deltaFiles: [{ path: SINGLE_FILE, patch: SINGLE_FILE_FIX_PATCH, hunks: 1 }],
         chainDepth: 1,
       };
@@ -349,7 +339,7 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
       expect(disclosure?.carriedForwardPaths).toEqual([]);
     });
 
-    it('selects delta mode for multi-file PR where all modified files had prior findings', () => {
+    it('requires full review when modified files carry prior findings', () => {
       const priorRecord: PriorReviewRecord = {
         runId: RUN_1,
         executionAttempt: 1,
@@ -386,14 +376,10 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
         delta: { maxChain: DEFAULT_INCREMENTAL_MAX_CHAIN },
       });
 
-      expect(decision.mode).toBe('incremental');
-      if (decision.mode === 'incremental') {
-        expect(decision.deltaPaths).toEqual([MULTI_FILE_A, MULTI_FILE_B]);
-        expect(decision.carriedForwardPaths).toEqual([]);
-      }
+      expect(decision).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
     });
 
-    it('plans incremental review successfully for single-file PR via planIncrementalReview', async () => {
+    it('plans incremental review successfully for a clean single-file PR via planIncrementalReview', async () => {
       const priorRecord: PriorReviewRecord = {
         runId: RUN_1,
         executionAttempt: 1,
@@ -406,10 +392,10 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
         completionDigest: 'f'.repeat(64),
         ageMs: 10_000,
         coverageComplete: true,
-        shipComplete: false,
-        findingPaths: [SINGLE_FILE],
+        shipComplete: true,
+        findingPaths: [],
         taskCount: 3,
-        findings: [openFindingFrom({ path: SINGLE_FILE, line: 45, severity: 'P1', title: 'Defect' })],
+        findings: [],
       };
 
       const reader = mockReader({
@@ -430,7 +416,7 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
       expect(plan?.decision.mode).toBe('incremental');
       expect(plan?.scope?.deltaFiles).toHaveLength(1);
       expect(plan?.scope?.deltaFiles![0].path).toBe(SINGLE_FILE);
-      expect(plan?.scope?.openFindings).toHaveLength(1);
+      expect(plan?.scope?.openFindings).toHaveLength(0);
     });
   });
 
@@ -625,7 +611,7 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
   });
 
   describe('5. End-to-End Integration of Finding-Centric Incremental State Machine', () => {
-    it('executes two-stage repair lifecycle from BLOCK to SHIP across three heads', async () => {
+    it('re-reviews each repair head in full until the blocking findings are cleared', async () => {
       // Head 1: Initial review reports 2 blockers (Finding A and Finding B)
       const findingA = openFindingFrom({ path: MULTI_FILE_A, line: 40, severity: 'P1', title: 'SQL injection' });
       const findingB = openFindingFrom({ path: MULTI_FILE_B, line: 100, severity: 'P1', title: 'Insecure cookie' });
@@ -662,11 +648,7 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
         delta: { maxChain: DEFAULT_INCREMENTAL_MAX_CHAIN },
       });
 
-      expect(decisionHead2.mode).toBe('incremental');
-      if (decisionHead2.mode === 'incremental') {
-        expect(decisionHead2.deltaPaths).toContain(MULTI_FILE_A);
-        expect(decisionHead2.openFindingPaths).toContain(MULTI_FILE_B);
-      }
+      expect(decisionHead2).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
 
       // Recheck resolves Finding A with HEAD_2; Finding B carried forward
       const head2FindingStates = [
@@ -708,11 +690,7 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
         delta: { maxChain: DEFAULT_INCREMENTAL_MAX_CHAIN },
       });
 
-      expect(decisionHead3.mode).toBe('incremental');
-      if (decisionHead3.mode === 'incremental') {
-        expect(decisionHead3.deltaPaths).toContain(MULTI_FILE_B);
-        expect(decisionHead3.carriedForwardPaths).toContain(MULTI_FILE_A);
-      }
+      expect(decisionHead3).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
 
       // Recheck resolves Finding B with HEAD_3 -> All findings resolved!
       const head3FindingStates = [
@@ -722,7 +700,7 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
       expect(head3FindingStates.every((f) => f.status === 'resolved')).toBe(true);
     });
 
-    it('verifies trusted incremental claim with delta paths and carried forward paths', async () => {
+    it('verifies a trusted incremental claim with no open prior findings', async () => {
       const claim = {
         version: 'IncrementalReview.v1' as const,
         previousRunId: RUN_1,
@@ -747,8 +725,9 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
         completionDigest: 'f'.repeat(64),
         ageMs: 30_000,
         coverageComplete: true,
-        shipComplete: false,
-        findingPaths: [MULTI_FILE_A],
+        shipComplete: true,
+        findingPaths: [],
+        findings: [],
       };
 
       const reader = mockReader({
@@ -772,4 +751,128 @@ describe('incrementalReview: Finding-Centric Incremental State Machine', () => {
     });
   });
 
+});
+
+describe('incrementalReview: prior finding fail-closed contract', () => {
+  it('plans a full review when prior finding paths or finding records are present', async () => {
+    const finding = openFindingFrom({
+      path: SINGLE_FILE,
+      line: 45,
+      severity: 'P1',
+      title: 'Unsanitized auth token passed to validator',
+    });
+    const prior: PriorReviewRecord = {
+      runId: RUN_1,
+      executionAttempt: 1,
+      repositoryId: 100,
+      prNumber: 42,
+      headSha: HEAD_1,
+      baseSha: BASE,
+      policyDigest: POLICY,
+      configDigest: CONFIG,
+      completionDigest: 'f'.repeat(64),
+      ageMs: 30_000,
+      coverageComplete: true,
+      shipComplete: false,
+      shipIncompleteReason: 'blocking-finding',
+      findingPaths: [SINGLE_FILE],
+      findings: [finding],
+    };
+    const reader = mockReader({
+      [`${HEAD_1}...${HEAD_2}`]: comparison('ahead', [
+        { path: SINGLE_FILE, status: 'modified', patch: SINGLE_FILE_FIX_PATCH },
+      ], HEAD_1),
+      [`${BASE}...${HEAD_1}`]: comparison('ahead', [SINGLE_FILE]),
+      [`${BASE}...${HEAD_2}`]: comparison('ahead', [SINGLE_FILE]),
+    });
+    const claim = {
+      version: 'IncrementalReview.v1' as const,
+      previousRunId: RUN_1,
+      previousExecutionAttempt: 1,
+      previousHeadSha: HEAD_1,
+      previousBaseSha: BASE,
+      previousCompletionDigest: prior.completionDigest,
+      carriedForwardPaths: [],
+      deltaPaths: [SINGLE_FILE],
+      chainDepth: 1,
+    };
+
+    for (const priorFindings of [
+      { findingPaths: [SINGLE_FILE], findings: [] },
+      { findingPaths: [], findings: [finding] },
+    ]) {
+      const plan = await planIncrementalReview({
+        env: { REVIEW_YETI_INCREMENTAL: 'all', REVIEW_YETI_INCREMENTAL_DELTA: 'all' },
+        repository: 'acme/repo',
+        current: currentIdentity(RUN_2, HEAD_2),
+        currentPaths: [SINGLE_FILE],
+        base: { read: async () => ({ prior: { ...prior, ...priorFindings },
+          maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS }) },
+        reader,
+      });
+
+      expect(plan?.decision).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
+      expect(plan?.scope).toBeNull();
+
+      const verification = await verifyIncrementalClaim({
+        claim,
+        prior: { ...prior, ...priorFindings },
+        maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS,
+        current: currentIdentity(RUN_2, HEAD_2),
+        currentPaths: [SINGLE_FILE],
+        reader,
+      });
+      expect(verification).toMatchObject({ verified: false, reason: 'prior-findings-require-full-review' });
+    }
+  });
+
+  it('verifies a trusted delta claim when the complete prior has no findings', async () => {
+    const prior: PriorReviewRecord = {
+      runId: RUN_1,
+      executionAttempt: 1,
+      repositoryId: 100,
+      prNumber: 42,
+      headSha: HEAD_1,
+      baseSha: BASE,
+      policyDigest: POLICY,
+      configDigest: CONFIG,
+      completionDigest: 'f'.repeat(64),
+      ageMs: 30_000,
+      coverageComplete: true,
+      shipComplete: true,
+      findingPaths: [],
+      findings: [],
+    };
+    const claim = {
+      version: 'IncrementalReview.v1' as const,
+      previousRunId: RUN_1,
+      previousExecutionAttempt: 1,
+      previousHeadSha: HEAD_1,
+      previousBaseSha: BASE,
+      previousCompletionDigest: prior.completionDigest,
+      carriedForwardPaths: [MULTI_FILE_B],
+      deltaPaths: [SINGLE_FILE],
+      chainDepth: 1,
+    };
+    const reader = mockReader({
+      [`${HEAD_1}...${HEAD_2}`]: comparison('ahead', [
+        { path: SINGLE_FILE, status: 'modified', patch: SINGLE_FILE_FIX_PATCH },
+      ], HEAD_1),
+      [`${BASE}...${HEAD_1}`]: comparison('ahead', [SINGLE_FILE, MULTI_FILE_B]),
+      [`${BASE}...${HEAD_2}`]: comparison('ahead', [SINGLE_FILE, MULTI_FILE_B]),
+    });
+
+    const verification = await verifyIncrementalClaim({
+      claim,
+      prior,
+      maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS,
+      current: currentIdentity(RUN_2, HEAD_2),
+      currentPaths: [SINGLE_FILE, MULTI_FILE_B],
+      reader,
+    });
+
+    expect(verification.verified).toBe(true);
+    expect(verification.reason).toBe('verified');
+    expect(verification.deltaFiles?.map((file) => file.path)).toEqual([SINGLE_FILE]);
+  });
 });

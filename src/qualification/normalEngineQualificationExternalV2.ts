@@ -125,6 +125,38 @@ function hasExactKeys(value: unknown, keys: string[]): value is Record<string, u
     && Object.keys(value).sort().join('|') === [...keys].sort().join('|'));
 }
 
+const EXTERNAL_NORMAL_V2_CREDENTIAL_FREE_ARMS = new Set([
+  'provider-failure', 'preflight-source-coverage-control', 'repair-head-history-unavailable',
+]);
+const EXTERNAL_NORMAL_V2_SUPPORTED_CASE_ARMS = new Set([
+  'p2-only', 'repair-introduction', 'repair-head-history', 'repair-head-empty-history', 'provider-failure',
+  'resource-exhaustion', 'repair-head-history-unavailable', 'preflight-source-coverage-control',
+]);
+const EXTERNAL_NORMAL_V2_PROJECTION_KEYS = new Set([
+  'stepId', 'caseId', 'inputPath', 'inputSha256', 'arm', 'historyMode', 'targetRepositoryId',
+  'sourceBundleSha256', 'runId', 'historyRunId', 'runtime', 'policy',
+]);
+const EXTERNAL_NORMAL_V2_REQUIRED_PROJECTION_KEYS = [
+  'stepId', 'caseId', 'inputPath', 'inputSha256', 'arm', 'historyMode', 'targetRepositoryId',
+  'sourceBundleSha256', 'runId', 'runtime', 'policy',
+];
+const MAX_EXTERNAL_NORMAL_V2_CREDENTIAL_BYTES = 8 * 1024;
+
+function isValidInferenceCredential(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.trim() === value
+    && Buffer.byteLength(value, 'utf8') <= MAX_EXTERNAL_NORMAL_V2_CREDENTIAL_BYTES
+    && !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function hasValidExternalNormalV2Projection(value: unknown): value is ExternalNormalV2Projection {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const projection = value as Record<string, unknown>;
+  const arm = projection.arm;
+  return Object.keys(projection).every((key) => EXTERNAL_NORMAL_V2_PROJECTION_KEYS.has(key))
+    && EXTERNAL_NORMAL_V2_REQUIRED_PROJECTION_KEYS.every((key) => Object.hasOwn(projection, key))
+    && typeof arm === 'string' && EXTERNAL_NORMAL_V2_SUPPORTED_CASE_ARMS.has(arm);
+}
+
 export function validateExternalNormalV2PrivateBinding(value: unknown, env?: Env): ExternalNormalV2PrivateBinding {
   const binding = value as unknown as ExternalNormalV2PrivateBinding;
   const bindingKeys = ['schemaVersion', 'credentialBindingSha256', 'phaseRoot', 'sourceDescriptor', 'transport', 'managementBaseUrl', 'policy', 'runtime'];
@@ -429,6 +461,28 @@ function outerCallAllocationForArm(arm: string): number {
   throw new Error('external_normal_v2_arm_call_allocation_unavailable');
 }
 
+export function parseExternalNormalV2ImageCaseRequest(value: unknown): ExternalNormalV2ImageCaseRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('external_normal_v2_child_case_request_invalid');
+  }
+  const candidate = value as Record<string, unknown>;
+  if (!hasValidExternalNormalV2Projection(candidate.projection)) {
+    throw new Error('external_normal_v2_child_case_request_invalid');
+  }
+  const arm = candidate.projection.arm;
+  const credentialRequired = !EXTERNAL_NORMAL_V2_CREDENTIAL_FREE_ARMS.has(arm);
+  const requestKeys = ['projection', 'clientCallAllocation', 'deadlineAt',
+    ...(credentialRequired ? ['inferenceCredential'] : [])];
+  if (!hasExactKeys(value, requestKeys)
+    || !Number.isSafeInteger(candidate.clientCallAllocation)
+    || candidate.clientCallAllocation !== outerCallAllocationForArm(arm)
+    || !Number.isSafeInteger(candidate.deadlineAt) || (candidate.deadlineAt as number) <= Date.now()
+    || (credentialRequired && !isValidInferenceCredential(candidate.inferenceCredential))) {
+    throw new Error('external_normal_v2_child_case_request_invalid');
+  }
+  return value as unknown as ExternalNormalV2ImageCaseRequest;
+}
+
 export function createBoundExternalNormalV2CaseExecutor(input: {
   baseEnv?: Env;
   fetchImplementation?: FetchImplementation;
@@ -461,9 +515,13 @@ export function createBoundExternalNormalV2CaseExecutor(input: {
     const serviceBudget = trustedPreparedBudget(env);
     if (serviceBudget.total !== 100 || serviceBudget.investigation !== 88 || serviceBudget.verifier !== 12
       || serviceBudget.maxTasks !== 8) throw new Error('external_normal_v2_prepared_budget_binding_mismatch');
-    if (!['provider-failure', 'preflight-source-coverage-control', 'repair-head-history-unavailable'].includes(projection.arm)) {
+    if (!EXTERNAL_NORMAL_V2_CREDENTIAL_FREE_ARMS.has(projection.arm)) {
       if (!input.readInferenceKeyInMemory) throw new Error('external_normal_v2_parent_credential_reader_required');
-      env.OPENAI_API_KEY = await input.readInferenceKeyInMemory(context.signal);
+      const credential = await input.readInferenceKeyInMemory(context.signal);
+      if (!isValidInferenceCredential(credential)) {
+        throw new Error('external_normal_v2_child_inference_credential_invalid');
+      }
+      env.OPENAI_API_KEY = credential;
     }
     let actualFetchAttempts = 0;
     const actualRequestAttempts: Array<Record<string, unknown>> = [];
@@ -518,6 +576,9 @@ export function createBoundExternalNormalV2CaseExecutor(input: {
         attestorRecordedCalls: null,
         providerCalls: actualRequestAttempts,
       };
+    } finally {
+      if (env.OPENAI_API_KEY !== undefined) env.OPENAI_API_KEY = '';
+      delete env.OPENAI_API_KEY;
     }
     const providerCallByCid = new Map(receipt.provider.calls.map((call) => [call.clientRequestIdSha256, call]));
     if (providerCallByCid.size !== receipt.provider.calls.length || actualFetchAttempts !== context.clientCallCount
@@ -600,6 +661,7 @@ interface ExternalNormalV2ImageCaseRequest {
   projection: ExternalNormalV2Projection;
   clientCallAllocation: number;
   deadlineAt: number;
+  inferenceCredential?: string;
 }
 
 interface ExternalNormalV2TransportProbeRequest {
@@ -723,14 +785,11 @@ export async function runExternalNormalV2TransportPreflightFromImage(
 export async function runExternalNormalV2CaseFromImage(): Promise<Record<string, unknown>> {
   const inputBytes = await readBoundedStdin(64 * 1024);
   let request: ExternalNormalV2ImageCaseRequest;
-  try { request = JSON.parse(inputBytes.toString('utf8')) as ExternalNormalV2ImageCaseRequest; }
+  try { request = parseExternalNormalV2ImageCaseRequest(JSON.parse(inputBytes.toString('utf8'))); }
   catch { inputBytes.fill(0); throw new Error('external_normal_v2_child_case_request_invalid'); }
   inputBytes.fill(0);
-  if (!request?.projection || !Number.isSafeInteger(request.clientCallAllocation) || request.clientCallAllocation < 0
-    || !Number.isSafeInteger(request.deadlineAt) || request.deadlineAt <= Date.now()) {
-    throw new Error('external_normal_v2_child_case_request_invalid');
-  }
-  const executor = createBoundExternalNormalV2CaseExecutor({ baseEnv: process.env, policyInputRoot: '/phase-inputs' });
+  const executor = createBoundExternalNormalV2CaseExecutor({ baseEnv: process.env, policyInputRoot: '/phase-inputs',
+    readInferenceKeyInMemory: () => request.inferenceCredential ?? '' });
   const controller = new AbortController();
   const deadlineTimer = setTimeout(() => controller.abort(new Error('external_normal_v2_child_deadline_exceeded')),
     Math.max(1, request.deadlineAt - Date.now()));
@@ -752,7 +811,10 @@ export async function runExternalNormalV2CaseFromImage(): Promise<Record<string,
       get clientCallCount() { return clientCalls; },
       get blockedClientCallCount() { return blockedClientCalls; },
     });
-  } finally { clearTimeout(deadlineTimer); }
+  } finally {
+    clearTimeout(deadlineTimer);
+    delete request.inferenceCredential;
+  }
 }
 
 function dockerCliEnvironment(workerEnv?: Env): Env {
@@ -760,7 +822,9 @@ function dockerCliEnvironment(workerEnv?: Env): Env {
   for (const key of ['DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG']) {
     if (process.env[key]) result[key] = process.env[key];
   }
-  for (const [key, value] of Object.entries(workerEnv ?? {})) if (value !== undefined) result[key] = value;
+  for (const [key, value] of Object.entries(workerEnv ?? {})) {
+    if (key !== 'OPENAI_API_KEY' && value !== undefined) result[key] = value;
+  }
   return result;
 }
 
@@ -798,23 +862,29 @@ function runPinnedWorkerContainer(input: {
   if (typeof process.getuid !== 'function' || typeof process.getgid !== 'function' || process.getuid() === 0) {
     return Promise.reject(new Error('external_normal_v2_host_runner_must_be_nonroot'));
   }
-  const args = ['run', '--rm', '--pull=never', '--read-only', '--init', '--network', 'bridge',
+  const args = ['run', '--interactive', '--rm', '--pull=never', '--read-only', '--init', '--network', 'bridge',
     '--user', `${process.getuid()}:${process.getgid()}`, '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m', '--workdir', '/app'];
   if (input.phaseRoot) args.push('--mount', `type=bind,source=${mountablePath(input.phaseRoot)},target=/phase`);
   if (input.policyInputRoot) args.push('--mount', `type=bind,source=${mountablePath(input.policyInputRoot)},target=/phase-inputs,readonly`);
   args.push('--env', 'HOME=/tmp');
   for (const key of Object.keys(input.workerEnv).sort()) {
-    if (input.workerEnv[key] !== undefined) args.push('--env', key);
+    if (key !== 'OPENAI_API_KEY' && input.workerEnv[key] !== undefined) args.push('--env', key);
   }
   args.push('--entrypoint', 'node', input.imageRef,
     '/app/dist/qualification/normalEngineQualificationExternalV2.js', input.mode);
   const spawnImpl = input.spawnImplementation ?? spawn;
   const launchEnv = dockerCliEnvironment(input.workerEnv);
+  const stdinBytes = Buffer.from(input.stdinJson, 'utf8');
+  input.stdinJson = '';
+  const maxStdinBytes = input.mode === '--external-normal-v2-case' ? 64 * 1024 : 16 * 1024;
+  if (stdinBytes.byteLength > maxStdinBytes) {
+    stdinBytes.fill(0);
+    return Promise.reject(childExecutionError('external_normal_v2_child_input_too_large', false));
+  }
   let child: ChildProcessByStdio<Writable, Readable, null>;
   try { child = spawnImpl('docker', args, { env: launchEnv, stdio: ['pipe', 'pipe', 'ignore'] }); }
   catch {
-    if (launchEnv.OPENAI_API_KEY !== undefined) launchEnv.OPENAI_API_KEY = '';
-    delete launchEnv.OPENAI_API_KEY;
+    stdinBytes.fill(0);
     return Promise.reject(childExecutionError('external_normal_v2_docker_launcher_unavailable', false));
   }
   return new Promise((resolveResult, rejectResult) => {
@@ -828,8 +898,7 @@ function runPinnedWorkerContainer(input: {
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (killTimer) clearTimeout(killTimer);
       input.signal?.removeEventListener('abort', onAbort);
-      if (launchEnv.OPENAI_API_KEY !== undefined) launchEnv.OPENAI_API_KEY = '';
-      delete launchEnv.OPENAI_API_KEY;
+      stdinBytes.fill(0);
       pending.fill(0);
       resultLine?.fill(0);
     };
@@ -897,7 +966,7 @@ function runPinnedWorkerContainer(input: {
       }
       resolveResult(result as Record<string, unknown>);
     });
-    child.stdin.end(input.stdinJson, 'utf8');
+    child.stdin.end(stdinBytes, () => stdinBytes.fill(0));
   });
 }
 
@@ -943,6 +1012,9 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
   };
   const executeCase = async (projection: ExternalNormalV2Projection, context: ExternalNormalV2Context) => {
     validateExternalNormalV2PrivateBinding(privateBinding, baseEnv);
+    if (!hasValidExternalNormalV2Projection(projection)) {
+      throw new Error('external_normal_v2_worker_projection_invalid');
+    }
     const targetBinding = privateBinding.policy.targetProjections
       .find((target) => target.repositoryId === projection.targetRepositoryId);
     if (projection.runtime.sourceRevision !== privateBinding.runtime.finalSourceRevision
@@ -979,20 +1051,25 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
     }
     const workerEnv: Env = { NODE_ENV: 'production',
       REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID: String(projection.policy.policySource.repositoryId) };
-    if (!['provider-failure', 'preflight-source-coverage-control', 'repair-head-history-unavailable'].includes(projection.arm)) {
-      const key = await input.readInferenceKeyInMemory(context.signal);
-      if (!key || /[\r\n]/u.test(key)) throw new Error('external_normal_v2_parent_inference_credential_invalid');
-      workerEnv.OPENAI_API_KEY = key;
-    }
+    let inferenceCredential: string | undefined;
+    let caseRequestJson = '';
     try {
+      if (!EXTERNAL_NORMAL_V2_CREDENTIAL_FREE_ARMS.has(projection.arm)) {
+        inferenceCredential = await input.readInferenceKeyInMemory(context.signal);
+        if (!isValidInferenceCredential(inferenceCredential)) {
+          throw new Error('external_normal_v2_parent_inference_credential_invalid');
+        }
+      }
+      caseRequestJson = JSON.stringify({ projection, clientCallAllocation: context.clientCallAllocation,
+        deadlineAt: context.deadlineAt,
+        ...(inferenceCredential === undefined ? {} : { inferenceCredential }) });
       return await runPinnedWorkerContainer({ imageRef, mode: '--external-normal-v2-case', workerEnv,
         phaseRoot, policyInputRoot: policyRoot,
-        stdinJson: JSON.stringify({ projection, clientCallAllocation: context.clientCallAllocation,
-          deadlineAt: context.deadlineAt }),
+        stdinJson: caseRequestJson,
         signal: context.signal, deadlineAt: context.deadlineAt, spawnImplementation: input.spawnImplementation });
     } finally {
-      if (workerEnv.OPENAI_API_KEY !== undefined) workerEnv.OPENAI_API_KEY = '';
-      delete workerEnv.OPENAI_API_KEY;
+      inferenceCredential = undefined;
+      caseRequestJson = '';
     }
   };
   return { executeCase, preflight };

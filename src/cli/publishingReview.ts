@@ -2018,11 +2018,19 @@ export async function runPublishingReviewWorker(
     const authenticatedDisputes = historySnapshotBound && authenticatedDisputeProjection?.status === 'complete'
       ? authenticatedDisputeProjection : undefined;
     const authenticatedDisputePaths = historySnapshotBound ? authenticatedDisputeProjection?.paths ?? [] : [];
-    const historyAllowsCheckpointReuse = (planningHistoryContext.status === 'complete'
-      && (planningHistoryContext.evidenceSemanticsCompatibility.compatibleForCheckpointReuse
-        || planningHistoryContext.evidenceSemanticsCompatibility.compatibleForContinuity));
+    const historyAllowsCheckpointReuse = planningHistoryContext.status === 'complete'
+      && planningHistoryContext.evidenceSemanticsCompatibility.compatibleForCheckpointReuse;
     const historyAllowsCoverageReuse = planningHistoryContext.status === 'complete'
       && planningHistoryContext.evidenceSemanticsCompatibility.compatibleForCoverageReuse;
+    const retryRequiresExactCheckpoint = authoritative && configuredReviewEngine === 'composed'
+      && identity.executionAttempt > 1;
+    // A retry is a continuation, not permission to silently start fresh when the
+    // authenticated history/checkpoint boundary is unavailable. Fail before the
+    // first model call if this attempt cannot prove it has a safe checkpoint.
+    if (retryRequiresExactCheckpoint
+      && (!historyAllowsCheckpointReuse || !deps.reviewCheckpoint)) {
+      throw new Error('Exact-head checkpoint and disputed finding requests are required for a safe retry');
+    }
     let historyAffectedPaths = [...new Set([
       ...(planningHistoryContext.status === 'complete' ? lifecycleHistory.findings.map((finding) => finding.path) : []),
       ...authenticatedDisputePaths,
@@ -2061,6 +2069,9 @@ export async function runPublishingReviewWorker(
       resumedCheckpoint.policyDigest === value(env, 'REVIEW_POLICY_DIGEST') &&
       resumedCheckpoint.configDigest === value(env, 'REVIEW_CONFIG_DIGEST')
     );
+    if (retryRequiresExactCheckpoint && !isExactHead) {
+      throw new Error('Exact-head checkpoint and disputed finding requests are required for a safe retry');
+    }
     const isContentAddressedPrior = Boolean(
       resumedCheckpoint &&
       !isExactHead &&
@@ -3373,8 +3384,8 @@ export async function runPublishingReviewWorker(
           ...(unreadable.length > 0
             ? [`Reviewed ${changedFiles.length} file(s); ${unreadable.length} diff header(s) could not be read, so those files were NOT reviewed:\n${unreadable.map((header) => `- \`${header}\``).join('\n')}`]
             : []),
-          // REL-1079: set by the engine only when its lanes received a shrunk diff.
-          ...renderDiffShrinkSummary(diffShrinkDisclosure),
+          // REL-1079: composed shrink describes PLAN context; WORK source delivery is reported below.
+          ...renderDiffShrinkSummary(diffShrinkDisclosure, { scope: reviewEngine === 'composed' ? 'plan' : 'work' }),
           // REL-1084: every carried-forward file, or why the review stayed full.
           ...renderIncrementalSummary(incrementalDisclosure, incrementalPlan),
           ...renderIncrementalLedgerSummary(panelResult.incrementalLedger),

@@ -3,6 +3,7 @@ import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { OnboardingWizard } from '@/components/github-app/onboarding-wizard';
+import { Step2ReposPicker } from '@/components/onboarding/steps/step-2-repos-picker';
 import { RepoTable } from '@/components/repos/repo-table';
 import ReposPage from '@/app/repos/page';
 import { ProviderSettings } from '@/components/settings/provider-settings';
@@ -229,15 +230,15 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
   describe('Feature 2: Monitored Repositories & Strictness Profiles', () => {
     const mockRepos: RepositorySetting[] = [
       {
-        owner: 'exampleorg',
+        owner: 'synthetic',
         repo: 'example-api',
         automationEnabled: true,
         customProfile: 'balanced',
-        modelOverrides: { security: 'gpt-4o' },
+        modelOverrides: { security: 'synthetic/v1' },
         updatedAt: new Date().toISOString(),
       },
       {
-        owner: 'exampleorg',
+        owner: 'synthetic',
         repo: 'api-gateway',
         automationEnabled: false,
         customProfile: 'assertive',
@@ -271,7 +272,7 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
       expect(switches[0]).toHaveAttribute('aria-checked', 'true');
 
       fireEvent.click(switches[0]);
-      expect(onToggle).toHaveBeenCalledWith('exampleorg', 'example-api', false);
+      expect(onToggle).toHaveBeenCalledWith('synthetic', 'example-api', false);
     });
 
     it('2.4 changes strictness profile selection for a repository', () => {
@@ -312,7 +313,7 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
     it('2.7 handles special characters in repository names (e.g., @scope/pkg#123)', async () => {
       const specialRepos: RepositorySetting[] = [
         {
-          owner: '@exampleorg-org',
+          owner: '@synthetic-org',
           repo: 'c++_core-service#v1.0',
           automationEnabled: true,
           customProfile: 'chill',
@@ -324,7 +325,7 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
       render(<ReposPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('@exampleorg-org/')).toBeInTheDocument();
+        expect(screen.getByText('@synthetic-org/')).toBeInTheDocument();
         expect(screen.getByText('c++_core-service#v1.0')).toBeInTheDocument();
       });
     });
@@ -332,7 +333,7 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
     it('2.8 opens Add Repository modal and adds a new repository', async () => {
       vi.mocked(apiClient.fetchRepositories).mockResolvedValue(mockRepos);
       vi.mocked(apiClient.createRepository).mockResolvedValue({
-        owner: 'exampleorg',
+        owner: 'synthetic',
         repo: 'new-microservice',
         automationEnabled: true,
         customProfile: 'balanced',
@@ -352,7 +353,10 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
         expect(screen.getByText('Onboard New Repository')).toBeInTheDocument();
       });
 
-      const repoInput = screen.getByPlaceholderText('e.g. example-api');
+      const dialog = screen.getByRole('dialog');
+      const [ownerInput, repoInput] = within(dialog).getAllByRole('textbox');
+      fireEvent.change(ownerInput, { target: { value: 'synthetic' } });
+      expect(repoInput).toHaveAttribute('placeholder', 'e.g. example-api');
       fireEvent.change(repoInput, { target: { value: 'new-microservice' } });
 
       const onboardBtn = screen.getByRole('button', { name: /onboard repo/i });
@@ -360,12 +364,36 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
 
       await waitFor(() => {
         expect(apiClient.createRepository).toHaveBeenCalledWith({
-          owner: 'reviewyeti-ai',
+          owner: 'synthetic',
           repo: 'new-microservice',
           automationEnabled: true,
           customProfile: 'balanced',
         });
       });
+    });
+
+    it('adds an explicitly named repository through the Step 2 picker', () => {
+      const onAddRepo = vi.fn();
+      const repoInputValue = 'synthetic/new-microservice';
+
+      render(
+        <Step2ReposPicker
+          repositories={mockRepos}
+          onUpdateRepo={vi.fn()}
+          onAddRepo={onAddRepo}
+        />
+      );
+
+      const repoInput = screen.getByPlaceholderText('org/repository-name');
+      const addRepoButton = screen.getByRole('button', { name: /add repo/i });
+      expect(addRepoButton).toBeDisabled();
+
+      fireEvent.change(repoInput, { target: { value: repoInputValue } });
+      expect(addRepoButton).toBeEnabled();
+      fireEvent.click(addRepoButton);
+
+      expect(onAddRepo).toHaveBeenCalledWith('synthetic', 'new-microservice');
+      expect(repoInput).toHaveValue('');
     });
 
     it('2.9 opens Scan Stack modal and triggers repository stack scanner', async () => {

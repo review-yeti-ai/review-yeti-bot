@@ -252,8 +252,12 @@ describe('composed task-level retry', () => {
 
   it('records a task that stalls on every attempt as a named timeout lane without aborting its siblings', async () => {
     const harness = recordingClient(({ taskId, nonce }) => (taskId === 'task-2' ? stall() : clean(taskId, nonce)));
+    const config = configFor();
+    // This test verifies task-level quorum semantics. File-coverage mode can satisfy quorum
+    // when sibling tasks fully cover the same file, even while one planned task times out.
+    config.composed!.quorum_policy!.mode = 'all_tasks';
     const result = await executeComposedReview({
-      config: configFor(), changedFiles, repository: 'acme/app', headSha: 'e'.repeat(40), client: harness.client,
+      config, changedFiles, repository: 'acme/app', headSha: 'e'.repeat(40), client: harness.client,
     });
 
     expect(harness.attempts('task-2')).toBe(1 + COMPOSED_TASK_MAX_EXTRA_ATTEMPTS);
@@ -262,6 +266,8 @@ describe('composed task-level retry', () => {
     expect(result.optionalFailures).toEqual([expect.objectContaining({ id: 'task-2', failureClass: 'timeout' })]);
     expect(result.optionalFailures[0].error).toContain('stalled on a provider timeout in 3 fresh attempt(s) (retries exhausted)');
     expect(result.optionalFailures[0].error).toContain('[src/app.ts]');
+    expect((result.quorum as any).coverageMode).toBe('all_tasks');
+    expect((result.quorum as any).fileCoverage.satisfied).toBe(true);
     expect(result.quorum.satisfied).toBe(false);
   }, 30_000);
 

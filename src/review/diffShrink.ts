@@ -516,53 +516,72 @@ function listed<T>(items: readonly T[], render: (item: T) => string): string {
 }
 
 /** Check-summary disclosure lines (plan section 3, invariant 5). Empty when shrinking is off. */
-export function renderDiffShrinkSummary(disclosure: DiffShrinkDisclosure | null): string[] {
+export function renderDiffShrinkSummary(
+  disclosure: DiffShrinkDisclosure | null,
+  options: { scope?: 'work' | 'plan' } = {},
+): string[] {
   if (!disclosure) return [];
+  const planOnly = options.scope === 'plan';
   const lines: string[] = [
-    `**Diff shrinking** (\`${DIFF_SHRINK_FLAG}\`): every changed file stays listed to its lanes; `
-    + `~${disclosure.estimatedTokensBefore.toLocaleString('en-US')} -> ~${disclosure.estimatedTokensAfter.toLocaleString('en-US')} estimated diff tokens.`,
+    planOnly
+      ? `**Diff shrinking** (\`${DIFF_SHRINK_FLAG}\`): PLAN input projection only; composed WORK requires every original assigned patch, and delivery completion is reported separately. `
+        + `Estimated diff-token projection: ~${disclosure.estimatedTokensBefore.toLocaleString('en-US')} -> ~${disclosure.estimatedTokensAfter.toLocaleString('en-US')} (not actual provider usage or cost). The omission list below contains entries remaining after WORK source reconciliation; it may be empty even when PLAN omitted content.`
+      : `**Diff shrinking** (\`${DIFF_SHRINK_FLAG}\`): every changed file stays listed to its lanes; `
+        + `~${disclosure.estimatedTokensBefore.toLocaleString('en-US')} -> ~${disclosure.estimatedTokensAfter.toLocaleString('en-US')} estimated diff tokens.`,
   ];
   if (disclosure.whitespaceOnlyFiles.length > 0) {
-    lines.push(`- Whitespace-only, content not sent (${disclosure.whitespaceOnlyFiles.length}): ${listed(disclosure.whitespaceOnlyFiles, code)}`);
+    lines.push(`${planOnly ? '- PLAN only: whitespace-only content not sent' : '- Whitespace-only, content not sent'} `
+      + `(${disclosure.whitespaceOnlyFiles.length}): ${listed(disclosure.whitespaceOnlyFiles, code)}`);
   }
   if (disclosure.collapsedWhitespaceHunks.length > 0) {
     const hunks = disclosure.collapsedWhitespaceHunks.reduce((sum, entry) => sum + entry.hunks, 0);
-    lines.push(`- Whitespace-only hunks collapsed (${hunks} in ${disclosure.collapsedWhitespaceHunks.length} file(s)): `
+    lines.push(`- ${planOnly ? 'PLAN only: whitespace-only' : 'Whitespace-only'} hunks collapsed (${hunks} in ${disclosure.collapsedWhitespaceHunks.length} file(s)): `
       + listed(disclosure.collapsedWhitespaceHunks, (entry) => `${code(entry.path)} (${entry.hunks})`));
   }
   if (disclosure.renames.length > 0) {
-    lines.push(`- Renamed, moved or copied (${disclosure.renames.length}): ${listed(disclosure.renames, (entry) => {
+    lines.push(`- ${planOnly ? 'PLAN only: ' : ''}Renamed, moved or copied (${disclosure.renames.length}): ${listed(disclosure.renames, (entry) => {
       const similarity = entry.similarity === null ? 'similarity unknown' : `similarity ${entry.similarity}%`;
-      const sent = entry.contentSent === 'none' ? 'content unchanged, not sent' : 'only changed hunks sent';
+      const sent = planOnly
+        ? entry.contentSent === 'none' ? 'content unchanged, omitted from PLAN' : 'only changed hunks in PLAN'
+        : entry.contentSent === 'none' ? 'content unchanged, not sent' : 'only changed hunks sent';
       return `${code(entry.from)} -> ${code(entry.to)} (${entry.kind}, ${similarity}, ${sent})`;
     })}`);
   }
   if (disclosure.linguistExcluded.length > 0) {
-    lines.push(`- Excluded by .gitattributes, content not sent (${disclosure.linguistExcluded.length}): `
+    lines.push(`- ${planOnly ? 'PLAN only: excluded by .gitattributes, content not sent' : 'Excluded by .gitattributes, content not sent'} (${disclosure.linguistExcluded.length}): `
       + listed(disclosure.linguistExcluded, (entry) => `${code(entry.path)} (${entry.attribute})`));
   }
   const rules = disclosure.linguistRules;
   if (typeof rules === 'object') {
-    lines.push(`- .gitattributes linguist rules not applied: ${rules.notApplied}.`);
+    lines.push(`- ${planOnly ? 'PLAN only: ' : ''}.gitattributes linguist rules not applied: ${rules.notApplied}.`);
   }
   if (disclosure.keptFullDepth.length > 0) {
-    lines.push(`- Security-sensitive, kept at full depth (${disclosure.keptFullDepth.length}): `
+    lines.push(`${planOnly ? '- PLAN only: security-sensitive' : '- Security-sensitive'}, kept at full depth (${disclosure.keptFullDepth.length}): `
       + listed(disclosure.keptFullDepth, (entry) => `${code(entry.path)} (${entry.rule})`));
   }
   const touched = disclosure.whitespaceOnlyFiles.length + disclosure.collapsedWhitespaceHunks.length
     + disclosure.renames.length + disclosure.linguistExcluded.length;
   // REL-1141: never claim every change was sent in full when something was not.
   const notSentInFull = disclosure.notSentInFull;
-  if (Array.isArray(notSentInFull) && notSentInFull.length > 0) {
-    const label: Record<NotSentInFullReason, string> = {
-      filtered: 'hidden by the review filter',
-      summarized: 'summarized: oversized lockfile',
-      truncated: 'truncated',
-      unavailable: 'patch unavailable',
-      unreviewable: 'not reviewed',
-      'budget-signatures': 'review budget: signatures only',
-      'budget-listed': 'review budget: not deeply reviewed',
-    };
+  const label: Record<NotSentInFullReason, string> = {
+    filtered: 'hidden by the review filter',
+    summarized: 'summarized: oversized lockfile',
+    truncated: 'truncated',
+    unavailable: 'patch unavailable',
+    unreviewable: 'not reviewed',
+    'budget-signatures': 'review budget: signatures only',
+    'budget-listed': 'review budget: not deeply reviewed',
+  };
+  if (planOnly) {
+    if (Array.isArray(notSentInFull) && notSentInFull.length > 0) {
+      lines.push(`- Remaining entries in the WORK-reconciled PLAN omission list (${notSentInFull.length}): `
+        + listed(notSentInFull, (entry) => `${code(entry.path)} (${label[entry.why]})`));
+    } else if (Array.isArray(notSentInFull)) {
+      lines.push('- The WORK-reconciled PLAN omission list is empty; original PLAN omission details may be unavailable.');
+    } else {
+      lines.push('- The WORK-reconciled PLAN omission list is unavailable; WORK source coverage is reported separately.');
+    }
+  } else if (Array.isArray(notSentInFull) && notSentInFull.length > 0) {
     lines.push(`- ${touched === 0 ? 'No file was shrunk, but not' : 'Not'} every change was sent in full `
       + `(${notSentInFull.length}): ${listed(notSentInFull, (entry) => `${code(entry.path)} (${label[entry.why]})`)}`);
   } else if (touched === 0) {

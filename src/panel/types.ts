@@ -184,9 +184,9 @@ export interface PanelResult {
    */
   noReviewableContentKind?: 'documentation' | 'lockfile-only';
   /**
-   * REL-1079: what diff shrinking did to the content these lanes received. Set only when
-   * `REVIEW_YETI_DIFF_SHRINK` applied to a run with at least one lane; the check summary
-   * publishes exactly this.
+   * REL-1079: what diff shrinking did to the engine's effective input. Persona reviews use this
+   * for lane content; composed reviews label it as PLAN context while original WORK source
+   * completeness is reported separately through TaskSourceDelivery receipts.
    */
   diffShrink?: DiffShrinkDisclosure;
   /**

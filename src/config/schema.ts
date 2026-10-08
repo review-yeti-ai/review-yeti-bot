@@ -642,6 +642,23 @@ export const composedEngineConfigSchema = z.object({
 }).strict();
 export type ComposedEngineConfig = z.infer<typeof composedEngineConfigSchema>;
 
+// This receipt records policy-supplied values. Accept the two fields that older
+// readers accidentally defaulted, but never materialize them when they were absent.
+const configuredQuorumPolicyReceiptSchema = z.object({
+  mode: z.enum(['file_coverage', 'all_tasks', 'blocker_fast_path']).optional(),
+  min_file_coverage_pct: z.number().min(0).max(100).optional(),
+  enforce_security_floor: z.boolean().optional(),
+  blocker_fast_path_enabled: z.boolean().optional(),
+}).strict();
+const configuredComposedOverridesSchema = z.object({
+  max_tasks: z.number().int().positive().max(64).optional(),
+  max_turns_total: z.number().int().positive().max(200).optional(),
+  max_turns_per_task: z.number().int().positive().max(50).optional(),
+  max_findings_total: z.number().int().positive().max(500).optional(),
+  swarm_context_isolation: z.boolean().optional(),
+  quorum_policy: configuredQuorumPolicyReceiptSchema.optional(),
+}).strict();
+
 /** Optional independent model route for authenticated disputed P0/P1 rechecks.
  * Configuration selects only a Bifrost model alias; it does not prove that the
  * route is qualified or that the gateway served the selected upstream model. */
@@ -713,7 +730,7 @@ export const effectiveReviewConfigReceiptSchema = z.object({
     }).strict(),
     composed_budget: z.object({
       source: z.literal('engine_defaults'),
-      configured_overrides: composedEngineConfigSchema,
+      configured_overrides: configuredComposedOverridesSchema,
       central_policy_total_turns: z.number().int().positive(),
       central_policy_max_tasks: z.number().int().positive(),
       plan_turns: z.number().int().positive(),

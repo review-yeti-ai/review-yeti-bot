@@ -11,7 +11,7 @@
  *    - GitHub App ID 4385771 configuration, User-Agent, payload structure, threading endpoint
  *    - Client pathways & robust error handling (404, 403, 500, network crash, input boundaries)
  * 3. System-level integration:
- *    - Complete 18-tool catalog listing over remoteMcpRouter HTTP JSON-RPC 2.0
+ *    - Complete 20-tool catalog listing over remoteMcpRouter HTTP JSON-RPC 2.0
  *    - Remote tools/call execution for attest_pr_gate and reply_review_thread
  *    - Authentication (401) and tenancy authorization (403) boundary verification
  */

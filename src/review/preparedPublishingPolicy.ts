@@ -75,7 +75,9 @@ export function parsePreparedReviewExecution(json: string, expectedDigest: strin
       parsed.qualificationRuntimeImageDigest);
     // Verify both stored transport and the actual injected transport. Neither
     // the operator nor a stale environment may silently select another model/URL.
-    verifyPreparedPublishingConfig(config, expectedDigest, parsed.transport, parsed.qualificationRuntimeImageDigest);
+    // Recheck the original envelope config: current schema defaults may add
+    // fields to an older, still-valid v1 producer payload after its digest was issued.
+    verifyPreparedPublishingConfig(parsed.config, expectedDigest, parsed.transport, parsed.qualificationRuntimeImageDigest);
     return { version: parsed.version, config, transport: parsed.transport,
       ...(parsed.qualificationRuntimeImageDigest === undefined ? {} : {
         qualificationRuntimeImageDigest: parsed.qualificationRuntimeImageDigest,
@@ -152,18 +154,57 @@ export function preparePublishingPolicy(file: ImmutableReviewPolicyFile,
   } catch { throw new Error('Trusted publishing policy could not be prepared'); }
 }
 
-/** The future authoritative worker lane verifies its normalized prepared
- * config before a provider call. This does not activate or change legacy Jobs. */
+function asJsonRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown> : undefined;
+}
+
+/** v1 identities bind the producer's normalized config, including field absence.
+ * A newer reader may know defaults the producer did not; do not retroactively
+ * activate those fields while preserving the original service-issued digest. */
+function preservePreparedV1FieldPresence(config: CtReviewConfigV3, input: unknown): CtReviewConfigV3 {
+  const source = asJsonRecord(input);
+  if (!source) return config;
+  const normalized = config as unknown as Record<string, unknown>;
+  if (!Object.hasOwn(source, 'swarm_context_isolation')) delete normalized.swarm_context_isolation;
+
+  const sourceComposed = asJsonRecord(source.composed);
+  const normalizedComposed = asJsonRecord(normalized.composed);
+  if (normalizedComposed) {
+    for (const field of ['swarm_context_isolation', 'quorum_policy']) {
+      if (!sourceComposed || !Object.hasOwn(sourceComposed, field)) delete normalizedComposed[field];
+    }
+  }
+
+  const sourceReceipt = asJsonRecord(source.review_configuration_receipt);
+  const sourceEffective = asJsonRecord(sourceReceipt?.effective);
+  const sourceBudget = asJsonRecord(sourceEffective?.composed_budget);
+  const sourceOverrides = asJsonRecord(sourceBudget?.configured_overrides);
+  const normalizedReceipt = asJsonRecord(normalized.review_configuration_receipt);
+  const normalizedEffective = asJsonRecord(normalizedReceipt?.effective);
+  const normalizedBudget = asJsonRecord(normalizedEffective?.composed_budget);
+  const normalizedOverrides = asJsonRecord(normalizedBudget?.configured_overrides);
+  if (normalizedOverrides) {
+    for (const field of ['swarm_context_isolation', 'quorum_policy']) {
+      if (!sourceOverrides || !Object.hasOwn(sourceOverrides, field)) delete normalizedOverrides[field];
+    }
+  }
+  return config;
+}
+
+/** The authoritative worker verifies the original prepared config identity
+ * before a provider call, then preserves v1 field presence when parsing it. */
 export function verifyPreparedPublishingConfig(config: unknown, expectedDigest: string,
   transport: PreparedPublishingPolicy['transport'], qualificationRuntimeImageDigest?: string): CtReviewConfigV3 {
   try {
     const selectedTransport = transportSchema.parse(transport);
-    const parsed = ctReviewConfigV3Schema.parse(config);
+    if (!/^[a-f0-9]{64}$/u.test(expectedDigest)) throw new Error();
     const runtimeDigest = qualificationRuntimeImageDigest === undefined ? undefined
       : qualificationRuntimeImageDigestSchema.parse(qualificationRuntimeImageDigest);
-    if (!/^[a-f0-9]{64}$/u.test(expectedDigest)
-      || fingerprintEffectiveReviewConfig({ config: parsed, transport: selectedTransport,
-        ...(runtimeDigest === undefined ? {} : { qualificationRuntimeImageDigest: runtimeDigest }) }) !== expectedDigest
+    const admittedDigest = fingerprintEffectiveReviewConfig({ config, transport: selectedTransport,
+      ...(runtimeDigest === undefined ? {} : { qualificationRuntimeImageDigest: runtimeDigest }) });
+    const parsed = ctReviewConfigV3Schema.parse(config);
+    if (admittedDigest !== expectedDigest
       || parsed.reviewers.providers.length !== 1
       || parsed.reviewers.providers[0].id !== 'bifrost'
       || parsed.reviewers.providers[0].enabled !== true
@@ -171,6 +212,6 @@ export function verifyPreparedPublishingConfig(config: unknown, expectedDigest: 
       || parsed.disputed_blocker_adjudicator?.model.toLowerCase() === selectedTransport.model.toLowerCase()
       || parsed.reviewers.arbiter.order.some((id) => id !== 'bifrost')
       || parsed.personas.some((persona) => persona.providers?.some((id) => id !== 'bifrost'))) throw new Error();
-    return parsed;
+    return preservePreparedV1FieldPresence(parsed, config);
   } catch { throw new Error('Prepared publishing configuration does not match its admitted identity'); }
 }

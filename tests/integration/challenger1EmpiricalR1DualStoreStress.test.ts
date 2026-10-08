@@ -116,16 +116,24 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
       expect(found.strictnessProfile).toBe('assertive');
     });
 
-    it('retains default initial dataset on PVC file creation', () => {
+    it('keeps a fresh production PVC store free of synthesized repositories and review history', () => {
       delete process.env.DATABASE_URL;
       delete process.env.POSTGRES_URL;
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.stubEnv('VITEST', '');
 
-      const store = new DashboardStore(tempStorePath);
-      const repos = store.getRepositories();
-      expect(repos.length).toBeGreaterThanOrEqual(3);
-      expect(repos.some((r) => r.repo === 'example-api')).toBe(true);
-      expect(repos.some((r) => r.repo === 'example-meta')).toBe(true);
-      expect(repos.some((r) => r.repo === 'ct-review-bot')).toBe(true);
+      try {
+        const store = new DashboardStore(tempStorePath);
+        expect(store.getRepositories()).toEqual([]);
+        expect(store.getReviewLogs()).toEqual([]);
+        expect(store.getAnalyticsSummary('30d')).toMatchObject({
+          totalReviews: 0,
+          totalSpendUsd: 0,
+          totalTokens: 0,
+        });
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
   });
 
@@ -277,7 +285,7 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
   });
 
   describe('4. Automatic Disk Seeding Behavior', () => {
-    it('seeds all tables from fallbackSeedData when database is empty (count === 0)', async () => {
+    it('does not infer repositories or review history when the caller seed is empty', async () => {
       process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/mockdb';
       const store = new PostgresStore();
 
@@ -299,55 +307,94 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
       vi.spyOn(store, 'getPool').mockReturnValue({ connect: async () => mockClient } as any);
 
       const seedData: DashboardData = {
-        repositories: [
-          { id: 'repo-1', owner: 'seed-org', repo: 'seed-repo-1', full_name: 'seed-org/seed-repo-1', automationEnabled: true, updatedAt: '2026-01-01T00:00:00Z' },
-        ],
+        repositories: [],
         settings: {
-          defaultModelOverrides: { security: 'gpt-4o' },
+          defaultModelOverrides: { security: 'synthetic/v1' },
           personaSettings: {
-            security: { id: 'security', displayName: 'Security', description: 'sec', enabled: true, model: 'gpt-4o', effort: 'high', confidenceThreshold: 80 },
+            security: { id: 'security', displayName: 'Security', description: 'Synthetic fixture', enabled: true, model: 'synthetic/v1', effort: 'high', confidenceThreshold: 80 },
           },
           providerConfigs: {
-            openai: { id: 'openai', displayName: 'OpenAI', enabled: true, activeModels: ['gpt-4o'], updatedAt: '2026-01-01T00:00:00Z' },
+            synthetic: { id: 'synthetic', displayName: 'Synthetic', enabled: true, activeModels: ['synthetic/v1'], updatedAt: '2026-01-01T00:00:00Z' },
           },
           memoryEngineSettings: { autoSuppressNits: true, learningConfidenceThreshold: 80, maxLearningsPerRepo: 100 },
           providerCostCaps: { monthlyBudgetUSD: 100, dailyBudgetUSD: 10, alertThresholdPercent: 80, actionOnCapBreach: 'fail_closed' },
         },
-        reviewLogs: [
-          {
-            id: 'log-1',
-            prRun: 'seed-org/seed-repo-1 #1',
-            repo: 'seed-org/seed-repo-1',
-            prNumber: 1,
-            headSha: 'abc1234',
-            personas: ['security'],
-            quorum: '1/1',
-            arbiterVerdict: 'SHIP',
-            timestamp: '2026-01-01T00:00:00Z',
-          },
-        ],
+        reviewLogs: [],
         apiKeys: [],
-        reviewCounter: 1,
+        reviewCounter: 0,
         totalCostUSD: 0,
       };
 
       await store.initialize(seedData);
 
-      // Verify seeding inserts happened for settings, repos, personas, providers, review_logs
+      // Empty caller data may seed configuration but must not synthesize repository or review-history rows.
       expect(insertedQueries.some((q) => q.text.includes('INSERT INTO dashboard_settings'))).toBe(true);
-      expect(insertedQueries.some((q) => q.text.includes('INSERT INTO repositories'))).toBe(true);
+      expect(insertedQueries.some((q) => q.text.includes('INSERT INTO repositories'))).toBe(false);
       expect(insertedQueries.some((q) => q.text.includes('INSERT INTO personas'))).toBe(true);
       expect(insertedQueries.some((q) => q.text.includes('INSERT INTO providers'))).toBe(true);
-      expect(insertedQueries.some((q) => q.text.includes('INSERT INTO review_logs'))).toBe(true);
+      expect(insertedQueries.some((q) => q.text.includes('INSERT INTO review_logs'))).toBe(false);
+    });
 
-      const repoInsert = insertedQueries.find((q) => q.text.includes('INSERT INTO repositories'));
-      expect(repoInsert?.params[0]).toBe('repo-1');
-      expect(repoInsert?.params[1]).toBe('seed-org');
-      expect(repoInsert?.params[2]).toBe('seed-repo-1');
+    it('persists repositories and review history explicitly present in the caller seed', async () => {
+      process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/mockdb';
+      const store = new PostgresStore();
+      const insertedQueries: Array<{ text: string; params: any[] }> = [];
 
-      const logInsert = insertedQueries.find((q) => q.text.includes('INSERT INTO review_logs'));
-      expect(logInsert?.params[0]).toBe('log-1');
-      expect(logInsert?.params[5]).toBe('SHIP');
+      const mockClient = {
+        query: vi.fn(async (text: string, params?: any[]) => {
+          if (text.startsWith('INSERT INTO')) {
+            insertedQueries.push({ text, params: params || [] });
+          }
+          if (text.includes('COUNT(*)')) {
+            return { rows: [{ count: 0 }] };
+          }
+          return { rows: [] };
+        }),
+        release: vi.fn(),
+      };
+
+      vi.spyOn(store, 'getPool').mockReturnValue({ connect: async () => mockClient } as any);
+
+      await store.initialize({
+        repositories: [{
+          id: 'caller-repo',
+          owner: 'synthetic',
+          repo: 'caller-seeded',
+          full_name: 'synthetic/caller-seeded',
+          automationEnabled: true,
+          updatedAt: '2026-10-08T00:00:00.000Z',
+        }],
+        settings: {
+          defaultModelOverrides: {},
+          memoryEngineSettings: { autoSuppressNits: true, learningConfidenceThreshold: 80, maxLearningsPerRepo: 100 },
+          providerCostCaps: { monthlyBudgetUSD: 100, dailyBudgetUSD: 10, alertThresholdPercent: 80, actionOnCapBreach: 'fail_closed' },
+        },
+        reviewLogs: [{
+          id: 'caller-log',
+          prRun: 'synthetic/caller-seeded #1',
+          repo: 'synthetic/caller-seeded',
+          prNumber: 1,
+          headSha: 'synthetic-head',
+          personas: ['security'],
+          quorum: '1/1',
+          arbiterVerdict: 'SHIP',
+          timestamp: '2026-10-08T00:00:00.000Z',
+        }],
+        apiKeys: [],
+        reviewCounter: 1,
+        totalCostUSD: 0,
+      });
+
+      const repositoryInsert = insertedQueries.find((query) => query.text.includes('INSERT INTO repositories'));
+      expect(repositoryInsert?.params).toEqual(expect.arrayContaining([
+        'caller-repo',
+        'synthetic',
+        'caller-seeded',
+        'synthetic/caller-seeded',
+      ]));
+      const reviewLogInsert = insertedQueries.find((query) => query.text.includes('INSERT INTO review_logs'));
+      expect(reviewLogInsert?.params[0]).toBe('caller-log');
+      expect(reviewLogInsert?.params[5]).toBe('SHIP');
     });
 
     it('skips seeding when database tables already contain entries (count > 0)', async () => {
@@ -374,7 +421,7 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
       vi.spyOn(store, 'getPool').mockReturnValue({ connect: async () => mockClient } as any);
 
       const seedData: DashboardData = {
-        repositories: [{ owner: 'seed-org', repo: 'seed-repo-1', automationEnabled: true, updatedAt: '2026-01-01T00:00:00Z' }],
+        repositories: [{ owner: 'synthetic', repo: 'seed-repo-1', automationEnabled: true, updatedAt: '2026-01-01T00:00:00Z' }],
         settings: {
           defaultModelOverrides: {},
           memoryEngineSettings: { autoSuppressNits: true, learningConfidenceThreshold: 80, maxLearningsPerRepo: 100 },
@@ -464,7 +511,7 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
 
       const store = new DashboardStore(tempStorePath);
       store.recordReviewRun({
-        repo: 'exampleorg/example-api',
+        repo: 'synthetic/example-api',
         prNumber: 99,
         headSha: 'head99',
         personas: ['security'],
@@ -474,7 +521,7 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
 
       expect(saveLogSpy).toHaveBeenCalled();
       const passedLog = saveLogSpy.mock.calls[0][0];
-      expect(passedLog.repo).toBe('exampleorg/example-api');
+      expect(passedLog.repo).toBe('synthetic/example-api');
       expect(passedLog.prNumber).toBe(99);
       expect(passedLog.arbiterVerdict).toBe('SHIP');
     });

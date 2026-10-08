@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createAuthoritativeCompletionContext } from '../../src/review/authoritativeCompletionContext';
-import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
-import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
+import { parsePreparedReviewExecution, preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
+import { buildAuthoritativeReviewIdentity, fingerprintEffectiveReviewConfig } from '../../src/review/authoritativeReviewIdentity';
 import { findingClaimType, findingFingerprint, findingFingerprintForClaimType } from '../../src/review/findingConvergence';
 import { createReviewDecisionV2, REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
 import { applyGroundedVerificationToPersonas, buildDeterministicCoverageManifest, groundedAffectedContextDigest, GROUNDED_VERIFICATION_LEGACY_VERSION,
@@ -298,13 +298,38 @@ describe('WorkerReviewCompletion.v1', () => {
       contextDigests: [sha256('task-context')], complete: true,
       files: [{ path: 'src/example.ts', patchDigest: sha256(patchText), totalChars: patchText.length,
         ranges: [[0, patchText.length] as [number, number]], inline: true }] };
-    const prepared = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({
-      review_engine: 'composed', severity_policy: REVIEW_SEVERITY_POLICY_V2, personas: ['security'],
-    }) }, { baseUrl: 'https://gateway.example.invalid', apiKey: 'test', model: 'test-model' });
-    const configuration = prepared.review_configuration_receipt;
+    const servicePolicyContent = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      review_engine: 'composed', severity_policy: REVIEW_SEVERITY_POLICY_V2, personas: 'security',
+      budget: { max_investigation_turns: 20 },
+    } });
+    const source = { repositoryId: 987, repository: 'exampleorg/review-yeti-bot', sha: 'f'.repeat(40),
+      path: 'policy/review.json', contentDigest: sha256(servicePolicyContent) };
+    const prepared = preparePublishingPolicy({ content: servicePolicyContent, source },
+      { baseUrl: 'https://gateway.example.invalid', model: 'test-model' });
+    expect(prepared.config.swarm_context_isolation).toBe(true);
+    expect(prepared.config.composed?.swarm_context_isolation).toBe(true);
+    expect(prepared.config.composed?.quorum_policy).toMatchObject({ mode: 'file_coverage',
+      blocker_fast_path_enabled: true });
+    expect(prepared.config.review_configuration_receipt?.effective.composed_budget.configured_overrides)
+      .toMatchObject({ swarm_context_isolation: true, quorum_policy: { mode: 'file_coverage', blocker_fast_path_enabled: true } });
+    const legacyConfig = structuredClone(prepared.config);
+    delete (legacyConfig as unknown as Record<string, unknown>).swarm_context_isolation;
+    delete (legacyConfig.composed as unknown as Record<string, unknown>).swarm_context_isolation;
+    delete (legacyConfig.composed as unknown as Record<string, unknown>).quorum_policy;
+    const legacyOverrides = legacyConfig.review_configuration_receipt!.effective.composed_budget.configured_overrides as Record<string, unknown>;
+    delete legacyOverrides.swarm_context_isolation;
+    delete legacyOverrides.quorum_policy;
+    const legacyConfigDigest = fingerprintEffectiveReviewConfig({ config: legacyConfig, transport: prepared.transport });
+    const admitted = parsePreparedReviewExecution(JSON.stringify({ version: 'PreparedReviewExecution.v1',
+      config: legacyConfig, transport: prepared.transport }), legacyConfigDigest, prepared.transport);
+    const configuration = admitted.config.review_configuration_receipt;
     if (!configuration) throw new Error('test effective configuration receipt was not produced');
+    expect(admitted.config).not.toHaveProperty('swarm_context_isolation');
+    expect(admitted.config.composed?.swarm_context_isolation).toBeUndefined();
+    expect(admitted.config.composed?.quorum_policy).toBeUndefined();
+    expect(configuration.effective.composed_budget.configured_overrides).toEqual({});
     const providerAttemptBudget = new ProviderAttemptBudget({ totalLimit: 100, investigationLimit: 88, verificationLimit: 12 });
-    const observer = new ComposedRuntimeResourceObserver({ configDigest: expectedCoordinates.configDigest, configuration,
+    const observer = new ComposedRuntimeResourceObserver({ configDigest: legacyConfigDigest, configuration,
       providerAttemptBudget });
     observer.configureBudget({ configuredTotalTurns: 100, investigationTurns: 88, verificationReserveTurns: 12 });
     observer.setPlan([task]);
@@ -312,11 +337,14 @@ describe('WorkerReviewCompletion.v1', () => {
     observer.markTaskOutcome(task.id, 'completed', sourceDelivery);
     const observation = observer.snapshot('terminal');
     if (!observation) throw new Error('test composed resource observation was not produced');
-    const resources = completeComposedRuntimeResources({ observation, configDigest: expectedCoordinates.configDigest,
+    const resources = completeComposedRuntimeResources({ observation, configDigest: legacyConfigDigest,
       verifierCalls: 0, providerAttemptBudget: providerAttemptBudget.snapshot() });
     if (!resources) throw new Error('test worker resource receipt was not produced');
+    expect(resources.configuration.value).toEqual(configuration);
 
+    const legacyCoordinates = { ...expectedCoordinates, configDigest: legacyConfigDigest };
     const input = completion({ result: { ...completion().result, personas: [lane(task.id, { sourceDelivery })], taskPlan: [task] } });
+    Object.assign(input, legacyCoordinates);
     const v2 = withDecision(input, { expectedLanes: 1, completedLanes: 1 });
     const legacyReceipt = v2.result.groundedReview!;
     v2.result.groundedReview = {
@@ -330,7 +358,7 @@ describe('WorkerReviewCompletion.v1', () => {
         coverageComplete: legacyReceipt.coverage.complete, calls: 0, budget: GROUNDED_DEFAULT_BUDGET, outcomes: [] },
     } as any;
     v2.result.composedResources = resources;
-    const trusted: TrustedReviewCoverageContract = { ...v2Contract, reviewEngine: 'composed',
+    const trusted: TrustedReviewCoverageContract = { ...v2Contract, expectedCoordinates: legacyCoordinates, reviewEngine: 'composed',
       composedChangedPaths: ['src/example.ts'], composedMaxTasks: 8, composedEffectiveConfiguration: configuration };
     expect(derive(v2, trusted)).toMatchObject({ valid: true, evidence: { reviewEngine: 'composed',
       coverageComplete: true, verdict: 'SHIP' } });
@@ -346,10 +374,13 @@ describe('WorkerReviewCompletion.v1', () => {
     };
     expectInvalid(derive(declaredOperatorAllowance, trusted), /physical provider attempts disagree/u);
 
-    const legacyPrepared = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({
-      review_engine: 'composed', personas: ['security'],
-    }) }, { baseUrl: 'https://gateway.example.invalid', apiKey: 'test', model: 'test-model' });
-    const legacyConfiguration = structuredClone(legacyPrepared.review_configuration_receipt!);
+    const legacyContent = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      review_engine: 'composed', personas: 'security', budget: { max_investigation_turns: 20 },
+    } });
+    const legacyPrepared = preparePublishingPolicy({ content: legacyContent, source: {
+      ...source, contentDigest: sha256(legacyContent),
+    } }, { baseUrl: 'https://gateway.example.invalid', model: 'test-model' });
+    const legacyConfiguration = structuredClone(legacyPrepared.config.review_configuration_receipt!);
     delete (legacyConfiguration.effective.composed_budget as Record<string, unknown>).provider_attempt_budget;
     const legacyGroundedPublisher = structuredClone(v2);
     delete legacyGroundedPublisher.result.reviewDecision;

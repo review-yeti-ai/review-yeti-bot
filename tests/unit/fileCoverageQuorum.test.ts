@@ -168,6 +168,39 @@ describe('File Coverage Quorum Validator', () => {
     expect(result.verdict).toBe('BLOCK');
   });
 
+  it('requires lockfile and generic JSON task coverage when documentation is also changed', () => {
+    const changedFiles = ['README.md', 'package-lock.json', 'mix.lock', 'go.sum', 'data/seeds.json'];
+    const reviewablePaths = ['package-lock.json', 'mix.lock', 'go.sum', 'data/seeds.json'];
+    const zeroTaskResult = validateFileCoverageQuorum({ tasks: [] }, [], changedFiles);
+
+    expect(zeroTaskResult.satisfied).toBe(false);
+    expect(zeroTaskResult.coveragePct).toBe(0);
+    expect(zeroTaskResult.coveredPaths).toEqual([]);
+    expect(zeroTaskResult.uncoveredPaths).toEqual(reviewablePaths);
+    expect(zeroTaskResult.verdict).toBe('BLOCK');
+    expect(zeroTaskResult.status).toBe('INCOMPLETE_REVIEW');
+
+    const plan: ReviewTaskPlan = {
+      tasks: [{
+        id: 'task-dependencies',
+        dimension: 'dependencies',
+        paths: reviewablePaths,
+        question: 'Review changed dependency and data files.',
+        rationale: 'Lockfiles and structured data remain part of changed-file coverage.',
+      }],
+    };
+    const fullyCovered = validateFileCoverageQuorum(
+      plan,
+      [{ nonce: 'n1', task: 'task-dependencies', status: 'COMPLETE', findings: [] }],
+      changedFiles,
+    );
+    expect(fullyCovered.satisfied).toBe(true);
+    expect(fullyCovered.coveragePct).toBe(100);
+    expect(fullyCovered.coveredPaths).toEqual(reviewablePaths);
+    expect(fullyCovered.uncoveredPaths).toEqual([]);
+    expect(fullyCovered.verdict).toBe('SHIP');
+  });
+
   it('supports options object signature for ergonomic caller integration', () => {
     const res = validateFileCoverageQuorum({
       changedFiles: ['src/auth/guard.ts', 'src/db/repo.ts'],

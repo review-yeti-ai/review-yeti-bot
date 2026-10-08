@@ -1044,7 +1044,10 @@ describe('composed engine wiring', () => {
     expect(networkFetch).not.toHaveBeenCalled();
     const summary = JSON.stringify((checkClient.completeCheck.mock.calls as unknown[][]).map(call => call[0]));
     expect(summary).toContain('4 in full (2 past the 20k per-file cut), 0 as signatures only, 0 not deeply reviewed');
-    expect(summary).toContain('No file was shrunk; every change was sent in full.');
+    expect(summary).toContain('PLAN input projection only');
+    expect(summary).toContain('composed WORK requires every original assigned patch');
+    expect(summary).toContain('The WORK-reconciled PLAN omission list is empty; original PLAN omission details may be unavailable.');
+    expect(summary).not.toContain('No file was shrunk; every change was sent in full.');
     expect(summary).not.toContain('No file was shrunk, but not every change');
     expect(summary).not.toContain('truncated');
   });

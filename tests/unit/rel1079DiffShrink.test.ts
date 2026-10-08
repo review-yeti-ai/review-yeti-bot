@@ -24,6 +24,12 @@ import {
 } from '../../src/review/gitattributesLinguist';
 import { buildEffectiveReviewFiles, resolveReviewApplicability } from '../../src/review/personaApplicability';
 import { isSecuritySensitivePath } from '../../src/review/securitySensitivePaths';
+import {
+  attachTaskSourceDelivery,
+  renderTaskSourceDelivery,
+  TaskSourceDelivery,
+  validateTaskSourceReceipt,
+} from '../../src/review/taskSourceDelivery';
 
 /**
  * REL-1079 (plan 2026-09-23 section 4 W2): deterministic diff shrinking behind
@@ -556,6 +562,52 @@ describe('check-summary disclosure', () => {
     expect(text).not.toContain('; every change was sent in full.');
   });
 
+  it('reports only remaining PLAN omission rows after a complete WORK receipt reconciles them', () => {
+    const patch = modified('src/a.ts', ['@@ -1 +1 @@', '-old', '+new']);
+    const delivery = new TaskSourceDelivery({
+      taskId: 't',
+      paths: ['src/a.ts'],
+      files: [{ path: 'src/a.ts', patch, originalPatchLength: patch.length }],
+      prefix: patch,
+      inlinedPaths: ['src/a.ts'],
+      headSha: 'e'.repeat(40),
+    });
+    const receipt = delivery.acknowledgeRequest([{ role: 'user', content: patch }]);
+    expect(receipt.complete).toBe(true);
+
+    const disclosure = {
+      ...planDiffShrink([], ON).disclosure,
+      notSentInFull: [
+        { path: 'src/a.ts', why: 'budget-listed' as const },
+        { path: 'src/a.ts', why: 'truncated' as const },
+      ],
+    };
+    const reconciled = attachTaskSourceDelivery({
+      taskPlan: [{ id: 't', paths: ['src/a.ts'] }],
+      truncatedFiles: [{ path: 'src/a.ts' }],
+      diffShrink: disclosure,
+    }, [receipt]);
+
+    expect(reconciled.truncatedFiles).toBeUndefined();
+    expect(reconciled.diffShrink?.notSentInFull).toEqual([]);
+    const summary = renderDiffShrinkSummary(reconciled.diffShrink ?? null, { scope: 'plan' }).join('\n');
+    expect(summary).toContain('PLAN input projection only');
+    expect(summary).toContain('not actual provider usage or cost');
+    expect(summary).toContain('omission list below contains entries remaining after WORK source reconciliation');
+    expect(summary).toContain('The WORK-reconciled PLAN omission list is empty; original PLAN omission details may be unavailable.');
+    expect(summary).not.toContain('No file was shrunk in PLAN context');
+    expect(renderTaskSourceDelivery(reconciled).join('\n'))
+      .toContain('1/1 assigned task(s) received every original diff character; source delivery complete=true');
+
+    const withUnresolvedOmission = attachTaskSourceDelivery({
+      taskPlan: [{ id: 't', paths: ['src/a.ts'] }],
+      diffShrink: { ...disclosure, notSentInFull: [...disclosure.notSentInFull, { path: 'src/b.ts', why: 'unavailable' as const }] },
+    }, [receipt]);
+    const remainingSummary = renderDiffShrinkSummary(withUnresolvedOmission.diffShrink ?? null, { scope: 'plan' }).join('\n');
+    expect(remainingSummary).toContain('Remaining entries in the WORK-reconciled PLAN omission list (1)');
+    expect(remainingSummary).toContain('src/b.ts` (patch unavailable)');
+  });
+
   it('renders nothing when the flag is off', () => {
     expect(renderDiffShrinkSummary(null)).toEqual([]);
   });
@@ -702,37 +754,84 @@ describe('composed engine wiring', () => {
     composed: { max_tasks: 1, max_turns_total: 4, max_turns_per_task: 2, swarm_context_isolation: false },
   });
 
-  // The first model call is the plan turn; its prompt carries the static diff prefix.
-  async function planPrompt(diffShrink?: DiffShrinkInput): Promise<string> {
+  // Capture both plan context and task source delivery. The planner sees a structured whole-PR
+  // map; composed WORK must still deliver every original assigned patch character.
+  const originalFiles = files(modified('src/app.ts', [WS_HUNK, REAL_HUNK]) + modified('src/other.ts', [WS_HUNK]));
+
+  async function composedRun(diffShrink?: DiffShrinkInput, reviewBudget?: { enabled: boolean }) {
     const prompts: string[] = [];
     const client = {
       complete: vi.fn(async (req: any) => {
-        prompts.push(req.messages.map((message: any) => extractMessageContentText(message.content)).join('\n'));
-        throw new Error('stop after the plan prompt');
+        const text = req.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
+        prompts.push(text);
+        const nonce = [...text.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/gu)].at(-1)?.[1] ?? 'n';
+        const body = text.includes('=== WORK TURN: TASK')
+          ? { nonce, task: 't1', status: 'COMPLETE', findings: [] }
+          : { nonce, tasks: [{ id: 't1', dimension: 'architecture', paths: ['src/app.ts', 'src/other.ts'], question: 'q', rationale: 'r' }] };
+        return { model: 'm', content: JSON.stringify(body), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
       }),
     };
-    await executeComposedReview({
+    const result = await executeComposedReview({
       config: COMPOSED_CONFIG(),
-      changedFiles: files(modified('src/app.ts', [WS_HUNK, REAL_HUNK]) + modified('src/other.ts', [WS_HUNK])),
+      changedFiles: originalFiles,
       repository: 'acme/app',
       headSha: 'e'.repeat(40),
       client: client as never,
       ...(diffShrink ? { diffShrink } : {}),
-    }).catch(() => undefined);
-    expect(prompts.length).toBeGreaterThan(0);
-    return prompts[0];
+      ...(reviewBudget ? { reviewBudget } : {}),
+    });
+    const plan = prompts.find((prompt) => prompt.includes('=== PLAN TURN ==='));
+    const work = prompts.find((prompt) => prompt.includes('=== WORK TURN: TASK'));
+    expect(plan).toBeDefined();
+    expect(work).toBeDefined();
+    return { plan: plan!, work: work!, result };
   }
 
-  it('sends every change in full without the flag', async () => {
-    const text = await planPrompt();
-    expect(text).toContain('WS_ONLY_MARKER');
-    expect(text).toContain('REAL_CHANGE_MARKER');
+  function expectCompleteOriginalReceipt(result: Awaited<ReturnType<typeof executeComposedReview>>) {
+    expect(result.sourceDelivery).toHaveLength(1);
+    const receipt = result.sourceDelivery?.[0];
+    expect(receipt?.complete).toBe(true);
+    expect(receipt?.files.map((file) => file.path).sort()).toEqual(['src/app.ts', 'src/other.ts']);
+    expect(validateTaskSourceReceipt(receipt, {
+      taskId: 't1',
+      paths: ['src/app.ts', 'src/other.ts'],
+      files: originalFiles,
+      headSha: 'e'.repeat(40),
+    })).toEqual(receipt);
+  }
+
+  it('keeps full original WORK source and a complete receipt when shrinking is disabled', async () => {
+    const { plan, work, result } = await composedRun();
+    expect(plan).not.toContain('=== PULL REQUEST AST & FILE-TREE OUTLINE ===');
+    expect(plan).toContain('=== PR CHANGED FILES INDEX');
+    expect(plan).toContain('src/app.ts');
+    expect(plan).toContain('src/other.ts');
+    expect(plan).toContain('WS_ONLY_MARKER');
+    expect(plan).toContain('REAL_CHANGE_MARKER');
+    expect(work).toContain('WS_ONLY_MARKER');
+    expect(work).toContain('REAL_CHANGE_MARKER');
+    expect(result.diffShrink).toBeUndefined();
+    expectCompleteOriginalReceipt(result);
   });
 
-  it('sends the shrunk diff with the flag', async () => {
-    const text = await planPrompt(ON);
-    expect(text).not.toContain('WS_ONLY_MARKER');
-    expect(text).toContain('REAL_CHANGE_MARKER');
+  it('keeps full original WORK source and a complete receipt when shrinking is enabled', async () => {
+    const { plan, work, result } = await composedRun(ON, { enabled: true });
+    expect(plan).not.toContain('=== PULL REQUEST AST & FILE-TREE OUTLINE ===');
+    expect(plan).toContain('=== PR CHANGED FILES INDEX');
+    expect(plan).toContain('src/app.ts');
+    expect(plan).toContain('src/other.ts');
+    expect(plan).not.toContain('WS_ONLY_MARKER');
+    expect(plan).toContain('REAL_CHANGE_MARKER');
+    expect(work).toContain('WS_ONLY_MARKER');
+    expect(work).toContain('REAL_CHANGE_MARKER');
+    expectCompleteOriginalReceipt(result);
+
+    const shrinkSummary = renderDiffShrinkSummary(result.diffShrink ?? null, { scope: 'plan' }).join('\n');
+    expect(shrinkSummary).toContain('PLAN input projection only');
+    expect(shrinkSummary).toContain('WORK requires every original assigned patch');
+    expect(shrinkSummary).toContain('PLAN only: whitespace-only');
+    expect(renderTaskSourceDelivery(result).join('\n'))
+      .toContain('1/1 assigned task(s) received every original diff character; source delivery complete=true');
   });
 
   it('returns the disclosure of its own shrink on a completed run, and none without the flag', async () => {

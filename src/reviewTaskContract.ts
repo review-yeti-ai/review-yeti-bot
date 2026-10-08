@@ -25,7 +25,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { classifyDomainLanesByHeuristic, isBypassDiffOnlyPath } from './pathDomainContract';
+import { classifyDomainLanesByHeuristic } from './pathDomainContract';
 
 // ---------------------------------------------------------------------------
 // Task dimensions
@@ -779,13 +779,12 @@ export function validateFileCoverageQuorum(
 
   // 2. Classify reviewable files (exempt pure docs and assets)
   const domainMap = classifyDomainLanesByHeuristic(changedFiles.map((p) => ({ path: p })));
-
-  const allFilesDocsAssetsOrBypass = changedFiles.every(
-    (p) => domainMap[p] === 'docs_assets' || isBypassDiffOnlyPath(p)
+  const reviewableCodePaths = changedFiles.filter(
+    (p) => domainMap[p] !== 'docs_assets'
   );
 
-  // If all files are documentation, assets, or bypass lockfiles, coverage is automatically satisfied
-  if (allFilesDocsAssetsOrBypass) {
+  // If all files are documentation or assets, coverage is automatically satisfied
+  if (reviewableCodePaths.length === 0) {
     const hasP1 = activeFindings.some((f) => f.severity === 'P1');
     return {
       satisfied: true,
@@ -793,7 +792,7 @@ export function validateFileCoverageQuorum(
       mode: 'file_coverage',
       verdict: hasP1 ? 'FIX_FIRST' : 'SHIP',
       status: 'COMPLETE',
-      rationale: 'All changed files are documentation, assets, or bypass lockfiles; documentation or assets coverage satisfied automatically.',
+      rationale: 'All changed files are documentation or assets. Coverage satisfied automatically.',
       coveragePct: 100,
       coveredPaths: [],
       uncoveredPaths: [],
@@ -803,10 +802,6 @@ export function validateFileCoverageQuorum(
       blockerFastPath: false,
     };
   }
-
-  const reviewableCodePaths = changedFiles.filter(
-    (p) => domainMap[p] !== 'docs_assets' && (plan && plan.tasks && plan.tasks.length > 0 ? !isBypassDiffOnlyPath(p) : true)
-  );
 
   // 3. Collect covered paths from completed tasks only
   const coveredSet = new Set<string>();
@@ -937,5 +932,4 @@ export function isFileCoverageSatisfied(
     securityCoverageSatisfied: result.securityCoverageSatisfied,
   };
 }
-
 

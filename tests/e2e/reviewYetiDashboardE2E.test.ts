@@ -79,29 +79,30 @@ export function calculatePercentile(values: number[], percentile: number): numbe
 }
 
 // ============================================================================
-// FIXTURE SEEDING FOR REAL DASHBOARD STORE & LIVESTREAM BUS
+// Synthetic fixtures for the dashboard store and live stream bus
 // ============================================================================
 
 function seedDashboardStoreFixture(): void {
   authService.reset();
   dashboardStore.reset();
+  const seededAt = Date.now();
   const bus = LiveStreamBus.getInstance();
   bus.clearHistory();
 
   // 1. Seed Repositories
-  dashboardStore.updateRepository('exampleorg', 'example-api', {
+  dashboardStore.updateRepository('synthetic', 'example-api', {
     automationEnabled: true,
     strictnessProfile: 'balanced',
     customProfile: 'balanced',
     defaultBranch: 'main',
   });
-  dashboardStore.updateRepository('exampleorg', 'example-workspace', {
+  dashboardStore.updateRepository('synthetic', 'example-workspace', {
     automationEnabled: true,
     strictnessProfile: 'assertive',
     customProfile: 'assertive',
     defaultBranch: 'main',
   });
-  dashboardStore.updateRepository('review-yeti-ai', 'review-yeti-bot', {
+  dashboardStore.updateRepository('synthetic', 'sample-bot', {
     automationEnabled: false,
     strictnessProfile: 'chill',
     customProfile: 'chill',
@@ -109,7 +110,7 @@ function seedDashboardStoreFixture(): void {
   });
 
   // 2. Seed Repository Rules
-  dashboardStore.updateRepositoryRules('exampleorg', 'example-api', {
+  dashboardStore.updateRepositoryRules('synthetic', 'example-api', {
     profile: 'balanced',
     auto_review: { enabled: true, triggers: ['pr_opened', 'pr_synchronize'] },
     pre_checks: { enabled: true, zoekt: { enabled: true }, analyzers: { enabled: true } },
@@ -118,8 +119,8 @@ function seedDashboardStoreFixture(): void {
   // 3. Seed Review Logs (which populate PR discovery fallbacks & analytics)
   dashboardStore.recordReviewRun({
     id: 'review-pr-405',
-    prRun: 'exampleorg/example-api#405',
-    repo: 'exampleorg/example-api',
+    prRun: 'synthetic/example-api#405',
+    repo: 'synthetic/example-api',
     prNumber: 405,
     title: 'fix(auth): prevent token exposure in error trace',
     headSha: 'a1b2c3d4e5f67890123456789abcdef012345678',
@@ -127,15 +128,17 @@ function seedDashboardStoreFixture(): void {
     verdict: 'BLOCK',
     arbiterVerdict: 'BLOCK',
     latencyMs: 6100,
-    timestamp: '2026-10-01T12:35:00.000Z',
+    costUSD: 0.12,
+    tokens: { prompt: 1200, completion: 180, total: 1380 },
+    timestamp: new Date(seededAt - 5 * 60_000).toISOString(),
     personas: ['security', 'architecture'],
     personaLogs: [{ persona: 'security', findingsCount: 1 }],
   } as any);
 
   dashboardStore.recordReviewRun({
     id: 'job-402',
-    prRun: 'exampleorg/example-api#402',
-    repo: 'exampleorg/example-api',
+    prRun: 'synthetic/example-api#402',
+    repo: 'synthetic/example-api',
     prNumber: 402,
     title: 'feat(harness): implement tripartite fencing lifecycle',
     headSha: 'e4d3c2b1a09876543210fedcba9876543210fedc',
@@ -143,14 +146,16 @@ function seedDashboardStoreFixture(): void {
     verdict: 'SHIP',
     arbiterVerdict: 'SHIP',
     latencyMs: 4200,
-    timestamp: '2026-10-01T11:05:00.000Z',
+    costUSD: 0.08,
+    tokens: { prompt: 900, completion: 140, total: 1040 },
+    timestamp: new Date(seededAt - 10 * 60_000).toISOString(),
     personas: ['security', 'architecture', 'quality'],
     personaLogs: [{ persona: 'security', findingsCount: 0 }],
   } as any);
 
   // 4. Seed Diff Snapshots in LiveStreamBus
   bus.setJobSnapshot('job-402', {
-    owner: 'exampleorg',
+    owner: 'synthetic',
     repo: 'example-api',
     prNumber: 402,
     headSha: 'e4d3c2b1a09876543210fedcba9876543210fedc',
@@ -180,7 +185,7 @@ function seedDashboardStoreFixture(): void {
   });
 
   bus.setJobSnapshot('review-pr-405', {
-    owner: 'exampleorg',
+    owner: 'synthetic',
     repo: 'example-api',
     prNumber: 405,
     headSha: 'a1b2c3d4e5f67890123456789abcdef012345678',
@@ -209,7 +214,7 @@ function seedDashboardStoreFixture(): void {
   });
 
   // 5. Seed Findings
-  const fId = computeFindingId('exampleorg/example-api', 'src/auth/jwtSigner.ts', 44, 'Hardcoded fallback secret');
+  const fId = computeFindingId('synthetic/example-api', 'src/auth/jwtSigner.ts', 44, 'Hardcoded fallback secret');
   dashboardStore.setFinding('review-pr-405', {
     id: fId,
     severity: 'P1',
@@ -454,7 +459,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
         expect(res.status).toBe(200);
         expect(res.body.success).toBe(true);
         expect(res.body.organizations.length).toBeGreaterThanOrEqual(1);
-        expect(res.body.organizations.some((o: any) => o.login === 'reviewyeti-ai' || o.login === 'exampleorg')).toBe(true);
+        expect(res.body.organizations.some((o: any) => o.login === 'synthetic')).toBe(true);
       });
 
       it('TEST_T1_F3_02 — GET /api/github/repos returns repositories belonging to organizations', async () => {
@@ -487,10 +492,10 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
 
       it('TEST_T1_F3_05 — Supports filtering repositories by organization query parameter (?org=...)', async () => {
         const res = await request(server)
-          .get('/api/github/repos?org=exampleorg')
+          .get('/api/github/repos?org=synthetic')
           .set('Authorization', `Bearer ${adminToken}`);
         expect(res.status).toBe(200);
-        expect(res.body.repositories.every((r: any) => r.owner === 'exampleorg')).toBe(true);
+        expect(res.body.repositories.every((r: any) => r.owner === 'synthetic')).toBe(true);
       });
     });
 
@@ -500,7 +505,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
     describe('F4: Active Pull Requests Discovery & Review Dispatch', () => {
       it('TEST_T1_F4_01 — GET /api/github/repos/:owner/:repo/pulls returns open PRs with metadata', async () => {
         const res = await request(server)
-          .get('/api/github/repos/exampleorg/example-api/pulls')
+          .get('/api/github/repos/synthetic/example-api/pulls')
           .set('Authorization', `Bearer ${adminToken}`);
         expect(res.status).toBe(200);
         expect(res.body.success).toBe(true);
@@ -510,7 +515,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
 
       it('TEST_T1_F4_02 — Pull requests are joined with existing Review Yeti review logs (verdict, duration)', async () => {
         const res = await request(server)
-          .get('/api/github/repos/exampleorg/example-api/pulls')
+          .get('/api/github/repos/synthetic/example-api/pulls')
           .set('Authorization', `Bearer ${adminToken}`);
         expect(res.status).toBe(200);
         const pr = res.body.pullRequests.find((p: any) => p.number === 402);
@@ -520,7 +525,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
 
       it('TEST_T1_F4_03 — POST /api/github/repos/:owner/:repo/pulls/:prNumber/review initiates on-demand review', async () => {
         const res = await request(server)
-          .post('/api/github/repos/exampleorg/example-api/pulls/402/review')
+          .post('/api/github/repos/synthetic/example-api/pulls/402/review')
           .set('Authorization', `Bearer ${adminToken}`)
           .send({});
         expect(res.status).toBe(202);
@@ -536,7 +541,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
         bus.on('event', handler);
 
         await request(server)
-          .post('/api/github/repos/exampleorg/example-api/pulls/402/review')
+          .post('/api/github/repos/synthetic/example-api/pulls/402/review')
           .set('Authorization', `Bearer ${adminToken}`)
           .send({});
 
@@ -546,7 +551,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
 
       it('TEST_T1_F4_05 — Supports state filtering query parameter (?state=open, ?state=all)', async () => {
         const res = await request(server)
-          .get('/api/github/repos/exampleorg/example-api/pulls?state=open')
+          .get('/api/github/repos/synthetic/example-api/pulls?state=open')
           .set('Authorization', `Bearer ${adminToken}`);
         expect(res.status).toBe(200);
         expect(res.body.pullRequests.every((p: any) => p.state === 'open')).toBe(true);
@@ -725,10 +730,10 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
     // ------------------------------------------------------------------------
     describe('F7: Line-Anchored Finding Dismissals & Severity Adjustments', () => {
       const reviewId = 'review-pr-405';
-      const fId = computeFindingId('exampleorg/example-api', 'src/auth/jwtSigner.ts', 44, 'Hardcoded fallback secret');
+      const fId = computeFindingId('synthetic/example-api', 'src/auth/jwtSigner.ts', 44, 'Hardcoded fallback secret');
 
       it('TEST_T1_F7_01 — Generates deterministic finding ID via sha256(repo:file:line:title)', () => {
-        const expected = crypto.createHash('sha256').update('exampleorg/example-api:src/auth/jwtSigner.ts:44:Hardcoded fallback secret').digest('hex');
+        const expected = crypto.createHash('sha256').update('synthetic/example-api:src/auth/jwtSigner.ts:44:Hardcoded fallback secret').digest('hex');
         expect(fId).toBe(expected);
       });
 
@@ -1145,13 +1150,13 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
 
       it('TEST_T2_F4_02 — Returns 400 when PR number is non-numeric, 0, or negative', async () => {
         const res1 = await request(server)
-          .post('/api/github/repos/exampleorg/example-api/pulls/not-a-number/review')
+          .post('/api/github/repos/synthetic/example-api/pulls/not-a-number/review')
           .set('Authorization', `Bearer ${adminToken}`)
           .send({});
         expect(res1.status).toBe(400);
 
         const res2 = await request(server)
-          .post('/api/github/repos/exampleorg/example-api/pulls/-5/review')
+          .post('/api/github/repos/synthetic/example-api/pulls/-5/review')
           .set('Authorization', `Bearer ${adminToken}`)
           .send({});
         expect(res2.status).toBe(400);
@@ -1160,8 +1165,8 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
       it('TEST_T2_F4_03 — Returns 409 Conflict when attempting to trigger review on closed PR without force', async () => {
         (dashboardStore as any).data.reviewLogs.push({
           id: 'rev-closed-999',
-          prRun: 'exampleorg/example-api#999',
-          repo: 'exampleorg/example-api',
+          prRun: 'synthetic/example-api#999',
+          repo: 'synthetic/example-api',
           prNumber: 999,
           title: 'closed PR',
           state: 'closed',
@@ -1171,7 +1176,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
         });
 
         const res = await request(server)
-          .post('/api/github/repos/exampleorg/example-api/pulls/999/review')
+          .post('/api/github/repos/synthetic/example-api/pulls/999/review')
           .set('Authorization', `Bearer ${adminToken}`)
           .send({});
         expect(res.status).toBe(409);
@@ -1179,7 +1184,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
 
       it('TEST_T2_F4_04 — Rejects dispatch when repository automation is explicitly disabled', async () => {
         const res = await request(server)
-          .post('/api/github/repos/review-yeti-ai/review-yeti-bot/pulls/101/review')
+          .post('/api/github/repos/synthetic/sample-bot/pulls/101/review')
           .set('Authorization', `Bearer ${adminToken}`)
           .send({});
         expect(res.status).toBe(400);
@@ -1188,7 +1193,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
 
       it('TEST_T2_F4_05 — Returns 401 when attempting to trigger review without valid auth', async () => {
         const res = await request(server)
-          .post('/api/github/repos/exampleorg/example-api/pulls/402/review')
+          .post('/api/github/repos/synthetic/example-api/pulls/402/review')
           .send({});
         expect(res.status).toBe(401);
       });
@@ -1283,7 +1288,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
 
       it('TEST_T2_F6_04 — Handles empty PR diffs (0 changed files) with 200 OK and empty list', async () => {
         bus.setJobSnapshot('empty-job', {
-          owner: 'exampleorg',
+          owner: 'synthetic',
           repo: 'example-api',
           prNumber: 100,
           headSha: 'head100',
@@ -1320,7 +1325,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
     // ------------------------------------------------------------------------
     describe('F7: Finding Dismissals Boundaries', () => {
       const reviewId = 'review-pr-405';
-      const fId = computeFindingId('exampleorg/example-api', 'src/auth/jwtSigner.ts', 44, 'Hardcoded fallback secret');
+      const fId = computeFindingId('synthetic/example-api', 'src/auth/jwtSigner.ts', 44, 'Hardcoded fallback secret');
 
       it('TEST_T2_F7_01 — Returns 404 when review ID or finding ID does not exist', async () => {
         const res1 = await request(server)
@@ -1498,7 +1503,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
 
       it('TEST_T2_F10_03 — Repository filter boundary: handles single repo filter gracefully', async () => {
         const res = await request(server)
-          .get('/api/analytics/summary?range=7d&repo=exampleorg/example-api')
+          .get('/api/analytics/summary?range=7d&repo=synthetic/example-api')
           .set('Authorization', `Bearer ${adminToken}`);
         expect(res.status).toBe(200);
       });
@@ -1578,7 +1583,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
     it('TEST_T3_PAIR_03 — Review Dispatch -> SSE Stream Connection -> Live Reasoning Token Broadcast (F4 + F5)', async () => {
       const port = (server.address() as any).port;
       const dispatchRes = await request(server)
-        .post('/api/github/repos/exampleorg/example-api/pulls/402/review')
+        .post('/api/github/repos/synthetic/example-api/pulls/402/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
       const jobId = dispatchRes.body.jobId;
@@ -1660,7 +1665,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
       const changedFile = diffRes.body.files[0];
 
       // Retrieve finding
-      const fId = computeFindingId('exampleorg/example-api', changedFile.path, 44, 'Hardcoded fallback secret');
+      const fId = computeFindingId('synthetic/example-api', changedFile.path, 44, 'Hardcoded fallback secret');
       const finding = dashboardStore.getFinding(jobId, fId);
       expect(finding).toBeDefined();
       expect(finding?.line).toBe(44);
@@ -1669,7 +1674,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
 
     it('TEST_T3_PAIR_06 — Finding Discovery -> False-Positive Dismissal -> Review Audit Trail Recording (F7 + F8)', async () => {
       const reviewId = 'review-pr-405';
-      const fId = computeFindingId('exampleorg/example-api', 'src/auth/jwtSigner.ts', 44, 'Hardcoded fallback secret');
+      const fId = computeFindingId('synthetic/example-api', 'src/auth/jwtSigner.ts', 44, 'Hardcoded fallback secret');
 
       const dismissRes = await request(server)
         .post(`/api/reviews/${reviewId}/findings/${fId}/dismiss`)
@@ -1741,7 +1746,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
 
       // Step 2: Pick repo and active PR
       const reposRes = await request(server)
-        .get('/api/github/repos?org=exampleorg')
+        .get('/api/github/repos?org=synthetic')
         .set('Authorization', `Bearer ${devToken}`);
       const repo = reposRes.body.repositories[0];
 
@@ -1791,7 +1796,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
 
     it('TEST_T4_SCENARIO_02 — Human-in-the-Loop False-Positive Triage: Security Lane P1 Finding Dismissal -> Auto-Approval Gate Update', async () => {
       const reviewId = 'review-pr-405';
-      const fId = computeFindingId('exampleorg/example-api', 'src/auth/jwtSigner.ts', 44, 'Hardcoded fallback secret');
+      const fId = computeFindingId('synthetic/example-api', 'src/auth/jwtSigner.ts', 44, 'Hardcoded fallback secret');
 
       // Verify finding is initially active
       const initialFinding = dashboardStore.getFinding(reviewId, fId);
