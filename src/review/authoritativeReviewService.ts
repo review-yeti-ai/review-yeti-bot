@@ -117,6 +117,9 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
   const resolver = new AuthoritativePublishingResolver({
     policyRepository: config.policyRepository, policyRef: config.policyRef, policyPath: config.policyPath,
     transport: config.transport, candidateReaderFactory: readerFactory, policyReaderFactory,
+    ...(config.qualificationRuntimeImageDigest === undefined ? {} : {
+      qualificationRuntimeImageDigest: config.qualificationRuntimeImageDigest,
+    }),
     ...(process.env.COMPOSED_ENGINE_MAX_TURNS === undefined ? {} : {
       composedEngineMaxTurns: process.env.COMPOSED_ENGINE_MAX_TURNS,
     }),

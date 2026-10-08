@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "WS5ExternalNormalBundle.v2",
+  "cases": [
+    {
+      "caseId": "ws5-current-1dd-v2-coverage-hole",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/coverage_hole.json",
+      "inputSha256": "6cf9a5f6c493f1db2f91f8abc907e9d4f9f9ad1d3c62296298326cb18f78897c",
+      "schemaVersion": "WS5LargeCrossfileInput.v1",
+      "repository": { "repositoryId": 73003, "owner": "synthetic", "repo": "fixture-large-crossfile" },
+      "prNumber": 42,
+      "baseSha": "f83c7fbab1909ebc8e3b1a905c4d93a6ffdf8448",
+      "headSha": "cef2d6d195ad1ec19ec6a745363a804fd679b369"
+    },
+    {
+      "caseId": "ws5-current-1dd-v2-p2",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json",
+      "inputSha256": "4f476e36aa78b6788bb37c02ba5b2fae899c99eeba7d43dae399507cd93ed216",
+      "schemaVersion": "WS5P2DisplaySortInput.v1",
+      "repository": { "repositoryId": 73004, "owner": "synthetic", "repo": "fixture-display-sort" },
+      "prNumber": 43,
+      "baseSha": "740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7",
+      "headSha": "e4edc4bd9f74fd9ec3e8f8f7d9a83bd821832497"
+    },
+    {
+      "caseId": "ws5-current-1dd-v2-provider-failure",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/provider_failure.json",
+      "inputSha256": "76278ffbbb439e4e4d7b77dabe6022c01cf2c33d61753127cc82c542a9d1e2bd",
+      "schemaVersion": "WS5P2DisplaySortInput.v1",
+      "repository": { "repositoryId": 73004, "owner": "synthetic", "repo": "fixture-display-sort" },
+      "prNumber": 43,
+      "baseSha": "740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7",
+      "headSha": "e4edc4bd9f74fd9ec3e8f8f7d9a83bd821832497"
+    },
+    {
+      "caseId": "ws5-current-1dd-v2-resource-exhaustion",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/resource_exhaustion.json",
+      "inputSha256": "015efdfc7c5253cb52e4ec99f22bfc354ea51ae54667f161993a98b1566cd1bc",
+      "schemaVersion": "WS5P2DisplaySortInput.v1",
+      "repository": { "repositoryId": 73004, "owner": "synthetic", "repo": "fixture-display-sort" },
+      "prNumber": 43,
+      "baseSha": "740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7",
+      "headSha": "e4edc4bd9f74fd9ec3e8f8f7d9a83bd821832497"
+    },
+    {
+      "caseId": "ws5-current-1dd-v2-sequence-a",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_a.json",
+      "inputSha256": "0e3bade3d6d7a148a2a36515ed1b40b9c1ab3f4cc2b2d92343176f2069ca0da9",
+      "schemaVersion": "WS5RepairReviewInput.v1",
+      "repository": { "repositoryId": 73002, "owner": "synthetic", "repo": "fixture-sequence" },
+      "prNumber": 41,
+      "baseSha": "1fd9256afcf0250975c69410a766629c4d4225ad",
+      "headSha": "1035dc8db9a222447aa774fd9660c224e5d37655"
+    },
+    {
+      "caseId": "ws5-current-1dd-v2-sequence-b",
+      "inputPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_b.json",
+      "inputSha256": "52cdd6d19fc5dd042412a85df5b4effe8c9793c43cea3104ab5b35d036b1d1aa",
+      "schemaVersion": "WS5RepairReviewInput.v1",
+      "repository": { "repositoryId": 73002, "owner": "synthetic", "repo": "fixture-sequence" },
+      "prNumber": 41,
+      "baseSha": "1035dc8db9a222447aa774fd9660c224e5d37655",
+      "headSha": "1b183caf5f8c518a3acda3fb2d8eea38133eed98"
+    }
+  ]
+}

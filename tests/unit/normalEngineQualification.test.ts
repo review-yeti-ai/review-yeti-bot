@@ -23,6 +23,7 @@ import {
   normalEngineQualificationProviderCaptureRelativePath,
 } from '../../src/qualification/normalEngineQualificationProvider';
 import { parseNormalEngineQualificationPlanDescriptor } from '../../src/qualification/normalEngineQualificationWorker';
+import * as NormalEngineQualificationWorker from '../../src/qualification/normalEngineQualificationWorker';
 import { ComposedRuntimeResourceObserver, completeComposedRuntimeResources,
   composedRuntimeResourcesSchema } from '../../src/panel/composedResourceReceipt';
 
@@ -283,6 +284,45 @@ function validQualificationPlanReceipt() {
 }
 
 describe('normal-engine qualification admission contract', () => {
+  it('retains the final P1 claim and grounded source citations in the private case receipt', () => {
+    const receipt = validQualificationReceipt() as any;
+    receipt.arm = 'repair-introduction';
+    receipt.phase = 'repair-introduction';
+    receipt.target = { ...receipt.target, repositoryId: 73002, repository: 'synthetic/fixture-sequence', prNumber: 41,
+      caseId: 'ws5-current-1dd-v2-sequence-a', bundleVersion: 'WS5ExternalNormalBundle.v2',
+      bundleSha256: '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1',
+      inputSha256: '0e3bade3d6d7a148a2a36515ed1b40b9c1ab3f4cc2b2d92343176f2069ca0da9',
+      baseSha: '1fd9256afcf0250975c69410a766629c4d4225ad', headSha: '1035dc8db9a222447aa774fd9660c224e5d37655' };
+    receipt.composedResourcesPath = normalEngineQualificationComposedResourcesRelativePath(receipt.runId,
+      'repair-introduction', receipt.target.caseId);
+    receipt.provider.capturePath = normalEngineQualificationProviderCaptureRelativePath({
+      runId: receipt.runId, phase: 'repair-introduction', caseId: receipt.target.caseId,
+    });
+    receipt.canonicalReviewEvidence = { decisionClassification: 'FIX_FIRST',
+      counts: { p0Count: 0, p1Count: 1, p2Count: 0, p3Count: 0, nitCount: 0 }, coverageComplete: true,
+      quorumSatisfied: true, blockingFindings: [{ fingerprintSha256: 'c'.repeat(64), severity: 'P1',
+        path: 'audience-policy.ts', line: 17, title: 'A missing audience selects the permissive route',
+        claim: 'Requests without an audience can pass the allowlist and select a route that requires another audience.',
+        blockerEvidence: { trigger: 'The request omits the audience field.',
+          impact: 'The route accepts a caller it should reject.', violatedContract: 'The selected route audience must be enforced.' },
+        verificationStatus: 'confirmed', causalScope: 'introduced',
+        sourceReviewIdentitySha256: 'd'.repeat(64),
+        reviewIdentity: { repository: 'synthetic/fixture-sequence', baseSha: '1fd9256afcf0250975c69410a766629c4d4225ad',
+          headSha: '1035dc8db9a222447aa774fd9660c224e5d37655' },
+        scopeEvidenceSha256: 'e'.repeat(64), blockerEvidenceSha256: 'f'.repeat(64),
+        citationEvidence: { sourceWindowManifestDigest: '1'.repeat(64), usedCitationIds: ['head-audience-policy'],
+          citations: [{ id: 'head-audience-policy', path: 'audience-policy.ts', repository: 'synthetic/fixture-sequence',
+            side: 'head', revisionSha: '1035dc8db9a222447aa774fd9660c224e5d37655',
+            headSha: '1035dc8db9a222447aa774fd9660c224e5d37655', baseSha: '1fd9256afcf0250975c69410a766629c4d4225ad',
+            sourceDigest: '2'.repeat(64), window: null }] } }] };
+    const parsed = assertNormalEngineQualificationReceipt(receipt);
+    expect(parsed.canonicalReviewEvidence?.blockingFindings[0]).toMatchObject({
+      title: 'A missing audience selects the permissive route',
+      claim: expect.stringContaining('select a route'),
+      citationEvidence: { citations: [{ id: 'head-audience-policy', path: 'audience-policy.ts', side: 'head' }] },
+    });
+  });
+
   it('binds each qualification receipt to the exact grounded v2 semantics', () => {
     const receipt = validQualificationReceipt();
     expect(assertNormalEngineQualificationReceipt(receipt).policy.groundedEvidenceSemanticsVersion)
@@ -959,5 +999,96 @@ describe('normal-engine qualification admission contract', () => {
       upstreamResponseRequestId: responseRequestId,
     });
     expect(JSON.stringify(privateRows)).not.toContain('never-record-this-key-id');
+  });
+});
+
+describe('WS5 external v2 repair history binding', () => {
+  it('loads only the completed fresh v2 A receipt with matching runtime, policy, config, and ancestry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'review-yeti-external-v2-history-'));
+    try {
+      const store = new NormalEngineQualificationHistoryStore(root);
+      const base = repairHistoryState();
+      const sequenceId = 'ws5-current-source-external-v2';
+      const sourceCaseId = 'ws5-current-1dd-v2-sequence-a';
+      const repairCaseId = 'ws5-current-1dd-v2-sequence-b';
+      const bundleSha256 = '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1';
+      const sourceInputSha256 = '0e3bade3d6d7a148a2a36515ed1b40b9c1ab3f4cc2b2d92343176f2069ca0da9';
+      const repairInputSha256 = '52cdd6d19fc5dd042412a85df5b4effe8c9793c43cea3104ab5b35d036b1d1aa';
+      const policyDigest = 'c7de3af7f4e5c98de86a4a2a8f962a1779d0195e7ab470b25332b0f6fbe0210b';
+      const configDigest = 'f737fbef64a7336614e441d092e3899d0c2b674f04ea197c610aaf7db9050df1';
+      const runtime = { sourceRevision: '7'.repeat(40), workerImageDigest: `sha256:${'8'.repeat(64)}`,
+        runtimeManifestSha256: '9'.repeat(64) };
+      const v2State = {
+        ...base,
+        configurationVariant: 'prepared-policy-default-v1' as const,
+        disputedBlockerAdjudicator: { state: 'unconfigured' as const, modelAlias: null, reasoningEffort: null },
+        adjudicatorRecheckTarget: null,
+        sequenceId,
+        caseId: sourceCaseId,
+        bundleSha256,
+        inputSha256: sourceInputSha256,
+        repairCaseId,
+        repairInputSha256,
+        repairBaseSha: '1035dc8db9a222447aa774fd9660c224e5d37655',
+        repairHeadSha: '1b183caf5f8c518a3acda3fb2d8eea38133eed98',
+        policyDigest,
+        configDigest,
+        runtime,
+        historyLoad: {
+          ...base.historyLoad,
+          events: base.historyLoad.events.map((event) => ({ ...event, policyDigest, configDigest })),
+        },
+      };
+      await store.persistInitial(v2State as never);
+      const binding = {
+        runId: v2State.runId,
+        repairRunId: 'nq_abcdef0123456789abcdef0123456789',
+        sequenceId,
+        sourceCaseId,
+        repairCaseId,
+        bundleSha256,
+        sourceInputSha256,
+        repairInputSha256,
+        repositoryId: 73002,
+        repository: 'synthetic/fixture-sequence',
+        currentBaseSha: '1035dc8db9a222447aa774fd9660c224e5d37655',
+        currentHeadSha: '1b183caf5f8c518a3acda3fb2d8eea38133eed98',
+        policyDigest,
+        configDigest,
+        configurationVariant: 'prepared-policy-default-v1' as const,
+        runtime,
+        mode: 'repair-head' as const,
+        currentInputSha256: repairInputSha256,
+      };
+      const loaded = await store.sourceForRepair(binding).read();
+      expect(loaded).toMatchObject({ status: 'complete', snapshotId: base.historyLoad.snapshotId,
+        contextDigest: base.historyLoad.contextDigest });
+
+      const mismatchedRuntime = await store.sourceForRepair({ ...binding,
+        runtime: { ...runtime, workerImageDigest: `sha256:${'a'.repeat(64)}` } }).read();
+      const mismatchedPolicy = await store.sourceForRepair({ ...binding, policyDigest: 'b'.repeat(64) }).read();
+      const mismatchedRepair = await store.sourceForRepair({ ...binding, repairInputSha256: 'c'.repeat(64) }).read();
+      expect(mismatchedRuntime.status).toBe('unavailable');
+      expect(mismatchedPolicy.status).toBe('unavailable');
+      expect(mismatchedRepair.status).toBe('unavailable');
+
+      const oldV1Binding = store.sourceForRepair({ ...binding, sequenceId: 'ws5-repair-sequence-v1',
+        sourceCaseId: 'ws5-sequence-a-v1', repairCaseId: 'ws5-sequence-b-v1',
+        bundleSha256: base.bundleSha256, sourceInputSha256: base.inputSha256,
+        repairInputSha256: base.repairInputSha256, currentInputSha256: base.repairInputSha256 });
+      expect((await oldV1Binding.read()).status).toBe('unavailable');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('WS5 external v2 active/capture deadline split', () => {
+  it('keeps a 240-second child deadline separate from the later exact-log capture reserve', () => {
+    const deadlineFor = (NormalEngineQualificationWorker as Record<string, unknown>)
+      .normalEngineQualificationChildDeadlineAt as ((nowMs: number, activeMs: number, captureOutsideChild: boolean) => string | null) | undefined;
+    expect(deadlineFor).toBeTypeOf('function');
+    expect(deadlineFor!(1_000, 240_000, true)).toBe(new Date(241_000).toISOString());
+    expect(deadlineFor!(1_000, 240_000, false)).toBe(new Date(541_000).toISOString());
   });
 });

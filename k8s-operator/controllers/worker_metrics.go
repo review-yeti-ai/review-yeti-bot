@@ -14,6 +14,7 @@ import (
 	reviewv1alpha2 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
 	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
 	operatorMetrics "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/metrics"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/operatorconfig"
 )
 
 // Cache-only index; eligibility that depends on the clock is checked at collect
@@ -36,7 +37,10 @@ func isQueueMetricsCandidate(review *reviewv1alpha2.PRReviewJob) bool {
 // Use the manager cache independently of admission. A full queue short-circuits
 // admission's review list; terminal-only traffic must also refresh the gauges.
 // This process watches the one namespace accepted by the worker contract.
-type workerMetricsCollector struct{ reader client.Reader }
+type workerMetricsCollector struct {
+	reader    client.Reader
+	namespace operatorconfig.NamespaceConfig
+}
 
 func (*workerMetricsCollector) NeedLeaderElection() bool { return true }
 
@@ -56,18 +60,19 @@ func (c *workerMetricsCollector) Start(ctx context.Context) error {
 }
 
 func (c *workerMetricsCollector) collect(ctx context.Context, now time.Time) error {
+	namespace := c.namespace.Namespace()
 	component, err := labels.NewRequirement("review-yeti.ai/component", selection.In,
 		[]string{job.ReceiptOnlyWorkerComponent, job.PublishingWorkerComponent})
 	if err != nil {
 		return err
 	}
 	var jobs batchv1.JobList
-	if err := c.reader.List(ctx, &jobs, client.InNamespace(job.Namespace),
+	if err := c.reader.List(ctx, &jobs, client.InNamespace(namespace),
 		client.MatchingLabelsSelector{Selector: labels.NewSelector().Add(*component)}); err != nil {
 		return err
 	}
 	var reviews reviewv1alpha2.PRReviewJobList
-	if err := c.reader.List(ctx, &reviews, client.InNamespace(job.Namespace), client.MatchingFields{queueMetricsCandidateField: "true"}); err != nil {
+	if err := c.reader.List(ctx, &reviews, client.InNamespace(namespace), client.MatchingFields{queueMetricsCandidateField: "true"}); err != nil {
 		return err
 	}
 	active, queued, failed := 0, 0, 0
@@ -87,7 +92,7 @@ func (c *workerMetricsCollector) collect(ctx context.Context, now time.Time) err
 	}
 	for i := range reviews.Items {
 		candidate := &reviews.Items[i]
-		if validWorkerAdmissionCandidate(candidate, now) &&
+		if validWorkerAdmissionCandidate(candidate, now, namespace) &&
 			isQueueMetricsCandidate(candidate) {
 			queued++
 		}

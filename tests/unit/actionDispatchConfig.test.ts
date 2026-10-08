@@ -74,9 +74,48 @@ describe('actionDispatchConfig', () => {
         windowMs: 60_000,
         max: 60,
       });
+  });
+
+  describe('service-owned isolated qualification instance', () => {
+    const qualificationRepository = 'review-yeti-ai/review-yeti-qualification';
+    const qualificationEnvironment = {
+      REVIEW_YETI_QUALIFICATION_INSTANCE: 'true',
+      REVIEW_YETI_PASSTHROUGH: 'false',
+      ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: qualificationRepository,
+      REVIEW_JOB_WORKER_IMAGE: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'a'.repeat(64)}`,
+      GITHUB_APP_WEBHOOK_ENABLED: 'false',
+      REVIEW_YETI_MCP_ENABLED: 'false',
+      REVIEW_YETI_PUBLIC_TARGET_APP_ID: '4552718',
+      REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY: 'synthetic-public-app-key-must-not-be-selected',
+    };
+
+    it('admits only the qualification repository and uses the primary App credentials', () => {
+      const config = actionDispatchConfigFromEnv(qualificationEnvironment);
+
+      expect(config).toMatchObject({ qualificationInstance: true, passthroughEnabled: false });
+      expect(config.qualificationRuntimeImageDigest).toBe(`sha256:${'a'.repeat(64)}`);
+      expect([...config.centralExternalRepositories]).toEqual([[qualificationRepository, 1_409_547_157]]);
+      expect(config.centralExternalAppCredentials).toBeUndefined();
+      expect(config.mcp.enabled).toBe(false);
     });
 
-    describe('REVIEW_YETI_PASSTHROUGH parsing', () => {
+    it.each([
+      ['missing marker', { REVIEW_YETI_QUALIFICATION_INSTANCE: undefined }],
+      ['marker typo', { REVIEW_YETI_QUALIFICATION_INSTANCE: 'TRUE' }],
+      ['global pause still enabled', { REVIEW_YETI_PASSTHROUGH: 'true' }],
+      ['public target substituted', { ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: 'review-yeti-ai/review-yeti-bot' }],
+      ['multiple targets', { ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES:
+        `${qualificationRepository},review-yeti-ai/review-yeti-bot` }],
+      ['missing worker image pin', { REVIEW_JOB_WORKER_IMAGE: undefined }],
+      ['mutable worker image', { REVIEW_JOB_WORKER_IMAGE: 'ghcr.io/review-yeti-ai/review-yeti-worker:latest' }],
+      ['MCP surface enabled', { REVIEW_YETI_MCP_ENABLED: 'true', REVIEW_YETI_MCP_AUTH_TOKEN: 'synthetic-mcp-token' }],
+      ['App webhook surface enabled', { GITHUB_APP_WEBHOOK_ENABLED: 'true' }],
+    ])('rejects qualification instance configuration with %s', (_caseName, override) => {
+      expect(() => actionDispatchConfigFromEnv({ ...qualificationEnvironment, ...override })).toThrow();
+    });
+  });
+
+  describe('REVIEW_YETI_PASSTHROUGH parsing', () => {
       it('enables only the exact true value and defaults off', () => {
         expect(actionDispatchConfigFromEnv({}).passthroughEnabled).toBe(false);
         expect(actionDispatchConfigFromEnv({ REVIEW_YETI_PASSTHROUGH: 'false' }).passthroughEnabled).toBe(false);

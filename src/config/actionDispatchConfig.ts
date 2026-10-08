@@ -1,8 +1,11 @@
 import { reviewYetiPassthroughEnabledFromEnv } from './reviewYetiPassthrough';
+import { qualificationRuntimeImageDigestFromReference } from './qualificationRuntimeImage';
 import {
   PUBLIC_REVIEW_REPOSITORY,
   PUBLIC_REVIEW_REPOSITORY_ID,
   PUBLIC_REVIEW_APP_ID,
+  QUALIFICATION_REVIEW_REPOSITORY,
+  QUALIFICATION_REVIEW_REPOSITORY_ID,
 } from './repositoryReviewAuthorityConstants';
 
 export const SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY = PUBLIC_REVIEW_REPOSITORY;
@@ -27,6 +30,10 @@ export interface McpServerConfig {
 export interface ActionDispatchConfig {
   /** Skip new review admission after caller authentication and request validation. */
   passthroughEnabled: boolean;
+  /** True only for the isolated, one-repository normal-review qualification release. */
+  qualificationInstance: boolean;
+  /** Digest derived from the service-owned worker image reference; present only in qualification. */
+  qualificationRuntimeImageDigest?: string;
   requireExpectedGeneration: boolean;
   centralExternalRepositories: ReadonlyMap<string, number>;
   centralExternalAppCredentials?: {
@@ -51,8 +58,11 @@ export function parsePositiveInteger(
 
 interface ActionDispatchEnvironment {
   REVIEW_YETI_PASSTHROUGH?: string;
+  REVIEW_YETI_QUALIFICATION_INSTANCE?: string;
   ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION?: string;
   ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES?: string;
+  GITHUB_APP_WEBHOOK_ENABLED?: string;
+  REVIEW_JOB_WORKER_IMAGE?: string;
   REVIEW_YETI_PUBLIC_TARGET_APP_ID?: string;
   REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY?: string;
   REVIEW_YETI_MCP_ENABLED?: string;
@@ -69,22 +79,39 @@ export interface CentralExternalTargetConfig {
   appCredentials?: { appId: string; privateKey: string };
 }
 
+export function qualificationInstanceEnabledFromEnv(environment: Pick<ActionDispatchEnvironment,
+  'REVIEW_YETI_QUALIFICATION_INSTANCE'> | NodeJS.ProcessEnv): boolean {
+  const value = environment.REVIEW_YETI_QUALIFICATION_INSTANCE;
+  if (value === undefined || value === 'false') return false;
+  if (value === 'true') return true;
+  throw new Error('REVIEW_YETI_QUALIFICATION_INSTANCE must be exactly true or false');
+}
+
 /**
- * Parses the one explicitly supported public target and its dedicated App.
- * Both the admission service and the worker-token control plane use this exact
- * parser so lookup, read-token, check-token, and fail-closed publication routing
- * cannot drift onto different GitHub App identities.
+ * Parses the exact public target and its dedicated App, or the separately
+ * marked one-repository qualification target. Both the admission service and
+ * worker-token control plane use this parser so lookup, read-token, check-token,
+ * and fail-closed publication routing cannot drift onto different identities.
  */
 export function centralExternalTargetConfigFromEnv(
-  environment: NodeJS.ProcessEnv | Pick<ActionDispatchEnvironment,
-    'REVIEW_YETI_PASSTHROUGH'
-    |
-    'ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES'
-    | 'REVIEW_YETI_PUBLIC_TARGET_APP_ID'
-    | 'REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY'>,
+  environment: NodeJS.ProcessEnv | ActionDispatchEnvironment,
   options: { allowUnavailableSigningKey?: boolean } = {},
 ): CentralExternalTargetConfig {
   const configuredRepositories = environment.ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES;
+  const qualificationInstance = qualificationInstanceEnabledFromEnv(environment);
+  if (qualificationInstance) {
+    if (environment.REVIEW_YETI_PASSTHROUGH !== 'false') {
+      throw new Error('Qualification instance requires REVIEW_YETI_PASSTHROUGH=false');
+    }
+    if (configuredRepositories !== QUALIFICATION_REVIEW_REPOSITORY) {
+      throw new Error('Qualification instance must admit only its source-owned repository');
+    }
+    const qualificationRuntimeImageDigest = qualificationRuntimeImageDigestFromReference(environment.REVIEW_JOB_WORKER_IMAGE);
+    if (!qualificationRuntimeImageDigest) {
+      throw new Error('Qualification instance requires a digest-pinned REVIEW_JOB_WORKER_IMAGE');
+    }
+    return { repositories: new Map([[QUALIFICATION_REVIEW_REPOSITORY, QUALIFICATION_REVIEW_REPOSITORY_ID]]) };
+  }
   if (configuredRepositories === undefined) return { repositories: new Map() };
   if (configuredRepositories !== SELF_HOSTED_CENTRAL_DISPATCH_REPOSITORY) {
     throw new Error('ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES must contain only explicit supported repositories');
@@ -109,6 +136,7 @@ export function actionDispatchConfigFromEnv(
   environment: NodeJS.ProcessEnv | ActionDispatchEnvironment = process.env,
 ): ActionDispatchConfig {
   const passthroughEnabled = reviewYetiPassthroughEnabledFromEnv(environment);
+  const qualificationInstance = qualificationInstanceEnabledFromEnv(environment);
   const value = environment.ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION;
   let requireExpectedGeneration: boolean;
   if (value === undefined || value === '' || value === 'false') requireExpectedGeneration = false;
@@ -120,6 +148,12 @@ export function actionDispatchConfigFromEnv(
   });
   const centralExternalRepositories = external.repositories;
   const centralExternalAppCredentials = external.appCredentials;
+  const qualificationRuntimeImageDigest = qualificationInstance
+    ? qualificationRuntimeImageDigestFromReference(environment.REVIEW_JOB_WORKER_IMAGE)
+    : undefined;
+  if (qualificationInstance && !qualificationRuntimeImageDigest) {
+    throw new Error('Qualification instance requires a digest-pinned REVIEW_JOB_WORKER_IMAGE');
+  }
 
   const mcpEnabledVal = environment.REVIEW_YETI_MCP_ENABLED;
   let mcpEnabled = false;
@@ -130,6 +164,9 @@ export function actionDispatchConfigFromEnv(
   }
 
   const mcpAuthToken = environment.REVIEW_YETI_MCP_AUTH_TOKEN?.trim();
+  if (qualificationInstance && mcpEnabled) {
+    throw new Error('Qualification instance does not expose the MCP trigger surface');
+  }
   if (mcpEnabled && !mcpAuthToken) {
     throw new Error('REVIEW_YETI_MCP_AUTH_TOKEN is required when REVIEW_YETI_MCP_ENABLED is true');
   }
@@ -137,6 +174,10 @@ export function actionDispatchConfigFromEnv(
   const mcpPath = (environment.REVIEW_YETI_MCP_PATH || '/api/mcp').trim();
   if (!mcpPath.startsWith('/')) {
     throw new Error('REVIEW_YETI_MCP_PATH must start with "/"');
+  }
+  if (qualificationInstance && environment.GITHUB_APP_WEBHOOK_ENABLED !== undefined
+    && environment.GITHUB_APP_WEBHOOK_ENABLED !== 'false') {
+    throw new Error('Qualification instance does not expose the GitHub App webhook surface');
   }
 
   const mcpMaxSessions = parsePositiveInteger(
@@ -168,6 +209,8 @@ export function actionDispatchConfigFromEnv(
 
   return {
     passthroughEnabled,
+    qualificationInstance,
+    ...(qualificationRuntimeImageDigest ? { qualificationRuntimeImageDigest } : {}),
     requireExpectedGeneration,
     centralExternalRepositories,
     ...(centralExternalAppCredentials ? { centralExternalAppCredentials } : {}),

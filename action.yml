@@ -116,6 +116,12 @@ inputs:
       doks or mars). It must be an https URL with a DNS hostname and the exact path /api/dispatch/action.
     required: false
     default: ''
+  qualification-runtime-image-digest:
+    description: >-
+      Service-checked worker image digest for the exact central qualification target. Only the
+      trusted central workflow should set this; the Action cannot choose the target service image.
+    required: false
+    default: ''
   doks-publish-mode:
     description: >-
       DOKS publication policy: app-gate is the standard gate-checked publication mode for
@@ -508,6 +514,7 @@ runs:
         DOKS_DISPATCH_URL: ${{ inputs.doks-dispatch-url }}
         DOKS_OIDC_AUDIENCE: review-yeti-doks-dispatch
         DOKS_PUBLISH_MODE: ${{ inputs.doks-publish-mode }}
+        QUALIFICATION_RUNTIME_IMAGE_DIGEST: ${{ inputs.qualification-runtime-image-digest }}
         REFRESH_REQUESTED: ${{ inputs.refresh-requested }}
         REFRESH_EXECUTION_ATTEMPT: ${{ inputs.refresh-execution-attempt }}
         INCOMPLETE_P2_RECOVERY: ${{ inputs.incomplete-p2-recovery }}

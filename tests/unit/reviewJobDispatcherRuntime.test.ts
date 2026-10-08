@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  assertQualificationReviewClaim,
   reviewJobDispatcherConfigFromEnv,
   runReviewJobDispatcherLoop,
 } from '../../src/k8s/reviewJobDispatcherRuntime';
@@ -45,6 +46,52 @@ describe('reviewJobDispatcherConfigFromEnv', () => {
       abandonedReaperLimit: 1,
       delegatedFailurePollMs: 15_000,
     });
+  });
+
+  it('accepts the exact qualification namespace only for the marked unpaused one-repo instance', () => {
+    const config = reviewJobDispatcherConfigFromEnv({
+      REVIEW_YETI_QUALIFICATION_INSTANCE: 'true',
+      REVIEW_YETI_PASSTHROUGH: 'false',
+      ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: 'review-yeti-ai/review-yeti-qualification',
+      REVIEW_JOB_DISPATCH_ENABLED: 'true',
+      REVIEW_JOB_NAMESPACE: 'ct-review-qualification',
+      REVIEW_JOB_WORKER_IMAGE: workerImage,
+      HOSTNAME: 'qualification-dispatcher-abc123',
+    });
+
+    expect(config).toMatchObject({ namespace: 'ct-review-qualification', workerImage,
+      qualificationRuntimeImageDigest: `sha256:${'e'.repeat(64)}`,
+      workerId: 'review-job-dispatcher:qualification-dispatcher-abc123', runnerMode: 'prebaked' });
+  });
+
+  it.each([
+    ['unmarked namespace', { REVIEW_YETI_QUALIFICATION_INSTANCE: 'false' }],
+    ['production namespace', { REVIEW_JOB_NAMESPACE: 'ct-review-system' }],
+    ['operator pause', { REVIEW_YETI_PASSTHROUGH: 'true' }],
+    ['different repository', { ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: 'review-yeti-ai/review-yeti-bot' }],
+    ['invalid marker', { REVIEW_YETI_QUALIFICATION_INSTANCE: 'yes' }],
+  ])('rejects qualification namespace when %s', (_reason, override) => {
+    expect(() => reviewJobDispatcherConfigFromEnv({
+      REVIEW_YETI_QUALIFICATION_INSTANCE: 'true',
+      REVIEW_YETI_PASSTHROUGH: 'false',
+      ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: 'review-yeti-ai/review-yeti-qualification',
+      REVIEW_JOB_DISPATCH_ENABLED: 'true',
+      REVIEW_JOB_NAMESPACE: 'ct-review-qualification',
+      REVIEW_JOB_WORKER_IMAGE: workerImage,
+      HOSTNAME: 'qualification-dispatcher-abc123',
+      ...override,
+    })).toThrow();
+  });
+
+  it('rejects any durable qualification claim outside the exact repository/App installation tuple', () => {
+    const valid = { repositoryId: 1_409_547_157, installationId: 152_783_031,
+      repo: 'review-yeti-ai/review-yeti-qualification' };
+    expect(() => assertQualificationReviewClaim(true, valid)).not.toThrow();
+    expect(() => assertQualificationReviewClaim(true, { ...valid, repositoryId: 1326169548 })).toThrow();
+    expect(() => assertQualificationReviewClaim(true, { ...valid, installationId: 123 })).toThrow();
+    expect(() => assertQualificationReviewClaim(true, { ...valid, repo: 'review-yeti-ai/review-yeti-bot' })).toThrow();
+    expect(() => assertQualificationReviewClaim(false, { ...valid, repositoryId: 123, installationId: 456,
+      repo: 'exampleorg/example-meta' })).not.toThrow();
   });
 
   describe('REL-896 REVIEW_ABANDONED_REAPER_LIMIT', () => {

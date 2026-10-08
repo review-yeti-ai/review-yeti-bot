@@ -33,11 +33,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	reviewv1alpha2 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/operatorconfig"
 )
 
 const (
-	// DefaultCapacityLedgerNamespace is the default Kubernetes namespace hosting the singleton Lease.
-	DefaultCapacityLedgerNamespace = "ct-review-system"
+	// DefaultCapacityLedgerNamespace is the production namespace hosting the singleton Lease.
+	DefaultCapacityLedgerNamespace = operatorconfig.DefaultNamespace
 	// CapacityLedgerLeaseName is the singleton Lease resource coordinating cluster-wide worker capacity.
 	CapacityLedgerLeaseName = "review-yeti-capacity-ledger"
 	// CapacityLedgerActiveSlotsAnnotation is the Lease annotation key storing the active review names JSON array.
@@ -71,7 +72,7 @@ func (s *CapacitySlot) UnmarshalJSON(data []byte) error {
 
 // CapacityLedger coordinates declarative worker admission across threads and replicas
 // using native metadata.ResourceVersion optimistic concurrency control (Compare-And-Swap)
-// on a singleton coordination.k8s.io/v1 Lease in ct-review-system.
+// on a singleton coordination.k8s.io/v1 Lease in the configured instance namespace.
 type CapacityLedger struct {
 	client    client.Client
 	Reader    client.Reader
@@ -482,10 +483,11 @@ func (c *CapacityLedger) parseActiveSlots(lease *coordinationv1.Lease) []Capacit
 
 // filterLiveSlots prunes expired or orphaned slots and synchronizes active cluster workloads.
 // Slots are self-healed when:
-// 1. Slot age exceeds LeaseDurationSeconds without renewal.
-// 2. The referenced PRReviewJob no longer exists in the cluster (NotFound).
-// 3. The referenced PRReviewJob is undergoing deletion (DeletionTimestamp != nil)
-//    or has entered a terminal phase (Succeeded, Failed, Expired, Cancelled).
+//  1. Slot age exceeds LeaseDurationSeconds without renewal.
+//  2. The referenced PRReviewJob no longer exists in the cluster (NotFound).
+//  3. The referenced PRReviewJob is undergoing deletion (DeletionTimestamp != nil)
+//     or has entered a terminal phase (Succeeded, Failed, Expired, Cancelled).
+//
 // Active batchv1.Job workers and active candidate reservations in the cluster are
 // authoritatively projected into the ledger slots.
 func (c *CapacityLedger) filterLiveSlots(ctx context.Context, lease *coordinationv1.Lease, now time.Time) []CapacitySlot {

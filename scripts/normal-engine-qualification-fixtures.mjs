@@ -23,11 +23,29 @@ export const NORMAL_ENGINE_QUALIFICATION_FIXTURE_ALLOWLIST = Object.freeze([
     sha256: '1e929cc12ef523e523dc67e1ee7c3d7ef83268f1e2c4734615c219523e4813c9' },
   { path: 'eval-baselines/competitive-review-benchmark/ws5-large-crossfile-v1/inputs/ws5-large-crossfile-v1.json',
     sha256: 'ad360475a095d194b933f2323b7226f057cc617f8cbb605d5473bd00f00b62f5' },
+  { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json',
+    sha256: '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1' },
+  { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json',
+    sha256: '42ebbe56627c38a3f781acf1a5e4ed4301b14b546bf04139d6a05c2951ebb8ee' },
+  { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json',
+    sha256: '4f476e36aa78b6788bb37c02ba5b2fae899c99eeba7d43dae399507cd93ed216' },
+  { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_a.json',
+    sha256: '0e3bade3d6d7a148a2a36515ed1b40b9c1ab3f4cc2b2d92343176f2069ca0da9' },
+  { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_b.json',
+    sha256: '52cdd6d19fc5dd042412a85df5b4effe8c9793c43cea3104ab5b35d036b1d1aa' },
+  { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/coverage_hole.json',
+    sha256: '6cf9a5f6c493f1db2f91f8abc907e9d4f9f9ad1d3c62296298326cb18f78897c' },
+  { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/provider_failure.json',
+    sha256: '76278ffbbb439e4e4d7b77dabe6022c01cf2c33d61753127cc82c542a9d1e2bd' },
+  { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/resource_exhaustion.json',
+    sha256: '015efdfc7c5253cb52e4ec99f22bfc354ea51ae54667f161993a98b1566cd1bc' },
 ]);
 
-export async function verifyQualificationFixtureAllowlist(root = process.cwd()) {
+export async function verifyQualificationFixtureAllowlist(root = process.cwd(), excludedPaths = []) {
+  const excluded = new Set(excludedPaths);
   const verified = [];
   for (const fixture of NORMAL_ENGINE_QUALIFICATION_FIXTURE_ALLOWLIST) {
+    if (excluded.has(fixture.path)) continue;
     if (fixture.path.split('/').some((part) => part.toLowerCase() === 'oracle')) {
       throw new Error('qualification fixture allowlist includes an oracle path');
     }

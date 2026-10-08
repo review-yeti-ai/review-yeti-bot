@@ -194,3 +194,48 @@ describe('exact public repository service authority', () => {
       { ...policy, repositoryIds: new Set(['1326169548']) })).toThrow(error);
   });
 });
+
+describe('isolated qualification service authority', () => {
+  const repository = 'review-yeti-ai/review-yeti-qualification';
+  const repositoryId = 1_409_547_157;
+  const identity = { repositoryId, owner: 'review-yeti-ai', repo: 'review-yeti-qualification' };
+  const qualificationPolicy = { allowAppGate: true, repositoryIds: new Set(['1339040553', String(repositoryId)]) };
+  const qualificationEnv = (overrides: Record<string, string | undefined> = {}) => env({
+    REVIEW_YETI_QUALIFICATION_INSTANCE: 'true',
+    REVIEW_YETI_PASSTHROUGH: 'false',
+    ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: repository,
+    REVIEW_JOB_WORKER_IMAGE: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'a'.repeat(64)}`,
+    AUTHORITATIVE_REVIEW_ADMISSION_ENABLED: 'true',
+    AUTHORITATIVE_REVIEW_REPOSITORY_IDS: String(repositoryId),
+    AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES: JSON.stringify([identity]),
+    ...overrides,
+  });
+
+  it('binds the isolated instance to the one qualification repo under the primary App', () => {
+    const configuredEnvironment = qualificationEnv();
+    const config = authoritativeServiceConfigFromEnv(configuredEnvironment, qualificationPolicy)!;
+
+    expect(config).toMatchObject({ expectedAppId: 4_385_771, admissionEnabled: true,
+      repositoryIds: [repositoryId], repositoryIdentities: [identity],
+      qualificationRuntimeImageDigest: `sha256:${'a'.repeat(64)}` });
+    expect(config.publicRepository).toBeUndefined();
+    expect(actionDispatchConfigFromEnv(configuredEnvironment as unknown as NodeJS.ProcessEnv))
+      .toMatchObject({ qualificationInstance: true, passthroughEnabled: false });
+  });
+
+  it.each([
+    ['global pause is active', { REVIEW_YETI_PASSTHROUGH: 'true' }],
+    ['multiple primary repositories are enrolled', { AUTHORITATIVE_REVIEW_REPOSITORY_IDS: `${repositoryId},123` }],
+    ['the repository name binding is wrong', { AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES: JSON.stringify([
+      { ...identity, repo: 'review-yeti-bot' },
+    ]) }],
+    ['the repository owner binding is wrong', { AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES: JSON.stringify([
+      { ...identity, owner: 'calltelemetry' },
+    ]) }],
+    ['the repository identity is missing', { AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES: undefined }],
+    ['the existing App is not configured', { GITHUB_APP_ID: '4552718' }],
+    ['the central target map is different', { ACTION_DISPATCH_CENTRAL_EXTERNAL_REPOSITORIES: 'review-yeti-ai/review-yeti-bot' }],
+  ])('rejects qualification service configuration when %s', (_reason, override) => {
+    expect(() => authoritativeServiceConfigFromEnv(qualificationEnv(override), qualificationPolicy)).toThrow();
+  });
+});

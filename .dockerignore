@@ -35,5 +35,14 @@ eval-baselines/**
 !eval-baselines/competitive-review-benchmark/ws5-large-crossfile-v1/descriptor.json
 !eval-baselines/competitive-review-benchmark/ws5-large-crossfile-v1/inputs/
 !eval-baselines/competitive-review-benchmark/ws5-large-crossfile-v1/inputs/ws5-large-crossfile-v1.json
+!eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/
+!eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json
+!eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/
+!eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json
+!eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_a.json
+!eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_b.json
+!eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/coverage_hole.json
+!eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/provider_failure.json
+!eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/resource_exhaustion.json
 fixtures
 legacy_public

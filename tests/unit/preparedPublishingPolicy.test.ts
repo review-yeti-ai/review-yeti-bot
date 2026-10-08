@@ -155,6 +155,27 @@ describe('trusted prepared publishing policy', () => {
     expect(JSON.stringify(prepared)).not.toContain('PRIVATE_KEY_NAME_ONLY');
     expect(verifyPreparedPublishingConfig(prepared.config, prepared.policy.effectiveConfigDigest, transport)).toEqual(prepared.config);
   });
+  it('binds the service-owned qualification image digest into the prepared config identity and receipt', () => {
+    const imageDigest = `sha256:${'a'.repeat(64)}`;
+    const prepared = preparePublishingPolicy(file(), transport, { owner: 'review-yeti-ai', repo: 'review-yeti-qualification' }, {
+      qualificationRuntimeImageDigest: imageDigest,
+    });
+    const legacy = preparePublishingPolicy(file(), transport, { owner: 'review-yeti-ai', repo: 'review-yeti-qualification' });
+    const envelope = JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config,
+      transport, qualificationRuntimeImageDigest: imageDigest });
+
+    expect(prepared.qualificationRuntimeImageDigest).toBe(imageDigest);
+    expect(prepared.policy.effectiveConfigDigest).not.toBe(legacy.policy.effectiveConfigDigest);
+    expect(prepared.policy.effectivePolicyDigest).not.toBe(legacy.policy.effectivePolicyDigest);
+    expect(parsePreparedReviewExecution(envelope, prepared.policy.effectiveConfigDigest, transport))
+      .toMatchObject({ qualificationRuntimeImageDigest: imageDigest });
+    expect(() => parsePreparedReviewExecution(JSON.stringify({ ...JSON.parse(envelope),
+      qualificationRuntimeImageDigest: `sha256:${'b'.repeat(64)}` }), prepared.policy.effectiveConfigDigest, transport))
+      .toThrow('Prepared review execution does not match its admitted identity');
+    expect(parsePreparedReviewExecution(JSON.stringify({ version: 'PreparedReviewExecution.v1',
+      config: legacy.config, transport }), legacy.policy.effectiveConfigDigest, transport))
+      .not.toHaveProperty('qualificationRuntimeImageDigest');
+  });
   it('keeps the old normalized config/hash shape unless central policy explicitly admits a larger cap', () => {
     const priorShape = preparePublishingPolicy(file(), transport);
     expect(Object.hasOwn(priorShape.config, 'max_reviewed_lockfile_patch_chars')).toBe(false);

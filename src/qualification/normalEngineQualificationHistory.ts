@@ -4,6 +4,8 @@ import { join, relative } from 'node:path';
 import { z } from 'zod';
 import { canonicalJson } from '../review/reviewCore';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from '../review/groundedEvidenceV2';
+import { NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT, NORMAL_ENGINE_QUALIFICATION_STORE_ROOT,
+  WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE } from './normalEngineQualification';
 import type {
   PrLifecycleHistoryEvent,
   PrLifecycleHistoryFinding,
@@ -11,7 +13,6 @@ import type {
   PrLifecycleHistorySource,
   AuthenticatedDisputesProjection,
 } from '../review/prLifecycleHistoryHttp';
-import { NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT, NORMAL_ENGINE_QUALIFICATION_STORE_ROOT } from './normalEngineQualification';
 import type { NormalEngineQualificationHistorySource } from '../cli/publishingReview';
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
@@ -90,13 +91,17 @@ const stateSchema = z.object({
   schemaVersion: z.literal('ReviewYetiNormalQualificationHistory.v2'),
   purpose: z.literal('normal-engine-qualification-history'),
   evidenceSemanticsVersion: z.literal(GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION),
-  configurationVariant: z.literal(NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT),
+  configurationVariant: z.enum(['prepared-policy-default-v1', NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT]),
   executionAttempt: z.number().int().positive().safe(),
   disputedBlockerAdjudicator: z.object({
-    state: z.literal('available'),
-    modelAlias: z.string().min(1).max(256),
-    reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
-  }).strict(),
+    state: z.enum(['available', 'unconfigured', 'inactive']),
+    modelAlias: z.string().min(1).max(256).nullable(),
+    reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullable(),
+  }).strict().superRefine((value, context) => {
+    if ((value.state === 'available') !== (value.modelAlias !== null && value.reasoningEffort !== null)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['state'], message: 'qualification history adjudicator binding is inconsistent' });
+    }
+  }),
   adjudicatorRecheckTarget: z.object({
     path: z.string().min(1).max(4096),
     findingFingerprint: z.string().min(1).max(500),
@@ -118,11 +123,25 @@ const stateSchema = z.object({
   headSha: sha,
   policyDigest: digest,
   configDigest: digest,
+  runtime: z.object({
+    sourceRevision: sha,
+    workerImageDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
+    runtimeManifestSha256: digest,
+  }).strict().optional(),
   workerCompletionSha256: digest,
   canonicalEvidenceSha256: digest,
   gateDecisionSha256: digest,
   historyLoad: historyLoadSchema,
 }).strict().superRefine((state, context) => {
+  if (state.configurationVariant === NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT
+    && state.disputedBlockerAdjudicator.state !== 'available') {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['disputedBlockerAdjudicator'],
+      message: 'configured adjudicator history requires the available selector' });
+  }
+  if (state.sequenceId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sequenceId && !state.runtime) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['runtime'],
+      message: 'external v2 history requires exact runtime identity' });
+  }
   if (state.historyLoad.status === 'complete' && state.historyLoad.events.some((event) =>
     event.evidenceSemanticsVersion !== state.evidenceSemanticsVersion)) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['historyLoad', 'events'],
@@ -206,6 +225,8 @@ export interface NormalEngineQualificationHistoryBinding {
   currentHeadSha: string;
   policyDigest: string;
   configDigest: string;
+  configurationVariant?: 'prepared-policy-default-v1' | typeof NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT;
+  runtime?: { sourceRevision: string; workerImageDigest: string; runtimeManifestSha256: string };
   mode: 'repair-head' | 'same-head-recheck';
   currentInputSha256: string;
 }
@@ -336,11 +357,15 @@ function qualificationArtifactPath(rootDirectory: string, absolutePath: string):
 }
 
 function validateVerificationIdentity(identity: NormalEngineQualificationVerificationSetIdentity): void {
+  const legacySequence = identity.sequenceId === 'ws5-repair-sequence-v1' && identity.sourceCaseId === 'ws5-sequence-a-v1'
+    && ['ws5-sequence-a-v1', 'ws5-sequence-b-v1'].includes(identity.repairCaseId);
+  const externalV2Sequence = identity.sequenceId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sequenceId
+    && identity.sourceCaseId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sourceCaseId
+    && [WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sourceCaseId, WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairCaseId]
+      .includes(identity.repairCaseId as typeof WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sourceCaseId);
   if (!runId.safeParse(identity.runId).success || (identity.sourceRunId !== null && !runId.safeParse(identity.sourceRunId).success)
     || !name.safeParse(identity.sequenceId).success || !name.safeParse(identity.sourceCaseId).success
-    || !name.safeParse(identity.repairCaseId).success || identity.sequenceId !== 'ws5-repair-sequence-v1'
-    || identity.sourceCaseId !== 'ws5-sequence-a-v1'
-    || !['ws5-sequence-a-v1', 'ws5-sequence-b-v1'].includes(identity.repairCaseId)) {
+    || !name.safeParse(identity.repairCaseId).success || (!legacySequence && !externalV2Sequence)) {
     throw new Error('qualification verification set identity is invalid');
   }
 }
@@ -350,10 +375,22 @@ function validBinding(state: NormalEngineQualificationHistoryState, binding: Nor
     && state.bundleSha256 === binding.bundleSha256 && state.inputSha256 === binding.sourceInputSha256
     && state.repositoryId === binding.repositoryId && state.repository === binding.repository
     && state.policyDigest === binding.policyDigest && state.configDigest === binding.configDigest
-    && state.configurationVariant === NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT
+    && state.configurationVariant === (binding.configurationVariant ?? NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT)
+    && (!binding.runtime || Boolean(state.runtime && state.runtime.sourceRevision === binding.runtime.sourceRevision
+      && state.runtime.workerImageDigest === binding.runtime.workerImageDigest
+      && state.runtime.runtimeManifestSha256 === binding.runtime.runtimeManifestSha256))
     && state.evidenceSemanticsVersion === GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
     && state.historyLoad.status === 'complete';
   if (!common) return false;
+  if (binding.sequenceId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sequenceId
+    && (binding.configurationVariant !== 'prepared-policy-default-v1' || !binding.runtime
+      || binding.bundleSha256 !== WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.bundleSha256
+      || binding.sourceCaseId !== WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sourceCaseId
+      || binding.repairCaseId !== WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairCaseId
+      || binding.sourceInputSha256 !== WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sourceInputSha256
+      || binding.repairInputSha256 !== WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairInputSha256
+      || binding.currentBaseSha !== WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairBaseSha
+      || binding.currentHeadSha !== WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairHeadSha)) return false;
   if (binding.mode === 'same-head-recheck') {
     return binding.repairCaseId === binding.sourceCaseId && binding.currentInputSha256 === state.inputSha256
       && binding.repairInputSha256 === state.inputSha256 && binding.currentBaseSha === state.baseSha

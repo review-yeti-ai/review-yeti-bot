@@ -464,6 +464,18 @@ describe('service-owned authoritative completion context', () => {
     expect(f.readerFactory.mock.calls[0][1].aborted).toBe(true);
   });
 
+  it('revalidates a persisted qualification runtime capability during completion context resolution', async () => {
+    const base = policyFile();
+    const imageDigest = `sha256:${'e'.repeat(64)}`;
+    const stored = preparePublishingPolicy(base,
+      { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' }, undefined,
+      { qualificationRuntimeImageDigest: imageDigest });
+    const f = fixture({}, stored);
+
+    await expect(f.context(f.gate)).resolves.toMatchObject({ coverage: { coverageComplete: true, quorumSatisfied: true } });
+    expect(f.getStoredPrepared).toHaveBeenCalledExactlyOnceWith(stored.policy.effectivePolicyDigest, expect.any(AbortSignal));
+  });
+
   it('derives the authoritative roster from immutable persona paths and the exact current diff', async () => {
     const stored = prepared(3, 'security,testing,documentation');
     const f = fixture({}, stored);

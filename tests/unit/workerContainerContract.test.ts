@@ -11,6 +11,7 @@ const qualificationFixtureAllowlistPath = resolve(repositoryRoot, 'scripts/norma
 const dockerignorePath = resolve(repositoryRoot, '.dockerignore');
 const liveReviewPath = resolve(repositoryRoot, 'src/cli/runLiveReview.ts');
 const selfTestModulesPath = resolve(repositoryRoot, 'src/cli/workerSelfTestModules.json');
+const externalV2WorkerPath = resolve(repositoryRoot, 'src/qualification/normalEngineQualificationExternalV2.ts');
 const ciWorkflowPath = resolve(repositoryRoot, '.github/workflows/ci-cd.yaml');
 const sizeGatePath = resolve(repositoryRoot, 'scripts/verify-worker-image-size.mjs');
 
@@ -109,15 +110,46 @@ describe('worker container contract', () => {
     const dockerignore = readRequired(dockerignorePath);
     const stagingScript = readRequired(stagingScriptPath);
 
-    expect(allowlist).toHaveLength(9);
+    expect(allowlist).toHaveLength(17);
     expect(allowlist.every((fixture) => fixture.sha256 === fixture.actualSha256)).toBe(true);
     expect(allowlist.every((fixture) => !fixture.path.toLowerCase().includes('/oracle/'))).toBe(true);
-    for (const fixture of allowlist) {
+    const phasePlanPath = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json';
+    const workerFixtures = allowlist.filter((fixture) => fixture.path !== phasePlanPath);
+    expect(workerFixtures).toHaveLength(16);
+    expect(dockerfile).not.toContain(`COPY ${phasePlanPath}`);
+    expect(dockerignore).not.toContain(`!${phasePlanPath}`);
+    for (const fixture of workerFixtures) {
       expect(dockerfile).toContain(`COPY ${fixture.path} ./` + fixture.path);
       expect(dockerignore).toContain(`!${fixture.path}`);
     }
-    expect(stagingScript).toContain("verifyQualificationFixtureAllowlist(packageRoot)");
+    expect(stagingScript).toContain("verifyQualificationFixtureAllowlist(packageRoot, [");
+    expect(stagingScript).toContain("'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json'");
     expect(allowlist.map(({ path }) => path)).not.toContain('eval-baselines/grounded-lifecycle-corpus-v1/inputs/lc_0d8f4a7c2b9e41f8.json');
+  });
+
+  it('packages the exact image child entrypoint, pinned V2 snapshots, and bounded host launcher contract', () => {
+    const dockerfile = readRequired(dockerfilePath);
+    const modules = JSON.parse(readRequired(selfTestModulesPath)) as Array<{ id: string; entry: string | null }>;
+    const childRunner = readRequired(externalV2WorkerPath);
+    const phasePlan = readRequired(resolve(repositoryRoot,
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json'));
+    expect(modules).toContainEqual({ id: '../qualification/normalEngineQualificationExternalV2',
+      entry: 'dist/qualification/normalEngineQualificationExternalV2.js' });
+    for (const path of [
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json',
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json',
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_a.json',
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_b.json',
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/coverage_hole.json',
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/provider_failure.json',
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/resource_exhaustion.json',
+    ]) expect(dockerfile).toContain(`COPY ${path} ./${path}`);
+    expect(dockerfile).not.toContain('COPY eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json');
+    expect(childRunner).toContain("'--pull=never'");
+    expect(childRunner).toContain("'--read-only'");
+    expect(childRunner).toContain("'--rm'");
+    expect(childRunner).toContain("'/app/dist/qualification/normalEngineQualificationExternalV2.js'");
+    expect(phasePlan).toContain('"sourceRuntimeFromPinnedImage": true');
   });
 
   it('exposes an offline self-test entrypoint and attests published indexes without a cluster deploy', () => {
@@ -126,9 +158,10 @@ describe('worker container contract', () => {
     const workflow = readRequired(ciWorkflowPath);
     expect(liveReview).toContain("process.argv.includes('--self-test')");
     expect(liveReview).toContain('runWorkerSelfTest');
-    expect(selfTestModules).toHaveLength(6);
+    expect(selfTestModules).toHaveLength(7);
     expect(selfTestModules.map((module: { id: string }) => module.id)).toContain('../github/qualificationReader');
     expect(selfTestModules.map((module: { id: string }) => module.id)).toContain('../k8s/reviewJobDispatchEngine');
+    expect(selfTestModules.map((module: { id: string }) => module.id)).toContain('../qualification/normalEngineQualificationExternalV2');
     expect(workflow).toContain('file: Dockerfile.worker');
     expect(workflow).toContain('NODE_BASE_IMAGE=');
     expect(workflow).toContain('--self-test');

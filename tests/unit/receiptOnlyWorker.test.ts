@@ -172,16 +172,19 @@ describe('receipt-only worker contract', () => {
       moduleLoader,
     );
 
-    expect(fsMocks.readFile).not.toHaveBeenCalled();
-    expect(moduleLoader).toHaveBeenCalledTimes(6);
-    expect(new Set(moduleLoader.mock.calls.flat())).toEqual(new Set([
+    const requiredModuleIds = new Set([
       '../gateway/openRouterClient',
       '../panel/panelEngine',
       '../github/qualificationReader',
       '../k8s/reviewJobProjection',
       '../k8s/reviewJobDispatchEngine',
       'node:child_process',
-    ]));
+      '../qualification/normalEngineQualificationExternalV2',
+    ]);
+    expect(fsMocks.readFile).not.toHaveBeenCalled();
+    expect(moduleLoader).toHaveBeenCalledTimes(requiredModuleIds.size);
+    expect(new Set(moduleLoader.mock.calls.map(([moduleId]) => moduleId))).toEqual(requiredModuleIds);
+    expect(new Set(result.loadedModuleIds)).toEqual(requiredModuleIds);
     expect(result.ok).toBe(true);
     expect(result.runtimeManifestDigest).toBe(createHash('sha256').update(manifest).digest('hex'));
     expect(result.loadedModuleIds).toContain('../gateway/openRouterClient');

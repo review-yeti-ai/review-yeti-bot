@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
+import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from '../../src/review/groundedEvidenceV2';
 import { OpenRouterClient, type FetchImplementation, type GroundedVerifierRequestContextV1,
   type ReviewModelClient } from '../../src/gateway/openRouterClient';
@@ -239,6 +240,90 @@ function providerFailureEnvironment(): { env: NodeJS.ProcessEnv; baseUrl: string
 }
 
 describe('normal engine qualification source and capture', () => {
+  it('withholds the pinned head window and abstains before any client or verifier call', async () => {
+    const policyContent = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security', profile: 'balanced', review_engine: 'composed', severity_policy: 'review-yeti-severity.v2',
+      budget: { max_investigation_turns: 1 },
+    } });
+    const source = { repositoryId: 73099, repository: 'synthetic/policy-target', sha: 'a'.repeat(40),
+      path: 'policy/review-yeti.json', contentDigest: createHash('sha256').update(policyContent).digest('hex') };
+    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'qualification-primary' };
+    const prepared = preparePublishingPolicy({ source, content: policyContent }, transport,
+      { owner: 'synthetic', repo: 'policy-target' });
+    const env: NodeJS.ProcessEnv = { ...VALID_ENV,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_RUN_ID: 'nq_abcdef0123456789abcdef0123456789',
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_CASE_ID: 'ws5-current-1dd-v2-coverage-hole',
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM: 'preflight-source-coverage-control',
+      REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest,
+      REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
+      REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID: String(source.repositoryId),
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER: 'synthetic',
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO: 'policy-target',
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF: source.sha,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH: source.path,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256: source.contentDigest,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: 'synthetic/policy-target',
+      OPENAI_BASE_URL: transport.baseUrl, OPENAI_API_KEY: 'qualification-test-key', REVIEW_MODEL: transport.model,
+    };
+    let publisherCalls = 0;
+    const fetcher = vi.fn(async () => { throw new Error('source preflight must not call the model'); });
+    const result = await runNormalEngineQualificationCase(env, {
+      verifyRuntimeManifest: async () => VALID_ENV.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256!,
+      runPublishingWorker: async (workerEnv, workerDeps) => {
+        publisherCalls += 1;
+        return runPublishingReviewWorker(workerEnv, workerDeps);
+      },
+      providerFetchImplementation: fetcher as never,
+      persistProviderCapture: providerCapturePersistenceStub(),
+      persistCaseReceipt: async () => ({ receiptPath: 'private/receipt.json', sha256Path: 'private/receipt.sha256',
+        receiptSha256: 'e'.repeat(64), idempotent: false }),
+    });
+    const request = parseNormalEngineQualificationRequest(env);
+    const provider = createNormalEngineQualificationRepoFileProvider(request);
+    const withheld = await provider.readFileAt!('src/modules/module-01.ts', 'head');
+    expect(withheld).toMatchObject({ content: null, presence: 'unavailable', source: { side: 'head', path: 'src/modules/module-01.ts' } });
+    expect(publisherCalls).toBe(1);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ arm: 'preflight-source-coverage-control', qualificationControl: 'source-coverage-unavailable',
+      preflight: { sourceCoverage: 'unavailable', withheldPath: 'src/modules/module-01.ts', physicalClientCalls: 0 }, provider: { calls: [] },
+      outcome: { workerOutcomeClass: 'incomplete', gateOutcomeClass: 'incomplete', agreement: 'incomplete' },
+      terminal: { status: 'incomplete' }, publication: { githubWrites: 0, appChecks: 0, reviews: 0, comments: 0 } });
+  });
+
+  it('treats required v2 history transport failure as incomplete before task planning and all model calls', async () => {
+    const { env } = providerFailureEnvironment();
+    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+      value: 'qualification-test-key' });
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUN_ID = 'nq_abcdef0123456789abcdef0123456789';
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_CASE_ID = 'ws5-current-1dd-v2-sequence-b';
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'repair-head-history-unavailable';
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_HISTORY_RUN_ID = 'nq_0123456789abcdef0123456789abcdef';
+    let publisherCalls = 0;
+    const fetcher = vi.fn(async () => { throw new Error('history preflight must not call a model'); });
+    const result = await runNormalEngineQualificationCase(env, {
+      verifyRuntimeManifest: async () => VALID_ENV.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256!,
+      runPublishingWorker: async (workerEnv, workerDeps) => {
+        publisherCalls += 1;
+        return runPublishingReviewWorker(workerEnv, workerDeps);
+      },
+      providerFetchImplementation: fetcher as never,
+      persistProviderCapture: providerCapturePersistenceStub(),
+      persistCaseReceipt: async () => ({ receiptPath: 'private/receipt.json', sha256Path: 'private/receipt.sha256',
+        receiptSha256: 'e'.repeat(64), idempotent: false }),
+    });
+    expect(publisherCalls).toBe(1);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ arm: 'repair-head-history-unavailable', qualificationControl: 'history-unavailable',
+      preflight: { control: 'required-history-unavailable-transport', historyStatus: 'unavailable',
+        historyFailureClass: 'transport',
+        historySourceRunIdSha256: createHash('sha256').update('nq_0123456789abcdef0123456789abcdef').digest('hex'),
+        physicalClientCalls: 0 },
+      provider: { calls: [] },
+      outcome: { workerOutcomeClass: 'incomplete', gateOutcomeClass: 'incomplete', agreement: 'incomplete' },
+      terminal: { status: 'incomplete' }, publication: { githubWrites: 0, appChecks: 0, reviews: 0, comments: 0 } });
+  });
+
   it('loads the immutable eleven-arm outcome-blind plan and exact fixture pins', () => {
     const plan = parseNormalEngineQualificationPlanDescriptor();
     expect(plan).toMatchObject({

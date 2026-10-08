@@ -4,5 +4,6 @@
   { "id": "../github/qualificationReader", "entry": "dist/github/qualificationReader.js" },
   { "id": "../k8s/reviewJobProjection", "entry": "dist/k8s/reviewJobProjection.js" },
   { "id": "../k8s/reviewJobDispatchEngine", "entry": "dist/k8s/reviewJobDispatchEngine.js" },
-  { "id": "node:child_process", "entry": null }
+  { "id": "node:child_process", "entry": null },
+  { "id": "../qualification/normalEngineQualificationExternalV2", "entry": "dist/qualification/normalEngineQualificationExternalV2.js" }
 ]

@@ -272,14 +272,18 @@ function checkedPrepared(input: PreparedPublishingPolicy | null): PreparedPublis
   if (!input || input.version !== 'PreparedPublishingPolicy.v1'
     || Buffer.byteLength(JSON.stringify(input), 'utf8') > 256 * 1024) throw unavailable();
   const policy = policySchema.parse(input.policy);
-  const config = verifyPreparedPublishingConfig(input.config, policy.effectiveConfigDigest, input.transport);
+  const config = verifyPreparedPublishingConfig(input.config, policy.effectiveConfigDigest, input.transport,
+    input.qualificationRuntimeImageDigest);
   const expectedPersonaIds = personasSchema.parse(input.expectedPersonaIds);
   const required = config.personas.filter((persona) => persona.enabled).map((persona) => persona.id);
   if (new Set(expectedPersonaIds).size !== expectedPersonaIds.length
     || canonicalJson(required) !== canonicalJson(expectedPersonaIds)
     || canonicalJson(config) !== canonicalJson(input.config)) throw unavailable();
   return { version: input.version, policy, config, expectedPersonaIds,
-    transport: { baseUrl: input.transport.baseUrl, model: input.transport.model } };
+    transport: { baseUrl: input.transport.baseUrl, model: input.transport.model },
+    ...(input.qualificationRuntimeImageDigest === undefined ? {} : {
+      qualificationRuntimeImageDigest: input.qualificationRuntimeImageDigest,
+    }) };
 }
 
 /** Service-owned read authority only. This factory neither accepts worker

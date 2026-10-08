@@ -15,6 +15,9 @@ const LARGE_BUNDLE_VERSION = 'WS5LargeCrossfileBundle.v1' as const;
 const LARGE_BUNDLE_SHA256 = '1e929cc12ef523e523dc67e1ee7c3d7ef83268f1e2c4734615c219523e4813c9';
 const P2_BUNDLE_VERSION = 'WS5P2DisplaySortBundle.v1' as const;
 const P2_BUNDLE_SHA256 = 'ff43921f3c8188d6a0efd8a257c310f1ac1d8cefcc32fd1f8fba242c1ecb26af';
+const EXTERNAL_V2_BUNDLE_VERSION = 'WS5ExternalNormalBundle.v2' as const;
+const EXTERNAL_V2_BUNDLE_SHA256 = '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1';
+const EXTERNAL_V2_BUNDLE_DESCRIPTOR_PATH = 'competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json';
 const REPOSITORY_ROOT = resolve(__dirname, '../..');
 const FIXTURE_ROOT = resolve(REPOSITORY_ROOT, 'eval-baselines');
 export const NORMAL_ENGINE_QUALIFICATION_RECEIPT_PATH = '/workspace/.review-yeti/normal-engine-qualification.json';
@@ -54,6 +57,37 @@ export interface FixturePin {
   baseSha: string;
   headSha: string;
 }
+
+export interface NormalEngineQualificationHistoryLineage {
+  sequenceId: string;
+  sourceCaseId: string;
+  repairCaseId: string;
+  sourceInputSha256: string;
+  repairInputSha256: string;
+  repairBaseSha: string;
+  repairHeadSha: string;
+}
+
+export const WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE = Object.freeze({
+  sequenceId: 'ws5-current-source-external-v2',
+  sourceCaseId: 'ws5-current-1dd-v2-sequence-a',
+  repairCaseId: 'ws5-current-1dd-v2-sequence-b',
+  bundleSha256: EXTERNAL_V2_BUNDLE_SHA256,
+  sourceInputSha256: '0e3bade3d6d7a148a2a36515ed1b40b9c1ab3f4cc2b2d92343176f2069ca0da9',
+  repairInputSha256: '52cdd6d19fc5dd042412a85df5b4effe8c9793c43cea3104ab5b35d036b1d1aa',
+  repairBaseSha: '1035dc8db9a222447aa774fd9660c224e5d37655',
+  repairHeadSha: '1b183caf5f8c518a3acda3fb2d8eea38133eed98',
+});
+
+const LEGACY_REPAIR_HISTORY_LINEAGE: NormalEngineQualificationHistoryLineage = {
+  sequenceId: 'ws5-repair-sequence-v1',
+  sourceCaseId: 'ws5-sequence-a-v1',
+  repairCaseId: 'ws5-sequence-b-v1',
+  sourceInputSha256: '31feff802596e9e8b52aa45b64a1a00fc2af5e221158815c007188b3b11877a5',
+  repairInputSha256: '4023515cfc0daef0b1c00089924ca12d5071080da4e97d6e964c03c8596bbceb',
+  repairBaseSha: '1035dc8db9a222447aa774fd9660c224e5d37655',
+  repairHeadSha: '1b183caf5f8c518a3acda3fb2d8eea38133eed98',
+};
 
 const FIXTURE_PINS: readonly FixturePin[] = [
   { caseId: 'lc_0d8f4a7c2b9e41f8', path: 'eval-baselines/grounded-lifecycle-corpus-v1/inputs/lc_0d8f4a7c2b9e41f8.json',
@@ -124,6 +158,36 @@ const FIXTURE_PINS: readonly FixturePin[] = [
     schemaVersion: 'WS5P2DisplaySortInput.v1', bundleVersion: P2_BUNDLE_VERSION, bundleSha256: P2_BUNDLE_SHA256,
     repository: { repositoryId: 73004, owner: 'synthetic', repo: 'fixture-display-sort' }, prNumber: 43,
     baseSha: '740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7', headSha: 'e4edc4bd9f74fd9ec3e8f8f7d9a83bd821832497' },
+  { caseId: 'ws5-current-1dd-v2-p2', path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json',
+    sha256: '4f476e36aa78b6788bb37c02ba5b2fae899c99eeba7d43dae399507cd93ed216',
+    schemaVersion: 'WS5P2DisplaySortInput.v1', bundleVersion: EXTERNAL_V2_BUNDLE_VERSION, bundleSha256: EXTERNAL_V2_BUNDLE_SHA256,
+    repository: { repositoryId: 73004, owner: 'synthetic', repo: 'fixture-display-sort' }, prNumber: 43,
+    baseSha: '740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7', headSha: 'e4edc4bd9f74fd9ec3e8f8f7d9a83bd821832497' },
+  { caseId: 'ws5-current-1dd-v2-sequence-a', path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_a.json',
+    sha256: '0e3bade3d6d7a148a2a36515ed1b40b9c1ab3f4cc2b2d92343176f2069ca0da9',
+    schemaVersion: 'WS5RepairReviewInput.v1', bundleVersion: EXTERNAL_V2_BUNDLE_VERSION, bundleSha256: EXTERNAL_V2_BUNDLE_SHA256,
+    repository: { repositoryId: 73002, owner: 'synthetic', repo: 'fixture-sequence' }, prNumber: 41,
+    baseSha: '1fd9256afcf0250975c69410a766629c4d4225ad', headSha: '1035dc8db9a222447aa774fd9660c224e5d37655' },
+  { caseId: 'ws5-current-1dd-v2-sequence-b', path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_b.json',
+    sha256: '52cdd6d19fc5dd042412a85df5b4effe8c9793c43cea3104ab5b35d036b1d1aa',
+    schemaVersion: 'WS5RepairReviewInput.v1', bundleVersion: EXTERNAL_V2_BUNDLE_VERSION, bundleSha256: EXTERNAL_V2_BUNDLE_SHA256,
+    repository: { repositoryId: 73002, owner: 'synthetic', repo: 'fixture-sequence' }, prNumber: 41,
+    baseSha: '1035dc8db9a222447aa774fd9660c224e5d37655', headSha: '1b183caf5f8c518a3acda3fb2d8eea38133eed98' },
+  { caseId: 'ws5-current-1dd-v2-coverage-hole', path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/coverage_hole.json',
+    sha256: '6cf9a5f6c493f1db2f91f8abc907e9d4f9f9ad1d3c62296298326cb18f78897c',
+    schemaVersion: 'WS5LargeCrossfileInput.v1', bundleVersion: EXTERNAL_V2_BUNDLE_VERSION, bundleSha256: EXTERNAL_V2_BUNDLE_SHA256,
+    repository: { repositoryId: 73003, owner: 'synthetic', repo: 'fixture-large-crossfile' }, prNumber: 42,
+    baseSha: 'f83c7fbab1909ebc8e3b1a905c4d93a6ffdf8448', headSha: 'cef2d6d195ad1ec19ec6a745363a804fd679b369' },
+  { caseId: 'ws5-current-1dd-v2-provider-failure', path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/provider_failure.json',
+    sha256: '76278ffbbb439e4e4d7b77dabe6022c01cf2c33d61753127cc82c542a9d1e2bd',
+    schemaVersion: 'WS5P2DisplaySortInput.v1', bundleVersion: EXTERNAL_V2_BUNDLE_VERSION, bundleSha256: EXTERNAL_V2_BUNDLE_SHA256,
+    repository: { repositoryId: 73004, owner: 'synthetic', repo: 'fixture-display-sort' }, prNumber: 43,
+    baseSha: '740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7', headSha: 'e4edc4bd9f74fd9ec3e8f8f7d9a83bd821832497' },
+  { caseId: 'ws5-current-1dd-v2-resource-exhaustion', path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/resource_exhaustion.json',
+    sha256: '015efdfc7c5253cb52e4ec99f22bfc354ea51ae54667f161993a98b1566cd1bc',
+    schemaVersion: 'WS5P2DisplaySortInput.v1', bundleVersion: EXTERNAL_V2_BUNDLE_VERSION, bundleSha256: EXTERNAL_V2_BUNDLE_SHA256,
+    repository: { repositoryId: 73004, owner: 'synthetic', repo: 'fixture-display-sort' }, prNumber: 43,
+    baseSha: '740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7', headSha: 'e4edc4bd9f74fd9ec3e8f8f7d9a83bd821832497' },
 ].sort((left, right) => left.caseId < right.caseId ? -1 : left.caseId > right.caseId ? 1 : 0);
 
 const LIFECYCLE_PINS = FIXTURE_PINS.filter((pin) => pin.bundleVersion === FIXTURE_BUNDLE_VERSION);
@@ -147,6 +211,7 @@ export interface NormalEngineQualificationRequest {
   phase: 'single' | 'repair-introduction' | 'repair-head' | 'same-head-recheck';
   configurationVariant: NormalEngineQualificationConfigurationVariant;
   historyRunId: string | null;
+  historyLineage: NormalEngineQualificationHistoryLineage | null;
   fixture: {
     bundleVersion: string;
     bundleSha256: string;
@@ -196,13 +261,15 @@ export type NormalEngineQualificationArm =
   | 'repair-head-verifier-unavailable'
   | 'provider-failure'
   | 'resource-exhaustion'
+  | 'preflight-source-coverage-control'
   | 'p2-only'
   | 'large-crossfile'
   | 'adjudicator-recheck';
 
 export type NormalEngineQualificationBudgetProfile = 'prepared-policy-default'
-  | 'normal-canary-120s' | 'large-crossfile-canary-300s'
-  | 'bifrost-auth-rejection-30s-one-request' | 'resource-exhaustion-60s-one-request';
+  | 'normal-canary-120s' | 'normal-canary-240s-capture-outside-child' | 'large-crossfile-canary-300s'
+  | 'bifrost-auth-rejection-30s-one-request' | 'resource-exhaustion-60s-one-request'
+  | 'source-coverage-preflight-15s' | 'required-history-preflight-15s';
 
 export const NORMAL_ENGINE_QUALIFICATION_PLAN_ID = 'ws6-normal-canary-v1' as const;
 export const NORMAL_ENGINE_QUALIFICATION_PLAN_DESCRIPTOR_PATH =
@@ -211,6 +278,9 @@ export const NORMAL_ENGINE_QUALIFICATION_PLAN_DESCRIPTOR_SHA256 =
   '60f724e4ae3782ec8b5be7705d97d5dace662938570a34ac73bd566749e5dc99';
 export const NORMAL_ENGINE_QUALIFICATION_PLAN_CASE_IDS = Object.freeze([
   'ws5-sequence-a-v1', 'ws5-sequence-b-v1', 'ws5-p2-display-sort-v1', 'ws5-large-crossfile-v1',
+  'ws5-current-1dd-v2-p2', 'ws5-current-1dd-v2-sequence-a', 'ws5-current-1dd-v2-sequence-b',
+  'ws5-current-1dd-v2-coverage-hole', 'ws5-current-1dd-v2-provider-failure',
+  'ws5-current-1dd-v2-resource-exhaustion',
 ] as const);
 
 export interface NormalEngineQualificationPlanRequest {
@@ -395,6 +465,27 @@ export interface NormalEngineQualificationReceipt {
     canonicalEvidenceSha256: string | null;
     gateDecisionSha256: string | null;
   };
+  /** Private final finding text and source-window references needed to adjudicate the synthetic P1 claim. */
+  canonicalReviewEvidence?: {
+    decisionClassification: 'SHIP' | 'FIX_FIRST' | 'INCOMPLETE_REVIEW';
+    counts: { p0Count: number; p1Count: number; p2Count: number; p3Count: number; nitCount: number };
+    coverageComplete: boolean;
+    quorumSatisfied: boolean;
+    blockingFindings: Array<{ fingerprintSha256: string; severity: 'P0' | 'P1'; path: string; line?: number;
+      title?: string; claim?: string; blockerEvidence?: { trigger: string; impact: string; violatedContract: string };
+      verificationStatus: 'confirmed' | 'contradicted' | 'insufficient' | 'unavailable';
+      causalScope: 'introduced' | 'exacerbated' | 'preexisting' | 'unproven';
+      sourceReviewIdentitySha256: string | null; reviewIdentity?: { repository: string; baseSha: string; headSha: string } | null;
+      scopeEvidenceSha256: string | null; blockerEvidenceSha256: string | null;
+      citationEvidence?: { sourceWindowManifestDigest: string; usedCitationIds: string[];
+        citations: Array<{ id: string; path: string; repository: string; side: 'head' | 'base' | 'diff';
+          revisionSha: string; headSha: string; baseSha: string; sourceDigest: string;
+          window: { id: string; role: string; startLine: number; endLine: number; windowSha256: string;
+            fullContentSha256: string; regionDigest: string } | null }> } | null }>;
+  } | null;
+  preflight?: { control: 'source-coverage-unavailable'; sourceCoverage: 'unavailable';
+    withheldPath: 'src/modules/module-01.ts'; physicalClientCalls: 0 } | { control: 'required-history-unavailable-transport';
+    historyStatus: 'unavailable'; historyFailureClass: 'transport'; historySourceRunIdSha256: string; physicalClientCalls: 0 };
   composedLimits: {
     configuredTotalTurns: number;
     investigationTurns: number;
@@ -422,7 +513,7 @@ export interface NormalEngineQualificationReceipt {
   };
   qualificationControl: 'none' | 'empty-history-ablation' | 'history-unavailable' | 'grounded-verifier-unavailable'
     | 'bifrost-auth-rejection-invalid-inference-key' | 'worker-deadline-test-60s-one-physical-request'
-    | 'authenticated-adjudicator-recheck';
+    | 'authenticated-adjudicator-recheck' | 'source-coverage-unavailable';
   testBudget: { profile: NormalEngineQualificationBudgetProfile; panelBudgetSeconds: number | null;
     maxPhysicalModelRequests: number | null; terminalDeadlineAt: string | null;
     resourceExhaustion: { status: 'observed' | 'not_observed'; physicalRequestCap: 1; logicalCompletionAttempts: number;
@@ -596,6 +687,7 @@ export interface NormalEngineProviderCaptureV1 {
 }
 
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
+const shaSchema = z.string().regex(SHA_PATTERN);
 const repositoryPathSchema = z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u);
 const relativePolicyPathSchema = z.string().min(1).max(512).refine((path) => !path.startsWith('/')
   && !path.split('/').some((part) => part === '' || part === '.' || part === '..')
@@ -657,7 +749,7 @@ const qualificationReceiptSchema = z.object({
   runId: z.string().regex(RUN_ID_PATTERN),
   arm: z.enum(['single', 'repair-introduction', 'repair-head-history', 'repair-head-repeat',
     'repair-head-empty-history', 'repair-head-history-unavailable', 'repair-head-verifier-unavailable',
-    'provider-failure', 'resource-exhaustion', 'p2-only', 'large-crossfile', 'adjudicator-recheck']),
+    'provider-failure', 'resource-exhaustion', 'preflight-source-coverage-control', 'p2-only', 'large-crossfile', 'adjudicator-recheck']),
   phase: z.enum(['single', 'repair-introduction', 'repair-head', 'same-head-recheck']),
   target: z.object({
     kind: z.literal('public-synthetic-fixture'),
@@ -707,6 +799,37 @@ const qualificationReceiptSchema = z.object({
     workerCompletionSha256: digestSchema.nullable(), canonicalEvidenceSha256: digestSchema.nullable(),
     gateDecisionSha256: digestSchema.nullable(),
   }).strict(),
+  preflight: z.discriminatedUnion('control', [
+    z.object({ control: z.literal('source-coverage-unavailable'), sourceCoverage: z.literal('unavailable'),
+      withheldPath: z.literal('src/modules/module-01.ts'), physicalClientCalls: z.literal(0) }).strict(),
+    z.object({ control: z.literal('required-history-unavailable-transport'), historyStatus: z.literal('unavailable'),
+      historyFailureClass: z.literal('transport'), historySourceRunIdSha256: digestSchema, physicalClientCalls: z.literal(0) }).strict(),
+  ]).optional(),
+  canonicalReviewEvidence: z.object({
+    decisionClassification: z.enum(['SHIP', 'FIX_FIRST', 'INCOMPLETE_REVIEW']),
+    counts: z.object({ p0Count: z.number().int().nonnegative().safe(), p1Count: z.number().int().nonnegative().safe(),
+      p2Count: z.number().int().nonnegative().safe(), p3Count: z.number().int().nonnegative().safe(),
+      nitCount: z.number().int().nonnegative().safe() }).strict(),
+    coverageComplete: z.boolean(), quorumSatisfied: z.boolean(),
+    blockingFindings: z.array(z.object({ fingerprintSha256: digestSchema, severity: z.enum(['P0', 'P1']),
+      path: z.string().min(1).max(4096), line: z.number().int().positive().safe().optional(),
+      title: z.string().min(1).max(4_000).optional(), claim: z.string().min(1).max(16_000).optional(),
+      blockerEvidence: z.object({ trigger: z.string().min(12).max(2_000),
+        impact: z.string().min(12).max(2_000), violatedContract: z.string().min(12).max(2_000) }).strict().optional(),
+      verificationStatus: z.enum(['confirmed', 'contradicted', 'insufficient', 'unavailable']),
+      causalScope: z.enum(['introduced', 'exacerbated', 'preexisting', 'unproven']),
+      sourceReviewIdentitySha256: digestSchema.nullable(),
+      reviewIdentity: z.object({ repository: z.string().min(3).max(500), baseSha: shaSchema, headSha: shaSchema }).strict().nullable().optional(),
+      scopeEvidenceSha256: digestSchema.nullable(), blockerEvidenceSha256: digestSchema.nullable(),
+      citationEvidence: z.object({ sourceWindowManifestDigest: digestSchema,
+        usedCitationIds: z.array(z.string().min(1).max(4096)).max(64),
+        citations: z.array(z.object({ id: z.string().min(1).max(4096), path: z.string().min(1).max(4096),
+          repository: z.string().min(3).max(500), side: z.enum(['head', 'base', 'diff']), revisionSha: shaSchema,
+          headSha: shaSchema, baseSha: shaSchema, sourceDigest: digestSchema,
+          window: z.object({ id: digestSchema, role: z.string().min(1).max(64), startLine: z.number().int().nonnegative().safe(),
+            endLine: z.number().int().nonnegative().safe(), windowSha256: digestSchema,
+            fullContentSha256: digestSchema, regionDigest: digestSchema }).strict().nullable() }).strict()).max(64) }).strict().nullable().optional() }).strict()).max(10_000),
+  }).strict().nullable().optional(),
   composedLimits: z.object({
     configuredTotalTurns: z.number().int().positive().safe(),
     investigationTurns: z.number().int().positive().safe(),
@@ -745,10 +868,11 @@ const qualificationReceiptSchema = z.object({
   }),
   qualificationControl: z.enum(['none', 'empty-history-ablation', 'history-unavailable',
     'grounded-verifier-unavailable', 'bifrost-auth-rejection-invalid-inference-key',
-    'worker-deadline-test-60s-one-physical-request', 'authenticated-adjudicator-recheck']),
+    'worker-deadline-test-60s-one-physical-request', 'authenticated-adjudicator-recheck', 'source-coverage-unavailable']),
   testBudget: z.object({
-    profile: z.enum(['prepared-policy-default', 'normal-canary-120s', 'large-crossfile-canary-300s',
-      'bifrost-auth-rejection-30s-one-request', 'resource-exhaustion-60s-one-request']),
+    profile: z.enum(['prepared-policy-default', 'normal-canary-120s', 'normal-canary-240s-capture-outside-child', 'large-crossfile-canary-300s',
+      'bifrost-auth-rejection-30s-one-request', 'resource-exhaustion-60s-one-request', 'source-coverage-preflight-15s',
+      'required-history-preflight-15s']),
     panelBudgetSeconds: z.number().int().positive().safe().nullable(),
     maxPhysicalModelRequests: z.number().int().positive().safe().nullable(),
     terminalDeadlineAt: z.string().datetime().nullable(),
@@ -1153,8 +1277,9 @@ const qualificationPlanReceiptSchema = z.object({
     receiptPath: z.string().regex(/^normal-engine-qualification-store\/nq_[a-f0-9]{32}\/(?:single|repair-introduction|repair-head|same-head-recheck)\/[a-z0-9][a-z0-9_-]{0,99}\/receipt\.json$/u),
     receiptSha256: digestSchema,
     terminalStatus: z.enum(['completed', 'incomplete', 'failed']),
-    budgetProfile: z.enum(['prepared-policy-default', 'normal-canary-120s', 'large-crossfile-canary-300s',
-      'bifrost-auth-rejection-30s-one-request', 'resource-exhaustion-60s-one-request']),
+    budgetProfile: z.enum(['prepared-policy-default', 'normal-canary-120s', 'normal-canary-240s-capture-outside-child', 'large-crossfile-canary-300s',
+      'bifrost-auth-rejection-30s-one-request', 'resource-exhaustion-60s-one-request', 'source-coverage-preflight-15s',
+      'required-history-preflight-15s']),
     providerIdentifiersPath: z.string().regex(/^normal-engine-qualification-store\/nq_[a-f0-9]{32}\/(?:single|repair-introduction|repair-head|same-head-recheck)\/[a-z0-9][a-z0-9_-]{0,99}\/provider-identifiers\.record\/provider-identifiers\.json$/u).nullable(),
     providerIdentifiersSha256: digestSchema.nullable(),
     providerCaptureStatus: z.enum(['captured', 'unavailable']),
@@ -1363,7 +1488,18 @@ function armAllowedForPin(pin: FixturePin, arm: NormalEngineQualificationArm): b
     'repair-head-history-unavailable', 'repair-head-verifier-unavailable',
   ].includes(arm);
   if (pin.caseId === 'ws5-p2-display-sort-v1') return ['p2-only', 'provider-failure', 'resource-exhaustion'].includes(arm);
-  return pin.caseId === 'ws5-large-crossfile-v1' && arm === 'large-crossfile';
+  if (pin.caseId === 'ws5-large-crossfile-v1') return arm === 'large-crossfile';
+  if (pin.bundleVersion === EXTERNAL_V2_BUNDLE_VERSION) {
+    if (pin.caseId === 'ws5-current-1dd-v2-p2') return arm === 'p2-only';
+    if (pin.caseId === 'ws5-current-1dd-v2-sequence-a') return arm === 'repair-introduction';
+    if (pin.caseId === 'ws5-current-1dd-v2-sequence-b') {
+      return ['repair-head-history', 'repair-head-empty-history', 'repair-head-history-unavailable'].includes(arm);
+    }
+    if (pin.caseId === 'ws5-current-1dd-v2-coverage-hole') return arm === 'preflight-source-coverage-control';
+    if (pin.caseId === 'ws5-current-1dd-v2-provider-failure') return arm === 'provider-failure';
+    if (pin.caseId === 'ws5-current-1dd-v2-resource-exhaustion') return arm === 'resource-exhaustion';
+  }
+  return false;
 }
 
 export function qualificationArmAllowedForFixture(caseId: string, arm: NormalEngineQualificationArm): boolean {
@@ -1394,7 +1530,9 @@ function assertFixtureBundleDescriptor(pin: FixturePin): void {
     : pin.bundleVersion === LARGE_BUNDLE_VERSION
       ? resolve(FIXTURE_ROOT, 'competitive-review-benchmark/ws5-large-crossfile-v1/descriptor.json')
       : pin.bundleVersion === P2_BUNDLE_VERSION
-        ? resolve(FIXTURE_ROOT, 'competitive-review-benchmark/ws5-p2-display-sort-v1/descriptor.json') : '';
+        ? resolve(FIXTURE_ROOT, 'competitive-review-benchmark/ws5-p2-display-sort-v1/descriptor.json')
+        : pin.bundleVersion === EXTERNAL_V2_BUNDLE_VERSION
+          ? resolve(FIXTURE_ROOT, EXTERNAL_V2_BUNDLE_DESCRIPTOR_PATH) : '';
   if (!descriptorPath) throw new Error('normal_engine_qualification_fixture_bundle_unknown');
   const bytes = readFileSync(descriptorPath);
   if (createHash('sha256').update(bytes).digest('hex') !== pin.bundleSha256) {
@@ -1406,6 +1544,35 @@ function assertFixtureBundleDescriptor(pin: FixturePin): void {
     throw new Error('normal_engine_qualification_fixture_descriptor_invalid');
   }
   const value = descriptor as Record<string, unknown>;
+  if (pin.bundleVersion === EXTERNAL_V2_BUNDLE_VERSION) {
+    if (value.schemaVersion !== EXTERNAL_V2_BUNDLE_VERSION || !Array.isArray(value.cases)) {
+      throw new Error('normal_engine_qualification_fixture_descriptor_invalid');
+    }
+    const externalPins = FIXTURE_PINS.filter((entry) => entry.bundleVersion === EXTERNAL_V2_BUNDLE_VERSION);
+    if (value.cases.length !== externalPins.length) {
+      throw new Error('normal_engine_qualification_fixture_descriptor_identity_mismatch');
+    }
+    const entry = value.cases.find((candidate) => candidate && typeof candidate === 'object'
+      && !Array.isArray(candidate) && (candidate as Record<string, unknown>).caseId === pin.caseId) as Record<string, unknown> | undefined;
+    if (!entry || entry.inputPath !== pin.path || entry.inputSha256 !== pin.sha256
+      || entry.schemaVersion !== pin.schemaVersion || entry.repository === undefined
+      || JSON.stringify(entry.repository) !== JSON.stringify(pin.repository)
+      || entry.prNumber !== pin.prNumber || entry.baseSha !== pin.baseSha || entry.headSha !== pin.headSha) {
+      throw new Error('normal_engine_qualification_fixture_descriptor_identity_mismatch');
+    }
+    for (const candidate of externalPins) {
+      const candidateEntry = value.cases.find((row) => row && typeof row === 'object'
+        && !Array.isArray(row) && (row as Record<string, unknown>).caseId === candidate.caseId) as Record<string, unknown> | undefined;
+      if (!candidateEntry || candidateEntry.inputPath !== candidate.path || candidateEntry.inputSha256 !== candidate.sha256
+        || candidateEntry.schemaVersion !== candidate.schemaVersion
+        || JSON.stringify(candidateEntry.repository) !== JSON.stringify(candidate.repository)
+        || candidateEntry.prNumber !== candidate.prNumber || candidateEntry.baseSha !== candidate.baseSha
+        || candidateEntry.headSha !== candidate.headSha) {
+        throw new Error('normal_engine_qualification_fixture_descriptor_identity_mismatch');
+      }
+    }
+    return;
+  }
   if (value.schemaVersion !== pin.bundleVersion || value.repository === undefined) {
     throw new Error('normal_engine_qualification_fixture_descriptor_invalid');
   }
@@ -1473,6 +1640,69 @@ function readPinnedInput(pin: FixturePin): { bytes: Buffer; input: Record<string
   return { bytes, input: record };
 }
 
+const HISTORY_LINEAGE_ENV_KEYS = Object.freeze({
+  sequenceId: 'REVIEW_NORMAL_ENGINE_QUALIFICATION_HISTORY_SEQUENCE_ID',
+  sourceCaseId: 'REVIEW_NORMAL_ENGINE_QUALIFICATION_HISTORY_SOURCE_CASE_ID',
+  repairCaseId: 'REVIEW_NORMAL_ENGINE_QUALIFICATION_HISTORY_REPAIR_CASE_ID',
+  sourceInputSha256: 'REVIEW_NORMAL_ENGINE_QUALIFICATION_HISTORY_SOURCE_INPUT_SHA256',
+  repairInputSha256: 'REVIEW_NORMAL_ENGINE_QUALIFICATION_HISTORY_REPAIR_INPUT_SHA256',
+  repairBaseSha: 'REVIEW_NORMAL_ENGINE_QUALIFICATION_HISTORY_REPAIR_BASE_SHA',
+  repairHeadSha: 'REVIEW_NORMAL_ENGINE_QUALIFICATION_HISTORY_REPAIR_HEAD_SHA',
+});
+
+function historyLineageForRequest(
+  env: NodeJS.ProcessEnv,
+  caseId: string,
+  arm: NormalEngineQualificationArm,
+): NormalEngineQualificationHistoryLineage | null {
+  const needsLineage = arm === 'repair-introduction' || arm === 'adjudicator-recheck' || arm.startsWith('repair-head-');
+  if (!needsLineage) return null;
+  const raw = Object.fromEntries(Object.entries(HISTORY_LINEAGE_ENV_KEYS).map(([key, envName]) => [key, nonempty(env, envName)])) as
+    Record<keyof NormalEngineQualificationHistoryLineage, string>;
+  const present = Object.values(raw).filter(Boolean).length;
+  let lineage: NormalEngineQualificationHistoryLineage;
+  if (present === 0) {
+    if (caseId === LEGACY_REPAIR_HISTORY_LINEAGE.sourceCaseId || caseId === LEGACY_REPAIR_HISTORY_LINEAGE.repairCaseId) {
+      lineage = { ...LEGACY_REPAIR_HISTORY_LINEAGE };
+    } else if (caseId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sourceCaseId
+      || caseId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairCaseId) {
+      const { bundleSha256: _bundleSha256, ...externalLineage } = WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE;
+      lineage = { ...externalLineage };
+    } else {
+      throw new Error('normal_engine_qualification_history_lineage_required');
+    }
+  } else {
+    if (present !== Object.keys(HISTORY_LINEAGE_ENV_KEYS).length) {
+      throw new Error('normal_engine_qualification_history_lineage_incomplete');
+    }
+    lineage = raw;
+  }
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/u.test(lineage.sequenceId)
+    || !/^[a-z0-9][a-z0-9_-]{0,99}$/u.test(lineage.sourceCaseId)
+    || !/^[a-z0-9][a-z0-9_-]{0,99}$/u.test(lineage.repairCaseId)
+    || !DIGEST_PATTERN.test(lineage.sourceInputSha256) || !DIGEST_PATTERN.test(lineage.repairInputSha256)
+    || !SHA_PATTERN.test(lineage.repairBaseSha) || !SHA_PATTERN.test(lineage.repairHeadSha)) {
+    throw new Error('normal_engine_qualification_history_lineage_invalid');
+  }
+  const isExternalV2 = lineage.sequenceId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sequenceId;
+  const expectedLineage: NormalEngineQualificationHistoryLineage = isExternalV2 ? {
+    sequenceId: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sequenceId,
+    sourceCaseId: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sourceCaseId,
+    repairCaseId: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairCaseId,
+    sourceInputSha256: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sourceInputSha256,
+    repairInputSha256: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairInputSha256,
+    repairBaseSha: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairBaseSha,
+    repairHeadSha: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairHeadSha,
+  } : { ...LEGACY_REPAIR_HISTORY_LINEAGE };
+  if (JSON.stringify(lineage) !== JSON.stringify(expectedLineage)
+    || (arm === 'repair-introduction' && caseId !== lineage.sourceCaseId)
+    || (arm === 'adjudicator-recheck' && caseId !== lineage.sourceCaseId)
+    || (arm.startsWith('repair-head-') && caseId !== lineage.repairCaseId)) {
+    throw new Error('normal_engine_qualification_history_lineage_binding_invalid');
+  }
+  return lineage;
+}
+
 export function parseNormalEngineQualificationRequest(
   env: NodeJS.ProcessEnv = process.env,
 ): NormalEngineQualificationRequest {
@@ -1500,10 +1730,11 @@ export function parseNormalEngineQualificationRequest(
   const validArms: readonly NormalEngineQualificationArm[] = [
     'single', 'repair-introduction', 'repair-head-history', 'repair-head-repeat', 'repair-head-empty-history',
     'repair-head-history-unavailable', 'repair-head-verifier-unavailable', 'provider-failure',
-    'resource-exhaustion', 'p2-only', 'large-crossfile', 'adjudicator-recheck',
+    'resource-exhaustion', 'preflight-source-coverage-control', 'p2-only', 'large-crossfile', 'adjudicator-recheck',
   ];
   const arm = validArms.find((candidate) => candidate === armRaw);
   const historyRunId = historyRunIdRaw || null;
+  const historyLineage = arm ? historyLineageForRequest(env, caseId, arm) : null;
   if (nonempty(env, 'REVIEW_NORMAL_ENGINE_QUALIFICATION_ONLY') !== 'true'
     || nonempty(env, 'REVIEW_PUBLICATION_MODE') !== 'disabled'
     || nonempty(env, 'REVIEW_RECEIPT_PATH') !== NORMAL_ENGINE_QUALIFICATION_RECEIPT_PATH
@@ -1535,6 +1766,7 @@ export function parseNormalEngineQualificationRequest(
     phase: phaseForArm(arm),
     configurationVariant: configurationVariant as NormalEngineQualificationConfigurationVariant,
     historyRunId,
+    historyLineage,
     fixture: {
       bundleVersion: pin.bundleVersion,
       bundleSha256: pin.bundleSha256,

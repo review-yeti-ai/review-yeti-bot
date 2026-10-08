@@ -13,6 +13,7 @@ interface ContractCase {
   integrityOnly?: string;
   digestMismatch?: boolean;
   actualTransport?: { baseUrl: string; model: string };
+  workerImage?: string;
 }
 
 // Kept within the Go module so standalone operator tests also carry the corpus.
@@ -36,6 +37,23 @@ describe('shared Go/TypeScript prepared execution contract', () => {
     }
   });
 
+  it('binds the service-prepared capability fixture to the exact projected worker image digest', () => {
+    const fixture = corpus.cases.find((candidate) => candidate.workerImage !== undefined);
+    expect(fixture).toBeDefined();
+    const raw = fixture!.json.replaceAll('$CONFIG', corpus.configJson);
+    const decoded = JSON.parse(raw) as { config: unknown; transport: { baseUrl: string; model: string };
+      qualificationRuntimeImageDigest?: string };
+    const digest = decoded.qualificationRuntimeImageDigest;
+    expect(digest).toMatch(/^sha256:[a-f0-9]{64}$/u);
+    expect(fixture!.workerImage).toBe(`registry.digitalocean.com/exampleorg/review-yeti-worker@${digest}`);
+    const configDigest = fingerprintEffectiveReviewConfig({ config: decoded.config, transport: decoded.transport,
+      qualificationRuntimeImageDigest: digest });
+
+    expect(parsePreparedReviewExecution(raw, configDigest)).toMatchObject({
+      qualificationRuntimeImageDigest: digest,
+    });
+  });
+
   it.each(corpus.cases)('$name', (fixture) => {
     let raw = fixture.json.replaceAll('$CONFIG', corpus.configJson);
     if (fixture.padToBytes !== undefined) {
@@ -46,11 +64,15 @@ describe('shared Go/TypeScript prepared execution contract', () => {
     // A matching digest removes config-binding noise from the shared envelope
     // cases. Only the named digest-mismatch case deliberately uses another one.
     let digest = '0'.repeat(64);
-    let decoded: { config: unknown; transport: { baseUrl: string; model: string } } | undefined;
+    let decoded: { config: unknown; transport: { baseUrl: string; model: string };
+      qualificationRuntimeImageDigest?: string } | undefined;
     try {
       decoded = JSON.parse(raw);
       if (decoded && !fixture.digestMismatch) digest = fingerprintEffectiveReviewConfig({
         config: decoded.config, transport: decoded.transport,
+        ...(decoded.qualificationRuntimeImageDigest === undefined ? {} : {
+          qualificationRuntimeImageDigest: decoded.qualificationRuntimeImageDigest,
+        }),
       });
     } catch { /* Malformed envelopes still reach the public parser below. */ }
     const parse = () => parsePreparedReviewExecution(raw, digest, fixture.actualTransport);

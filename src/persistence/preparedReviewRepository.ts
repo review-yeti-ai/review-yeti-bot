@@ -12,11 +12,16 @@ export const PREPARED_REVIEW_SCHEMA_SQL = `
     effective_config_digest VARCHAR(64) NOT NULL CHECK (effective_config_digest ~ '^[a-f0-9]{64}$'),
     config JSONB NOT NULL CHECK (jsonb_typeof(config) = 'object'),
     transport JSONB NOT NULL CHECK (jsonb_typeof(transport) = 'object'),
+    qualification_runtime_image_digest VARCHAR(71) CHECK (
+      qualification_runtime_image_digest IS NULL OR qualification_runtime_image_digest ~ '^sha256:[a-f0-9]{64}$'
+    ),
     sources JSONB NOT NULL CHECK (jsonb_typeof(sources) = 'array'),
     expected_persona_ids JSONB NOT NULL CHECK (jsonb_typeof(expected_persona_ids) = 'array'),
     prepared_content_digest VARCHAR(64) NOT NULL CHECK (prepared_content_digest ~ '^[a-f0-9]{64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  ALTER TABLE prepared_review_policies
+    ADD COLUMN IF NOT EXISTS qualification_runtime_image_digest VARCHAR(71);
 `;
 
 export interface PreparedReviewQueryable {
@@ -39,6 +44,7 @@ const preparedSchema = z.object({
   config: z.record(z.unknown()),
   // The shared verifier enforces HTTPS, no userinfo/query/fragment, and bounds.
   transport: z.object({ baseUrl: z.string(), model: z.string() }).strict(),
+  qualificationRuntimeImageDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u).optional(),
   expectedPersonaIds: z.array(personaIdSchema).min(1).max(64),
 }).strict();
 
@@ -48,6 +54,7 @@ const storedSchema = z.object({
   effective_config_digest: digestSchema,
   config: z.record(z.unknown()),
   transport: z.record(z.unknown()),
+  qualification_runtime_image_digest: z.string().regex(/^sha256:[a-f0-9]{64}$/u).nullable().optional(),
   sources: z.array(z.unknown()),
   expected_persona_ids: z.array(z.unknown()),
   prepared_content_digest: digestSchema,
@@ -105,7 +112,8 @@ function validatePrepared(input: unknown): PreparedPublishingPolicy {
   // Storage rejects unknown root fields and rejects nested stripping/defaults:
   // only an already-normalized config may cross this persistence boundary.
   const strictConfig = ctReviewConfigV3Schema.innerType().strict().parse(parsed.config);
-  const config = verifyPreparedPublishingConfig(strictConfig, parsed.policy.effectiveConfigDigest, parsed.transport);
+  const config = verifyPreparedPublishingConfig(strictConfig, parsed.policy.effectiveConfigDigest, parsed.transport,
+    parsed.qualificationRuntimeImageDigest);
   if (canonicalJson(config) !== canonicalJson(parsed.config) || config.personas.length > 64) throw new Error();
   const expected = config.personas.filter((persona) => persona.enabled).map((persona) => persona.id);
   if (new Set(parsed.expectedPersonaIds).size !== parsed.expectedPersonaIds.length
@@ -136,7 +144,7 @@ export async function getPreparedPublishingPolicy(
   try {
     digestSchema.parse(effectivePolicyDigest);
     const result = await queryable.query(`SELECT effective_policy_digest, version, effective_config_digest,
-      config, transport, sources, expected_persona_ids, prepared_content_digest
+      config, transport, qualification_runtime_image_digest, sources, expected_persona_ids, prepared_content_digest
       FROM prepared_review_policies WHERE effective_policy_digest = $1`, [effectivePolicyDigest]);
     if (result.rows.length === 0) return null;
     if (result.rows.length !== 1) throw new Error();
@@ -152,7 +160,10 @@ export async function getPreparedPublishingPolicy(
         effectiveConfigDigest: row.effective_config_digest,
         sources: row.sources,
       },
-      config: row.config, transport: row.transport, expectedPersonaIds: row.expected_persona_ids,
+      config: row.config, transport: row.transport,
+      ...(row.qualification_runtime_image_digest === null || row.qualification_runtime_image_digest === undefined
+        ? {} : { qualificationRuntimeImageDigest: row.qualification_runtime_image_digest }),
+      expectedPersonaIds: row.expected_persona_ids,
     });
     if (row.prepared_content_digest !== contentDigest(prepared)) throw new Error();
     return prepared;
@@ -178,12 +189,12 @@ export async function savePreparedPublishingPolicy(
     const normalized = validatePrepared(prepared);
     await queryable.query(`INSERT INTO prepared_review_policies (
       effective_policy_digest, version, effective_config_digest, config, transport,
-      sources, expected_persona_ids, prepared_content_digest
-    ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, $8)
+      qualification_runtime_image_digest, sources, expected_persona_ids, prepared_content_digest
+    ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7::jsonb, $8::jsonb, $9)
       ON CONFLICT (effective_policy_digest) DO NOTHING`, [
       normalized.policy.effectivePolicyDigest, normalized.version, normalized.policy.effectiveConfigDigest,
-      canonicalJson(normalized.config), canonicalJson(normalized.transport), canonicalJson(normalized.policy.sources),
-      canonicalJson(normalized.expectedPersonaIds), contentDigest(normalized),
+      canonicalJson(normalized.config), canonicalJson(normalized.transport), normalized.qualificationRuntimeImageDigest ?? null,
+      canonicalJson(normalized.policy.sources), canonicalJson(normalized.expectedPersonaIds), contentDigest(normalized),
     ]);
     const stored = await getPreparedPublishingPolicy(queryable, normalized.policy.effectivePolicyDigest);
     if (!stored || canonicalJson(stored) !== canonicalJson(normalized)) throw new Error();
