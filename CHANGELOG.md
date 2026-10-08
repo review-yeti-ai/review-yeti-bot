@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.122.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.2...v1.122.3) (2026-10-08)
+
+
+### Bug Fixes
+
+* bind qualification helper provenance ([#1451](https://github.com/review-yeti-ai/review-yeti-bot/issues/1451)) ([5d0917f](https://github.com/review-yeti-ai/review-yeti-bot/commit/5d0917f3a222cf40f2cb216eb761f5f4aeac8d25))
+
 ## [1.122.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.1...v1.122.2) (2026-10-08)
 
 
