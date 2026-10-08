@@ -93,6 +93,43 @@ test('public phase plan is a non-dispatchable template and requires a private ro
   runner.validateExternalNormalV2Plan(plan, bundle);
 });
 
+test('pins prepared helper provenance to the exact source revision and bytes admitted by the host plan', async () => {
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const { plan } = await runner.readFrozenExternalNormalV2Plan(repositoryRoot);
+  const helperBytes = await readFile(path.join(repositoryRoot, 'src/review/preparedPublishingPolicy.ts'));
+  const helperSha256 = createHash('sha256').update(helperBytes).digest('hex');
+
+  assert.equal(plan.runtime.preparedConfigHelperSourceRevision, 'a755abe90455b2b729c3f2eeaa5367481a90f7f3');
+  assert.equal(plan.runtime.preparedConfigHelperSourceFileSha256, helperSha256);
+  assert.equal(plan.runtime.preparedConfigHelperCompiledFileSha256,
+    '972c1687e4d24f30352fbe464e4f420461aa2a48dbfab69636b24de9f1fd621d');
+  const boundPlan = { ...plan, runtime: { ...plan.runtime,
+    finalSourceRevision: plan.runtime.preparedConfigHelperSourceRevision } };
+  const preparedManifest = { helper: {
+    repository: 'review-yeti-ai/review-yeti-bot',
+    helper: 'preparePublishingPolicy',
+    helper_path: 'src/review/preparedPublishingPolicy.ts',
+    source_sha: plan.runtime.preparedConfigHelperSourceRevision,
+    source_file_sha256: plan.runtime.preparedConfigHelperSourceFileSha256,
+    compiled_file_sha256: plan.runtime.preparedConfigHelperCompiledFileSha256,
+  } };
+  assert.equal(runner.preparedConfigHelperProvenanceMatchesPlan(preparedManifest, boundPlan), true);
+  assert.equal(runner.preparedConfigHelperProvenanceMatchesPlan({ helper: {
+    ...preparedManifest.helper, source_sha: '1917204826d9a145dc7db8217b01978dad679e2b',
+  } }, boundPlan), false);
+  assert.equal(runner.preparedConfigHelperProvenanceMatchesPlan({ helper: {
+    ...preparedManifest.helper, source_file_sha256: '54f90267c4e97ae5ec50d77e7241151e0d81f156305ad031326cea1c34535bb0',
+  } }, boundPlan), false);
+  assert.equal(runner.preparedConfigHelperProvenanceMatchesPlan({ helper: {
+    ...preparedManifest.helper, compiled_file_sha256: '0'.repeat(64),
+  } }, boundPlan), false);
+  assert.equal(runner.preparedConfigHelperProvenanceMatchesPlan({ helper: {
+    ...preparedManifest.helper, source_file_sha256: '0'.repeat(64),
+  } }, boundPlan), false);
+  assert.equal(runner.preparedConfigHelperProvenanceMatchesPlan(preparedManifest, { ...boundPlan,
+    runtime: { ...boundPlan.runtime, finalSourceRevision: 'b'.repeat(40) } }), false);
+});
+
 test('ships only the exact new synthetic v2 source inputs into the worker image', async () => {
   const root = new URL('../../', import.meta.url).pathname;
   const rows = await verifyQualificationFixtureAllowlist(root);
@@ -100,7 +137,7 @@ test('ships only the exact new synthetic v2 source inputs into the worker image'
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json']);
   const expected = new Map([
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json',
-      '0b7650472ee57c906b7a022cb3ee213644acc80cca72c44ab171ed4f72d96733'],
+      'c3296f598a273d7a183a06b2e97480ce9b655d7f9e92b158b9d788819bf14d59'],
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json',
       '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1'],
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json',

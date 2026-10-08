@@ -44,7 +44,9 @@
   "runtime": {
     "baseMain": "ab5183141397c55975d8fdd48243c4243a5909f7",
     "currentBudgetFixCandidate": "3a22bc1365e404362a7d072f8eb472850c2bbf6c",
-    "preparedConfigHelperSourceRevision": "1917204826d9a145dc7db8217b01978dad679e2b",
+    "preparedConfigHelperSourceRevision": "a755abe90455b2b729c3f2eeaa5367481a90f7f3",
+    "preparedConfigHelperSourceFileSha256": "4ab88f14b6dc7e263b866ae56715d41d25f3ae716b32429f6e92eb991504f4c3",
+    "preparedConfigHelperCompiledFileSha256": "972c1687e4d24f30352fbe464e4f420461aa2a48dbfab69636b24de9f1fd621d",
     "deployedSourceBeforeBudgetFix": "1ddbc65d2fdae527a604c94fb6ae1d941471dfe9",
     "workerImageIndexBeforeBudgetFix": "sha256:afadc116b2266b3cc5dbc119361b0300f29eaa8789d9b1a30fc80bd24baf2b1a",
     "workerImageDigest": null,
