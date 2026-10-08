@@ -184,6 +184,7 @@ import { remainingCheckpointTasksAfterRechecks, type DisputedFindingRecheck } fr
 import { canonicalJson, sha256 } from '../review/reviewCore';
 import { REVIEW_SEVERITY_POLICY_V2 } from '../review/reviewDecision';
 import { ComposedRuntimeResourceObserver } from './composedResourceReceipt';
+import { ProviderAttemptBudget, ProviderAttemptBudgetExceededError } from '../gateway/providerAttemptBudget';
 import { buildDeterministicCoverageManifest } from '../review/groundedReviewEngine';
 import { buildDeterministicReviewPlanningContext, enrichTasksWithPlanningContext, renderReviewPlanningManifest,
   reviewTaskCharterDigest, type ReviewPlanningHistoryContext, type ReviewPlanningManifest } from '../review/prReviewPlanningContext';
@@ -211,6 +212,8 @@ export interface ComposedReviewOptions {
   publisherShadow?: boolean;
   /** Publisher reserves these calls from the existing total-turn budget for independent verification. */
   verificationReserveTurns?: number;
+  /** Shared physical request budget, including provider retries, for normal composed execution. */
+  providerAttemptBudget?: ProviderAttemptBudget;
   /** Exact digest copied from the service-prepared worker configuration. */
   effectiveConfigDigest?: string;
   /** Bounded secret-free snapshots for the publisher's protected outer-cutoff closeout. */
@@ -682,6 +685,7 @@ async function callTurn(params: {
   /** Clock paired with `deadlineAtMs`; inherited from the panel deadline context. */
   now?: () => number;
   resourceObserver?: ComposedRuntimeResourceObserver;
+  providerAttemptBudget?: ProviderAttemptBudget;
   resourcePhase: 'planning' | 'task';
 }): Promise<TurnCallResult> {
   throwIfPanelAborted(params.signal);
@@ -719,6 +723,8 @@ async function callTurn(params: {
           ...(params.signal ? { signal: params.signal } : {}),
           ...(params.jobId ? { jobId: params.jobId } : {}),
           ...(params.internalProgress ? { internalProgress: params.internalProgress } : {}),
+          ...(params.providerAttemptBudget ? { beforePhysicalAttempt: () =>
+            params.providerAttemptBudget!.beginAttempt('investigation') } : {}),
           responseFormat: params.responseFormat,
         })).then((value) => {
         params.resourceObserver?.clientCallSettled(performance.now() - clientCallStartedAt, true);
@@ -738,6 +744,7 @@ async function callTurn(params: {
         : Infinity;
 
       const cooldownFloorMs = retryAfterFloorMs(error, (params.now ?? Date.now)());
+      if (error instanceof ProviderAttemptBudgetExceededError) throw error;
       const emptyCompletionDelayMs = Math.max(EMPTY_COMPLETION_RETRY_DELAY_MS, cooldownFloorMs);
       if (isEmptyCompletionError(error) && emptyCompletionAttempts < EMPTY_COMPLETION_MAX_ATTEMPTS - 1
           && emptyCompletionDelayMs < budgetLeftMs) {
@@ -1510,6 +1517,7 @@ async function runPlanPhase(input: {
   requestCapBytes?: number;
   progress?: PublishingProgressReporter;
   resourceObserver?: ComposedRuntimeResourceObserver;
+  providerAttemptBudget?: ProviderAttemptBudget;
 }): Promise<PlanPhaseOutcome> {
   let messages = [...input.messages];
   const turnUsages: LaneTurnUsage[] = [];
@@ -1523,28 +1531,39 @@ async function runPlanPhase(input: {
     }
     const isLastLocalTurn = iter === localMaxTurns - 1;
     const responseFormat = isLastLocalTurn ? buildPanelResponseFormat('plan', {}, { allowIncomplete: false }) : NATIVE_TURN_RESPONSE_FORMAT;
-    const turn = await callTurn({
-      client: input.client,
-      model: input.model,
-      providerId: input.providerId,
-      messages,
-      timeoutMs: input.timeoutMs,
-      inactivityTimeoutMs: input.inactivityTimeoutMs,
-      requestPolicy: input.requestPolicy,
-      reasoningEffort: input.reasoningEffort,
-      deadlineAtMs: input.deadlineAtMs,
-      now: input.now,
-      responseFormat,
-      jobId: input.jobId,
-      signal: input.signal,
-      turnNumber: turnsUsed + 1,
-      kind: isLastLocalTurn ? 'final' : 'tool',
-      resourceObserver: input.resourceObserver,
-      resourcePhase: 'planning',
-      ...(input.progress ? { internalProgress: {
-        turn: turnsUsed + 1, task: 'composed_plan', lane: 'composed-plan',
-      } } : {}),
-    });
+    let turn: TurnCallResult;
+    try {
+      turn = await callTurn({
+        client: input.client,
+        model: input.model,
+        providerId: input.providerId,
+        messages,
+        timeoutMs: input.timeoutMs,
+        inactivityTimeoutMs: input.inactivityTimeoutMs,
+        requestPolicy: input.requestPolicy,
+        reasoningEffort: input.reasoningEffort,
+        deadlineAtMs: input.deadlineAtMs,
+        now: input.now,
+        responseFormat,
+        jobId: input.jobId,
+        signal: input.signal,
+        turnNumber: turnsUsed + 1,
+        kind: isLastLocalTurn ? 'final' : 'tool',
+        resourceObserver: input.resourceObserver,
+        providerAttemptBudget: input.providerAttemptBudget,
+        resourcePhase: 'planning',
+        ...(input.progress ? { internalProgress: {
+          turn: turnsUsed + 1, task: 'composed_plan', lane: 'composed-plan',
+        } } : {}),
+      });
+    } catch (error) {
+      if (error instanceof ProviderAttemptBudgetExceededError) {
+        throw new PanelConfigurationError('composed review exhausted the shared provider request budget before a valid plan was produced', {
+          failureClass: 'budget_exhausted',
+        });
+      }
+      throw error;
+    }
     turnsUsed += 1;
     turnUsages.push(turn.usage);
     messages = [...messages, { role: 'assistant', content: turn.content }];
@@ -1681,6 +1700,7 @@ async function runTaskWorkPhase(input: {
   progress?: PublishingProgressReporter;
   progressState?: { startedAt: number; turnUsages: LaneTurnUsage[] };
   resourceObserver?: ComposedRuntimeResourceObserver;
+  providerAttemptBudget?: ProviderAttemptBudget;
 }): Promise<TaskOutcome> {
   const diagnosticLane = composedTaskDiagnosticLane(input.taskIndex);
   const startedAt = input.progressState?.startedAt ?? Date.now();
@@ -1726,28 +1746,35 @@ async function runTaskWorkPhase(input: {
       retainSmallToolResults: true,
       toolCalls: toolCallsLog,
     });
-    const turn = await callTurn({
-      client: input.client,
-      model: input.model,
-      providerId: input.providerId,
-      messages: activeMessages,
-      timeoutMs: input.timeoutMs,
-      inactivityTimeoutMs: input.inactivityTimeoutMs,
-      requestPolicy: input.requestPolicy,
-      reasoningEffort: input.reasoningEffort,
-      deadlineAtMs: input.deadlineAtMs,
-      now: input.now,
-      responseFormat,
-      jobId: input.jobId,
-      signal: input.signal,
-      turnNumber: turnUsages.length + 1,
-      kind: correctionAttempts > 0 ? 'correction' : finalizing ? 'final' : 'tool',
-      resourceObserver: input.resourceObserver,
-      resourcePhase: 'task',
-      ...(input.progress ? { internalProgress: {
-        turn: turnUsages.length + 1, task: 'composed_task', lane: diagnosticLane,
-      } } : {}),
-    });
+    let turn: TurnCallResult;
+    try {
+      turn = await callTurn({
+        client: input.client,
+        model: input.model,
+        providerId: input.providerId,
+        messages: activeMessages,
+        timeoutMs: input.timeoutMs,
+        inactivityTimeoutMs: input.inactivityTimeoutMs,
+        requestPolicy: input.requestPolicy,
+        reasoningEffort: input.reasoningEffort,
+        deadlineAtMs: input.deadlineAtMs,
+        now: input.now,
+        responseFormat,
+        jobId: input.jobId,
+        signal: input.signal,
+        turnNumber: turnUsages.length + 1,
+        kind: correctionAttempts > 0 ? 'correction' : finalizing ? 'final' : 'tool',
+        resourceObserver: input.resourceObserver,
+        providerAttemptBudget: input.providerAttemptBudget,
+        resourcePhase: 'task',
+        ...(input.progress ? { internalProgress: {
+          turn: turnUsages.length + 1, task: 'composed_task', lane: diagnosticLane,
+        } } : {}),
+      });
+    } catch (error) {
+      if (error instanceof ProviderAttemptBudgetExceededError) return exhausted('total_turn_budget_exhausted');
+      throw error;
+    }
     turnUsages.push(turn.usage);
     const sourceDelivery = input.sourceDelivery.acknowledgeRequest(activeMessages);
     logger.info('[composed] source delivery receipt', { event:'composed_task_source_delivery',
@@ -2083,9 +2110,27 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
   // budget check, and until this was wired the check compared against Infinity and did nothing.
   const composedDeadlineAtMs = deadline.budget.deadlineAtMs;
   const panelStartedAt = Date.now();
+  const workBudget = options.providerAttemptBudget
+    ? { totalTurns: options.providerAttemptBudget.limits.investigationLimit,
+      verificationReserveTurns: options.providerAttemptBudget.limits.verificationLimit }
+    : resolveComposedEngineWorkBudget(process.env, options.config.composed?.max_turns_total,
+      options.verificationReserveTurns);
+  const providerAttemptBudget = options.providerAttemptBudget ?? new ProviderAttemptBudget({
+    totalLimit: workBudget.totalTurns + workBudget.verificationReserveTurns,
+    investigationLimit: workBudget.totalTurns,
+    verificationLimit: workBudget.verificationReserveTurns,
+  });
+  if (providerAttemptBudget.limits.totalLimit !== workBudget.totalTurns + workBudget.verificationReserveTurns
+    || providerAttemptBudget.limits.investigationLimit !== workBudget.totalTurns
+    || providerAttemptBudget.limits.verificationLimit !== workBudget.verificationReserveTurns) {
+    throw new PanelConfigurationError('composed provider request budget disagrees with its normalized work budget', {
+      failureClass: 'contract',
+    });
+  }
   const resourceObserver = new ComposedRuntimeResourceObserver({
     configDigest: options.effectiveConfigDigest,
     configuration: options.config.review_configuration_receipt,
+    providerAttemptBudget,
     onSnapshot: options.resourceObservationCapture,
   });
   options.progress?.emit({ task: 'panel', status: 'started' });
@@ -2288,8 +2333,6 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       },
     ];
 
-    const workBudget = resolveComposedEngineWorkBudget(process.env, config.composed?.max_turns_total,
-      options.verificationReserveTurns);
     resourceObserver.configureBudget({
       configuredTotalTurns: workBudget.totalTurns + workBudget.verificationReserveTurns,
       investigationTurns: workBudget.totalTurns,
@@ -2361,6 +2404,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           turnsRemaining: remainingBudget,
           progress: options.progress,
           resourceObserver,
+          providerAttemptBudget,
         });
         planOutcome = { ...freshPlan, tasks: orderReviewTasksByRisk(freshPlan.tasks, deletionClassification) };
       }
@@ -2724,6 +2768,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
               repoFileProvider,
               zoektConfig,
               resourceObserver,
+              providerAttemptBudget,
               // The shared budget counts completed usage and every in-flight reservation. A task may
               // spend only its reserved slice; unused turns are refunded as soon as this task settles.
               turnsRemaining: () => reserved.reservedTurns - taskTurnUsages.length,

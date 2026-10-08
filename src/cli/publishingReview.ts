@@ -31,6 +31,7 @@ import { githubRetryDeadlineFromEnv, type GitHubRetryOptions } from '../github/g
 import {
   buildGracefulComposedPanelResult,
   executeComposedReview,
+  resolveComposedEngineWorkBudget,
   resolveComposedProviderId,
   type ComposedCheckpointSnapshot,
 } from '../panel/composedEngine';
@@ -61,6 +62,7 @@ import {
 } from '../gateway/openRouterClient';
 import type { ReviewModelClient } from '../gateway/openRouterClient';
 import { UpstreamCapacityRejectionError } from '../gateway/providerCapacityManager';
+import { ProviderAttemptBudget } from '../gateway/providerAttemptBudget';
 import { withProviderConcurrencyLimit } from '../gateway/concurrencyLimitedModelClient';
 import { providerConcurrencyWorkerConfigFromEnv } from '../config/providerConcurrency';
 import type { ProviderLeaseCoordinator } from '../gateway/providerLeaseCoordinator';
@@ -2122,6 +2124,15 @@ export async function runPublishingReviewWorker(
     const modelClient = providerPublishingModelClient(boundedPublishingModelClient(
       deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey }),
     ), env, deps.providerLease, now);
+    const composedWorkBudget = reviewEngine === 'composed'
+      ? resolveComposedEngineWorkBudget(env, workerConfig.composed?.max_turns_total,
+        GROUNDED_DEFAULT_BUDGET.callsPerTask)
+      : undefined;
+    const providerAttemptBudget = composedWorkBudget ? new ProviderAttemptBudget({
+      totalLimit: composedWorkBudget.totalTurns + composedWorkBudget.verificationReserveTurns,
+      investigationLimit: composedWorkBudget.totalTurns,
+      verificationLimit: composedWorkBudget.verificationReserveTurns,
+    }) : undefined;
     // REL-1132: every call the engines make is metered into this run's ledger. The composed shadow
     // engine gets its own label so its cost never reads as panel cost.
     // Phase events describe only this gating publisher execution. Shadow review remains separate
@@ -2607,6 +2618,7 @@ export async function runPublishingReviewWorker(
           ...(reviewEngine === 'composed' ? { planningHistoryContext } : {}),
           ...(composedCheckpoint ? { checkpoint: composedCheckpoint } : {}),
           ...(reviewEngine === 'composed' ? { verificationReserveTurns: GROUNDED_DEFAULT_BUDGET.callsPerTask } : {}),
+          ...(providerAttemptBudget ? { providerAttemptBudget } : {}),
           ...(reviewEngine === 'composed' && preparedConfigDigest ? { effectiveConfigDigest: preparedConfigDigest } : {}),
           ...(reviewEngine === 'composed' ? { resourceObservationCapture: captureComposedResourceObservation } : {}),
           ...(disputedFindingRechecks.length > 0 ? { disputedFindingRechecks } : {}),
@@ -2692,6 +2704,7 @@ export async function runPublishingReviewWorker(
           concurrency: GROUNDED_DEFAULT_BUDGET.concurrency,
           callTimeoutMs: GROUNDED_DEFAULT_BUDGET.callTimeoutMs,
           stageBudgetMs: Math.min(GROUNDED_DEFAULT_BUDGET.stageBudgetMs, remainingGroundedBudgetMs) },
+        ...(providerAttemptBudget ? { providerAttemptBudget } : {}),
         signal: panelDeadline.signal,
         ...(authenticatedDisputeTuples.length > 0 ? { authenticatedDisputes: authenticatedDisputeTuples } : {}),
       };
@@ -2754,6 +2767,7 @@ export async function runPublishingReviewWorker(
           observation: panelResult.composedResourceObservation,
           configDigest: preparedConfigDigest,
           verifierCalls: independentVerification.calls,
+          ...(providerAttemptBudget ? { providerAttemptBudget: providerAttemptBudget.snapshot() } : {}),
           verifierCallsUnknownReason: 'The worker completion bridge did not receive the grounded-verifier call counter.',
         })
         : undefined;

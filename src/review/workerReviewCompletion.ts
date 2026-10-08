@@ -946,7 +946,8 @@ function groundedImportResolutionMatches(input: { edge: GroundedDependencyEdgeV1
 
 function composedRuntimeResourcesRefusal(input: { result: WorkerReviewResult; tasks: readonly ReviewTask[];
   changedFiles: readonly ReviewChangedFile[]; coordinates: TrustedWorkerReviewCoordinates;
-  expectedConfiguration?: ComposedRuntimeResources['configuration']['value'] }): string | null {
+  expectedConfiguration?: ComposedRuntimeResources['configuration']['value'];
+  requirePhysicalAttempts: boolean }): string | null {
   const receipt = input.result.composedResources;
   if (!receipt) return 'composed completion is missing its worker-stage runtime resource receipt';
   if (receipt.stage !== 'worker_completion' || receipt.discoveryScope !== 'composed_engine'
@@ -957,6 +958,24 @@ function composedRuntimeResourcesRefusal(input: { result: WorkerReviewResult; ta
     || input.expectedConfiguration === undefined || input.expectedConfiguration === null
     || canonicalJson(receipt.configuration.value) !== canonicalJson(input.expectedConfiguration)) {
     return 'composed runtime resource receipt is not bound to the service-prepared effective configuration';
+  }
+  if (input.requirePhysicalAttempts && (receipt.version !== 'ComposedRuntimeResources.v2' || !receipt.providerAttempts)) {
+    return 'current composed review lacks physical provider attempt evidence';
+  }
+  if (receipt.providerAttempts) {
+    const attempts = receipt.providerAttempts;
+    const budget = receipt.budget;
+    const hardCap = receipt.configuration.value.effective.composed_budget.total_turns_hard_cap;
+    if (attempts.totalLimit !== budget.configuredTotalTurns
+      || attempts.investigationLimit !== budget.investigationTurns
+      || attempts.verificationLimit !== budget.verificationReserveTurns
+      || attempts.totalLimit > hardCap
+      || attempts.totalStarted !== attempts.investigationStarted + attempts.verificationStarted
+      || attempts.totalStarted > attempts.totalLimit
+      || attempts.investigationStarted > attempts.investigationLimit
+      || attempts.verificationStarted > attempts.verificationLimit) {
+      return 'composed physical provider attempts disagree with the prepared and reserved budgets';
+    }
   }
   const verifierCalls = input.result.groundedReview?.version === GROUNDED_REVIEW_RECEIPT_V2_VERSION
     ? input.result.groundedReview.verification.calls : null;
@@ -2358,7 +2377,7 @@ export function deriveCanonicalWorkerReviewEvidence(
     if (currentComposedSemantics || completion.result.composedResources) {
       const resourceRefusal = composedRuntimeResourcesRefusal({ result: completion.result,
         tasks: validatedPlan.tasks, changedFiles, coordinates: expectedCoordinates,
-        expectedConfiguration: contract.composedEffectiveConfiguration });
+        expectedConfiguration: contract.composedEffectiveConfiguration, requirePhysicalAttempts: currentComposedSemantics });
       if (resourceRefusal) return invalidEvidence(resourceRefusal);
       const composedResources = completion.result.composedResources!;
       composedResourceCoverageComplete = composedResources.engineExecutionState === 'complete'

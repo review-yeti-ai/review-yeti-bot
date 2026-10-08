@@ -17,7 +17,7 @@ import { computeArbitration } from '../../review/reviewCore';
 import { projectPublishingRosterBounds } from '../../cli/publishingReview';
 import { parseAndValidateConfig } from '../../config/configLoader';
 import type { OpenRouterResponse } from '../../gateway/openRouterClient';
-import { OpenRouterConnectionError, OpenRouterResponseError } from '../../gateway/openRouterClient';
+import { OpenRouterClient, OpenRouterConnectionError, OpenRouterResponseError } from '../../gateway/openRouterClient';
 import { mcpFleetManager } from '../../mcp/mcpFleetManager';
 import { createPublishingProgress } from '../../telemetry/publishingProgress';
 import * as panelEngine from '../panelEngine';
@@ -137,7 +137,7 @@ describe('executeComposedReview', () => {
       effectiveConfigDigest: configDigest, verificationReserveTurns: 12 });
 
     expect((result as any).composedResourceObservation).toMatchObject({
-      version: 'ComposedRuntimeResources.v1',
+      version: 'ComposedRuntimeResources.v2',
       configDigest: { value: configDigest, unavailableReason: null },
       budget: { configuredTotalTurns: 100, investigationTurns: 88, verificationReserveTurns: 12 },
       usage: {
@@ -156,6 +156,61 @@ describe('executeComposedReview', () => {
         regions: { state: 'unavailable', reason: expect.any(String) },
       },
     });
+  });
+
+  it.each([503, 429] as const)('counts failed HTTP %i attempts against the shared composed request budget', async (status) => {
+    vi.stubEnv('COMPOSED_ENGINE_MAX_TURNS', '2');
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    let httpAttempts = 0;
+    const fetchImplementation = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      httpAttempts += 1;
+      const request = JSON.parse(String(init?.body));
+      const requestText = lastText(request.messages);
+      const issued = nonceFrom(requestText);
+      if (requestText.includes('=== PLAN TURN ===')) {
+        return new Response(JSON.stringify({
+          id: 'chatcmpl-plan', model: 'test-model', choices: [{ index: 0, finish_reason: 'stop',
+            message: { role: 'assistant', content: JSON.stringify({ nonce: issued, tasks: [
+              { id: 'guard', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Safe?', rationale: 'Changed guard.' },
+            ] }) } }], usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (httpAttempts === 2) {
+        return new Response(JSON.stringify({ error: { message: 'temporary gateway failure' } }), {
+          status, headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({
+        id: 'chatcmpl-task', model: 'test-model', choices: [{ index: 0, finish_reason: 'stop',
+          message: { role: 'assistant', content: JSON.stringify({ nonce: issued, task: 'guard', status: 'COMPLETE', findings: [] }) } }],
+        usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    try {
+      const ledger = new TokenLedger();
+      const cfg = config();
+      cfg.composed = { max_turns_total: 2, max_turns_per_task: 1, max_tasks: 1 };
+      const client = meterModelClient(new OpenRouterClient({ baseUrl: 'https://gateway.example.invalid/v1',
+        apiKey: 'test', maxRetries: 0, fetchImplementation, sleep: async () => {}, random: () => 0 }), ledger);
+      const result = await executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
+        repository: 'exampleorg/example-meta', headSha: 'a'.repeat(40), client,
+        effectiveConfigDigest: 'b'.repeat(64) });
+      const resources = (result as any).composedResourceObservation;
+
+      expect(resources.budget).toEqual({ configuredTotalTurns: 2, investigationTurns: 2, verificationReserveTurns: 0 });
+      expect(resources.usage).toMatchObject({ totalTurns: 1, clientCallsStarted: 3, clientResponsesReceived: 1 });
+      expect(ledger.calls).toBe(1);
+      expect(resources.engineExecutionState).toBe('incomplete');
+      expect(resources.providerAttempts).toMatchObject({ totalLimit: 2, investigationLimit: 2, verificationLimit: 0,
+        totalStarted: 2, investigationStarted: 2, verificationStarted: 0,
+        deniedAttempts: 1, investigationDenied: 1, verificationDenied: 0 });
+      expect(httpAttempts).toBe(2);
+      expect(resources.usage.totalTurns).toBeLessThanOrEqual(resources.budget.investigationTurns);
+      expect(resources.providerAttempts.totalStarted).toBeLessThanOrEqual(resources.budget.investigationTurns);
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+    }
   });
 
   it('does not call a shared path fully investigated while an assigned task remains blocked', async () => {

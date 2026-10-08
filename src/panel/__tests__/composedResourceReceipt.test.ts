@@ -7,6 +7,7 @@ import {
 import type { EffectiveReviewConfigReceipt } from '../../config/schema';
 import type { ReviewTask } from '../../reviewTaskContract';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from '../../review/groundedEvidenceV2';
+import { ProviderAttemptBudget } from '../../gateway/providerAttemptBudget';
 
 const CONFIG_DIGEST = 'a'.repeat(64);
 const SOURCE_DIGEST = 'b'.repeat(64);
@@ -84,6 +85,33 @@ describe('composed runtime resources', () => {
       configDigest: CONFIG_DIGEST, verifierCalls: 2 });
     expect(completed).toMatchObject({ stage: 'worker_completion', configDigest: { value: CONFIG_DIGEST },
       usage: { verifierCalls: { value: 2, unavailableReason: null } } });
+  });
+
+  it('binds physical attempts to a versioned receipt and refuses to invent them for legacy evidence', () => {
+    const providerAttemptBudget = new ProviderAttemptBudget({ totalLimit: 100, investigationLimit: 88, verificationLimit: 12 });
+    const record = new ComposedRuntimeResourceObserver({ configDigest: CONFIG_DIGEST, configuration,
+      providerAttemptBudget, now: () => 1_100 });
+    record.configureBudget({ configuredTotalTurns: 100, investigationTurns: 88, verificationReserveTurns: 12 });
+    record.setPlan([task('auth-a', ['src/auth.ts'])]);
+    record.markTaskStarted('auth-a');
+    record.markTaskOutcome('auth-a', 'completed', completeSource('auth-a', 'src/auth.ts'));
+    providerAttemptBudget.beginAttempt('investigation');
+
+    const engineReceipt = record.snapshot('terminal')!;
+    expect(engineReceipt).toMatchObject({ version: 'ComposedRuntimeResources.v2',
+      providerAttempts: { totalLimit: 100, investigationLimit: 88, verificationLimit: 12,
+        totalStarted: 1, investigationStarted: 1, verificationStarted: 0 } });
+
+    providerAttemptBudget.beginAttempt('verification');
+    const completed = completeComposedRuntimeResources({ observation: engineReceipt,
+      configDigest: CONFIG_DIGEST, verifierCalls: 1, providerAttemptBudget: providerAttemptBudget.snapshot() });
+    expect(completed).toMatchObject({ version: 'ComposedRuntimeResources.v2', stage: 'worker_completion',
+      providerAttempts: { totalStarted: 2, investigationStarted: 1, verificationStarted: 1 } });
+
+    const legacy = observer([task('auth-a', ['src/auth.ts'])]).snapshot('terminal')!;
+    expect(legacy.version).toBe('ComposedRuntimeResources.v1');
+    expect(completeComposedRuntimeResources({ observation: legacy, configDigest: CONFIG_DIGEST,
+      verifierCalls: 1, providerAttemptBudget: providerAttemptBudget.snapshot() })).toBeUndefined();
   });
 
   it('counts a shared path as investigated only when every assigned task completes with delivered source', () => {

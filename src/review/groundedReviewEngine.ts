@@ -23,6 +23,7 @@ import { classifyFindingChangeScope, findingChangeScopeProofDigest,
 } from './findingChangeScope';
 export { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION };
 import type { GroundedVerifierRequestContextV1, ReviewModelClient } from '../gateway/openRouterClient';
+import type { ProviderAttemptBudget } from '../gateway/providerAttemptBudget';
 import type { RepoFileProvider } from '../panel/panelEngine';
 
 export const GROUNDED_COVERAGE_MANIFEST_VERSION = 'GroundedCoverageManifest.v1' as const;
@@ -1467,6 +1468,8 @@ export interface GroundedVerificationInput {
   /** Calls already spent by the discovery/planning portion of this same review. */
   spentCalls?: number;
   budget?: { totalCalls?: number; callsPerTask?: number; concurrency?: number; callTimeoutMs?: number; stageBudgetMs?: number };
+  /** Shared physical attempt budget for the composed investigation and verifier phases. */
+  providerAttemptBudget?: ProviderAttemptBudget;
 }
 
 export interface AuthenticatedDisputedBlockerV1 {
@@ -1494,7 +1497,9 @@ export async function runIndependentGroundedVerification(input: GroundedVerifica
     - (Number.isSafeInteger(input.spentCalls) && Number(input.spentCalls) > 0 ? Number(input.spentCalls) : 0));
   const requestedTotalCalls = Number.isSafeInteger(input.budget?.totalCalls) && Number(input.budget?.totalCalls) > 0
     ? Number(input.budget?.totalCalls) : GROUNDED_DEFAULT_BUDGET.totalCalls;
-  const totalCalls = Math.min(remainingReviewCalls, GROUNDED_DEFAULT_BUDGET.totalCalls, requestedTotalCalls);
+  const totalCalls = input.providerAttemptBudget
+    ? Math.min(input.providerAttemptBudget.limits.verificationLimit, requestedTotalCalls)
+    : Math.min(remainingReviewCalls, GROUNDED_DEFAULT_BUDGET.totalCalls, requestedTotalCalls);
   const callsPerTask = Math.min(GROUNDED_DEFAULT_BUDGET.callsPerTask,
     Number.isSafeInteger(input.budget?.callsPerTask) && Number(input.budget?.callsPerTask) > 0 ? Number(input.budget?.callsPerTask) : GROUNDED_DEFAULT_BUDGET.callsPerTask);
   const concurrency = Math.min(GROUNDED_DEFAULT_BUDGET.concurrency,
@@ -1648,6 +1653,8 @@ export async function runIndependentGroundedVerification(input: GroundedVerifica
         const verifierRequest = { model: selectedModel, messages,
           timeoutMs: Math.min(callTimeoutMs, remaining), maxTokens: 2_000, temperature: 0,
           responseFormat: { type: 'json_object' }, persona: 'independent-grounded-verifier',
+          ...(input.providerAttemptBudget ? { beforePhysicalAttempt: () =>
+            input.providerAttemptBudget!.beginAttempt('verification') } : {}),
           ...(input.signal ? { signal: input.signal } : {}),
           ...(selectedReasoningEffort ? { reasoningEffort: selectedReasoningEffort } : {}) };
         const requestContext: GroundedVerifierRequestContextV1 | undefined = routeSelection ? {

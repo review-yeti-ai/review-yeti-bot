@@ -11,6 +11,7 @@ import { buildDeterministicCoverageManifest, GROUNDED_DEFAULT_BUDGET } from '../
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, GROUNDED_REVIEW_RECEIPT_V2_VERSION,
   GROUNDED_VERIFICATION_V2_VERSION } from '../../src/review/groundedEvidenceV2';
 import { completeComposedRuntimeResources, ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
+import { ProviderAttemptBudget } from '../../src/gateway/providerAttemptBudget';
 import { parseGroundedRelativeImports, groundedRelativeImportCandidates } from '../../src/review/groundedContractResolver';
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
 import { TrustedCompletionResolutionError, isDeterministicCompletionFailure }
@@ -367,7 +368,9 @@ describe('service-owned authoritative completion context', () => {
       headSha: target.headSha, baseSha: target.baseSha, contextDigests: [sha256('task-context')], complete: true,
       files: [{ path: file.path, patchDigest: sha256(patchText), totalChars: patchText.length,
         ranges: [[0, patchText.length] as [number, number]], inline: true }] };
-    const observer = new ComposedRuntimeResourceObserver({ configDigest: coordinates.configDigest, configuration });
+    const providerAttemptBudget = new ProviderAttemptBudget({ totalLimit: 100, investigationLimit: 88, verificationLimit: 12 });
+    const observer = new ComposedRuntimeResourceObserver({ configDigest: coordinates.configDigest, configuration,
+      providerAttemptBudget });
     observer.configureBudget({ configuredTotalTurns: 100, investigationTurns: 88, verificationReserveTurns: 12 });
     observer.setPlan([task]);
     observer.markTaskStarted(task.id);
@@ -375,7 +378,7 @@ describe('service-owned authoritative completion context', () => {
     const observation = observer.snapshot('terminal');
     if (!observation) throw new Error('composed runtime observation was not produced');
     const composedResources = completeComposedRuntimeResources({ observation,
-      configDigest: coordinates.configDigest, verifierCalls: 0 });
+      configDigest: coordinates.configDigest, verifierCalls: 0, providerAttemptBudget: providerAttemptBudget.snapshot() });
     if (!composedResources) throw new Error('composed runtime receipt was not produced');
     const manifest = buildDeterministicCoverageManifest(context.coverage.changedFiles);
     const completion = { version: 'WorkerReviewCompletion.v1', ...coordinates, result: {

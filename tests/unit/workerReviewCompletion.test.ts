@@ -15,6 +15,7 @@ import { parseChangedFiles } from '../../src/review/changedFiles';
 import { groundedRelativeImportCandidates } from '../../src/review/groundedContractResolver';
 import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
 import { completeComposedRuntimeResources, ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
+import { ProviderAttemptBudget } from '../../src/gateway/providerAttemptBudget';
 import type { ReviewModelClient } from '../../src/gateway/openRouterClient';
 import type { RepoFileProvider } from '../../src/panel/panelEngine';
 import {
@@ -302,14 +303,17 @@ describe('WorkerReviewCompletion.v1', () => {
     }) }, { baseUrl: 'https://gateway.example.invalid', apiKey: 'test', model: 'test-model' });
     const configuration = prepared.review_configuration_receipt;
     if (!configuration) throw new Error('test effective configuration receipt was not produced');
-    const observer = new ComposedRuntimeResourceObserver({ configDigest: expectedCoordinates.configDigest, configuration });
+    const providerAttemptBudget = new ProviderAttemptBudget({ totalLimit: 100, investigationLimit: 88, verificationLimit: 12 });
+    const observer = new ComposedRuntimeResourceObserver({ configDigest: expectedCoordinates.configDigest, configuration,
+      providerAttemptBudget });
     observer.configureBudget({ configuredTotalTurns: 100, investigationTurns: 88, verificationReserveTurns: 12 });
     observer.setPlan([task]);
     observer.markTaskStarted(task.id);
     observer.markTaskOutcome(task.id, 'completed', sourceDelivery);
     const observation = observer.snapshot('terminal');
     if (!observation) throw new Error('test composed resource observation was not produced');
-    const resources = completeComposedRuntimeResources({ observation, configDigest: expectedCoordinates.configDigest, verifierCalls: 0 });
+    const resources = completeComposedRuntimeResources({ observation, configDigest: expectedCoordinates.configDigest,
+      verifierCalls: 0, providerAttemptBudget: providerAttemptBudget.snapshot() });
     if (!resources) throw new Error('test worker resource receipt was not produced');
 
     const input = completion({ result: { ...completion().result, personas: [lane(task.id, { sourceDelivery })], taskPlan: [task] } });
@@ -330,6 +334,43 @@ describe('WorkerReviewCompletion.v1', () => {
       composedChangedPaths: ['src/example.ts'], composedMaxTasks: 8, composedEffectiveConfiguration: configuration };
     expect(derive(v2, trusted)).toMatchObject({ valid: true, evidence: { reviewEngine: 'composed',
       coverageComplete: true, verdict: 'SHIP' } });
+
+    const declaredOperatorAllowance = structuredClone(v2);
+    declaredOperatorAllowance.result.composedResources!.budget = { configuredTotalTurns: 200,
+      investigationTurns: 188, verificationReserveTurns: 12 };
+    declaredOperatorAllowance.result.composedResources!.providerAttempts = {
+      version: 'ReviewProviderAttemptBudget.v1', totalLimit: 200,
+      investigationLimit: 188, verificationLimit: 12, totalStarted: 0,
+      investigationStarted: 0, verificationStarted: 0, deniedAttempts: 0,
+      investigationDenied: 0, verificationDenied: 0,
+    };
+    expect(derive(declaredOperatorAllowance, trusted)).toMatchObject({ valid: true,
+      evidence: { reviewEngine: 'composed', coverageComplete: true, verdict: 'SHIP' } });
+
+    const missingPhysicalAttempts = structuredClone(v2);
+    missingPhysicalAttempts.result.composedResources!.version = 'ComposedRuntimeResources.v1' as never;
+    delete missingPhysicalAttempts.result.composedResources!.providerAttempts;
+    expectInvalid(derive(missingPhysicalAttempts, trusted), /lacks physical provider attempt evidence/u);
+
+    const overHardCap = structuredClone(v2);
+    overHardCap.result.composedResources!.budget = { configuredTotalTurns: 201,
+      investigationTurns: 189, verificationReserveTurns: 12 };
+    overHardCap.result.composedResources!.providerAttempts = {
+      version: 'ReviewProviderAttemptBudget.v1', totalLimit: 201,
+      investigationLimit: 189, verificationLimit: 12, totalStarted: 0,
+      investigationStarted: 0, verificationStarted: 0, deniedAttempts: 0,
+      investigationDenied: 0, verificationDenied: 0,
+    };
+    expectInvalid(derive(overHardCap, trusted), /physical provider attempts disagree/u);
+
+    const overInvestigationBudget = structuredClone(v2);
+    overInvestigationBudget.result.composedResources!.providerAttempts = {
+      version: 'ReviewProviderAttemptBudget.v1', totalLimit: 100,
+      investigationLimit: 88, verificationLimit: 12, totalStarted: 89,
+      investigationStarted: 89, verificationStarted: 0, deniedAttempts: 0,
+      investigationDenied: 0, verificationDenied: 0,
+    } as never;
+    expect(() => derive(overInvestigationBudget, trusted)).toThrow();
 
     // Exercise the production service builder rather than hand-supplying its missing authority.
     const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {

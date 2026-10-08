@@ -23,6 +23,7 @@ import { isRecoverableFailureTitle } from '../../src/review/reviewCheckIdentity'
 import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
 import { resolveComposedProviderId, unreportedLaneFailure } from '../../src/panel/composedEngine';
 import { ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
+import { ProviderAttemptBudget } from '../../src/gateway/providerAttemptBudget';
 import { TaskSourceDelivery } from '../../src/review/taskSourceDelivery';
 import type { OpenRouterRequest } from '../../src/gateway/openRouterClient';
 import { JevClient, type JevOutcome } from '../../src/gateway/jevClient';
@@ -88,12 +89,14 @@ function composedEngineObservation(f: ReturnType<typeof fixture>, taskPlan: Arra
   const configuration = f.prepared.config.review_configuration_receipt;
   if (!configuration) throw new Error('Prepared composed configuration has no trusted runtime configuration receipt');
   const completedById = new Map(completedReceipts.map((receipt) => [receipt.taskId, receipt]));
+  const providerAttemptBudget = new ProviderAttemptBudget({ totalLimit: 100, investigationLimit: 88, verificationLimit: 12 });
   const observer = new ComposedRuntimeResourceObserver({
     configDigest: f.prepared.policy.effectiveConfigDigest,
     configuration,
+    providerAttemptBudget,
     now: () => START,
   });
-  observer.configureBudget({ configuredTotalTurns: 1, investigationTurns: 1, verificationReserveTurns: 0 });
+  observer.configureBudget({ configuredTotalTurns: 100, investigationTurns: 88, verificationReserveTurns: 12 });
   observer.setPlan(taskPlan as never);
   for (const task of taskPlan) {
     observer.markTaskStarted(task.id);
@@ -1951,7 +1954,7 @@ describe('authoritative prepared publishing worker', () => {
 
       const receipt = await runPublishingReviewWorker(f.env, f.deps);
       expect(f.reportReviewResult.mock.calls[0]?.[0]).toMatchObject({ result: { coverageComplete: false,
-        composedResources: { version: 'ComposedRuntimeResources.v1', stage: 'worker_completion',
+        composedResources: { version: 'ComposedRuntimeResources.v2', stage: 'worker_completion',
           engineExecutionState: 'incomplete', coverage: { remainingPaths: { count: 1 } } } } });
       const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
       expect(check?.conclusion).toBe('failure');
