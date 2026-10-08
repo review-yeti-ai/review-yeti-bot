@@ -7,7 +7,7 @@ import path from 'node:path';
 
 export const EXTERNAL_NORMAL_V2_PLAN_PATH = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json';
 export const EXTERNAL_NORMAL_V2_BUNDLE_PATH = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json';
-export const EXTERNAL_NORMAL_V2_PLAN_SHA256 = '0b7650472ee57c906b7a022cb3ee213644acc80cca72c44ab171ed4f72d96733';
+export const EXTERNAL_NORMAL_V2_PLAN_SHA256 = 'c3296f598a273d7a183a06b2e97480ce9b655d7f9e92b158b9d788819bf14d59';
 export const EXTERNAL_NORMAL_V2_BUNDLE_SHA256 = '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1';
 export const EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA = 'ReviewYetiExternalNormalQualificationRootGo.v1';
 export const EXTERNAL_NORMAL_V2_PRIVATE_BINDING_SCHEMA = 'ReviewYetiExternalNormalQualificationPrivateBinding.v1';
@@ -395,7 +395,9 @@ export function validateExternalNormalV2Plan(plan, bundle) {
     || Object.hasOwn(plan.policy ?? {}, 'policyInputDigests')
     || Object.hasOwn(plan.policy ?? {}, 'targetProjections')
     || plan.targetProjections?.some((target) => privateTargetFields.some((key) => target[key] !== null))
-    || plan.runtime?.preparedConfigHelperSourceRevision !== '1917204826d9a145dc7db8217b01978dad679e2b'
+    || plan.runtime?.preparedConfigHelperSourceRevision !== 'a755abe90455b2b729c3f2eeaa5367481a90f7f3'
+    || plan.runtime?.preparedConfigHelperSourceFileSha256 !== '4ab88f14b6dc7e263b866ae56715d41d25f3ae716b32429f6e92eb991504f4c3'
+    || plan.runtime?.preparedConfigHelperCompiledFileSha256 !== '972c1687e4d24f30352fbe464e4f420461aa2a48dbfab69636b24de9f1fd621d'
     || plan.runtime?.executionMode !== 'host-coordinator-with-pinned-worker-image-children'
     || plan.runtime?.executionNetwork !== 'docker-bridge-to-configured-https-origin'
     || plan.runtime?.publicationAttestationSha256 !== null
@@ -530,6 +532,11 @@ export async function verifyPolicyInputFiles(policyInputRoot, plan, privateBindi
     || preparedFixture.prepared_by.repository !== 'review-yeti-ai/review-yeti-bot'
     || preparedFixture.prepared_by.source_sha !== plan.runtime.preparedConfigHelperSourceRevision
     || preparedFixture.prepared_by.helper !== 'preparePublishingPolicy'
+    || preparedFixture.prepared_by.helper_path !== 'src/review/preparedPublishingPolicy.ts'
+    || preparedFixture.prepared_by.helper_source_file_sha256 !== plan.runtime.preparedConfigHelperSourceFileSha256
+    || preparedFixture.prepared_by.helper_compiled_file_sha256 !== plan.runtime.preparedConfigHelperCompiledFileSha256
+    || preparedFixture.prepared_by.worker_image_index_digest !== privateBinding.runtime.workerImageDigest
+    || preparedFixture.prepared_by.worker_runtime_manifest_sha256 !== privateBinding.runtime.runtimeManifestSha256
     || preparedFixture.transport.baseUrl !== privateBinding.transport.selectedBaseUrl
     || preparedFixture.transport.model !== privateBinding.transport.modelAlias
     || preparedManifest.schema !== `${sourceOwner}.review-yeti-prepared-execution-host-bundle.v1`
@@ -539,8 +546,7 @@ export async function verifyPolicyInputFiles(policyInputRoot, plan, privateBindi
     || preparedManifest.prepared_from.repository_id !== source.repositoryId
     || preparedManifest.prepared_from.source_sha !== source.sourceRef
     || preparedManifest.prepared_from.content_sha256 !== source.contentSha256
-    || preparedManifest.helper.source_sha !== plan.runtime.preparedConfigHelperSourceRevision
-    || preparedManifest.helper.source_file_sha256 !== '54f90267c4e97ae5ec50d77e7241151e0d81f156305ad031326cea1c34535bb0'
+    || !preparedConfigHelperProvenanceMatchesPlan(preparedManifest, plan)
     || preparedManifest.transport.provider !== 'bifrost' || preparedManifest.transport.baseUrl !== privateBinding.transport.selectedBaseUrl
     || preparedManifest.transport.model !== privateBinding.transport.modelAlias
     || preparedManifest.samples.length !== 6
@@ -629,6 +635,23 @@ export async function verifyPolicyInputFiles(policyInputRoot, plan, privateBindi
     preparedTargets,
     centralProjectionConfigSha256: plan.policy.centralEffectiveConfigProjectionSha256,
     configSha256: plan.policy.effectiveConfigSha256 };
+}
+
+export function preparedConfigHelperProvenanceMatchesPlan(preparedManifest, plan) {
+  const helper = preparedManifest?.helper;
+  const expectedRevision = plan?.runtime?.preparedConfigHelperSourceRevision;
+  const expectedSourceSha256 = plan?.runtime?.preparedConfigHelperSourceFileSha256;
+  const expectedCompiledSha256 = plan?.runtime?.preparedConfigHelperCompiledFileSha256;
+  return /^[a-f0-9]{40}$/iu.test(expectedRevision || '')
+    && /^[a-f0-9]{64}$/iu.test(expectedSourceSha256 || '')
+    && /^[a-f0-9]{64}$/iu.test(expectedCompiledSha256 || '')
+    && plan?.runtime?.finalSourceRevision === expectedRevision
+    && helper?.repository === 'review-yeti-ai/review-yeti-bot'
+    && helper?.helper === 'preparePublishingPolicy'
+    && helper?.helper_path === 'src/review/preparedPublishingPolicy.ts'
+    && helper?.source_sha === expectedRevision
+    && helper?.source_file_sha256 === expectedSourceSha256
+    && helper?.compiled_file_sha256 === expectedCompiledSha256;
 }
 
 function expectedPolicyHash(plan) {
