@@ -5107,3 +5107,4 @@ export class DashboardStore {
 }
 
 export const dashboardStore = new DashboardStore();
+(globalThis as any).__ct_dashboardStore = dashboardStore;

@@ -6,12 +6,7 @@ import * as matchers from '@testing-library/jest-dom/matchers';
 import { expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
 import path from 'node:path';
-import { dashboardStore } from '../src/persistence/dashboardStore';
-import { postgresStore } from '../src/persistence/postgresStore';
-import { providerPool } from '../src/gateway/providerPool';
-import { inMemorySpanExporter } from '../src/telemetry/spans';
 import http from 'node:http';
-import { authService } from '../src/dashboard/authService';
 import {
   closeResourcesAndCleanupScratch,
   cleanupSuiteStoreFile,
@@ -164,22 +159,19 @@ export function resetAllGlobalState() {
   const resetStoreId = `${process.pid}_${Date.now()}_${Math.random().toString(36).substring(2)}`;
   process.env.REVIEW_YETI_DASHBOARD_STORE = path.join(suiteStateRoot, `test_store_${resetStoreId}.json`);
 
-  // 2. Reset Singleton Stores
-  if (typeof dashboardStore.reset === 'function') {
-    dashboardStore.reset();
+  // 2. Reset Singleton Stores (if loaded into memory by any test or imported module)
+  const g = globalThis as any;
+  if (typeof g.__ct_dashboardStore?.reset === 'function') {
+    g.__ct_dashboardStore.reset();
   }
-  // PostgresStore has no `reset` method on its declared type (confirmed in
-  // src/persistence/postgresStore.ts) — this guard is a pre-existing no-op kept in the same
-  // defensive-optional style as the inMemorySpanExporter check below, in case a future revision
-  // adds one. Cast, matching that existing pattern, rather than deleting the guard.
-  if (typeof (postgresStore as any).reset === 'function') {
-    (postgresStore as any).reset();
+  if (typeof g.__ct_postgresStore?.reset === 'function') {
+    g.__ct_postgresStore.reset();
   }
-  if (typeof providerPool.clear === 'function') {
-    providerPool.clear();
+  if (typeof g.__ct_providerPool?.clear === 'function') {
+    g.__ct_providerPool.clear();
   }
-  if (typeof (inMemorySpanExporter as any).reset === 'function') {
-    (inMemorySpanExporter as any).reset();
+  if (typeof g.__ct_inMemorySpanExporter?.reset === 'function') {
+    g.__ct_inMemorySpanExporter.reset();
   }
 
   // 3. Restore all Vitest spies and mocks
@@ -207,7 +199,7 @@ afterEach(() => {
 // the test file. Close DOM/store/database resources before deleting files they may still own.
 afterAll(() => closeResourcesAndCleanupScratch(suiteScratch, [
   () => resetAllGlobalState(),
-  () => postgresStore.close(),
+  () => (globalThis as any).__ct_postgresStore?.close?.(),
 ]));
 
 // Global ResizeObserver, IntersectionObserver, and matchMedia mocks for jsdom tests (ReactFlow, Recharts, Radix UI)

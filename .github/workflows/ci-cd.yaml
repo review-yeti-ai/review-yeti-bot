@@ -96,43 +96,52 @@ jobs:
       - uses: ./.github/actions/node-deps
 
       - id: base
-        name: Resolve the pull request merge base
-        if: github.event_name == 'pull_request'
+        name: Resolve commit range for stale test selection
         env:
+          EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_HEAD: ${{ github.sha }}
         run: |
           set -euo pipefail
-          git fetch --no-tags --filter=blob:none origin "$BASE_SHA" "$HEAD_SHA" >/dev/null 2>&1 || true
-          if merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"; then
-            echo "merge-base=${merge_base}" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            git fetch --no-tags --filter=blob:none origin "$BASE_SHA" "$HEAD_SHA" >/dev/null 2>&1 || true
+            if merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"; then
+              echo "merge-base=${merge_base}" >> "$GITHUB_OUTPUT"
+              echo "head-sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+            fi
+          elif [ "$EVENT_NAME" = "push" ] && [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            echo "merge-base=${PUSH_BEFORE}" >> "$GITHUB_OUTPUT"
+            echo "head-sha=${PUSH_HEAD}" >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::Could not compute the merge base of ${BASE_SHA} and ${HEAD_SHA}; running the full suite"
+            parent="$(git rev-parse HEAD~1 2>/dev/null || echo '')"
+            if [ -n "$parent" ]; then
+              echo "merge-base=${parent}" >> "$GITHUB_OUTPUT"
+              echo "head-sha=${PUSH_HEAD:-$(git rev-parse HEAD)}" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Audit commit metadata in the pull request range
         if: github.event_name == 'pull_request' && steps.base.outputs.merge-base != ''
         env:
           MERGE_BASE: ${{ steps.base.outputs.merge-base }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.base.outputs.head-sha || github.event.pull_request.head.sha }}
         run: node scripts/ci/audit-commit-metadata.mjs "${MERGE_BASE}..${HEAD_SHA}"
 
       - id: plan
         name: Select the test files this run executes
         env:
-          EVENT_NAME: ${{ github.event_name }}
           MERGE_BASE: ${{ steps.base.outputs.merge-base }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.base.outputs.head-sha || github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          if [ "$EVENT_NAME" != "pull_request" ]; then
-            node scripts/ci/select-vitest-tests.mjs --full "${EVENT_NAME} always runs the full suite" --out plan.json
-          elif [ -z "$MERGE_BASE" ]; then
-            node scripts/ci/select-vitest-tests.mjs --full "merge base unavailable" --out plan.json
-          elif ! node scripts/ci/select-vitest-tests.mjs --base "$MERGE_BASE" --head "$HEAD_SHA" --out plan.json; then
-            echo "::warning::Test selection failed; running the full suite"
-            node scripts/ci/select-vitest-tests.mjs --full "test selection failed" --out plan.json
+          args=()
+          if [ -n "$MERGE_BASE" ]; then
+            args+=(--base "$MERGE_BASE" --head "$HEAD_SHA")
           fi
+          args+=(--out plan.json)
+          node scripts/ci/select-vitest-tests.mjs "${args[@]}"
           node scripts/ci/plan-outputs.mjs plan.json >> "$GITHUB_OUTPUT"
           node scripts/ci/plan-outputs.mjs --summary plan.json >> "$GITHUB_STEP_SUMMARY"
 
@@ -152,6 +161,15 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
       - uses: ./.github/actions/node-deps
+
+      - id: vitest-cache
+        name: Restore Vitest module graph cache
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: node_modules/.vitest
+          key: ${{ github.repository }}-vitest-cache-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          restore-keys: |
+            ${{ github.repository }}-vitest-cache-${{ runner.os }}-${{ runner.arch }}-
 
       - id: frontend-artifacts-cache
         name: Restore frontend build artifacts (Actions cache)
