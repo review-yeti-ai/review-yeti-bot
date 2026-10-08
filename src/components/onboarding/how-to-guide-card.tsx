@@ -215,6 +215,10 @@ export function HowToGuideCard() {
               <DollarSign className="h-3.5 w-3.5 text-emerald-400" />
               3. OmniRoute &amp; Spending Caps
             </TabsTrigger>
+            <TabsTrigger value="next_gen" className="text-xs font-semibold gap-2">
+              <Sparkles className="h-3.5 w-3.5 text-cyan-400" />
+              4. Next-Gen Engine &amp; Zero-Token Replay
+            </TabsTrigger>
           </TabsList>
 
           {/* Guide 1: GitHub App Creation */}
@@ -360,6 +364,61 @@ export function HowToGuideCard() {
                   </span>
                   <p className="text-[11px] text-muted-foreground">
                     When monthly usage hits 80% of your budget limit, CT Review Bot sends an alert. At 100%, non-critical personas switch to lightweight fast models (e.g. GPT-4o-mini).
+                  </p>
+                </div>
+              </div>
+            </div>
+          </TabsContent>
+
+          {/* Guide 4: Next-Gen Engine & Performance */}
+          <TabsContent value="next_gen" className="space-y-4">
+            <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-4 space-y-3">
+              <h4 className="text-sm font-semibold text-foreground flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-cyan-400" />
+                Next-Gen AI Review Engine &amp; Zero-Token Replay
+              </h4>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Review Yeti incorporates modern industry-leading review patterns to keep your CI pipeline fast, token-efficient, and friction-free.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div className="p-3 rounded-lg border border-border/40 bg-background/50 space-y-1">
+                  <span className="font-semibold text-cyan-400 flex items-center gap-1.5">
+                    <Layers className="h-3.5 w-3.5" />
+                    Zero-Token Rebase Replay
+                  </span>
+                  <p className="text-[11px] text-muted-foreground">
+                    Content-addressed subtask checkpointing tracks file hashes. Rebasing on main or amending commits replays reviews for untouched files in 0 tokens and &lt; 2ms.
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-lg border border-border/40 bg-background/50 space-y-1">
+                  <span className="font-semibold text-indigo-400 flex items-center gap-1.5">
+                    <FileCode className="h-3.5 w-3.5" />
+                    Unbounded Context Scaling
+                  </span>
+                  <p className="text-[11px] text-muted-foreground">
+                    No 25k token ceilings. Path-bounded AST outlines and on-demand hunk retrieval scale across multi-megabyte enterprise pull requests with flat token growth.
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-lg border border-border/40 bg-background/50 space-y-1">
+                  <span className="font-semibold text-emerald-400 flex items-center gap-1.5">
+                    <Shield className="h-3.5 w-3.5" />
+                    Finding-Centric State Machine
+                  </span>
+                  <p className="text-[11px] text-muted-foreground">
+                    Pushing bug fixes evaluates only modified lines via targeted recheck lanes, automatically resolving verified threads without whole-PR re-reviews.
+                  </p>
+                </div>
+
+                <div className="p-3 rounded-lg border border-border/40 bg-background/50 space-y-1">
+                  <span className="font-semibold text-rose-400 flex items-center gap-1.5">
+                    <DollarSign className="h-3.5 w-3.5" />
+                    Blocker Fast-Path Quorum
+                  </span>
+                  <p className="text-[11px] text-muted-foreground">
+                    Critical P0 findings halt exploratory lanes immediately and cancel active model streams, alerting engineers in seconds without wasting inference budget.
                   </p>
                 </div>
               </div>

@@ -11,6 +11,7 @@ import {
   isBannedModel,
   R4_ALLOWED_MODELS,
   MODERN_TESTING_MODELS,
+  composedEngineConfigSchema,
 } from '../../src/config/schema';
 import {
   createDefaultV3Config,
@@ -395,4 +396,67 @@ reviewers:
       expect((config as any).reviewers.providers[0].model).toBe('z-ai/glm-5.3-flash');
     });
   });
+
+  // =========================================================================
+  // SUITE 7: SWARM CONTEXT ISOLATION SCHEMA & DEFAULT-ON VALUES
+  // =========================================================================
+  describe('Suite 7: Swarm Context Isolation Schema & Default-On Values', () => {
+    it('7.1: composedEngineConfigSchema defaults swarm_context_isolation to true when omitted', () => {
+      const parsed = composedEngineConfigSchema.parse({});
+      expect(parsed.swarm_context_isolation).toBe(true);
+    });
+
+    it('7.2: composedEngineConfigSchema respects explicit swarm_context_isolation: false', () => {
+      const parsed = composedEngineConfigSchema.parse({ swarm_context_isolation: false });
+      expect(parsed.swarm_context_isolation).toBe(false);
+    });
+
+    it('7.3: composedEngineConfigSchema rejects non-boolean swarm_context_isolation values', () => {
+      expect(() => composedEngineConfigSchema.parse({ swarm_context_isolation: 'true' as any })).toThrow();
+      expect(() => composedEngineConfigSchema.parse({ swarm_context_isolation: 1 as any })).toThrow();
+    });
+
+    it('7.4: parseAndValidateConfig defaults swarm_context_isolation to true when omitted in YAML', () => {
+      const yaml = createValidV3Yaml();
+      const config = parseAndValidateConfig(yaml);
+      expect((config as any).swarm_context_isolation).toBe(true);
+    });
+
+    it('7.5: parseAndValidateConfig preserves explicit swarm_context_isolation: false override', () => {
+      const yaml = createValidV3Yaml(`\nswarm_context_isolation: false\n`);
+      const config = parseAndValidateConfig(yaml);
+      expect((config as any).swarm_context_isolation).toBe(false);
+    });
+  });
+
+  // =========================================================================
+  // SUITE 8: QUORUM POLICY SCHEMA & DEFAULT-ON VALUES
+  // =========================================================================
+  describe('Suite 8: Quorum Policy Schema & Default-On Values', () => {
+    it('8.1: composedEngineConfigSchema defaults quorum_policy.mode to file_coverage when omitted', () => {
+      const parsed = composedEngineConfigSchema.parse({});
+      expect(parsed.quorum_policy).toBeDefined();
+      expect(parsed.quorum_policy?.mode).toBe('file_coverage');
+      expect(parsed.quorum_policy?.min_file_coverage_pct).toBe(100);
+      expect(parsed.quorum_policy?.enforce_security_floor).toBe(true);
+      expect(parsed.quorum_policy?.blocker_fast_path_enabled).toBe(true);
+    });
+
+    it('8.2: composedEngineConfigSchema respects explicit quorum_policy.mode override', () => {
+      const parsed = composedEngineConfigSchema.parse({
+        quorum_policy: { mode: 'all_tasks' },
+      });
+      expect(parsed.quorum_policy?.mode).toBe('all_tasks');
+    });
+
+    it('8.3: composedEngineConfigSchema respects explicit blocker_fast_path override', () => {
+      const parsed = composedEngineConfigSchema.parse({
+        quorum_policy: { mode: 'blocker_fast_path', min_file_coverage_pct: 80 },
+      });
+      expect(parsed.quorum_policy?.mode).toBe('blocker_fast_path');
+      expect(parsed.quorum_policy?.min_file_coverage_pct).toBe(80);
+    });
+  });
 });
+
+

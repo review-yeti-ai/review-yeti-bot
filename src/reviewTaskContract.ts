@@ -765,7 +765,7 @@ export function validateFileCoverageQuorum(
       mode: 'blocker_fast_path',
       verdict: 'BLOCK',
       status: 'BLOCKER_EXIT',
-      rationale: `P0 Blocker detected on ${p0.file}:${p0.line}. Fast-path early-exit triggered.`,
+      rationale: `P0 Blocker detected on ${(p0 as any).file || (p0 as any).path || 'unknown'}:${p0.line}. Fast-path early-exit triggered.`,
       coveragePct: 0,
       coveredPaths: [],
       uncoveredPaths: [],

@@ -306,11 +306,7 @@ describe('decideIncrementalReview with the delta scope', () => {
     });
   });
 
-  it('requires full coverage for prior findings while still excluding renamed and new paths from delta scope', () => {
-    const withOpenFinding = decide([TOUCHED], { findingPaths: ['src/open.ts'], findings: [
-      openFindingFrom({ path: 'src/open.ts', line: 11, severity: 'P2', title: 'Open defect' }),
-    ] });
-    expect(withOpenFinding).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
+  it('delta-scopes an open-finding file when touched, but never a renamed path or a file new to the pull request', () => {
     const decision = decide([{ path: 'src/open.ts' }, { path: 'src/renamed.ts', previousPath: 'src/old.ts' }, TOUCHED]);
     expect(decision).toMatchObject({ mode: 'incremental', deltaPaths: ['src/open.ts', 'src/touched.ts'] });
     const brandNew = decideIncrementalReview({
@@ -418,12 +414,13 @@ describe('applyIncrementalScope with delta files', () => {
     expect(disclosure).toMatchObject({ deltaPaths: ['src/touched.ts'], deltaHunkCount: 1, chainDepth: 2, carriedForwardPaths: ['src/unchanged.ts'] });
   });
 
-  it('never narrows an open-finding file, even when a delta entry names it', () => {
+  it('narrows an open-finding file when a delta entry names it', () => {
     const { files, disclosure } = applyIncrementalScope(effective(), scope({
       deltaFiles: [{ path: 'src/open.ts', patch: DELTA_PATCH, hunks: 1 }],
     }));
-    expect(files.find((file) => file.path === 'src/open.ts')!.patch).toContain('OPEN_MARKER');
-    expect(disclosure?.deltaPaths).toBeUndefined();
+    expect(files.find((file) => file.path === 'src/open.ts')!.patch).toContain('+const NEW = 2;');
+    expect(files.find((file) => file.path === 'src/open.ts')!.patch).not.toContain('OPEN_MARKER');
+    expect(disclosure?.deltaPaths).toEqual(['src/open.ts']);
   });
 
   it('applies on delta files alone and is a no-op with neither carry nor delta', () => {

@@ -464,7 +464,8 @@ export function incrementalPrecheck(input: {
     return full('prior-identity-mismatch');
   }
   if (prior.headSha === current.headSha) return full('same-head');
-  if (prior.coverageComplete !== true) {
+  const coverageComplete = prior.coverageComplete ?? prior.shipComplete;
+  if (coverageComplete !== true) {
     return { mode: 'full', reason: 'prior-coverage-incomplete',
       ...(prior.shipIncompleteReason ? { priorRefusal: prior.shipIncompleteReason } : {}) };
   }
@@ -535,7 +536,7 @@ export function decideIncrementalReview(input: {
   for (const file of currentPaths) {
     if (!priorPaths.has(file) || changedSincePrevious.has(file)) {
       reviewPaths.push(file);
-      if (input.delta && priorPaths.has(file) && !open.has(file) && !moved.has(file)) deltaPaths.push(file);
+      if (input.delta && priorPaths.has(file) && !moved.has(file)) deltaPaths.push(file);
     } else if (open.has(file)) {
       reviewPaths.push(file);
       openFindingPaths.push(file);
@@ -543,7 +544,7 @@ export function decideIncrementalReview(input: {
       carriedForwardPaths.push(file);
     }
   }
-  if (carriedForwardPaths.length === 0 && deltaPaths.length === 0) return full('nothing-carried-forward');
+  if (carriedForwardPaths.length === 0 && deltaPaths.length === 0 && openFindingPaths.length === 0) return full('nothing-carried-forward');
   if (reviewPaths.length === openFindingPaths.length) return full('no-new-reviewable-change');
   return {
     mode: 'incremental',
@@ -578,7 +579,7 @@ function carryForwardPatch(patch: string | undefined, previousHeadSha: string): 
   }
   const head = header.length > 0 && header[header.length - 1] === '' ? header.slice(0, -1) : header;
   return `${[...head, `${NOTE_PREFIX} unchanged since the previously reviewed head ${previousHeadSha}; `
-    + 'its SHIP verdict is carried forward and the content is not sent'].join('\n')}\n`;
+    + 'its previous review coverage is carried forward and the content is not sent'].join('\n')}\n`;
 }
 
 /**
@@ -607,7 +608,7 @@ export function applyIncrementalScope(
     // Delta scope: a touched file the previous review covered in full. An open-finding file is never
     // narrowed, so a flagged defect is always verified against the whole code it flagged.
     const narrowed = deltaByPath.get(file.path);
-    if (narrowed && !open.has(file.path) && whole) {
+    if (narrowed && whole) {
       delta.push(narrowed);
       reviewed.push(file.path);
       return { ...file, patch: deltaScopedPatch(file.patch, narrowed.patch, scope.previous.headSha) };
@@ -858,14 +859,12 @@ export async function planIncrementalReview(options: {
         return entry && entry.status === 'modified' && typeof entry.patch === 'string'
           ? [{ path: file, patch: entry.patch, hunks: deltaHunkRanges(entry.patch).length }] : [];
       });
-      if (decision.carriedForwardPaths.length === 0 && deltaFiles.length === 0) {
+      if (decision.carriedForwardPaths.length === 0 && deltaFiles.length === 0 && decision.openFindingPaths.length === 0) {
         return { scope: null, decision: full('nothing-carried-forward'), ancestryVerified, historyAncestry };
       }
-      // Every prior finding whose file is re-read whole: untouched open-finding files, and files this
-      // push touched. Delta files never carry one (a file with an open finding is never delta-scoped).
-      const wholePaths = new Set(decision.reviewPaths);
-      for (const file of deltaFiles) wholePaths.delete(file.path);
-      const openFindings: IncrementalOpenFinding[] = (prior!.findings ?? []).filter((finding) => wholePaths.has(finding.path));
+      // Retain finding fingerprints across all reviewPaths (both delta and whole).
+      const reviewPaths = new Set(decision.reviewPaths);
+      const openFindings: IncrementalOpenFinding[] = (prior!.findings ?? []).filter((finding) => reviewPaths.has(finding.path));
       scope.deltaFiles = deltaFiles;
       scope.openFindings = openFindings;
       scope.chainDepth = decision.chainDepth ?? (prior!.chainDepth ?? 0) + 1;
@@ -959,7 +958,7 @@ export function renderIncrementalSummary(
   if (disclosure) {
     const lines = [
       `**Incremental re-review** (\`${INCREMENTAL_FLAG}\`): reviewed the changes since the previously reviewed head `
-      + `\`${disclosure.previous.headSha}\` (run \`${disclosure.previous.runId}\`, SHIP), `
+      + `\`${disclosure.previous.headSha}\` (run \`${disclosure.previous.runId}\`), `
       + `~${disclosure.estimatedTokensBefore.toLocaleString('en-US')} -> ~${disclosure.estimatedTokensAfter.toLocaleString('en-US')} estimated diff tokens.`,
       `- Carried forward, unchanged since that head, content not sent (${disclosure.carriedForwardPaths.length}): ${listed(disclosure.carriedForwardPaths)}`,
     ];

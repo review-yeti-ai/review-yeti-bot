@@ -3963,4 +3963,103 @@ describe('telemetry integration with protected composed closeout', () => {
       vi.useRealTimers();
     }
   });
+
+  it('TEST_M3_05: Reuses subtask checkpoint across commit amend without fatal identity mismatch', async () => {
+    const content = JSON.stringify({
+      schema: 'exampleorg.review-policy.v1',
+      review_yeti: { personas: 'security,testing', review_engine: 'composed', budget: { max_investigation_turns: 1 } },
+    });
+    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+    const prepared = preparePublishingPolicy(
+      { content, source: { repositoryId: 987, repository: 'exampleorg/repo', sha: 'e'.repeat(40), path: 'policy/review.json',
+        contentDigest: createHash('sha256').update(content).digest('hex') } },
+      transport
+    );
+
+    const COMMIT_SHA_ORIGINAL = '1'.repeat(40);
+    const COMMIT_SHA_AMENDED  = '2'.repeat(40);
+
+    const workerInput = env({
+      REVIEW_AUTHORITATIVE_GATE: 'true',
+      REVIEW_HEAD_SHA: COMMIT_SHA_AMENDED,
+      REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest,
+      REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
+      REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+      REVIEW_MODEL: transport.model,
+      OPENAI_BASE_URL: transport.baseUrl,
+      GITHUB_PUBLISH_TOKEN: 'ghs_fake',
+      REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
+      REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
+    });
+
+    const sourceDiff = `diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old();\n+new();\n`;
+    const parsedFiles = parseChangedFiles(sourceDiff).files;
+
+    const plan = [{ id: 'task-a', dimension: 'security' as const, paths: ['src/a.ts'], question: 'Safe?', rationale: 'Risk.' }];
+
+    const delivery = new TaskSourceDelivery({ taskId: 'task-a', paths: ['src/a.ts'], files: parsedFiles,
+      prefix: sourceDiff, inlinedPaths: ['src/a.ts'], headSha: COMMIT_SHA_ORIGINAL, baseSha: BASE });
+    delivery.beginAttempt();
+    const receipt = delivery.acknowledgeRequest([{ role: 'user', content: sourceDiff }]);
+
+    const checkpoint = {
+      version: 'ReviewExecutionCheckpoint.v1' as const,
+      runId: `run_${'1'.repeat(32)}`,
+      repositoryId: 1339040553,
+      owner: 'exampleorg',
+      repo: 'example-meta',
+      prNumber: 2795,
+      headSha: COMMIT_SHA_ORIGINAL,
+      baseSha: BASE,
+      policyDigest: prepared.policy.effectivePolicyDigest,
+      configDigest: prepared.policy.effectiveConfigDigest,
+      executionAttempt: 1,
+      revision: 1,
+      plan,
+      completedTasks: [{ id: 'task-a', findings: [], sourceDelivery: receipt }],
+    };
+
+    let receivedResumedCompletedTasks: any[] = [];
+    const composedReviewRunner = vi.fn(async (options: any) => {
+      receivedResumedCompletedTasks = options.checkpoint?.resumed?.completedTasks ?? [];
+      const observer = new ComposedRuntimeResourceObserver({ configDigest: prepared.policy.effectiveConfigDigest,
+        configuration: prepared.config.review_configuration_receipt });
+      observer.configureBudget({ configuredTotalTurns: 1, investigationTurns: 1, verificationReserveTurns: 0 });
+      observer.setPlan(plan);
+      observer.markTaskStarted('task-a');
+      observer.markTaskOutcome('task-a', 'completed', receipt);
+      const resources = observer.snapshot('terminal');
+      if (resources) options.resourceObservationCapture(resources);
+      return {
+        taskPlan: plan,
+        applicablePersonaIds: ['task-a'],
+        personas: [{ id: 'task-a', decision: 'APPROVE', findings: [], sourceDelivery: receipt }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+        composedResourceObservation: resources,
+      };
+    });
+
+    const readCheckpoint = vi.fn(async () => ({ checkpoint, disputedFindingRechecks: [] }));
+
+    const result = await runPublishingReviewWorker(
+      workerInput,
+      deps({
+        composedReviewRunner,
+        reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
+        reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
+        sourceLoader: vi.fn(async () => ({
+          baseSha: BASE,
+          headSha: COMMIT_SHA_AMENDED,
+          diff: sourceDiff,
+          diffDigest: createHash('sha256').update(sourceDiff).digest('hex'),
+          githubReads: 0,
+        })),
+      }) as never
+    );
+
+    expect(result).toMatchObject({ verdict: 'SHIP', conclusion: 'success' });
+    expect(receivedResumedCompletedTasks.map((t) => t.id)).toEqual(['task-a']);
+  });
 });

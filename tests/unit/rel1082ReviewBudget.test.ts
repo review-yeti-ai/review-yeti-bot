@@ -914,7 +914,7 @@ describe('composed engine wiring', () => {
       providers: [{ id: 'codex', enabled: true, model: 'codex/model', effort: 'high', review_timeout_s: 15, arbiter_timeout_s: 15 }],
       arbiter: { order: ['codex'] },
     },
-    composed: { max_tasks: 1, max_turns_total: 4, max_turns_per_task: 2 },
+    composed: { max_tasks: 1, max_turns_total: 4, max_turns_per_task: 2, swarm_context_isolation: false },
   });
 
   async function planPrompt(reviewBudget?: ReviewBudgetInput): Promise<string> {
@@ -1009,7 +1009,7 @@ describe('composed engine wiring', () => {
           suggestion: null, replacementCode: null })) }), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
     });
     const cfg = COMPOSED_CONFIG();
-    cfg.composed = { max_tasks: 1, max_turns_total: 9, max_turns_per_task: 8 } as typeof cfg.composed;
+    cfg.composed = { ...cfg.composed, max_tasks: 1, max_turns_total: 9, max_turns_per_task: 8 } as typeof cfg.composed;
     const result = await executeComposedReview({ config: cfg, changedFiles, repository: 'acme/release-fixture',
       headSha: 'e'.repeat(40), client: { complete } as never, reviewBudget: ON, diffShrink: { enabled: true } });
     for (const record of records) expect(requests[0]).toContain(record.tail);
@@ -1083,7 +1083,7 @@ describe('composed engine wiring', () => {
       return { model: 'm', content: JSON.stringify(body), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
     });
     const cfg = COMPOSED_CONFIG();
-    cfg.composed = { max_tasks: 1, max_turns_total: 8, max_turns_per_task: 8 } as typeof cfg.composed;
+    cfg.composed = { ...cfg.composed, max_tasks: 1, max_turns_total: 8, max_turns_per_task: 8 } as typeof cfg.composed;
     const result = await executeComposedReview({ config: cfg, changedFiles: files(BIG_DIFF),
       repository: 'acme/reviewer-fixture', headSha: 'e'.repeat(40), client: { complete } as never, reviewBudget: ON,
       repoFileProvider: { readFile: vi.fn(async () => 'q'.repeat(900_000)), findFiles: vi.fn(async () => []) } as never });

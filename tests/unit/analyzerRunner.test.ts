@@ -649,6 +649,43 @@ describe('analyzerRunner.test.ts — Milestone 4 Unit Test Suite', () => {
       ];
       expect(formatCandidateHypothesesEvidence(hypotheses)).toBe(formatCandidateHypothesesPrompt(hypotheses));
     });
+
+    it('5.5: gracefully formats malformed candidate hypotheses with missing severity, id, or analyzer without throwing', () => {
+      const malformedHypotheses: CandidateHypothesis[] = [
+        {
+          id: undefined as any,
+          analyzer: undefined as any,
+          category: 'linter',
+          ruleId: 'no-var',
+          path: 'src/index.ts',
+          line: 15,
+          message: 'Malformed hypothesis missing id, analyzer, and severity',
+          severity: undefined as any,
+          confidence: undefined as any,
+        },
+        {
+          id: 'hyp:valid-auth-sec',
+          analyzer: 'semgrep',
+          category: 'security',
+          ruleId: 'cwe-287',
+          path: 'src/index.ts',
+          line: 20,
+          message: 'Valid auth vulnerability',
+          severity: 'error',
+          confidence: 'high',
+        },
+      ];
+
+      let prompt = '';
+      expect(() => {
+        prompt = formatCandidateHypothesesPrompt(malformedHypotheses);
+      }).not.toThrow();
+
+      expect(prompt).toContain('UNKNOWN');
+      expect(prompt).toContain('unidentified');
+      expect(prompt).toContain('unknown');
+      expect(prompt).toContain('hyp:valid-auth-sec');
+    });
   });
 
   // ===========================================================================
@@ -776,6 +813,82 @@ describe('analyzerRunner.test.ts — Milestone 4 Unit Test Suite', () => {
       expect(filtered).toHaveLength(20);
       // The secret must be sorted first due to category prioritization
       expect(filtered[0].id).toBe('hyp:gitleaks:critical-secret:src/app.ts:99');
+    });
+
+    it('6.5: documentation personas strictly receive linters and exclude security/secrets', () => {
+      const filtered = filterHypothesesForPersona({
+        hypotheses: sampleHypotheses,
+        personaId: 'documentation',
+        charter: 'builtin:docs',
+        scopedFiles: [{ path: 'src/app.ts' }, { path: 'config/secrets.env' }],
+      });
+
+      expect(filtered.map((h) => h.id)).toEqual(['hyp:eslint:no-unused:src/app.ts:10']);
+      expect(filtered.some((h) => h.category === 'security')).toBe(false);
+      expect(filtered.some((h) => h.category === 'secrets')).toBe(false);
+
+      const docCompliance = filterHypothesesForPersona({
+        hypotheses: sampleHypotheses,
+        personaId: 'docs-compliance',
+        charter: 'builtin:docs-compliance',
+        scopedFiles: [{ path: 'src/app.ts' }],
+      });
+      expect(docCompliance.some((h) => h.category === 'security')).toBe(false);
+      expect(docCompliance.some((h) => h.category === 'secrets')).toBe(false);
+    });
+
+    it('6.6: custom quality personas strictly receive linters and exclude security/secrets', () => {
+      const filtered = filterHypothesesForPersona({
+        hypotheses: sampleHypotheses,
+        personaId: 'code-quality',
+        charter: 'Review code quality, naming conventions, style, and formatting guidelines',
+        scopedFiles: [{ path: 'src/app.ts' }, { path: 'config/secrets.env' }],
+      });
+
+      expect(filtered.map((h) => h.id)).toEqual(['hyp:eslint:no-unused:src/app.ts:10']);
+      expect(filtered.every((h) => h.category === 'linter')).toBe(true);
+      expect(filtered.some((h) => h.category === 'security')).toBe(false);
+      expect(filtered.some((h) => h.category === 'secrets')).toBe(false);
+    });
+
+    it('6.7: safely sorts hypotheses when candidate id is undefined without throwing', () => {
+      const hypothesesWithMissingId: CandidateHypothesis[] = [
+        {
+          id: undefined as any,
+          analyzer: 'eslint',
+          category: 'linter',
+          ruleId: 'no-var',
+          path: 'src/app.ts',
+          line: 12,
+          message: 'Missing id test 1',
+          severity: 'warning',
+          confidence: 'medium',
+        },
+        {
+          id: 'hyp:eslint:second',
+          analyzer: 'eslint',
+          category: 'linter',
+          ruleId: 'semi',
+          path: 'src/app.ts',
+          line: 14,
+          message: 'Missing id test 2',
+          severity: 'warning',
+          confidence: 'medium',
+        },
+      ];
+
+      let filtered: CandidateHypothesis[] = [];
+      expect(() => {
+        filtered = filterHypothesesForPersona({
+          hypotheses: hypothesesWithMissingId,
+          personaId: 'qual-lane',
+          charter: 'builtin:consistency',
+          scopedFiles: [{ path: 'src/app.ts' }],
+        });
+      }).not.toThrow();
+
+      expect(filtered).toHaveLength(2);
+      expect(filtered.some((h) => h.id === 'hyp:eslint:second')).toBe(true);
     });
   });
 });

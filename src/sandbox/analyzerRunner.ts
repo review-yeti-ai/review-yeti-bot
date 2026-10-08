@@ -884,45 +884,64 @@ export function filterHypothesesForPersona(options: {
 
   const pathScoped = hypotheses.filter((h) =>
     scopedFiles.some((f) => {
-      const normH = normalizeRepoPath(h.path);
-      const normF = normalizeRepoPath(f.path);
+      const normH = normalizeRepoPath(h.path || '');
+      const normF = normalizeRepoPath(f.path || '');
+      if (!normH || !normF) return false;
       return normH === normF || normH.endsWith('/' + normF) || normF.endsWith('/' + normH);
     })
   );
 
-  const normalizedId = personaId.toLowerCase();
-  const normalizedCharter = charter.toLowerCase();
+  const normalizedId = String(personaId || '').toLowerCase();
+  const normalizedCharter = String(charter || '').toLowerCase();
 
   let laneFiltered: CandidateHypothesis[];
 
-  if (normalizedId === 'sec-lane' || normalizedCharter.includes('security') || normalizedCharter.includes('owasp')) {
+  if (normalizedId === 'sec-lane' || normalizedId.includes('sec-') || normalizedCharter.includes('security') || normalizedCharter.includes('owasp')) {
     laneFiltered = pathScoped.filter((h) => h.category === 'security' || h.category === 'secrets');
-  } else if (normalizedId === 'qual-lane' || normalizedCharter.includes('consistency') || normalizedCharter.includes('code smell') || normalizedCharter.includes('readability')) {
+  } else if (
+    normalizedId.includes('doc') ||
+    normalizedCharter.includes('doc') ||
+    normalizedCharter.includes('license') ||
+    normalizedCharter.includes('markdown')
+  ) {
+    laneFiltered = pathScoped.filter((h) => h.category === 'linter');
+  } else if (
+    normalizedId.includes('qual') ||
+    normalizedCharter.includes('quality') ||
+    normalizedCharter.includes('style') ||
+    normalizedCharter.includes('consistency') ||
+    normalizedCharter.includes('code smell') ||
+    normalizedCharter.includes('readability') ||
+    normalizedCharter.includes('naming') ||
+    normalizedCharter.includes('lint')
+  ) {
     laneFiltered = pathScoped.filter((h) => h.category === 'linter');
   } else if (normalizedId === 'correctness-lane' || normalizedCharter.includes('correctness') || normalizedCharter.includes('race condition')) {
     laneFiltered = pathScoped.filter((h) => h.category === 'linter');
   } else if (normalizedId === 'db-lane' || normalizedCharter.includes('database') || normalizedCharter.includes('sql')) {
     laneFiltered = pathScoped.filter((h) =>
-      h.category === 'security' && (h.ruleId.toLowerCase().includes('sql') || h.message.toLowerCase().includes('sql'))
+      h.category === 'security' && (String(h.ruleId || '').toLowerCase().includes('sql') || String(h.message || '').toLowerCase().includes('sql'))
     );
   } else if (normalizedId === 'devops-lane' || normalizedCharter.includes('devops')) {
     laneFiltered = pathScoped.filter((h) => h.category === 'secrets');
-  } else {
+  } else if (normalizedId.includes('general') || normalizedCharter.includes('general')) {
     laneFiltered = pathScoped;
+  } else {
+    laneFiltered = pathScoped.filter((h) => h.category === 'linter');
   }
 
-  const categoryRank = (cat: AnalyzerCategory) => (cat === 'secrets' ? 0 : cat === 'security' ? 1 : 2);
-  const severityRank = (sev: AnalyzerSeverity) => (sev === 'critical' ? 0 : sev === 'error' ? 1 : sev === 'warning' ? 2 : 3);
-  const confidenceRank = (conf: AnalyzerConfidence) => (conf === 'high' ? 0 : conf === 'medium' ? 1 : 2);
+  const categoryRank = (cat?: AnalyzerCategory) => (cat === 'secrets' ? 0 : cat === 'security' ? 1 : 2);
+  const severityRank = (sev?: AnalyzerSeverity) => (sev === 'critical' ? 0 : sev === 'error' ? 1 : sev === 'warning' ? 2 : 3);
+  const confidenceRank = (conf?: AnalyzerConfidence) => (conf === 'high' ? 0 : conf === 'medium' ? 1 : 2);
 
   laneFiltered.sort((a, b) => {
-    const catDiff = categoryRank(a.category) - categoryRank(b.category);
+    const catDiff = categoryRank(a?.category) - categoryRank(b?.category);
     if (catDiff !== 0) return catDiff;
-    const sevDiff = severityRank(a.severity) - severityRank(b.severity);
+    const sevDiff = severityRank(a?.severity) - severityRank(b?.severity);
     if (sevDiff !== 0) return sevDiff;
-    const confDiff = confidenceRank(a.confidence) - confidenceRank(b.confidence);
+    const confDiff = confidenceRank(a?.confidence) - confidenceRank(b?.confidence);
     if (confDiff !== 0) return confDiff;
-    return a.id.localeCompare(b.id);
+    return String(a?.id || '').localeCompare(String(b?.id || ''));
   });
 
   return laneFiltered.slice(0, 20);
@@ -985,10 +1004,16 @@ export function formatCandidateHypothesesPrompt(
   ];
 
   for (const h of hypotheses) {
-    lines.push(`- [HYPOTHESIS ${h.id}] (${h.analyzer} | ${h.severity.toUpperCase()} | ${h.confidence} confidence)`);
-    lines.push(`  - Target: ${h.path}:${h.line}`);
-    lines.push(`  - Rule: ${h.ruleId}`);
-    lines.push(`  - Diagnostic: ${h.message}`);
+    if (!h) continue;
+    const sev = h.severity ? String(h.severity).toUpperCase() : 'UNKNOWN';
+    const hypId = h.id ? String(h.id) : 'unidentified';
+    const analyzer = h.analyzer ? String(h.analyzer) : 'unknown';
+    const confidence = h.confidence ? String(h.confidence) : 'unknown';
+
+    lines.push(`- [HYPOTHESIS ${hypId}] (${analyzer} | ${sev} | ${confidence} confidence)`);
+    lines.push(`  - Target: ${h.path || 'unknown'}:${h.line ?? 0}`);
+    lines.push(`  - Rule: ${h.ruleId || 'unknown'}`);
+    lines.push(`  - Diagnostic: ${h.message || 'No description provided'}`);
     if (h.snippet) {
       lines.push(`  - Context: ${h.snippet}`);
     }

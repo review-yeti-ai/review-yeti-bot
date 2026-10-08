@@ -1040,7 +1040,8 @@ function composedRuntimeResourcesRefusal(input: { result: WorkerReviewResult; ta
     const persona = personaById.get(taskId);
     if (!task || !persona?.sourceDelivery) continue;
     const validated = validateTaskSourceReceipt(persona.sourceDelivery, { taskId, paths: task.paths,
-      files: input.changedFiles, headSha: input.coordinates.headSha, baseSha: input.coordinates.baseSha });
+      files: input.changedFiles, headSha: input.coordinates.headSha, baseSha: input.coordinates.baseSha,
+      allowContentAddressed: true });
     if (validated?.complete) deliveredComplete.add(taskId);
   }
   const assignedPaths = [...new Set(input.tasks.flatMap(task => task.paths))].sort();

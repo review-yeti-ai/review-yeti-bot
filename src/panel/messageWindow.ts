@@ -106,7 +106,8 @@ export function extractSynopsis(assistantMessage: OpenRouterMessage | undefined)
 function isToolResultMessage(message: OpenRouterMessage): message is OpenRouterMessage & { content: string } {
   return message.role === 'user'
     && typeof message.content === 'string'
-    && message.content.startsWith(PI_TOOL_RESULT_MARKER);
+    && message.content.startsWith(PI_TOOL_RESULT_MARKER)
+    && !message.content.startsWith(`${PI_TOOL_RESULT_MARKER}_RECEIPT`);
 }
 
 function formatReceiptLine(
