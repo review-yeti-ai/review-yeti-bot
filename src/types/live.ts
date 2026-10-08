@@ -288,6 +288,15 @@ export interface LiveJobSummary {
   endTime?: string;
   eventCount: number;
   lastEventTime: string;
+  isIncremental?: boolean;
+  recheckLane?: boolean;
+  fileCoveragePercent?: number;
+  checkpointHits?: number;
+  checkpointMisses?: number;
+  compactionRatio?: number;
+  blockerFastPathTriggered?: boolean;
+  haltedReason?: string;
+  candidateHypothesesCount?: number;
 }
 
 export interface LiveDashboardState {

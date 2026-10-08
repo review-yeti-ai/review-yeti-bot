@@ -123,6 +123,30 @@ export function ActiveJobsSidebar({
                   </Badge>
                 </div>
 
+                {/* Next-Gen Telemetry Badges */}
+                <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                  {(job.recheckLane || job.isIncremental) && (
+                    <span className="px-1.5 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 text-[9px] font-mono font-medium">
+                      ⚡ Recheck
+                    </span>
+                  )}
+                  {Boolean(job.checkpointHits) && (
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[9px] font-mono font-medium">
+                      📦 {job.checkpointHits} hit{job.checkpointHits === 1 ? '' : 's'}
+                    </span>
+                  )}
+                  {Boolean(job.blockerFastPathTriggered) && (
+                    <span className="px-1.5 py-0.5 rounded bg-rose-500/10 border border-rose-500/30 text-rose-400 text-[9px] font-mono font-semibold">
+                      🛑 Blocker Halt
+                    </span>
+                  )}
+                  {job.fileCoveragePercent !== undefined && job.fileCoveragePercent < 100 && (
+                    <span className="text-[9px] text-zinc-400 font-mono">
+                      Cov: {job.fileCoveragePercent}%
+                    </span>
+                  )}
+                </div>
+
                 <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono pt-1 border-t border-white/5">
                   <div className="flex items-center gap-1">
                     <Clock className="h-3 w-3 text-slate-500" />

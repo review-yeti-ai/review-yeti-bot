@@ -135,5 +135,57 @@ export function createAnalyticsRouter(): Router {
     });
   });
 
+  // GET /api/analytics/checkpoints
+  router.get('/checkpoints', (req: Request, res: Response) => {
+    const parsed = parseAndValidateWindow(req);
+    if (!parsed.valid) {
+      return res.status(400).json({ success: false, error: parsed.error });
+    }
+    const checkpointData = dashboardStore.getCheckpointMetrics(parsed.range, parsed.repo);
+    return res.status(200).json({
+      success: true,
+      ...checkpointData,
+    });
+  });
+
+  // GET /api/analytics/compaction
+  router.get('/compaction', (req: Request, res: Response) => {
+    const parsed = parseAndValidateWindow(req);
+    if (!parsed.valid) {
+      return res.status(400).json({ success: false, error: parsed.error });
+    }
+    const compactionData = dashboardStore.getCompactionAnalytics(parsed.range, parsed.repo);
+    return res.status(200).json({
+      success: true,
+      ...compactionData,
+    });
+  });
+
+  // GET /api/analytics/incremental
+  router.get('/incremental', (req: Request, res: Response) => {
+    const parsed = parseAndValidateWindow(req);
+    if (!parsed.valid) {
+      return res.status(400).json({ success: false, error: parsed.error });
+    }
+    const incrementalData = dashboardStore.getIncrementalLifecycleMetrics(parsed.range, parsed.repo);
+    return res.status(200).json({
+      success: true,
+      ...incrementalData,
+    });
+  });
+
+  // GET /api/analytics/fast-path
+  router.get('/fast-path', (req: Request, res: Response) => {
+    const parsed = parseAndValidateWindow(req);
+    if (!parsed.valid) {
+      return res.status(400).json({ success: false, error: parsed.error });
+    }
+    const fastPathData = dashboardStore.getBlockerFastPathMetrics(parsed.range, parsed.repo);
+    return res.status(200).json({
+      success: true,
+      ...fastPathData,
+    });
+  });
+
   return router;
 }

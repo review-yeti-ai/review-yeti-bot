@@ -83,8 +83,8 @@ describe('Empirical Challenger M4: Quorum Boundaries, Security Floor & Exclusion
       const taintedTasks: ReviewTaskResultV2[] = [
         { nonce: 'n1', task: 'task-1', status: 'COMPLETE', findings: [] },
         { nonce: 'n2', task: 'task-2', status: 'BLOCKED', findings: [] },
-        { nonce: 'n3', task: 'task-3', status: 'ERROR', findings: [] },
-        { nonce: 'n4', task: 'task-4', status: 'FAILED', findings: [] },
+        { nonce: 'n3', task: 'task-3', status: 'ERROR' as any, findings: [] },
+        { nonce: 'n4', task: 'task-4', status: 'FAILED' as any, findings: [] },
       ];
 
       const result = validateFileCoverageQuorum(multiFilePlan, taintedTasks, fourFiles);

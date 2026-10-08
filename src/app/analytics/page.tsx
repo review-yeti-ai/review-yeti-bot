@@ -10,6 +10,8 @@ import { TokenBurnChart } from '@/components/analytics/TokenBurnChart';
 import { FindingSeverityChart } from '@/components/analytics/FindingSeverityChart';
 import { DeveloperRoiCard } from '@/components/analytics/DeveloperRoiCard';
 import { CompactionSavingsCard } from '@/components/analytics/CompactionSavingsCard';
+import { RebaseCacheCard } from '@/components/analytics/RebaseCacheCard';
+import { FindingLifecycleCard } from '@/components/analytics/FindingLifecycleCard';
 import { MemoryAnalyticsView } from '@/components/analytics/MemoryAnalyticsView';
 import { QualityPolicyMatrix } from '@/components/analytics/QualityPolicyMatrix';
 import { Card } from '@/components/dashboard/tremor';
@@ -21,6 +23,8 @@ import {
   fetchTokenBurn,
   fetchFindingsQuality,
   fetchRepositories,
+  fetchCheckpointMetrics,
+  fetchIncrementalLifecycle,
 } from '@/lib/api-client';
 import {
   AnalyticsTimeRange,
@@ -29,8 +33,9 @@ import {
   CostBreakdownResponse,
   TokenBurnResponse,
   FindingsQualityResponse,
+  CheckpointMetricsResponse,
+  IncrementalLifecycleResponse,
 } from '@/types/analytics';
-import { RepositorySetting } from '@/types/dashboard';
 import { Cpu, DollarSign, Layers, Zap, Scissors, ShieldCheck, Activity, Database } from 'lucide-react';
 
 function AnalyticsSkeleton() {
@@ -71,6 +76,8 @@ function AnalyticsDashboardContent() {
   const [costData, setCostData] = useState<CostBreakdownResponse | null>(null);
   const [tokenData, setTokenData] = useState<TokenBurnResponse | null>(null);
   const [findingsData, setFindingsData] = useState<FindingsQualityResponse | null>(null);
+  const [checkpointData, setCheckpointData] = useState<CheckpointMetricsResponse | null>(null);
+  const [incrementalData, setIncrementalData] = useState<IncrementalLifecycleResponse | null>(null);
 
   const tabParam = searchParams.get('tab');
   const [activeTab, setActiveTab] = useState<string>(
@@ -91,7 +98,7 @@ function AnalyticsDashboardContent() {
   // Load repositories for filter dropdown
   useEffect(() => {
     fetchRepositories()
-      .then((repos: RepositorySetting[]) => {
+      .then((repos: any[]) => {
         const repoNames = repos
           .map((r) => r.full_name || `${r.owner}/${r.repo}`)
           .filter(Boolean);
@@ -107,12 +114,14 @@ function AnalyticsDashboardContent() {
     setIsLoading(true);
     try {
       const filter = { range: selectedWindow, repo: selectedRepo };
-      const [sumRes, latRes, costRes, tokRes, findRes] = await Promise.allSettled([
+      const [sumRes, latRes, costRes, tokRes, findRes, chkRes, incRes] = await Promise.allSettled([
         fetchAnalyticsSummary(filter),
         fetchLatencyMetrics(filter),
         fetchCostBreakdown(filter),
         fetchTokenBurn({ ...filter, interval: selectedWindow === '24h' ? 'hour' : 'day' }),
         fetchFindingsQuality(filter),
+        fetchCheckpointMetrics(filter),
+        fetchIncrementalLifecycle(filter),
       ]);
 
       if (sumRes.status === 'fulfilled') setSummary(sumRes.value);
@@ -120,6 +129,8 @@ function AnalyticsDashboardContent() {
       if (costRes.status === 'fulfilled') setCostData(costRes.value);
       if (tokRes.status === 'fulfilled') setTokenData(tokRes.value);
       if (findRes.status === 'fulfilled') setFindingsData(findRes.value);
+      if (chkRes.status === 'fulfilled') setCheckpointData(chkRes.value);
+      if (incRes.status === 'fulfilled') setIncrementalData(incRes.value);
 
       setLastUpdated(new Date().toISOString());
     } catch {
@@ -198,6 +209,7 @@ function AnalyticsDashboardContent() {
         {/* Tab 2: Cost & Context Compaction */}
         <TabsContent value="cost" className="space-y-6 mt-4">
           <CompactionSavingsCard summary={summary} isLoading={isLoading} />
+          <RebaseCacheCard data={checkpointData} isLoading={isLoading} />
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <TokenBurnChart
               data={tokenData?.data || []}
@@ -280,6 +292,7 @@ function AnalyticsDashboardContent() {
 
         {/* Tab 4: Review Quality & Signal */}
         <TabsContent value="quality" className="space-y-6 mt-4">
+          <FindingLifecycleCard data={incrementalData} isLoading={isLoading} />
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <FindingSeverityChart
               severityCounts={findingsData?.severityCounts ?? { P0: 0, P1: 0, P2: 0 }}

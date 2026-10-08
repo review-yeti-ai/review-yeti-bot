@@ -28,6 +28,10 @@ import type {
   CostBreakdownResponse,
   TokenBurnResponse,
   FindingsQualityResponse,
+  CheckpointMetricsResponse,
+  CompactionAnalyticsResponse,
+  IncrementalLifecycleResponse,
+  BlockerFastPathMetricsResponse,
 } from '@/types/analytics';
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
@@ -605,6 +609,58 @@ export async function fetchFindingsQuality(params?: {
   if (params?.repo) query.set('repo', params.repo);
   const qStr = query.toString() ? `?${query.toString()}` : '';
   return request<FindingsQualityResponse>(`/api/analytics/findings${qStr}`);
+}
+
+export async function fetchCheckpointMetrics(params?: {
+  range?: AnalyticsTimeRange;
+  window?: AnalyticsTimeRange;
+  repo?: string;
+}): Promise<CheckpointMetricsResponse> {
+  const query = new URLSearchParams();
+  const rangeVal = params?.range || params?.window;
+  if (rangeVal) query.set('range', rangeVal);
+  if (params?.repo) query.set('repo', params.repo);
+  const qStr = query.toString() ? `?${query.toString()}` : '';
+  return request<CheckpointMetricsResponse>(`/api/analytics/checkpoints${qStr}`);
+}
+
+export async function fetchCompactionAnalytics(params?: {
+  range?: AnalyticsTimeRange;
+  window?: AnalyticsTimeRange;
+  repo?: string;
+}): Promise<CompactionAnalyticsResponse> {
+  const query = new URLSearchParams();
+  const rangeVal = params?.range || params?.window;
+  if (rangeVal) query.set('range', rangeVal);
+  if (params?.repo) query.set('repo', params.repo);
+  const qStr = query.toString() ? `?${query.toString()}` : '';
+  return request<CompactionAnalyticsResponse>(`/api/analytics/compaction${qStr}`);
+}
+
+export async function fetchIncrementalLifecycle(params?: {
+  range?: AnalyticsTimeRange;
+  window?: AnalyticsTimeRange;
+  repo?: string;
+}): Promise<IncrementalLifecycleResponse> {
+  const query = new URLSearchParams();
+  const rangeVal = params?.range || params?.window;
+  if (rangeVal) query.set('range', rangeVal);
+  if (params?.repo) query.set('repo', params.repo);
+  const qStr = query.toString() ? `?${query.toString()}` : '';
+  return request<IncrementalLifecycleResponse>(`/api/analytics/incremental${qStr}`);
+}
+
+export async function fetchBlockerFastPathMetrics(params?: {
+  range?: AnalyticsTimeRange;
+  window?: AnalyticsTimeRange;
+  repo?: string;
+}): Promise<BlockerFastPathMetricsResponse> {
+  const query = new URLSearchParams();
+  const rangeVal = params?.range || params?.window;
+  if (rangeVal) query.set('range', rangeVal);
+  if (params?.repo) query.set('repo', params.repo);
+  const qStr = query.toString() ? `?${query.toString()}` : '';
+  return request<BlockerFastPathMetricsResponse>(`/api/analytics/fast-path${qStr}`);
 }
 
 

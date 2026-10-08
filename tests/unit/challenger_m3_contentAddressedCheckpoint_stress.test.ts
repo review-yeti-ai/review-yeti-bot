@@ -780,7 +780,7 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
 
     await expect(
       runPublishingReviewWorker(
-        workerEnvRetry,
+        workerEnvRetry as any,
         {
           checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn() },
           currentPullRequestVerifier: vi.fn(async () => undefined),
@@ -860,7 +860,7 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
 
     await expect(
       runPublishingReviewWorker(
-        workerEnvMismatch,
+        workerEnvMismatch as any,
         {
           checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn() },
           currentPullRequestVerifier: vi.fn(async () => undefined),

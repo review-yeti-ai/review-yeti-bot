@@ -507,3 +507,21 @@ export const PurgeCacheInputSchema = z.object({
 }).strict();
 
 export type PurgeCacheInput = z.infer<typeof PurgeCacheInputSchema>;
+
+// =============================================================================
+// Next-Gen Checkpoint Metrics & AST Compaction Analytics Tools
+// =============================================================================
+
+export const GetCheckpointMetricsInputSchema = z.object({
+  repo: z.string().trim().optional(),
+  window_hours: z.number().positive().optional(),
+}).strict();
+
+export type GetCheckpointMetricsInput = z.infer<typeof GetCheckpointMetricsInputSchema>;
+
+export const GetCompactionAnalyticsInputSchema = z.object({
+  repo: z.string().trim().optional(),
+  window_hours: z.number().positive().optional(),
+}).strict();
+
+export type GetCompactionAnalyticsInput = z.infer<typeof GetCompactionAnalyticsInputSchema>;

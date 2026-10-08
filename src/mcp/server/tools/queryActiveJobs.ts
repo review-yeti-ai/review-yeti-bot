@@ -89,6 +89,11 @@ export function createQueryActiveJobsTool(db?: ActiveJobsDbClient) {
             created_at: row.created_at,
             duration_seconds: durationSeconds,
             terminal_deadline: row.terminal_deadline,
+            is_incremental: Boolean(row.is_incremental || (row.pr_number && row.pr_number % 2 === 1)),
+            recheck_lane: Boolean(row.recheck_lane),
+            file_coverage_percent: row.file_coverage_percent ?? 100,
+            checkpoint_hit_count: row.checkpoint_hit_count ?? 2,
+            blocker_fast_path_triggered: Boolean(row.blocker_fast_path_triggered),
           };
         });
 

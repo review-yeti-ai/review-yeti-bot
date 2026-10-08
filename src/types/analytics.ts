@@ -31,6 +31,11 @@ export interface AnalyticsSummaryData {
   dismissalRate?: number;
   activeRepositories?: number;
   memoryRulesCount?: number;
+  checkpointHitRatePercent?: number;
+  zeroTokenReplaySavingsTokens?: number;
+  compactionRatio?: number;
+  recheckLaneRuns?: number;
+  blockerFastPathCount?: number;
   range: AnalyticsTimeRange;
   window?: AnalyticsTimeRange;
   repo?: string;
@@ -157,4 +162,77 @@ export interface FindingsQualityResponse {
   dismissedCount?: number;
   dismissalReasons?: Record<string, number>;
   categoryDistribution?: Record<string, number>;
+}
+
+export interface CheckpointRepoStats {
+  repo: string;
+  totalSubtasks: number;
+  cacheHits: number;
+  cacheMisses: number;
+  hitRatePercent: number;
+  zeroTokenReplaySavingsTokens: number;
+  savedLatencyMs: number;
+}
+
+export interface CheckpointMetricsResponse {
+  success?: boolean;
+  range: AnalyticsTimeRange;
+  window?: AnalyticsTimeRange;
+  repo?: string;
+  totalSubtasks: number;
+  cacheHits: number;
+  cacheMisses: number;
+  hitRatePercent: number;
+  zeroTokenReplaysCount: number;
+  tokensSavedTotal: number;
+  estimatedCostSavedUSD: number;
+  avgLatencySavedMs: number;
+  byRepo?: CheckpointRepoStats[];
+  byLane?: Record<string, { hits: number; misses: number; hitRate: number }>;
+}
+
+export interface CompactionAnalyticsResponse {
+  success?: boolean;
+  range: AnalyticsTimeRange;
+  window?: AnalyticsTimeRange;
+  repo?: string;
+  totalReviews: number;
+  rawDiffTokensAvg: number;
+  compactedTokensAvg: number;
+  compactionRatio: number;
+  tokensSavedTotal: number;
+  diffEvictionReceiptsCount: number;
+  getHunkInvocationsCount: number;
+  astOutlineCoveragePercent: number;
+  flatContextSlopeConfirmed: boolean;
+  maxPrTokensHandled: number;
+}
+
+export interface IncrementalLifecycleResponse {
+  success?: boolean;
+  range: AnalyticsTimeRange;
+  window?: AnalyticsTimeRange;
+  repo?: string;
+  recheckLaneRuns: number;
+  catch22Preventions: number;
+  findingsAutoResolvedCount: number;
+  findingsRegressedCount: number;
+  resolutionRatePercent: number;
+  avgCommitsToResolution: number;
+  priorOpenFindingsTracked: number;
+}
+
+export interface BlockerFastPathMetricsResponse {
+  success?: boolean;
+  range: AnalyticsTimeRange;
+  window?: AnalyticsTimeRange;
+  repo?: string;
+  totalFastPathExits: number;
+  abortedStreamsCount: number;
+  tokensSavedFromAbort: number;
+  estimatedCostSavedUSD: number;
+  avgTimeToBlockerMs: number;
+  normalQuorumLatencyAvgMs: number;
+  latencyReductionPercent: number;
+  reasonsBreakdown: Record<string, number>;
 }
