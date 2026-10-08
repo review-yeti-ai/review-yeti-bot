@@ -137,7 +137,7 @@ jobs:
           node scripts/ci/plan-outputs.mjs --summary plan.json >> "$GITHUB_STEP_SUMMARY"
 
   vitest:
-    needs: test-plan
+    needs: [test-plan, build]
     if: needs.test-plan.outputs.shard-count != '0'
     name: vitest (${{ matrix.shard }}/${{ needs.test-plan.outputs.shard-count }})
     runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'ubuntu-latest' }}
@@ -155,21 +155,21 @@ jobs:
 
       - id: frontend-artifacts-cache
         name: Restore frontend build artifacts (Actions cache)
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             public/_next
             dist/public
-          key: ${{ github.repository }}-next-dist-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/app/**', 'src/components/**', 'src/dashboard/**', 'package-lock.json', 'next.config.js') }}
+            public/*.html
+            public/**/*.html
+          key: ${{ needs.build.outputs.frontend-artifact-key }}
 
       - name: Build the artifacts the suite reads (npm pretest)
         run: |
           npm run test:artifacts
-          # HTML is tracked; hydration chunks are reused from cache when available,
-          # avoiding redundant ~3-minute Next.js compilations on every shard.
-          if [ ! -d "public/_next/static/chunks" ]; then
-            npm run build:frontend
-          fi
+          # The build job publishes one source- and content-addressed HTML/chunk bundle for every
+          # shard. A directory alone is insufficient: current HTML can reference absent chunks.
+          node scripts/verify-frontend-artifacts.js --ensure
 
       - name: Set up embedded operator Go toolchain
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
@@ -267,6 +267,8 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+    outputs:
+      frontend-artifact-key: ${{ steps.frontend-artifact-key.outputs.key }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
       - uses: ./.github/actions/node-deps
@@ -303,13 +305,30 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=3072
         run: npm run build
 
+      - name: Verify frontend artifacts before caching
+        run: node scripts/verify-frontend-artifacts.js
+
+      - name: Resolve frontend artifact cache key
+        id: frontend-artifact-key
+        env:
+          FRONTEND_SOURCE_HASH: ${{ hashFiles('src/app/**', 'src/components/**', 'src/dashboard/**', 'package-lock.json', 'next.config.js') }}
+          FRONTEND_OUTPUT_HASH: ${{ hashFiles('public/_next/**', 'dist/public/**', 'public/*.html', 'public/**/*.html') }}
+        run: |
+          set -euo pipefail
+          test -n "$FRONTEND_SOURCE_HASH"
+          test -n "$FRONTEND_OUTPUT_HASH"
+          echo "key=${GITHUB_REPOSITORY}-next-dist-v2-${RUNNER_OS}-${RUNNER_ARCH}-${FRONTEND_SOURCE_HASH}-${FRONTEND_OUTPUT_HASH}" >> "$GITHUB_OUTPUT"
+
       - name: Cache frontend build artifacts for test shards (Actions cache)
+        id: frontend-artifacts-cache
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             public/_next
             dist/public
-          key: ${{ github.repository }}-next-dist-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/app/**', 'src/components/**', 'src/dashboard/**', 'package-lock.json', 'next.config.js') }}
+            public/*.html
+            public/**/*.html
+          key: ${{ steps.frontend-artifact-key.outputs.key }}
 
   test:
     needs: [test-plan, vitest, vitest-postgres, worker-helper, build]
