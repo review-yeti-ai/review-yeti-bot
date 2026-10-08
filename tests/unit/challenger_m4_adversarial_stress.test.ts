@@ -55,8 +55,8 @@ describe('Adversarial Challenger Suite: Milestone 4 Quorum, Fast-Path, Cancellat
         tasks: [
           { id: 'sec-lane-1', dimension: 'security', paths: ['src/auth/session.ts'], question: 'Sec 1', rationale: 'Sec 1' },
           { id: 'sec-lane-2', dimension: 'security', paths: ['src/auth/session.ts'], question: 'Sec 2', rationale: 'Sec 2' },
-          { id: 'audit-lane', dimension: 'compliance', paths: ['src/auth/session.ts'], question: 'Audit', rationale: 'Audit' },
-          { id: 'unexecuted-1', dimension: 'perf', paths: ['src/perf.ts'], question: 'Perf', rationale: 'Perf' },
+          { id: 'audit-lane', dimension: 'contract' as any, paths: ['src/auth/session.ts'], question: 'Audit', rationale: 'Audit' },
+          { id: 'unexecuted-1', dimension: 'performance', paths: ['src/perf.ts'], question: 'Perf', rationale: 'Perf' },
         ],
       };
 
@@ -390,8 +390,8 @@ describe('Adversarial Challenger Suite: Milestone 4 Quorum, Fast-Path, Cancellat
     });
 
     it('publishingConclusion returns failure on BLOCK regardless of lane count', () => {
-      expect(publishingConclusion('BLOCK', 1)).toBe('failure');
-      expect(publishingConclusion('BLOCK', 0)).toBe('failure');
+      expect(publishingConclusion('BLOCK', 1, { mode: 'panel' } as any)).toBe('failure');
+      expect(publishingConclusion('BLOCK', 0, { mode: 'panel' } as any)).toBe('failure');
     });
   });
 

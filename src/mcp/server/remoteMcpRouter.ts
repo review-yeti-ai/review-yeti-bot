@@ -45,6 +45,8 @@ import {
   createGetRuntimeMetricsTool,
   createGetAnalyticsDashboardTool,
   createPurgeCacheTool,
+  createGetCheckpointMetricsTool,
+  createGetCompactionAnalyticsTool,
   type PreflightDiffReviewDependencies,
   type ExplainFindingDependencies,
   type GenerateFixDiffDependencies,
@@ -228,6 +230,8 @@ export function createDefaultToolRegistry(options?: {
   registry.registerTool(createGetRuntimeMetricsTool());
   registry.registerTool(createGetAnalyticsDashboardTool());
   registry.registerTool(createPurgeCacheTool({ cfOrchestratorUrl: options?.cfOrchestratorUrl }));
+  registry.registerTool(createGetCheckpointMetricsTool());
+  registry.registerTool(createGetCompactionAnalyticsTool());
 
   return registry;
 }

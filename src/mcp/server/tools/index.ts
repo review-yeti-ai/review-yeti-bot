@@ -17,3 +17,5 @@ export * from './getBillableRuntimeReport';
 export * from './getRuntimeMetrics';
 export * from './getAnalyticsDashboard';
 export * from './purgeCache';
+export * from './getCheckpointMetrics';
+export * from './getCompactionAnalytics';
