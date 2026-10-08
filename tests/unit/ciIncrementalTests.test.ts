@@ -8,6 +8,7 @@ import {
   REAPER_ACCEPTANCE,
   changedFiles,
   fullSuiteTrigger,
+  isPureReleaseVersionBump,
   literalText,
   parseNameStatus,
   isPostgresFile,
@@ -76,6 +77,18 @@ describe('CI incremental test selection (REL-1074)', () => {
     it('refuses a floating ref or an unknown commit as the base', () => {
       expect(() => changedFiles('main', 'HEAD')).toThrow(/full commit SHA/u);
       expect(() => changedFiles('0'.repeat(40), 'HEAD')).toThrow();
+    });
+
+    it('identifies pure release version bumps and ignores non-release changes', () => {
+      const releaseCommit = 'b7bdc70523a50a370d53a77a3b23853882c37de4';
+      const parentCommit = 'bb0a6d44c97f2d29299277ba3efb03a60f62a8f3';
+      expect(isPureReleaseVersionBump(['src/index.ts'], parentCommit, releaseCommit)).toBe(false);
+      expect(isPureReleaseVersionBump(['package.json', 'src/a.ts'], parentCommit, releaseCommit)).toBe(false);
+      expect(isPureReleaseVersionBump(
+        ['package.json', 'package-lock.json', 'CHANGELOG.md', '.release-please-manifest.json'],
+        parentCommit,
+        releaseCommit,
+      )).toBe(true);
     });
   });
 
