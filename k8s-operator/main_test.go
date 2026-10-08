@@ -9,6 +9,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 
 	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/operatorconfig"
 )
 
 func TestMainInitializesControllerRuntimeLogger(t *testing.T) {
@@ -113,6 +114,55 @@ func TestOperatorDisabledUnlessExplicitlyEnabled(t *testing.T) {
 		t.Run(test.value, func(t *testing.T) {
 			if got := operatorEnabled(func(string) string { return test.value }); got != test.want {
 				t.Fatalf("operatorEnabled(%q) = %v, want %v", test.value, got, test.want)
+			}
+		})
+	}
+}
+
+func TestOperatorManagerOptionsStayInsideOneConfiguredNamespace(t *testing.T) {
+	configs := []struct {
+		name      string
+		config    operatorconfig.NamespaceConfig
+		namespace string
+	}{
+		{name: "production default", config: operatorconfig.NamespaceConfig{}, namespace: operatorconfig.DefaultNamespace},
+	}
+	qualification, err := operatorconfig.NamespaceConfigFromEnv(func(name string) (string, bool) {
+		values := map[string]string{
+			operatorconfig.QualificationInstanceEnv: "true",
+			operatorconfig.NamespaceEnv:             operatorconfig.QualificationNamespace,
+			operatorconfig.PodNamespaceEnv:          operatorconfig.QualificationNamespace,
+		}
+		value, ok := values[name]
+		return value, ok
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configs = append(configs, struct {
+		name      string
+		config    operatorconfig.NamespaceConfig
+		namespace string
+	}{name: "isolated qualification", config: qualification, namespace: operatorconfig.QualificationNamespace})
+
+	for _, tc := range configs {
+		t.Run(tc.name, func(t *testing.T) {
+			options := operatorManagerOptions(tc.config)
+			if options.LeaderElectionNamespace != tc.namespace {
+				t.Fatalf("leader election namespace = %q, want %q", options.LeaderElectionNamespace, tc.namespace)
+			}
+			if len(options.Cache.DefaultNamespaces) != 1 {
+				t.Fatalf("cache namespaces = %v, want exactly %q", options.Cache.DefaultNamespaces, tc.namespace)
+			}
+			if _, ok := options.Cache.DefaultNamespaces[tc.namespace]; !ok {
+				t.Fatalf("cache namespaces = %v, want %q", options.Cache.DefaultNamespaces, tc.namespace)
+			}
+			other := operatorconfig.QualificationNamespace
+			if tc.namespace == other {
+				other = operatorconfig.DefaultNamespace
+			}
+			if _, ok := options.Cache.DefaultNamespaces[other]; ok {
+				t.Fatalf("cache includes other instance namespace %q: %v", other, options.Cache.DefaultNamespaces)
 			}
 		})
 	}

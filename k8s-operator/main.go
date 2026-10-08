@@ -36,6 +36,7 @@ import (
 	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers"
 	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
 	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/metrics"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/operatorconfig"
 )
 
 var (
@@ -67,6 +68,10 @@ func operatorEnabled(getenv func(string) string) bool {
 }
 
 func runOperator() error {
+	operatorNamespace, err := operatorconfig.NamespaceConfigFromEnv(os.LookupEnv)
+	if err != nil {
+		return fmt.Errorf("configure operator namespace: %w", err)
+	}
 	maxConcurrentJobs, err := operatorMaxConcurrentJobsFromEnv(os.Getenv)
 	if err != nil {
 		return err
@@ -75,16 +80,7 @@ func runOperator() error {
 	if err != nil {
 		return err
 	}
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                        scheme,
-		Cache:                         cache.Options{DefaultNamespaces: map[string]cache.Config{job.Namespace: {}}},
-		Metrics:                       metricsserver.Options{BindAddress: envOr("REVIEW_YETI_OPERATOR_METRICS_ADDR", ":8080")},
-		HealthProbeBindAddress:        envOr("REVIEW_YETI_OPERATOR_HEALTH_ADDR", ":8081"),
-		LeaderElection:                true,
-		LeaderElectionID:              "ct-review-yeti-operator",
-		LeaderElectionNamespace:       job.Namespace,
-		LeaderElectionReleaseOnCancel: true,
-	})
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), operatorManagerOptions(operatorNamespace))
 	if err != nil {
 		return fmt.Errorf("create manager: %w", err)
 	}
@@ -96,6 +92,7 @@ func runOperator() error {
 		Client:                  mgr.GetClient(),
 		SecretReader:            mgr.GetAPIReader(),
 		Scheme:                  mgr.GetScheme(),
+		OperatorNamespace:       operatorNamespace,
 		MaxConcurrentJobs:       maxConcurrentJobs,
 		MaxConcurrentReconciles: maxConcurrentReconciles,
 		Publishing:              publishingConfigFromEnv(),
@@ -111,6 +108,20 @@ func runOperator() error {
 		return fmt.Errorf("register readiness check: %w", err)
 	}
 	return mgr.Start(ctrl.SetupSignalHandler())
+}
+
+func operatorManagerOptions(namespace operatorconfig.NamespaceConfig) ctrl.Options {
+	operatorNamespace := namespace.Namespace()
+	return ctrl.Options{
+		Scheme:                        scheme,
+		Cache:                         cache.Options{DefaultNamespaces: map[string]cache.Config{operatorNamespace: {}}},
+		Metrics:                       metricsserver.Options{BindAddress: envOr("REVIEW_YETI_OPERATOR_METRICS_ADDR", ":8080")},
+		HealthProbeBindAddress:        envOr("REVIEW_YETI_OPERATOR_HEALTH_ADDR", ":8081"),
+		LeaderElection:                true,
+		LeaderElectionID:              "ct-review-yeti-operator",
+		LeaderElectionNamespace:       operatorNamespace,
+		LeaderElectionReleaseOnCancel: true,
+	}
 }
 
 func operatorMaxConcurrentJobsFromEnv(getenv func(string) string) (int, error) {

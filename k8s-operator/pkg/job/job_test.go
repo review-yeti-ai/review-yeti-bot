@@ -32,6 +32,7 @@ import (
 
 	v1alpha2 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
 	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/operatorconfig"
 	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/workspace"
 )
 
@@ -111,6 +112,73 @@ func TestPreparedReviewTransportOverridesDriftedOperatorGateway(t *testing.T) {
 	if envValue(container, "REVIEW_MODEL") != "ollama/glm-5.3-flash" {
 		t.Fatalf("model = %q", envValue(container, "REVIEW_MODEL"))
 	}
+}
+
+func TestPreparedReviewQualificationRuntimeImageDigestBindsWorkerImage(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	matchingDigest := "sha256:" + strings.Repeat("e", 64)
+	otherDigest := "sha256:" + strings.Repeat("f", 64)
+	cases := []struct {
+		name        string
+		receipt     string
+		workerImage string
+		wantErr     bool
+	}{
+		{
+			name:        "matching digest is admitted",
+			receipt:     preparedEnvelopeWithRuntimeImageDigest(matchingDigest),
+			workerImage: "registry.digitalocean.com/exampleorg/review-yeti-worker@" + matchingDigest,
+		},
+		{
+			name:        "mismatched digest is rejected",
+			receipt:     preparedEnvelopeWithRuntimeImageDigest(otherDigest),
+			workerImage: "registry.digitalocean.com/exampleorg/review-yeti-worker@" + matchingDigest,
+			wantErr:     true,
+		},
+		{
+			name:        "digest must be canonical lowercase sha256",
+			receipt:     preparedEnvelopeWithRuntimeImageDigest("sha256:" + strings.Repeat("E", 64)),
+			workerImage: "registry.digitalocean.com/exampleorg/review-yeti-worker@" + matchingDigest,
+			wantErr:     true,
+		},
+		{
+			name:        "digest must have exactly 64 hexadecimal characters",
+			receipt:     preparedEnvelopeWithRuntimeImageDigest("sha256:abc"),
+			workerImage: "registry.digitalocean.com/exampleorg/review-yeti-worker@" + matchingDigest,
+			wantErr:     true,
+		},
+		{
+			name:        "digest requires a pinned worker image",
+			receipt:     preparedEnvelopeWithRuntimeImageDigest(matchingDigest),
+			workerImage: "node:24-bookworm-slim",
+			wantErr:     true,
+		},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			review := reviewFixture(now)
+			review.Spec.PublicationMode = "app-gate"
+			review.Spec.WorkerImage = test.workerImage
+			review.Spec.PreparedReview = &test.receipt
+			input := buildInput(review, now)
+			input.Publishing = publishingFixture()
+			built, err := job.BuildWorkerJob(input)
+			if test.wantErr {
+				if built != nil || !errors.Is(err, job.ErrJobConfiguration) {
+					t.Fatalf("expected configuration rejection, got Job=%v err=%v", built, err)
+				}
+				return
+			}
+			if err != nil || built == nil {
+				t.Fatalf("matching prepared image digest rejected: %v", err)
+			}
+		})
+	}
+}
+
+func preparedEnvelopeWithRuntimeImageDigest(digest string) string {
+	trimmed := strings.TrimSpace(preparedEnvelope)
+	return strings.TrimSuffix(trimmed, "}") + ",\n \"qualificationRuntimeImageDigest\":\"" + digest + "\"\n}"
 }
 
 func TestPreparedReviewAbsentLeavesReceiptOnlyJobUnchanged(t *testing.T) {
@@ -236,6 +304,69 @@ func buildInput(review *v1alpha2.PRReviewJob, now time.Time) job.Input {
 		WorkspacePVCName: workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber),
 		WorkspaceLease:   leaseFixture(now, review.Spec.RunID, 16*time.Minute),
 		Now:              now,
+	}
+}
+
+func TestBuildWorkerJobUsesConfiguredNamespaceForJobAndPodIdentity(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	config, err := operatorconfig.NamespaceConfigFromEnv(func(name string) (string, bool) {
+		values := map[string]string{
+			operatorconfig.QualificationInstanceEnv: "true",
+			operatorconfig.NamespaceEnv:             operatorconfig.QualificationNamespace,
+			operatorconfig.PodNamespaceEnv:          operatorconfig.QualificationNamespace,
+		}
+		value, ok := values[name]
+		return value, ok
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	review := reviewFixture(now)
+	review.Namespace = operatorconfig.QualificationNamespace
+	input := buildInput(review, now)
+	input.OperatorNamespace = config
+	input.WorkspaceLease.Lease.Namespace = operatorconfig.QualificationNamespace
+
+	built, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("qualified Job build failed: %v", err)
+	}
+	if built.Namespace != operatorconfig.QualificationNamespace {
+		t.Fatalf("worker Job namespace = %q", built.Namespace)
+	}
+	if built.Spec.Template.ObjectMeta.Namespace != "" {
+		t.Fatalf("pod template must inherit namespace from its Job, got %q", built.Spec.Template.ObjectMeta.Namespace)
+	}
+	var podNamespace *corev1.EnvVar
+	for i := range built.Spec.Template.Spec.Containers[0].Env {
+		if built.Spec.Template.Spec.Containers[0].Env[i].Name == job.WorkerPodNamespaceEnv {
+			podNamespace = &built.Spec.Template.Spec.Containers[0].Env[i]
+		}
+	}
+	if podNamespace == nil || podNamespace.ValueFrom == nil || podNamespace.ValueFrom.FieldRef == nil ||
+		podNamespace.ValueFrom.FieldRef.FieldPath != "metadata.namespace" {
+		t.Fatalf("worker pod namespace must come from the Downward API: %+v", podNamespace)
+	}
+}
+
+func TestBuildWorkerJobRejectsReviewOutsideConfiguredNamespace(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	config, err := operatorconfig.NamespaceConfigFromEnv(func(name string) (string, bool) {
+		values := map[string]string{
+			operatorconfig.QualificationInstanceEnv: "true",
+			operatorconfig.NamespaceEnv:             operatorconfig.QualificationNamespace,
+			operatorconfig.PodNamespaceEnv:          operatorconfig.QualificationNamespace,
+		}
+		value, ok := values[name]
+		return value, ok
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := buildInput(reviewFixture(now), now)
+	input.OperatorNamespace = config
+	if _, err := job.BuildWorkerJob(input); err == nil {
+		t.Fatal("accepted a production-namespace review from the qualification operator")
 	}
 }
 

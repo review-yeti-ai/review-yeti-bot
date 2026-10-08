@@ -30,6 +30,7 @@ func TestSharedPreparedReviewExecutionContract(t *testing.T) {
 			EnvelopeAccepted   bool   `json:"envelopeAccepted"`
 			TypescriptAccepted bool   `json:"typescriptAccepted"`
 			IntegrityOnly      string `json:"integrityOnly"`
+			WorkerImage        string `json:"workerImage"`
 		} `json:"cases"`
 	}
 	if err := json.Unmarshal(contents, &corpus); err != nil {
@@ -39,6 +40,7 @@ func TestSharedPreparedReviewExecutionContract(t *testing.T) {
 		t.Fatal("missing or unsupported shared corpus")
 	}
 	seen := map[string]bool{}
+	boundRuntimeImageCases := 0
 	for _, fixture := range corpus.Cases {
 		if seen[fixture.Name] || fixture.Name == "" {
 			t.Fatal("fixture names must be nonempty and unique")
@@ -61,6 +63,18 @@ func TestSharedPreparedReviewExecutionContract(t *testing.T) {
 			}
 			now := time.Date(2026, 9, 9, 19, 0, 0, 0, time.UTC)
 			review := reviewFixture(now)
+			var envelope struct {
+				QualificationRuntimeImageDigest string `json:"qualificationRuntimeImageDigest"`
+			}
+			if json.Unmarshal([]byte(raw), &envelope) == nil && envelope.QualificationRuntimeImageDigest != "" {
+				if fixture.WorkerImage == "" || !strings.HasSuffix(fixture.WorkerImage, "@"+envelope.QualificationRuntimeImageDigest) {
+					t.Fatal("capability fixture must declare a matching immutable worker image")
+				}
+				boundRuntimeImageCases++
+			}
+			if fixture.WorkerImage != "" {
+				review.Spec.WorkerImage = fixture.WorkerImage
+			}
 			review.Spec.PublicationMode = "app-gate"
 			review.Spec.RunnerMode = "prebaked"
 			review.Spec.PreparedReview = &raw
@@ -84,5 +98,8 @@ func TestSharedPreparedReviewExecutionContract(t *testing.T) {
 				}
 			}
 		})
+	}
+	if boundRuntimeImageCases == 0 {
+		t.Fatal("shared corpus must exercise a capability-bearing envelope bound to its worker image")
 	}
 }

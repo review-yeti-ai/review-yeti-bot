@@ -46,6 +46,7 @@ import (
 	reviewv1alpha2 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
 	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
 	operatorMetrics "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/metrics"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/operatorconfig"
 	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/workspace"
 )
 
@@ -88,8 +89,11 @@ type PRReviewJobV1Alpha2Reconciler struct {
 	// SecretReader must be the manager's uncached APIReader. The operator Role
 	// deliberately has get/delete but no list/watch on Secrets, so an
 	// informer-backed client must never be used for the publish credential.
-	SecretReader      client.Reader
-	Scheme            *runtime.Scheme
+	SecretReader client.Reader
+	Scheme       *runtime.Scheme
+	// OperatorNamespace is the immutable startup-validated namespace shared by
+	// cache scope, leader election, worker Jobs, and controller validation.
+	OperatorNamespace operatorconfig.NamespaceConfig
 	Now               func() time.Time
 	MaxConcurrentJobs int
 	// MaxConcurrentReconciles allows parallel worker reconciliation (default 1).
@@ -111,7 +115,7 @@ type PRReviewJobV1Alpha2Reconciler struct {
 	Recorder record.EventRecorder
 
 	// CapacityLedger manages declarative, atomic CAS worker admission via
-	// coordination.k8s.io/v1 Lease in ct-review-system, eliminating in-memory mutexes.
+	// coordination.k8s.io/v1 Lease in the configured operator namespace.
 	CapacityLedger *CapacityLedger
 }
 
@@ -140,7 +144,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) getCapacityLedger() *CapacityLedger {
 		}
 		return r.CapacityLedger
 	}
-	ledger := NewCapacityLedger(r.Client, DefaultCapacityLedgerNamespace)
+	ledger := NewCapacityLedger(r.Client, r.OperatorNamespace.Namespace())
 	ledger.Reader = r.admissionReader()
 	ledger.Now = r.clock
 	return ledger
@@ -237,7 +241,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 		return r.reconcileCancellation(ctx, &review)
 	}
 	now := r.clock()
-	if err := validateProjectionWindow(&review); err != nil {
+	if err := validateProjectionWindow(&review, r.OperatorNamespace.Namespace()); err != nil {
 		// Same class as WorkerContractRejected below: the projection is rejected
 		// before any worker Job is ever built, so an app-gate review must still be
 		// delegated rather than left for the 30-minute deadline reaper to notice.
@@ -450,12 +454,13 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndResumeContinuationWorker(
 	}
 
 	worker, err := job.BuildWorkerJob(job.Input{
-		Review:           review,
-		WorkspacePVCName: "",
-		WorkspaceLease:   leaseResult,
-		Now:              now,
-		Publishing:       r.Publishing,
-		Phase:            job.JobPhaseContinuation,
+		Review:            review,
+		OperatorNamespace: r.OperatorNamespace,
+		WorkspacePVCName:  "",
+		WorkspaceLease:    leaseResult,
+		Now:               now,
+		Publishing:        r.Publishing,
+		Phase:             job.JobPhaseContinuation,
 	})
 	if err == nil && len(worker.Spec.Template.Spec.Containers) > 0 {
 		container := &worker.Spec.Template.Spec.Containers[0]
@@ -592,11 +597,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndCreateWorker(
 	}
 
 	worker, err := job.BuildWorkerJob(job.Input{
-		Review:           review,
-		WorkspacePVCName: pvcName,
-		WorkspaceLease:   leaseResult,
-		Now:              now,
-		Publishing:       r.Publishing,
+		Review:            review,
+		OperatorNamespace: r.OperatorNamespace,
+		WorkspacePVCName:  pvcName,
+		WorkspaceLease:    leaseResult,
+		Now:               now,
+		Publishing:        r.Publishing,
 	})
 	if err == nil && len(worker.Spec.Template.Spec.Containers) > 0 {
 		container := &worker.Spec.Template.Spec.Containers[0]
@@ -1467,7 +1473,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admissionSnapshot(
 		if candidate.Name == review.Name {
 			continue
 		}
-		if !validWorkerAdmissionCandidate(candidate, now) {
+		if !validWorkerAdmissionCandidate(candidate, now, r.OperatorNamespace.Namespace()) {
 			continue
 		}
 		if isAwaitingResumption(candidate) {
@@ -1511,7 +1517,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) getCachedThenLive(
 	return err
 }
 
-func validWorkerAdmissionCandidate(review *reviewv1alpha2.PRReviewJob, now time.Time) bool {
+func validWorkerAdmissionCandidate(review *reviewv1alpha2.PRReviewJob, now time.Time, operatorNamespace string) bool {
 	if review == nil || isTerminalPhase(review.Status.Phase) {
 		return false
 	}
@@ -1528,7 +1534,7 @@ func validWorkerAdmissionCandidate(review *reviewv1alpha2.PRReviewJob, now time.
 	}
 	// A sibling reconcile must never mutate an invalid or expired object, but it
 	// must not let either one strand newer, otherwise valid admission candidates.
-	if validateProjectionWindow(review) != nil || !now.Before(review.Spec.TerminalDeadline.Time) {
+	if validateProjectionWindow(review, operatorNamespace) != nil || !now.Before(review.Spec.TerminalDeadline.Time) {
 		return false
 	}
 	return true
@@ -1994,15 +2000,18 @@ func (r *PRReviewJobV1Alpha2Reconciler) clock() time.Time {
 	return time.Now().UTC()
 }
 
-func validateProjectionWindow(review *reviewv1alpha2.PRReviewJob) error {
+func validateProjectionWindow(review *reviewv1alpha2.PRReviewJob, operatorNamespace string) error {
 	window := review.Spec.TerminalDeadline.Sub(review.Spec.ReceivedAt.Time)
 	minimumWindow := time.Duration(job.MinTerminalDeadlineSeconds) * time.Second
 	maximumWindow := time.Duration(job.MaxTerminalDeadlineSeconds) * time.Second
 	if window < minimumWindow || window > maximumWindow {
 		return errors.New("terminal deadline must be between 15 and 60 minutes after receivedAt")
 	}
-	if review.Namespace != job.Namespace {
-		return fmt.Errorf("review must run in namespace %q", job.Namespace)
+	if operatorNamespace == "" {
+		operatorNamespace = job.Namespace
+	}
+	if review.Namespace != operatorNamespace {
+		return fmt.Errorf("review must run in namespace %q", operatorNamespace)
 	}
 	return nil
 }
@@ -2261,7 +2270,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) resolveAuthoritativeFencingEpoch(
 	return 1, nil
 }
 
-// verifyWorkerLeaseToken checks spec.WorkerLeaseToken against active lease state in ct-review-system.
+// verifyWorkerLeaseToken checks spec.WorkerLeaseToken against active lease state in the configured operator namespace.
 func (r *PRReviewJobV1Alpha2Reconciler) verifyWorkerLeaseToken(
 	ctx context.Context,
 	review *reviewv1alpha2.PRReviewJob,
@@ -2410,7 +2419,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) SetupWithManager(mgr ctrl.Manager) error
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &reviewv1alpha2.PRReviewJob{}, queueMetricsCandidateField, queueMetricsCandidateValues); err != nil {
 		return fmt.Errorf("index queue metric candidates: %w", err)
 	}
-	if err := mgr.Add(&workerMetricsCollector{reader: mgr.GetClient()}); err != nil {
+	if err := mgr.Add(&workerMetricsCollector{reader: mgr.GetClient(), namespace: r.OperatorNamespace}); err != nil {
 		return err
 	}
 	if r.APIReader == nil {
@@ -2424,7 +2433,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) SetupWithManager(mgr ctrl.Manager) error
 		// status updates, terminal cleanup, receipt handling) across reviews.
 		// Workload admission is coordinated declaratively via CapacityLedger
 		// using atomic Compare-And-Swap (CAS) optimistic locking on the
-		// singleton coordination.k8s.io/v1 Lease in ct-review-system, eliminating
+		// singleton coordination.k8s.io/v1 Lease in the configured instance namespace, eliminating
 		// intra-instance mutex lock convoys and providing multi-replica admission safety.
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Complete(r)

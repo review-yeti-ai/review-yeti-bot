@@ -41,11 +41,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	v1alpha2 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/operatorconfig"
 	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/workspace"
 )
 
 const (
-	Namespace                     = "ct-review-system"
+	Namespace                     = operatorconfig.DefaultNamespace
 	WorkerPriorityClassName       = "ct-review-worker"
 	ReceiptOnlyEnv                = "REVIEW_RECEIPT_ONLY"
 	FullPanelQualificationEnv     = "REVIEW_FULL_PANEL_QUALIFICATION_ONLY"
@@ -219,6 +220,10 @@ var (
 // evidence.  No Secret object or credential is accepted by this builder.
 type Input struct {
 	Review *v1alpha2.PRReviewJob
+	// OperatorNamespace is the startup-validated namespace for this operator
+	// instance. Its zero value preserves the production namespace for existing
+	// direct builder callers.
+	OperatorNamespace operatorconfig.NamespaceConfig
 	// WorkspacePVCName is required only when Review.Spec.RunnerMode == "generic".
 	WorkspacePVCName string
 	WorkspaceLease   workspace.LeaseAcquireResult
@@ -501,6 +506,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	if err := validateInput(input); err != nil {
 		return nil, err
 	}
+	operatorNamespace := input.OperatorNamespace.Namespace()
 	review := input.Review
 	spec := review.Spec
 	activeDeadlineSeconds, err := remainingDeadlineSeconds(spec.ReceivedAt.Time, spec.TerminalDeadline.Time, input.Now)
@@ -653,7 +659,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		// injected instead: the worker then rejects the job as an identity
 		// mismatch before it calls the model.
 		if spec.PreparedReview != nil {
-			admittedURL, admittedModel, err := admittedPreparedTransport(*spec.PreparedReview)
+			admittedURL, admittedModel, err := admittedPreparedTransport(*spec.PreparedReview, spec.WorkerImage)
 			if err != nil {
 				return nil, err
 			}
@@ -863,7 +869,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		TypeMeta: metav1.TypeMeta{APIVersion: batchv1.SchemeGroupVersion.String(), Kind: "Job"},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        review.Name + jobSuffix,
-			Namespace:   review.Namespace,
+			Namespace:   operatorNamespace,
 			Labels:      labels,
 			Annotations: annotations,
 		},
@@ -930,8 +936,9 @@ func IsValidRunSecretName(name string) bool {
 }
 
 func validateInput(input Input) error {
-	if input.Review == nil || input.Now.IsZero() || input.Review.Namespace != Namespace {
-		return configErr("review is nil, clock is zero, or namespace is not " + Namespace)
+	operatorNamespace := input.OperatorNamespace.Namespace()
+	if input.Review == nil || input.Now.IsZero() || input.Review.Namespace != operatorNamespace {
+		return configErr("review is nil, clock is zero, or namespace is not " + operatorNamespace)
 	}
 	review := input.Review
 	spec := review.Spec
@@ -967,7 +974,7 @@ func validateInput(input Input) error {
 		if spec.PublicationMode != PublicationModeAppGate || (spec.RunnerMode != "" && spec.RunnerMode != "prebaked") {
 			return configErr("prepared review requires the prebaked app-gate lane")
 		}
-		if err := validatePreparedReview(*spec.PreparedReview); err != nil {
+		if err := validatePreparedReview(*spec.PreparedReview, spec.WorkerImage); err != nil {
 			return err
 		}
 	}
@@ -997,19 +1004,35 @@ func validateInput(input Input) error {
 // The job's provider URL and model are copied from this admitted transport so
 // they cannot drift from the config digest. Both languages exercise
 // testdata/prepared-review-execution.json.
-func validatePreparedReview(raw string) error {
-	_, _, err := admittedPreparedTransport(raw)
+func validatePreparedReview(raw, workerImage string) error {
+	_, _, err := admittedPreparedTransport(raw, workerImage)
 	return err
 }
 
-func admittedPreparedTransport(raw string) (string, string, error) {
+func admittedPreparedTransport(raw, workerImage string) (string, string, error) {
 	rejected := configErr("prepared review envelope is invalid")
 	if len(raw) == 0 || len(raw) > MaxPreparedReviewBytes || !utf8.ValidString(raw) {
 		return "", "", rejected
 	}
 	var envelope map[string]json.RawMessage
-	if json.Unmarshal([]byte(raw), &envelope) != nil || len(envelope) != 3 {
+	if json.Unmarshal([]byte(raw), &envelope) != nil || (len(envelope) != 3 && len(envelope) != 4) {
 		return "", "", rejected
+	}
+	for key := range envelope {
+		if key != "version" && key != "config" && key != "transport" && key != "qualificationRuntimeImageDigest" {
+			return "", "", rejected
+		}
+	}
+	if rawDigest, hasRuntimeImageDigest := envelope["qualificationRuntimeImageDigest"]; hasRuntimeImageDigest {
+		var runtimeImageDigest string
+		if json.Unmarshal(rawDigest, &runtimeImageDigest) != nil || !strings.HasPrefix(runtimeImageDigest, "sha256:") ||
+			!digestPattern.MatchString(strings.TrimPrefix(runtimeImageDigest, "sha256:")) {
+			return "", "", rejected
+		}
+		imageDigestStart := strings.LastIndex(workerImage, "@sha256:")
+		if imageDigestStart < 0 || runtimeImageDigest != workerImage[imageDigestStart+1:] {
+			return "", "", rejected
+		}
 	}
 	var version string
 	var config map[string]json.RawMessage

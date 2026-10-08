@@ -18,6 +18,7 @@ import (
 	reviewv1alpha2 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
 	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
 	operatorMetrics "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/metrics"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/operatorconfig"
 )
 
 func TestWorkerMetricsSnapshotCountsFullQueueAndRecentFailures(t *testing.T) {
@@ -104,6 +105,54 @@ func TestWorkerMetricsSnapshotCountsFullQueueAndRecentFailures(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(operatorMetrics.RecentFailedJobs); got != 0 {
 		t.Fatalf("expired failures=%v", got)
+	}
+}
+
+func TestWorkerMetricsCollectorReadsOnlyItsConfiguredNamespace(t *testing.T) {
+	qualification, err := operatorconfig.NamespaceConfigFromEnv(func(name string) (string, bool) {
+		values := map[string]string{
+			operatorconfig.QualificationInstanceEnv: "true",
+			operatorconfig.NamespaceEnv:             operatorconfig.QualificationNamespace,
+			operatorconfig.PodNamespaceEnv:          operatorconfig.QualificationNamespace,
+		}
+		value, ok := values[name]
+		return value, ok
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_790_000_000, 0)
+	scheme := runtime.NewScheme()
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := reviewv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	worker := func(name, namespace string) *batchv1.Job {
+		return &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace,
+			Labels: map[string]string{"review-yeti.ai/component": job.PublishingWorkerComponent}}}
+	}
+	review := func(name, namespace string) *reviewv1alpha2.PRReviewJob {
+		return &reviewv1alpha2.PRReviewJob{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			Spec:   reviewv1alpha2.PRReviewJobSpec{ReceivedAt: metav1.NewTime(now.Add(-time.Minute)), TerminalDeadline: metav1.NewTime(now.Add(14 * time.Minute))},
+			Status: reviewv1alpha2.PRReviewJobStatus{Phase: reviewv1alpha2.PhaseQueued}}
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithIndex(&reviewv1alpha2.PRReviewJob{}, queueMetricsCandidateField, queueMetricsCandidateValues).
+		WithObjects(worker("production-active", operatorconfig.DefaultNamespace),
+			worker("qualification-active", operatorconfig.QualificationNamespace),
+			review("production-queued", operatorconfig.DefaultNamespace),
+			review("qualification-queued", operatorconfig.QualificationNamespace)).Build()
+	collector := &workerMetricsCollector{reader: kube, namespace: qualification}
+	if err := collector.collect(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	if got := testutil.ToFloat64(operatorMetrics.ActiveJobs); got != 1 {
+		t.Fatalf("qualification active jobs=%v, want 1", got)
+	}
+	if got := testutil.ToFloat64(operatorMetrics.QueuedJobs); got != 1 {
+		t.Fatalf("qualification queued jobs=%v, want 1", got)
 	}
 }
 
