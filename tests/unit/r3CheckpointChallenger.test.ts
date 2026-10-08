@@ -52,6 +52,16 @@ function checkClient() {
   };
 }
 
+function enableLifecycleHistory(input: {
+  policyDigest: string;
+  configDigest: string;
+  currentHeadSha: string;
+  priorHeadSha?: string;
+  baseSha: string;
+}) {
+  return preparedCheckpointHistory(input);
+}
+
 function deps(over: Record<string, unknown> = {}) {
   const defaultRepoFileProviderFactory = (input: {
     owner: string; repo: string; headSha: string; baseSha: string;
@@ -162,7 +172,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
-            ...preparedCheckpointHistory({
+            ...enableLifecycleHistory({
               policyDigest: prepared.policy.effectivePolicyDigest,
               configDigest: prepared.policy.effectiveConfigDigest,
               currentHeadSha: COMMIT_SHA_AMENDED,
@@ -211,7 +221,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
-            ...preparedCheckpointHistory({
+            ...enableLifecycleHistory({
               policyDigest: prepared.policy.effectivePolicyDigest,
               configDigest: prepared.policy.effectiveConfigDigest,
               currentHeadSha: COMMIT_SHA_AMENDED,
@@ -273,7 +283,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
-            ...preparedCheckpointHistory({
+            ...enableLifecycleHistory({
               policyDigest: prepared.policy.effectivePolicyDigest,
               configDigest: prepared.policy.effectiveConfigDigest,
               currentHeadSha: COMMIT_SHA_ORIGINAL,
@@ -483,7 +493,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
-            ...preparedCheckpointHistory({
+            ...enableLifecycleHistory({
               policyDigest: prepared.policy.effectivePolicyDigest,
               configDigest: prepared.policy.effectiveConfigDigest,
               currentHeadSha: COMMIT_SHA_ORIGINAL,
@@ -549,7 +559,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
-            ...preparedCheckpointHistory({
+            ...enableLifecycleHistory({
               policyDigest: prepared.policy.effectivePolicyDigest,
               configDigest: prepared.policy.effectiveConfigDigest,
               currentHeadSha: COMMIT_SHA_ORIGINAL,
@@ -613,7 +623,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
-            ...preparedCheckpointHistory({
+            ...enableLifecycleHistory({
               policyDigest: prepared.policy.effectivePolicyDigest,
               configDigest: prepared.policy.effectiveConfigDigest,
               currentHeadSha: COMMIT_SHA_ORIGINAL,

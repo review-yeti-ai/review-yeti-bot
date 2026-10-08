@@ -1,5 +1,6 @@
 import { createDefaultV3Config, isTriggerActionAllowed, type TriggerActionOptions } from './configLoader';
-import { disputedBlockerAdjudicatorSchema, type ComposedEngineConfig, type CtReviewConfigV3,
+import { disputedBlockerAdjudicatorSchema, effectiveReviewConfigReceiptSchema, composedEngineConfigSchema,
+  type ComposedEngineConfig, type CtReviewConfigV3,
   type DisputedBlockerAdjudicator, type ProviderId, type ReviewEngineName } from './schema';
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, type CompiledDomainIndex } from '../pipeline/domainIndex';
@@ -539,7 +540,7 @@ export function resolveWorkerConfig(
       },
       composed_budget: {
         source: 'engine_defaults' as const,
-        configured_overrides: composed,
+        configured_overrides: composedEngineConfigSchema.parse(composed),
         central_policy_total_turns: Math.min(composed.max_turns_total ?? COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS,
           COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS),
         central_policy_max_tasks: Math.min(composed.max_tasks ?? COMPOSED_ENGINE_DEFAULT_MAX_TASKS,
@@ -575,7 +576,7 @@ export function resolveWorkerConfig(
     review_engine: reviewEngine,
     ...(severityPolicy === undefined ? {} : { severity_policy: severityPolicy }),
     ...(disputedBlockerAdjudicator === undefined ? {} : { disputed_blocker_adjudicator: disputedBlockerAdjudicator }),
-    review_configuration_receipt: reviewConfigurationReceipt,
+    review_configuration_receipt: effectiveReviewConfigReceiptSchema.parse(reviewConfigurationReceipt),
     composed,
     default_max_turns: Math.min(PUBLISHING_MAX_TURNS, Math.max(1, maxInvestigationTurns || PUBLISHING_MAX_TURNS)),
     reviewer_effort: bifrostEffort,

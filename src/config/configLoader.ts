@@ -517,6 +517,9 @@ export function parseAndValidateConfig(rawYaml: string, isCodeRabbitFormat = fal
   if (raw.pre_checks === undefined) {
     raw.pre_checks = resolvePreChecksConfig(undefined);
   }
+  if (raw.swarm_context_isolation === undefined) {
+    raw.swarm_context_isolation = true;
+  }
   if (String(raw.version ?? 1) === '4') {
     if ('lenses' in raw) throw new ConfigValidationError('version 4 personas cannot be mixed with legacy lenses');
     const sanitized = sanitizeV3Config(raw);

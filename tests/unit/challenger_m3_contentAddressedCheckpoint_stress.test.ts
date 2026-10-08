@@ -21,6 +21,16 @@ import { preparedCheckpointHistory } from '../support/preparedCheckpointHistory'
 import type { ReviewTask } from '../../src/panel/reviewTask';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
 
+function enableLifecycleHistory(input: {
+  policyDigest: string;
+  configDigest: string;
+  currentHeadSha: string;
+  priorHeadSha: string;
+  baseSha: string;
+}) {
+  return preparedCheckpointHistory(input);
+}
+
 const COMMIT_SHA_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const COMMIT_SHA_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const BASE_SHA_A   = '1111111111111111111111111111111111111111';
@@ -600,7 +610,7 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
       currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: '', githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
-      ...preparedCheckpointHistory({
+      ...enableLifecycleHistory({
         policyDigest: prepared.policy.effectivePolicyDigest,
         configDigest: prepared.policy.effectiveConfigDigest,
         currentHeadSha: COMMIT_SHA_B,
@@ -859,13 +869,6 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
           checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn() },
           currentPullRequestVerifier: vi.fn(async () => undefined),
           composedReviewRunner: vi.fn(),
-          ...preparedCheckpointHistory({
-            policyDigest: prepared.policy.effectivePolicyDigest,
-            configDigest: prepared.policy.effectiveConfigDigest,
-            currentHeadSha: COMMIT_SHA_B,
-            priorHeadSha: COMMIT_SHA_A,
-            baseSha: BASE_SHA_A,
-          }),
           reviewCheckpoint: { read: vi.fn(async () => ({ checkpoint, disputedFindingRechecks: [] })), write: vi.fn() },
           reviewCompletion: { reportReviewResult: vi.fn() },
           groundedVerifierClient: groundedFixtureClient,
@@ -878,6 +881,13 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
             diffDigest: sha256(diff),
             githubReads: 0,
           })),
+          ...enableLifecycleHistory({
+            policyDigest: prepared.policy.effectivePolicyDigest,
+            configDigest: prepared.policy.effectiveConfigDigest,
+            currentHeadSha: COMMIT_SHA_B,
+            priorHeadSha: COMMIT_SHA_A,
+            baseSha: BASE_SHA_A,
+          }),
         } as any
       )
     ).rejects.toThrow('Exact-head checkpoint and disputed finding requests are required for a safe retry');
@@ -946,13 +956,6 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
           checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn() },
           currentPullRequestVerifier: vi.fn(async () => undefined),
           composedReviewRunner: vi.fn(),
-          ...preparedCheckpointHistory({
-            policyDigest: prepared.policy.effectivePolicyDigest,
-            configDigest: prepared.policy.effectiveConfigDigest,
-            currentHeadSha: COMMIT_SHA_B,
-            priorHeadSha: COMMIT_SHA_A,
-            baseSha: BASE_SHA_A,
-          }),
           reviewCheckpoint: { read: vi.fn(async () => ({ checkpoint, disputedFindingRechecks: [] })), write: vi.fn() },
           reviewCompletion: { reportReviewResult: vi.fn() },
           groundedVerifierClient: groundedFixtureClient,
@@ -965,6 +968,13 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
             diffDigest: sha256(diff),
             githubReads: 0,
           })),
+          ...enableLifecycleHistory({
+            policyDigest: prepared.policy.effectivePolicyDigest,
+            configDigest: prepared.policy.effectiveConfigDigest,
+            currentHeadSha: COMMIT_SHA_B,
+            priorHeadSha: COMMIT_SHA_A,
+            baseSha: BASE_SHA_A,
+          }),
         } as any
       )
     ).rejects.toThrow('Review execution checkpoint does not match this exact-head review');
