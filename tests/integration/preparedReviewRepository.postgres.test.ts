@@ -117,6 +117,42 @@ describeWithPostgres('prepared review policy immutable Postgres storage', () => 
     expect(stored[0]).not.toHaveProperty('raw_policy');
   });
 
+  it('round-trips an older prepared row without applying newer composed defaults', async () => {
+    const legacy = preparedPolicy();
+    const config = legacy.config as unknown as Record<string, unknown>;
+    delete config.swarm_context_isolation;
+    const composed = config.composed as Record<string, unknown>;
+    delete composed.swarm_context_isolation;
+    delete composed.quorum_policy;
+    rehashConfig(legacy);
+
+    const saved = await savePreparedPublishingPolicy(pool!, legacy);
+    expect(saved).toEqual(legacy);
+    expect(saved.config).not.toHaveProperty('swarm_context_isolation');
+    expect(saved.config.composed?.swarm_context_isolation).toBeUndefined();
+    expect(saved.config.composed?.quorum_policy).toBeUndefined();
+    expect(saved.config.review_configuration_receipt?.effective.composed_budget.configured_overrides).toEqual({});
+
+    const loaded = await getPreparedPublishingPolicy(pool!, legacy.policy.effectivePolicyDigest);
+    expect(loaded).toEqual(legacy);
+    expect((await rows())[0].prepared_content_digest).toBe(preparedDigest(legacy));
+  });
+
+  it('reads prior default-expanded override metadata without adding or removing fields', async () => {
+    const prior = preparedPolicy();
+    prior.config.review_configuration_receipt!.effective.composed_budget.configured_overrides = {
+      ...prior.config.review_configuration_receipt!.effective.composed_budget.configured_overrides,
+      swarm_context_isolation: true,
+      quorum_policy: { mode: 'file_coverage', min_file_coverage_pct: 100,
+        enforce_security_floor: true, blocker_fast_path_enabled: true },
+    };
+    rehashConfig(prior);
+
+    await savePreparedPublishingPolicy(pool!, prior);
+    expect(await getPreparedPublishingPolicy(pool!, prior.policy.effectivePolicyDigest)).toEqual(prior);
+    expect((await rows())[0].prepared_content_digest).toBe(preparedDigest(prior));
+  });
+
   it('persists a qualification runtime capability and detects a forged capability rewrite', async () => {
     const imageDigest = `sha256:${'a'.repeat(64)}`;
     const originDigest = 'b'.repeat(64);

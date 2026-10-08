@@ -734,18 +734,18 @@ describeWithPostgres('Review Yeti v2 additive storage foundation', () => {
   it('rolls back v2 DDL after a controlled post-hook seed failure and recovers on the next initialization', async () => {
     const before = await legacySnapshot();
     delete process.env.NATS_URL;
+    const invalidPersonaId = `synthetic-persona-${'x'.repeat(300)}`;
     const failingSeedData = {
-      reviewLogs: [{
-        id: null,
-        prRun: 'post-hook-failure',
-        repo: 'legacy-repo',
-        prNumber: 42,
-        headSha,
-        personas: [],
-        quorum: 'majority',
-        arbiterVerdict: 'NACK',
-        timestamp: '2026-09-11T12:00:00.000Z',
-      }],
+      settings: {
+        personaSettings: {
+          [invalidPersonaId]: {
+            id: invalidPersonaId,
+            displayName: 'Synthetic rollback fixture',
+            enabled: true,
+            model: 'synthetic/v1',
+          },
+        },
+      },
     } as unknown as DashboardData;
     const failingStore = new PostgresStore();
     let failure: { message?: string } | undefined;
@@ -756,7 +756,7 @@ describeWithPostgres('Review Yeti v2 additive storage foundation', () => {
     } finally {
       await failingStore.close();
     }
-    expect(failure?.message).toMatch(/null|not-null/iu);
+    expect(failure?.message).toMatch(/value too long|character varying/iu);
     expect((await pool.query(`SELECT to_regclass(current_schema() || '.review_event_v2_outbox') AS table_name`)).rows[0].table_name)
       .toBeNull();
     expect((await pool.query(`SELECT to_regclass(current_schema() || '.review_event_v2_sequence_counters') AS table_name`)).rows[0].table_name)

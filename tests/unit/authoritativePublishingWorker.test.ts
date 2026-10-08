@@ -185,6 +185,76 @@ function enableCurrentV2History(f: ReturnType<typeof fixture>): void {
   })) };
 }
 
+function exactWorkerCheckpoint(f: ReturnType<typeof fixture>) {
+  const plan = [{ id: 'checkpoint-task', dimension: 'testing' as const, paths: ['src/a.ts'],
+    question: 'Does current source retain the expected behavior?', rationale: 'Seed an exact source-bound checkpoint.' }];
+  return {
+    version: 'ReviewExecutionCheckpoint.v1' as const,
+    runId: f.env.REVIEW_RUN_ID!,
+    repositoryId: Number(f.env.REVIEW_REPOSITORY_ID),
+    owner: 'example',
+    repo: 'project',
+    prNumber: Number(f.env.REVIEW_PR_NUMBER),
+    headSha: HEAD,
+    baseSha: BASE,
+    policyDigest: f.prepared.policy.effectivePolicyDigest,
+    configDigest: f.prepared.policy.effectiveConfigDigest,
+    executionAttempt: 1,
+    revision: 1,
+    plan,
+    completedTasks: [{ id: plan[0]!.id, findings: [], sourceDelivery: completedTaskSourceDelivery(plan[0]!.id, plan[0]!.paths) }],
+  };
+}
+
+function configureHistoryCase(f: ReturnType<typeof fixture>, state: 'partial' | 'incompatible'): void {
+  const source = completeCurrentVersionLifecycleHistory();
+  const read = source.read;
+  f.deps.prLifecycleHistory = { ...source, read: async () => {
+    const history = await read();
+    const events = history.events.map((event) => ({
+      ...event,
+      ...(state === 'incompatible' ? { evidenceSemanticsVersion: 'GroundedReviewEvidenceSemantics.v1' } : {}),
+      policyDigest: f.prepared.policy.effectivePolicyDigest,
+      configDigest: f.prepared.policy.effectiveConfigDigest,
+    }));
+    return state === 'partial'
+      ? { ...history, status: 'partial' as const, eventCount: history.eventCount + 1,
+        eventOmittedCount: 1, omissions: ['one lifecycle event was omitted'], events }
+      : { ...history, events };
+  } } as never;
+  f.deps.findingThreadReader = async (_pr, expectedHeadSha) => ({ source: 'service', headSha: expectedHeadSha,
+    complete: true, omittedCount: 0, threads: [] });
+}
+
+function validDisputeForCheckpoint(f: ReturnType<typeof fixture>, checkpoint: ReturnType<typeof exactWorkerCheckpoint>) {
+  const task = checkpoint.plan[0]!;
+  const counterArgument = 'Recheck this exact finding against current source.';
+  const unsigned = {
+    requestId: randomUUID(),
+    runId: f.env.REVIEW_RUN_ID!,
+    sourceExecutionAttempt: 1,
+    sourceContentDigest: 'd'.repeat(64),
+    sourcePlanDigest: sha256(canonicalJson(checkpoint.plan)),
+    sourceGateAttemptId: `${f.env.REVIEW_RUN_ID}-g0-e1`,
+    repositoryId: Number(f.env.REVIEW_REPOSITORY_ID),
+    owner: 'example',
+    repo: 'project',
+    prNumber: Number(f.env.REVIEW_PR_NUMBER),
+    headSha: HEAD,
+    baseSha: BASE,
+    policyDigest: f.prepared.policy.effectivePolicyDigest,
+    configDigest: f.prepared.policy.effectiveConfigDigest,
+    findingId: 'source-finding-id',
+    personaId: task.id,
+    taskId: task.id,
+    finding: { severity: 'P1' as const, path: 'src/a.ts', line: 1,
+      title: 'Prior authenticated finding', body: 'Recheck the bound finding.' },
+    counterArgument,
+    counterArgumentDigest: sha256(counterArgument),
+  };
+  return { ...unsigned, requestDigest: disputedFindingRecheckDigest(unsigned) };
+}
+
 function expectedEvent(f: ReturnType<typeof fixture>, result: WorkerReviewResult) {
   return { version: 'WorkerReviewCompletion.v1', runId: f.env.REVIEW_RUN_ID, repositoryId: 123,
     owner: 'example', repo: 'project', prNumber: 42, headSha: HEAD, baseSha: BASE,
@@ -430,6 +500,7 @@ function retainedContext(f: ReturnType<typeof fixture>, overrides: Record<string
 describe('REL-1198 publishing panel respects the admitted lifecycle window', () => {
   it.each(['panel', 'composed'] as const)('prepares optional core classification before the %s engine and publishes its receipt', async (reviewEngine) => {
     const f = fixture({ reviewEngine });
+    f.env.REVIEW_EXECUTION_ATTEMPT = '1';
     const budgets: number[] = [];
     const createRuntime = deletionEvidenceModule.createDeletionEvidenceRuntime;
     vi.spyOn(deletionEvidenceModule, 'createDeletionEvidenceRuntime').mockImplementation((input) => {
@@ -509,6 +580,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(START);
     const f = fixture({ reviewEngine: 'composed' });
+    f.env.REVIEW_EXECUTION_ATTEMPT = '1';
     f.deps.now = Date.now;
     f.deps.prLifecycleHistory = completeEmptyLifecycleHistory() as never;
     f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 360_000).toISOString();
@@ -553,6 +625,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
       vi.useFakeTimers();
       vi.setSystemTime(START);
       const f = fixture({ reviewEngine });
+      f.env.REVIEW_EXECUTION_ATTEMPT = '1';
       f.deps.now = Date.now;
       // Simulate queue/startup/setup consuming all but three minutes. No map-reduce flag.
       f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 360_000).toISOString();
@@ -578,7 +651,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
         expect(event.result.personas.length).toBeGreaterThan(0);
         expect(event.result.personas.map((persona) => persona.id)).toEqual(f.prepared.expectedPersonaIds);
         expect(event.result.personas.every((p) => p.status === 'ERROR' && p.errorClass === 'timeout')).toBe(true);
-        expect(event.executionAttempt).toBe(2);
+        expect(event.executionAttempt).toBe(1);
         expect(event.headSha).toBe(HEAD);
         expect(f.env.REVIEW_PREPARED_CONFIG_JSON).toBe(configBefore);
         expect(f.checkClient.completeCheck).toHaveBeenCalledOnce();
@@ -947,12 +1020,31 @@ describe('REL-1198 retained P2 worker boundary', () => {
     const comparisonContent = vi.fn(async () => ({ files: [{ path: 'src/a.ts', status: 'modified',
       blobSha: 'a'.repeat(40), patch: `@@ -1 +1 @@\n-const value = 'old';\n+const value = 'new';\n` }] }));
     const composedReviewRunner = vi.fn(async (_options: any) => f.panel);
+    const retryTaskPlan = [{ id: 'retry-task', dimension: 'testing' as const, paths: ['src/a.ts'],
+      question: 'Does the retry still cover the changed source?', rationale: 'The exact checkpoint is this retry boundary.' }];
+    const exactRetryCheckpoint = {
+      version: 'ReviewExecutionCheckpoint.v1' as const,
+      runId: f.env.REVIEW_RUN_ID!,
+      repositoryId: Number(f.env.REVIEW_REPOSITORY_ID),
+      owner: 'example',
+      repo: 'project',
+      prNumber: Number(f.env.REVIEW_PR_NUMBER),
+      headSha: HEAD,
+      baseSha: BASE,
+      policyDigest: f.prepared.policy.effectivePolicyDigest,
+      configDigest: f.prepared.policy.effectiveConfigDigest,
+      executionAttempt: 1,
+      revision: 1,
+      plan: retryTaskPlan,
+      completedTasks: [],
+    };
     f.deps.incrementalBase = { read: incrementalRead };
     f.deps.verdictCacheBase = { read: cacheRead };
     f.deps.verdictCacheCompareReader = { content: comparisonContent };
     f.deps.composedReviewRunner = composedReviewRunner;
+    const checkpointRead = vi.fn(async () => ({ checkpoint: exactRetryCheckpoint, disputedFindingRechecks: [] }));
     f.deps.reviewCheckpoint = {
-      read: vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] })),
+      read: checkpointRead,
       write: vi.fn(async () => 1),
     };
 
@@ -961,38 +1053,76 @@ describe('REL-1198 retained P2 worker boundary', () => {
     expect(incrementalRead).toHaveBeenCalledOnce();
     expect(cacheRead).toHaveBeenCalledOnce();
     expect(comparisonContent).toHaveBeenCalledOnce();
+    expect(checkpointRead).toHaveBeenCalledOnce();
     expect(composedReviewRunner).toHaveBeenCalledOnce();
     const options = composedReviewRunner.mock.calls[0]![0];
+    expect(options.checkpoint?.resumed).toMatchObject({
+      runId: f.env.REVIEW_RUN_ID,
+      headSha: HEAD,
+      baseSha: BASE,
+      policyDigest: f.prepared.policy.effectivePolicyDigest,
+      configDigest: f.prepared.policy.effectiveConfigDigest,
+    });
     expect(options.verdictCache).toMatchObject({ source: null, permitted: [] });
     expect(options.disputedFindingRechecks).toBeUndefined();
   });
 
-  it('does not reuse checkpoints, incremental plans, or cached verdicts without complete lifecycle history', async () => {
-    const f = fixture({ reviewEngine: 'composed' });
-    f.env.REVIEW_YETI_INCREMENTAL = 'example/project';
-    f.env.REVIEW_YETI_VERDICT_CACHE = 'example/project';
-    const checkpointRead = vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] }));
-    const incrementalRead = vi.fn(async () => ({ prior: null, maxAgeMs: 60_000 }));
-    const cacheRead = vi.fn(async () => ({ source: null, maxAgeMs: 60_000 }));
-    const composedRunner = vi.fn(async (options: any) => {
-      expect(options.checkpoint?.resumed?.completedTasks ?? []).toEqual([]);
-      return f.panel;
-    });
-    f.deps.reviewCheckpoint = { read: checkpointRead, write: vi.fn(async () => 1) } as never;
-    f.deps.incrementalBase = { read: incrementalRead };
-    f.deps.verdictCacheBase = { read: cacheRead };
-    f.deps.composedReviewRunner = composedRunner;
+  it.each(['unavailable', 'partial', 'incompatible'] as const)(
+    'does not resume an exact checkpoint or reuse incremental/cache plans when lifecycle history is %s', async (historyState) => {
+      const f = fixture({ reviewEngine: 'composed' });
+      f.env.REVIEW_EXECUTION_ATTEMPT = '1';
+      if (historyState !== 'unavailable') configureHistoryCase(f, historyState);
+      f.env.REVIEW_YETI_INCREMENTAL = 'example/project';
+      f.env.REVIEW_YETI_VERDICT_CACHE = 'example/project';
+      const checkpointRead = vi.fn(async () => ({ checkpoint: exactWorkerCheckpoint(f), disputedFindingRechecks: [] }));
+      const incrementalRead = vi.fn(async () => ({ prior: null, maxAgeMs: 60_000 }));
+      const cacheRead = vi.fn(async () => ({ source: null, maxAgeMs: 60_000 }));
+      const composedRunner = vi.fn(async (options: any) => {
+        expect(options.checkpoint?.resumed ?? null).toBeNull();
+        expect(options.disputedFindingRechecks).toBeUndefined();
+        expect(options.incremental).toBeUndefined();
+        expect(options.verdictCache).toBeUndefined();
+        expect(options.changedFiles).toEqual([{ path: 'src/a.ts', patch: DIFF }]);
+        return f.panel;
+      });
+      f.deps.reviewCheckpoint = { read: checkpointRead, write: vi.fn(async () => 1) } as never;
+      f.deps.incrementalBase = { read: incrementalRead };
+      f.deps.verdictCacheBase = { read: cacheRead };
+      f.deps.composedReviewRunner = composedRunner;
 
-    await runPublishingReviewWorker(f.env, f.deps);
+      await runPublishingReviewWorker(f.env, f.deps);
 
-    expect(checkpointRead).not.toHaveBeenCalled();
-    expect(incrementalRead).not.toHaveBeenCalled();
-    expect(cacheRead).not.toHaveBeenCalled();
-    expect(composedRunner).toHaveBeenCalledOnce();
-    expect(f.reportReviewResult.mock.calls[0]?.[0].result.groundedReview?.history).toMatchObject({
-      status: 'unavailable', omissions: ['no authenticated lifecycle history source'],
+      expect(incrementalRead).not.toHaveBeenCalled();
+      expect(cacheRead).not.toHaveBeenCalled();
+      expect(composedRunner).toHaveBeenCalledOnce();
+      expect(f.client.complete).not.toHaveBeenCalled();
+      if (historyState === 'unavailable') {
+        expect(f.reportReviewResult.mock.calls[0]?.[0].result.groundedReview?.history).toMatchObject({
+          status: 'unavailable', omissions: ['no authenticated lifecycle history source'],
+        });
+      }
     });
-  });
+
+  it.each(['unavailable', 'partial', 'incompatible'] as const)(
+    'fails a retry before model work when lifecycle history is %s despite a valid exact checkpoint and dispute request', async (historyState) => {
+      const f = fixture({ reviewEngine: 'composed' });
+      f.env.REVIEW_EXECUTION_ATTEMPT = '2';
+      if (historyState !== 'unavailable') configureHistoryCase(f, historyState);
+      const checkpoint = exactWorkerCheckpoint(f);
+      const dispute = validDisputeForCheckpoint(f, checkpoint);
+      const checkpointRead = vi.fn(async () => ({ checkpoint, disputedFindingRechecks: [dispute] }));
+      f.deps.reviewCheckpoint = { read: checkpointRead, write: vi.fn(async () => 2) } as never;
+      const composedRunner = vi.fn(async () => f.panel);
+      f.deps.composedReviewRunner = composedRunner;
+
+      await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toThrow(
+        'Exact-head checkpoint and disputed finding requests are required for a safe retry',
+      );
+
+      expect(checkpointRead).not.toHaveBeenCalled();
+      expect(composedRunner).not.toHaveBeenCalled();
+      expect(f.client.complete).not.toHaveBeenCalled();
+    });
 
   it('publishes a valid retained P2 context below the complete Checks text bound without truncation', async () => {
     const f = fixture();
@@ -1153,6 +1283,7 @@ function expectEvidenceOnlyCallback(payload: WorkerReviewCompletion) {
 describe('authoritative prepared publishing worker', () => {
   it('bounds real retrying HTTP attempts to the prepared 100-attempt budget when worker env says 200', async () => {
     const f = fixture({ reviewEngine: 'composed' });
+    f.env.REVIEW_EXECUTION_ATTEMPT = '1';
     f.env.COMPOSED_ENGINE_MAX_TURNS = '200';
     let fetchCount = 0;
     const responseStatuses: number[] = [];
@@ -1239,11 +1370,22 @@ describe('authoritative prepared publishing worker', () => {
 
     const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
     const { version: _version, result: _result, ...expectedCoordinates } = completion;
+    const docsFiles = parseChangedFiles(docsDiff).files;
+    const expectedAuditDigest = sha256(canonicalJson({
+      version: 'NoReviewableContentAudit.v1',
+      repositoryId: expectedCoordinates.repositoryId,
+      prNumber: expectedCoordinates.prNumber,
+      headSha: expectedCoordinates.headSha,
+      baseSha: expectedCoordinates.baseSha,
+      policyDigest: expectedCoordinates.policyDigest,
+      configDigest: expectedCoordinates.configDigest,
+      paths: docsFiles.map(({ path }) => path),
+    }));
     const derived = deriveCanonicalWorkerReviewEvidence(completion, {
       expectedCoordinates,
       expectedPersonaIds: f.prepared.expectedPersonaIds,
       ...trustedGroundedVerifierContract(f),
-      changedFiles: parseChangedFiles(docsDiff).files,
+      changedFiles: docsFiles,
       coverageComplete: true,
       quorumSatisfied: true,
     });
@@ -1256,7 +1398,7 @@ describe('authoritative prepared publishing worker', () => {
         expectedLanes: 0, completedLanes: 0,
         exemption: {
           kind: 'no-reviewable-content',
-          auditDigest: '276d87f59de720f8837d773b4fe5f3fab9ef92126dd05b2de91568597e5930bc',
+          auditDigest: expectedAuditDigest,
         },
       },
     });
@@ -1450,6 +1592,7 @@ describe('authoritative prepared publishing worker', () => {
 
   it('accepts composed task evidence only after the trusted gate validates the task plan', async () => {
     const f = fixture({ reviewEngine: 'composed' });
+    f.env.REVIEW_EXECUTION_ATTEMPT = '1';
     const taskPlan = [{ id: 'task-a', dimension: 'architecture' as const, paths: ['src/a.ts'],
       question: 'Does this change preserve the contract?', rationale: 'The changed source needs review.' }];
     const taskASourceDelivery = completedTaskSourceDelivery('task-a', taskPlan[0].paths);
@@ -1486,6 +1629,7 @@ describe('authoritative prepared publishing worker', () => {
 
   it('wires admitted composed plan and task calls through progress and token attribution wrappers', async () => {
     const f = fixture({ reviewEngine: 'composed' });
+    f.env.REVIEW_EXECUTION_ATTEMPT = '1';
     const modelTaskId = 'task-a';
     const taskPlan = [{ id: modelTaskId, dimension: 'architecture' as const, paths: ['src/a.ts'],
       question: 'Does this change preserve the contract?', rationale: 'The changed source needs review.' }];
@@ -1927,6 +2071,7 @@ describe('authoritative prepared publishing worker', () => {
 
     it('publishes a fail-closed no-verdict check when a composed task ran without a verdict', async () => {
       const f = fixture({ reviewEngine: 'composed' });
+      f.env.REVIEW_EXECUTION_ATTEMPT = '1';
       const taskPlan = [
         { id: 'task-a', dimension: 'architecture' as const, paths: ['src/a.ts'],
           question: 'Does the change preserve the contract?', rationale: 'Review the changed source.' },
@@ -1981,6 +2126,7 @@ describe('authoritative prepared publishing worker', () => {
 
     it('names a composed task whose fresh attempts were all malformed instead of publishing BLOCK with 0 findings', async () => {
       const f = fixture({ reviewEngine: 'composed' });
+      f.env.REVIEW_EXECUTION_ATTEMPT = '1';
       const taskPlan = [
         { id: 'task-a', dimension: 'architecture' as const, paths: ['src/a.ts'],
           question: 'Does the change preserve the contract?', rationale: 'Review the changed source.' },

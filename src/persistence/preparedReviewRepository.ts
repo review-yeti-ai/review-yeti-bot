@@ -118,11 +118,12 @@ function validatePrepared(input: unknown): PreparedPublishingPolicy {
   requireSafeBoundedJson(input);
   const parsed = preparedSchema.parse(input);
   if ((parsed.qualificationDispatchOriginSha256 === undefined) !== (parsed.qualificationRuntimeImageDigest === undefined)) throw new Error();
-  // The shared config schema is intentionally permissive for other consumers.
-  // Storage rejects unknown root fields and rejects nested stripping/defaults:
-  // only an already-normalized config may cross this persistence boundary.
-  const strictConfig = ctReviewConfigV3Schema.innerType().strict().parse(parsed.config);
-  const config = verifyPreparedPublishingConfig(strictConfig, parsed.policy.effectiveConfigDigest, parsed.transport,
+  // The shared config schema is permissive for other consumers. Storage rejects
+  // unknown fields and requires validation to preserve the producer's admitted
+  // shape. Do not hash a schema-expanded copy of a v1 row: field absence is part
+  // of the service-issued identity and controls its historical runtime defaults.
+  ctReviewConfigV3Schema.innerType().strict().parse(parsed.config);
+  const config = verifyPreparedPublishingConfig(parsed.config, parsed.policy.effectiveConfigDigest, parsed.transport,
     parsed.qualificationRuntimeImageDigest);
   if (canonicalJson(config) !== canonicalJson(parsed.config) || config.personas.length > 64) throw new Error();
   const expected = config.personas.filter((persona) => persona.enabled).map((persona) => persona.id);

@@ -101,10 +101,10 @@ describe('Empirical Challenger M1: Finding-Centric Incremental State Machine', (
 
   // =========================================================================
   // STRESS TEST 1: Multi-Head Commit Sequence (4-Commit Chain)
-  // Head 1 (BLOCK) -> Head 2 (Partial Fix BLOCK) -> Head 3 (Full Fix SHIP) -> Head 4 (Clean Refactor SHIP)
+  // Blocking findings force full re-reviews until cleared; a later clean refactor can use delta scope.
   // =========================================================================
   describe('Challenge 1: 4-Commit Multi-Head Lifecycle State Transitions', () => {
-    it('reliably transitions from BLOCK to partial BLOCK to SHIP to clean refactor across 4 commits', async () => {
+    it('re-reviews blocking findings in full before delta-scoping a clean refactor', async () => {
       // --- HEAD 1 ---
       // PR touches 3 files: FILE_AUTH, FILE_DB, FILE_UTILS.
       // Review reports 2 blocking findings:
@@ -166,14 +166,8 @@ describe('Empirical Challenger M1: Finding-Centric Incremental State Machine', (
         delta: { maxChain: DEFAULT_INCREMENTAL_MAX_CHAIN },
       });
 
-      // Verification of Head 2 decision
-      expect(decisionHead2.mode).toBe('incremental');
-      if (decisionHead2.mode === 'incremental') {
-        expect(decisionHead2.deltaPaths).toEqual([FILE_AUTH]);
-        expect(decisionHead2.openFindingPaths).toEqual([FILE_DB]);
-        expect(decisionHead2.carriedForwardPaths).toEqual([FILE_UTILS]);
-        expect(decisionHead2.chainDepth).toBe(1);
-      }
+      // The prior receipt contains open findings, so the whole diff is re-reviewed.
+      expect(decisionHead2).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
 
       // Recheck lane evaluation for Head 2:
       // auth line 42 is in touched lines -> verified resolved.
@@ -230,15 +224,8 @@ describe('Empirical Challenger M1: Finding-Centric Incremental State Machine', (
         delta: { maxChain: DEFAULT_INCREMENTAL_MAX_CHAIN },
       });
 
-      // Verification of Head 3 decision
-      expect(decisionHead3.mode).toBe('incremental');
-      if (decisionHead3.mode === 'incremental') {
-        expect(decisionHead3.deltaPaths).toEqual([FILE_DB]);
-        // FILE_AUTH has NO open findings anymore, so it is in carriedForwardPaths alongside FILE_UTILS
-        expect(decisionHead3.carriedForwardPaths.sort()).toEqual([FILE_AUTH, FILE_UTILS].sort());
-        expect(decisionHead3.openFindingPaths).toEqual([]);
-        expect(decisionHead3.chainDepth).toBe(2);
-      }
+      // The prior receipt still contains an open finding, so the whole diff is re-reviewed.
+      expect(decisionHead3).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
 
       // Recheck lane evaluation for Head 3:
       const reviewedDbLines = deltaReviewedLines(dbPatchHead3, 5);
@@ -371,14 +358,13 @@ describe('Empirical Challenger M1: Finding-Centric Incremental State Machine', (
 
   // =========================================================================
   // STRESS TEST 2: Token Efficiency & Zero Token Leakage
-  // Untouched finding files do NOT trigger full review, and clean files leak 0 tokens
+  // Any prior finding requires the full diff, while clean carried-forward files leak 0 tokens.
   // =========================================================================
   describe('Challenge 2: Token Efficiency & Zero Token Leakage Invariants', () => {
-    it('verifies untouched finding files do NOT trigger full review in multi-file PR', () => {
+    it('requires full review when a prior finding is untouched in a multi-file PR', () => {
       const files = Array.from({ length: 10 }, (_, i) => `src/module_${i}.ts`);
       const fileWithOpenFinding = files[0];
       const touchedFile = files[1];
-      const cleanUntouchedFiles = files.slice(2);
 
       const prior: PriorReviewRecord = {
         runId: RUN_ID1,
@@ -415,13 +401,7 @@ describe('Empirical Challenger M1: Finding-Centric Incremental State Machine', (
         delta: { maxChain: DEFAULT_INCREMENTAL_MAX_CHAIN },
       });
 
-      // Must remain incremental!
-      expect(decision.mode).toBe('incremental');
-      if (decision.mode === 'incremental') {
-        expect(decision.deltaPaths).toEqual([touchedFile]);
-        expect(decision.openFindingPaths).toEqual([fileWithOpenFinding]);
-        expect(decision.carriedForwardPaths).toEqual(cleanUntouchedFiles);
-      }
+      expect(decision).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
     });
 
     it('proves zero token leakage on carried-forward files (>80% token reduction)', () => {
@@ -674,7 +654,7 @@ describe('Empirical Challenger M1: Finding-Centric Incremental State Machine', (
   // STRESS TEST 4: Single-File PR Catch-22 Boundary Conditions
   // =========================================================================
   describe('Challenge 4: Single-File PR Catch-22 Boundary & Edge Cases', () => {
-    it('delta-scopes single-file PR fix when file carried prior P0/P1/P2 findings', () => {
+    it('requires full review for single-file fixes to prior P0/P1/P2 findings', () => {
       for (const severity of ['P0', 'P1', 'P2']) {
         const finding = openFindingFrom({
           path: FILE_AUTH,
@@ -714,11 +694,7 @@ describe('Empirical Challenger M1: Finding-Centric Incremental State Machine', (
           delta: { maxChain: DEFAULT_INCREMENTAL_MAX_CHAIN },
         });
 
-        expect(decision.mode).toBe('incremental');
-        if (decision.mode === 'incremental') {
-          expect(decision.deltaPaths).toEqual([FILE_AUTH]);
-          expect(decision.carriedForwardPaths).toEqual([]);
-        }
+        expect(decision).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
       }
     });
 
@@ -735,9 +711,9 @@ describe('Empirical Challenger M1: Finding-Centric Incremental State Machine', (
         completionDigest: '1'.repeat(64),
         ageMs: 5_000,
         coverageComplete: true,
-        shipComplete: false,
-        findingPaths: [FILE_AUTH],
-        findings: [openFindingFrom({ path: FILE_AUTH, line: 20, severity: 'P1', title: 'Flaw' })],
+        shipComplete: true,
+        findingPaths: [],
+        findings: [],
       };
 
       const decision = decideIncrementalReview({

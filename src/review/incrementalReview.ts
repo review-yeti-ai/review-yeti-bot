@@ -480,7 +480,7 @@ export function incrementalPrecheck(input: {
   // path can therefore carry an unchanged caller after a related contract changes. Until that
   // closure is part of the trusted receipt, preserve the full finding history as context and read
   // the complete current diff again. This reuses no prior approval or coverage claim.
-  if (!input.delta && (prior.findingPaths.length > 0 || (prior.findings?.length ?? 0) > 0)) {
+  if (prior.findingPaths.length > 0 || (prior.findings?.length ?? 0) > 0) {
     return full('prior-findings-require-full-review');
   }
   return null;

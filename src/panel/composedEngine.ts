@@ -939,42 +939,24 @@ function buildStaticPrefix(input: {
 
   if (input.phase === 'plan') {
     const range = input.baseSha && input.headSha ? `${input.baseSha}...${input.headSha}` : input.headSha || 'HEAD';
-    if (input.astOutline) {
-      const lockfileSummaries = input.effectiveFiles
-        .filter((f) => (f.path.endsWith('-lock.json') || f.path.endsWith('.lock') || f.path === 'package-lock.json' || f.path === 'yarn.lock' || f.path === 'pnpm-lock.yaml') && f.patch)
-        .map((f) => `--- ${f.path} (summarized)\n${f.patch}`);
-      const lockfileSection = lockfileSummaries.length > 0
-        ? `\n\n=== SUMMARIZED LOCKFILES ===\n${lockfileSummaries.join('\n\n')}`
-        : '';
-      contextSection = [
-        `=== PLAN CONTEXT: WHOLE ADMITTED PULL REQUEST (${input.scopeLabel || 'ALL FILES -- UNSCOPED'}) ===`,
-        `=== GIT RANGE ===`,
-        `git diff ${range}`,
-        ...(input.baseSha ? [`Base SHA: ${input.baseSha}`] : []),
-        `Head SHA: ${input.headSha}`,
-        ``,
-        `=== PULL REQUEST AST & FILE-TREE OUTLINE ===`,
-        input.astOutline.summaryText + lockfileSection,
-      ].join('\n');
-    } else {
-      const diffSection = buildDiffSection(input.effectiveFiles, {
-        ...(input.inlineTokenBudget ? { tokenBudget: input.inlineTokenBudget } : {}),
-        baseSha: input.baseSha || '',
-        headSha: input.headSha,
-        domainLanes: input.domainLanes,
-        canonicalShared: true,
-        fileIndexScope: 'pull-request',
-      });
-      contextSection = [
-        `=== PLAN CONTEXT: WHOLE ADMITTED PULL REQUEST (${input.scopeLabel || 'ALL FILES -- UNSCOPED'}) ===`,
-        `=== GIT RANGE ===`,
-        `git diff ${range}`,
-        ...(input.baseSha ? [`Base SHA: ${input.baseSha}`] : []),
-        `Head SHA: ${input.headSha}`,
-        ``,
-        diffSection,
-      ].join('\n');
-    }
+    const diffSection = buildDiffSection(input.effectiveFiles, {
+      ...(input.inlineTokenBudget ? { tokenBudget: input.inlineTokenBudget } : {}),
+      baseSha: input.baseSha || '',
+      headSha: input.headSha,
+      domainLanes: input.domainLanes,
+      canonicalShared: true,
+      fileIndexScope: 'pull-request',
+    });
+    contextSection = [
+      `=== PLAN CONTEXT: WHOLE ADMITTED PULL REQUEST (${input.scopeLabel || 'ALL FILES -- UNSCOPED'}) ===`,
+      `=== GIT RANGE ===`,
+      `git diff ${range}`,
+      ...(input.baseSha ? [`Base SHA: ${input.baseSha}`] : []),
+      `Head SHA: ${input.headSha}`,
+      ``,
+      ...(input.astOutline ? [`=== PULL REQUEST AST & FILE-TREE OUTLINE ===`, input.astOutline.summaryText, ''] : []),
+      diffSection,
+    ].join('\n');
   } else {
     const diffSection = buildDiffSection(input.effectiveFiles, {
       ...(input.inlineTokenBudget ? { tokenBudget: input.inlineTokenBudget } : {}),

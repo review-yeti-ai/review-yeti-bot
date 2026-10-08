@@ -36,6 +36,12 @@ describe('Tier 3: Cross-Feature Pairwise Combinations (onboardingWizardPairwise.
 
   // 1. F1 (App Config) + F2 (Monitored Repos): Updating App config updates monitored repos active count.
   it('1. Pairwise F1+F2: Updating App config dynamically updates monitored repos active count', async () => {
+    dashboardStore.updateRepository('exampleorg', 'example-api', {
+      id: 'repo-example-api',
+      full_name: 'exampleorg/example-api',
+      automationEnabled: true,
+    });
+
     // Retrieve initial app config and repos count
     const initialConfigRes = await request(app)
       .get('/api/github/app-config')
@@ -395,6 +401,12 @@ describe('Tier 3: Cross-Feature Pairwise Combinations (onboardingWizardPairwise.
 
   // 12. F2 (Monitored Repos) + F6 (Tooltips & Guides): Help drawer guidance changing per monitored repo state.
   it('12. Pairwise F2+F6: Help drawer guidance changes per monitored repo state', async () => {
+    dashboardStore.updateRepository('exampleorg', 'example-api', {
+      id: 'repo-example-api',
+      full_name: 'exampleorg/example-api',
+      automationEnabled: true,
+    });
+
     // Check monitored repo listing
     const reposRes = await request(app)
       .get('/api/github/app-config/monitored-repos')

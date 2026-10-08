@@ -100,7 +100,7 @@ function mockReader(map: Record<string, CommitComparison>): CommitComparisonRead
 describe('incrementalReview: Adversarial Empirical Challenge Suite', () => {
 
   describe('1. Multiple Open Findings on the Same File at Different Line Ranges', () => {
-    it('correctly tracks and retains 3 distinct findings at disjoint line ranges on a single file', () => {
+    it('requires a full review while retaining 3 distinct findings on a single file', () => {
       const findingLow = openFindingFrom({ path: TARGET_FILE, line: 15, severity: 'P1', title: 'SQL injection at line 15' });
       const findingMid = openFindingFrom({ path: TARGET_FILE, line: 65, severity: 'P2', title: 'Null dereference at line 65' });
       const findingHigh = openFindingFrom({ path: TARGET_FILE, line: 180, severity: 'P0', title: 'Remote code execution at line 180' });
@@ -145,13 +145,9 @@ describe('incrementalReview: Adversarial Empirical Challenge Suite', () => {
         delta: { maxChain: DEFAULT_INCREMENTAL_MAX_CHAIN },
       });
 
-      expect(decision.mode).toBe('incremental');
-      if (decision.mode === 'incremental') {
-        expect(decision.deltaPaths).toEqual([TARGET_FILE]);
-        expect(decision.carriedForwardPaths).toEqual([]);
-      }
+      expect(decision).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
 
-      // Ledger items must contain all 3 prior findings plus the delta hunk
+      // The review ledger keeps all 3 prior findings plus the current patch hunk.
       const items = buildLedgerItems({
         deltaFiles: [{ path: TARGET_FILE, patch: patchFixLow, hunks: 1 }],
         openFindings: priorRecord.findings!,
@@ -256,7 +252,7 @@ describe('incrementalReview: Adversarial Empirical Challenge Suite', () => {
     });
   });
 
-  describe('4. Completely Deleting an Open-Finding File', () => {
+  describe('4. Completely Deleting a Previously Reviewed File', () => {
     it('handles single-file PR deletion gracefully: falls back safely to full review without unhandled exception', () => {
       const finding = openFindingFrom({ path: TARGET_FILE, line: 40, severity: 'P1', title: 'Fatal bug' });
 
@@ -291,7 +287,7 @@ describe('incrementalReview: Adversarial Empirical Challenge Suite', () => {
         delta: { maxChain: DEFAULT_INCREMENTAL_MAX_CHAIN },
       });
 
-      expect(decisionEmpty).toEqual({ mode: 'full', reason: 'nothing-carried-forward' });
+      expect(decisionEmpty).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
 
       // If file was deleted from base branch, currentPaths has TARGET_FILE with status 'removed'
       const decisionRemoved = decideIncrementalReview({
@@ -307,12 +303,10 @@ describe('incrementalReview: Adversarial Empirical Challenge Suite', () => {
         delta: { maxChain: DEFAULT_INCREMENTAL_MAX_CHAIN },
       });
 
-      expect(decisionRemoved.mode).toBe('incremental');
+      expect(decisionRemoved).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
     });
 
     it('handles multi-file PR deletion: falls back cleanly when deleted file leaves zero reviewable changes in PR diff', async () => {
-      const findingOnDeleted = openFindingFrom({ path: TARGET_FILE, line: 40, severity: 'P1', title: 'Bug in doomed file' });
-
       const priorRecord: PriorReviewRecord = {
         runId: RUN_A,
         executionAttempt: 1,
@@ -325,9 +319,9 @@ describe('incrementalReview: Adversarial Empirical Challenge Suite', () => {
         completionDigest: 'a'.repeat(64),
         ageMs: 5_000,
         coverageComplete: true,
-        shipComplete: false,
-        findingPaths: [TARGET_FILE],
-        findings: [findingOnDeleted],
+        shipComplete: true,
+        findingPaths: [],
+        findings: [],
       };
 
       // Scenario A: TARGET_FILE was created on PR branch and deleted in HEAD_CURR.
@@ -387,15 +381,12 @@ describe('incrementalReview: Adversarial Empirical Challenge Suite', () => {
       expect(planB?.scope?.carriedForwardPaths).toContain(UNCHANGED_FILE);
       // Deleted file is omitted from deltaFiles
       expect(planB?.scope?.deltaFiles ?? []).toEqual([]);
-      // Open finding on deleted file is retained for recheck lane verification
-      expect(planB?.scope?.openFindings?.some((f) => f.path === TARGET_FILE)).toBe(true);
+      expect(planB?.scope?.openFindings?.some((f) => f.path === TARGET_FILE)).toBe(false);
     });
   });
 
-  describe('5. Renaming an Open-Finding File', () => {
+  describe('5. Renaming a Previously Reviewed File', () => {
     it('never delta-scopes a renamed file and falls back to full review if it was the only file', () => {
-      const finding = openFindingFrom({ path: RENAMED_FILE_OLD, line: 25, severity: 'P1', title: 'Defect in old path' });
-
       const priorRecord: PriorReviewRecord = {
         runId: RUN_A,
         executionAttempt: 1,
@@ -408,9 +399,9 @@ describe('incrementalReview: Adversarial Empirical Challenge Suite', () => {
         completionDigest: 'a'.repeat(64),
         ageMs: 8_000,
         coverageComplete: true,
-        shipComplete: false,
-        findingPaths: [RENAMED_FILE_OLD],
-        findings: [finding],
+        shipComplete: true,
+        findingPaths: [],
+        findings: [],
       };
 
       // Single file PR: RENAMED_FILE_OLD -> RENAMED_FILE_NEW
@@ -446,9 +437,9 @@ describe('incrementalReview: Adversarial Empirical Challenge Suite', () => {
         completionDigest: 'a'.repeat(64),
         ageMs: 8_000,
         coverageComplete: true,
-        shipComplete: false,
-        findingPaths: [RENAMED_FILE_OLD],
-        findings: [openFindingFrom({ path: RENAMED_FILE_OLD, line: 25, severity: 'P1', title: 'Bug' })],
+        shipComplete: true,
+        findingPaths: [],
+        findings: [],
       };
 
       // Multi-file PR: UNCHANGED_FILE + RENAMED_FILE_OLD -> RENAMED_FILE_NEW

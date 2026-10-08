@@ -219,12 +219,40 @@ describe('PanelEngine & Review Quorum Unit Suite (tests/unit/panelEngine.test.ts
       expect(quorum.rationale).toContain('Security floor unsatisfied');
     });
 
-    it('automatically satisfies quorum for PRs containing only docs, assets, and lockfiles', () => {
-      const nonCodeFiles = ['README.md', 'docs/api.md', 'package-lock.json', 'mix.lock'];
+    it('automatically satisfies quorum for PRs containing only docs and assets', () => {
+      const nonCodeFiles = ['README.md', 'docs/api.md', 'assets/logo.png'];
       const quorum = validateFileCoverageQuorum({ tasks: [] }, [], nonCodeFiles);
       expect(quorum.satisfied).toBe(true);
       expect(quorum.coveragePct).toBe(100);
       expect(quorum.verdict).toBe('SHIP');
+    });
+
+    it('requires task coverage for lockfiles and generic JSON even with docs in the PR', () => {
+      const changedFiles = ['README.md', 'package-lock.json', 'data/seeds.json'];
+      const zeroTask = validateFileCoverageQuorum({ tasks: [] }, [], changedFiles);
+      expect(zeroTask.satisfied).toBe(false);
+      expect(zeroTask.coveragePct).toBe(0);
+      expect(zeroTask.uncoveredPaths).toEqual(['package-lock.json', 'data/seeds.json']);
+      expect(zeroTask.verdict).toBe('BLOCK');
+
+      const taskPlan: ReviewTaskPlan = {
+        tasks: [{
+          id: 'task-dependencies',
+          dimension: 'dependencies',
+          paths: ['package-lock.json', 'data/seeds.json'],
+          question: 'Review dependency and data files.',
+          rationale: 'Both changed non-documentation paths require task coverage.',
+        }],
+      };
+      const covered = validateFileCoverageQuorum(
+        taskPlan,
+        [{ nonce: 'n1', task: 'task-dependencies', status: 'COMPLETE', findings: [] }],
+        changedFiles,
+      );
+      expect(covered.satisfied).toBe(true);
+      expect(covered.coveragePct).toBe(100);
+      expect(covered.coveredPaths).toEqual(['package-lock.json', 'data/seeds.json']);
+      expect(covered.verdict).toBe('SHIP');
     });
   });
 

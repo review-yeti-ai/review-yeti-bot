@@ -18,6 +18,7 @@ import {
 import type { ReviewTask } from '../../src/panel/reviewTask';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
 import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
+import { preparedCheckpointHistory } from '../support/preparedCheckpointHistory';
 
 const BASE = 'b'.repeat(40);
 const COMMIT_SHA_ORIGINAL = '1'.repeat(40);
@@ -161,6 +162,13 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
+            ...preparedCheckpointHistory({
+              policyDigest: prepared.policy.effectivePolicyDigest,
+              configDigest: prepared.policy.effectiveConfigDigest,
+              currentHeadSha: COMMIT_SHA_AMENDED,
+              priorHeadSha: COMMIT_SHA_ORIGINAL,
+              baseSha: BASE,
+            }),
             composedReviewRunner,
             reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
             reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
@@ -203,6 +211,13 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
+            ...preparedCheckpointHistory({
+              policyDigest: prepared.policy.effectivePolicyDigest,
+              configDigest: prepared.policy.effectiveConfigDigest,
+              currentHeadSha: COMMIT_SHA_AMENDED,
+              priorHeadSha: COMMIT_SHA_ORIGINAL,
+              baseSha: BASE,
+            }),
             reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
             reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
             sourceLoader: vi.fn(async () => ({
@@ -258,6 +273,13 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
+            ...preparedCheckpointHistory({
+              policyDigest: prepared.policy.effectivePolicyDigest,
+              configDigest: prepared.policy.effectiveConfigDigest,
+              currentHeadSha: COMMIT_SHA_ORIGINAL,
+              priorHeadSha: COMMIT_SHA_ORIGINAL,
+              baseSha: BASE,
+            }),
             reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
             reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
             sourceLoader: vi.fn(async () => ({
@@ -270,6 +292,140 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
           }) as never
         )
       ).rejects.toThrow('Exact-head checkpoint and disputed finding requests are required for a safe retry');
+    });
+
+    it('fails closed when a retry has no history-authorized exact-head checkpoint', async () => {
+      const { prepared, transport } = setupPolicyAndPrepared();
+      const workerInput = env({
+        REVIEW_AUTHORITATIVE_GATE: 'true',
+        REVIEW_HEAD_SHA: COMMIT_SHA_ORIGINAL,
+        REVIEW_EXECUTION_ATTEMPT: '2',
+        REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest,
+        REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
+        REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+        GITHUB_PUBLISH_TOKEN: 'ghs_fake',
+        REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
+        REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
+      });
+      const readCheckpoint = vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] }));
+      const composedReviewRunner = vi.fn();
+      const clientComplete = vi.fn(async () => {});
+
+      await expect(
+        runPublishingReviewWorker(
+          workerInput,
+          deps({
+            composedReviewRunner,
+            client: { complete: clientComplete },
+            reviewCheckpoint: { read: readCheckpoint, write: vi.fn() },
+            reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
+            sourceLoader: vi.fn(async () => ({
+              baseSha: BASE,
+              headSha: COMMIT_SHA_ORIGINAL,
+              diff: sourceDiff,
+              diffDigest: createHash('sha256').update(sourceDiff).digest('hex'),
+              githubReads: 0,
+            })),
+          }) as never
+        )
+      ).rejects.toThrow('Exact-head checkpoint and disputed finding requests are required for a safe retry');
+
+      expect(readCheckpoint).not.toHaveBeenCalled();
+      expect(composedReviewRunner).not.toHaveBeenCalled();
+      expect(clientComplete).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when compatible history has no checkpoint adapter', async () => {
+      const { prepared, transport } = setupPolicyAndPrepared();
+      const workerInput = env({
+        REVIEW_AUTHORITATIVE_GATE: 'true',
+        REVIEW_HEAD_SHA: COMMIT_SHA_ORIGINAL,
+        REVIEW_EXECUTION_ATTEMPT: '2',
+        REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest,
+        REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
+        REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+        GITHUB_PUBLISH_TOKEN: 'ghs_fake',
+        REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
+        REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
+      });
+      const composedReviewRunner = vi.fn();
+      const clientComplete = vi.fn(async () => {});
+
+      await expect(
+        runPublishingReviewWorker(
+          workerInput,
+          deps({
+            ...preparedCheckpointHistory({
+              policyDigest: prepared.policy.effectivePolicyDigest,
+              configDigest: prepared.policy.effectiveConfigDigest,
+              currentHeadSha: COMMIT_SHA_ORIGINAL,
+              priorHeadSha: COMMIT_SHA_ORIGINAL,
+              baseSha: BASE,
+            }),
+            composedReviewRunner,
+            client: { complete: clientComplete },
+            reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
+            sourceLoader: vi.fn(async () => ({
+              baseSha: BASE,
+              headSha: COMMIT_SHA_ORIGINAL,
+              diff: sourceDiff,
+              diffDigest: createHash('sha256').update(sourceDiff).digest('hex'),
+              githubReads: 0,
+            })),
+          }) as never
+        )
+      ).rejects.toThrow('Exact-head checkpoint and disputed finding requests are required for a safe retry');
+
+      expect(composedReviewRunner).not.toHaveBeenCalled();
+      expect(clientComplete).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when compatible history returns a null retry checkpoint', async () => {
+      const { prepared, transport } = setupPolicyAndPrepared();
+      const workerInput = env({
+        REVIEW_AUTHORITATIVE_GATE: 'true',
+        REVIEW_HEAD_SHA: COMMIT_SHA_ORIGINAL,
+        REVIEW_EXECUTION_ATTEMPT: '2',
+        REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest,
+        REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
+        REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+        GITHUB_PUBLISH_TOKEN: 'ghs_fake',
+        REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
+        REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
+      });
+      const readCheckpoint = vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] }));
+      const composedReviewRunner = vi.fn();
+      const clientComplete = vi.fn(async () => {});
+
+      await expect(
+        runPublishingReviewWorker(
+          workerInput,
+          deps({
+            ...preparedCheckpointHistory({
+              policyDigest: prepared.policy.effectivePolicyDigest,
+              configDigest: prepared.policy.effectiveConfigDigest,
+              currentHeadSha: COMMIT_SHA_ORIGINAL,
+              priorHeadSha: COMMIT_SHA_ORIGINAL,
+              baseSha: BASE,
+            }),
+            composedReviewRunner,
+            client: { complete: clientComplete },
+            reviewCheckpoint: { read: readCheckpoint, write: vi.fn() },
+            reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
+            sourceLoader: vi.fn(async () => ({
+              baseSha: BASE,
+              headSha: COMMIT_SHA_ORIGINAL,
+              diff: sourceDiff,
+              diffDigest: createHash('sha256').update(sourceDiff).digest('hex'),
+              githubReads: 0,
+            })),
+          }) as never
+        )
+      ).rejects.toThrow('Exact-head checkpoint and disputed finding requests are required for a safe retry');
+
+      expect(readCheckpoint).toHaveBeenCalledOnce();
+      expect(composedReviewRunner).not.toHaveBeenCalled();
+      expect(clientComplete).not.toHaveBeenCalled();
     });
   });
 
@@ -327,6 +483,13 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
+            ...preparedCheckpointHistory({
+              policyDigest: prepared.policy.effectivePolicyDigest,
+              configDigest: prepared.policy.effectiveConfigDigest,
+              currentHeadSha: COMMIT_SHA_ORIGINAL,
+              priorHeadSha: COMMIT_SHA_ORIGINAL,
+              baseSha: BASE,
+            }),
             composedReviewRunner,
             reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
             reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
@@ -386,6 +549,13 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
+            ...preparedCheckpointHistory({
+              policyDigest: prepared.policy.effectivePolicyDigest,
+              configDigest: prepared.policy.effectiveConfigDigest,
+              currentHeadSha: COMMIT_SHA_ORIGINAL,
+              priorHeadSha: COMMIT_SHA_ORIGINAL,
+              baseSha: BASE,
+            }),
             composedReviewRunner,
             reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
             reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
@@ -443,6 +613,13 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         runPublishingReviewWorker(
           workerInput,
           deps({
+            ...preparedCheckpointHistory({
+              policyDigest: prepared.policy.effectivePolicyDigest,
+              configDigest: prepared.policy.effectiveConfigDigest,
+              currentHeadSha: COMMIT_SHA_ORIGINAL,
+              priorHeadSha: COMMIT_SHA_ORIGINAL,
+              baseSha: BASE,
+            }),
             reviewCheckpoint: { read: readCheckpoint, write: vi.fn(async () => 2) },
             reviewCompletion: { reportReviewResult: vi.fn(async () => {}) },
             sourceLoader: vi.fn(async () => ({

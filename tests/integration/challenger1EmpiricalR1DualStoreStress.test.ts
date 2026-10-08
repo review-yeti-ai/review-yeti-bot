@@ -116,16 +116,19 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
       expect(found.strictnessProfile).toBe('assertive');
     });
 
-    it('retains default initial dataset on PVC file creation', () => {
+    it('keeps a fresh PVC file free of demo repositories and review history', () => {
       delete process.env.DATABASE_URL;
       delete process.env.POSTGRES_URL;
 
       const store = new DashboardStore(tempStorePath);
       const repos = store.getRepositories();
-      expect(repos.length).toBeGreaterThanOrEqual(3);
-      expect(repos.some((r) => r.repo === 'example-api')).toBe(true);
-      expect(repos.some((r) => r.repo === 'example-meta')).toBe(true);
-      expect(repos.some((r) => r.repo === 'ct-review-bot')).toBe(true);
+      expect(repos).toEqual([]);
+      expect(store.getReviewLogs()).toEqual([]);
+      expect(store.getAnalyticsSummary('30d')).toMatchObject({
+        totalReviews: 0,
+        totalSpendUsd: 0,
+        totalTokens: 0,
+      });
     });
   });
 
@@ -277,7 +280,7 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
   });
 
   describe('4. Automatic Disk Seeding Behavior', () => {
-    it('seeds all tables from fallbackSeedData when database is empty (count === 0)', async () => {
+    it('seeds configuration but no demo repositories or review history into an empty database', async () => {
       process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/mockdb';
       const store = new PostgresStore();
 
@@ -300,15 +303,15 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
 
       const seedData: DashboardData = {
         repositories: [
-          { id: 'repo-1', owner: 'seed-org', repo: 'seed-repo-1', full_name: 'seed-org/seed-repo-1', automationEnabled: true, updatedAt: '2026-01-01T00:00:00Z' },
+          { id: 'repo-1', owner: 'synthetic', repo: 'sample-repo-1', full_name: 'synthetic/sample-repo-1', automationEnabled: true, updatedAt: '2026-01-01T00:00:00Z' },
         ],
         settings: {
-          defaultModelOverrides: { security: 'gpt-4o' },
+          defaultModelOverrides: { security: 'synthetic/v1' },
           personaSettings: {
-            security: { id: 'security', displayName: 'Security', description: 'sec', enabled: true, model: 'gpt-4o', effort: 'high', confidenceThreshold: 80 },
+            security: { id: 'security', displayName: 'Security', description: 'Synthetic fixture', enabled: true, model: 'synthetic/v1', effort: 'high', confidenceThreshold: 80 },
           },
           providerConfigs: {
-            openai: { id: 'openai', displayName: 'OpenAI', enabled: true, activeModels: ['gpt-4o'], updatedAt: '2026-01-01T00:00:00Z' },
+            synthetic: { id: 'synthetic', displayName: 'Synthetic', enabled: true, activeModels: ['synthetic/v1'], updatedAt: '2026-01-01T00:00:00Z' },
           },
           memoryEngineSettings: { autoSuppressNits: true, learningConfidenceThreshold: 80, maxLearningsPerRepo: 100 },
           providerCostCaps: { monthlyBudgetUSD: 100, dailyBudgetUSD: 10, alertThresholdPercent: 80, actionOnCapBreach: 'fail_closed' },
@@ -316,8 +319,8 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
         reviewLogs: [
           {
             id: 'log-1',
-            prRun: 'seed-org/seed-repo-1 #1',
-            repo: 'seed-org/seed-repo-1',
+            prRun: 'synthetic/sample-repo-1 #1',
+            repo: 'synthetic/sample-repo-1',
             prNumber: 1,
             headSha: 'abc1234',
             personas: ['security'],
@@ -333,21 +336,12 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
 
       await store.initialize(seedData);
 
-      // Verify seeding inserts happened for settings, repos, personas, providers, review_logs
+      // Fresh startup seeds configuration only; user repositories and review history are not demo defaults.
       expect(insertedQueries.some((q) => q.text.includes('INSERT INTO dashboard_settings'))).toBe(true);
-      expect(insertedQueries.some((q) => q.text.includes('INSERT INTO repositories'))).toBe(true);
+      expect(insertedQueries.some((q) => q.text.includes('INSERT INTO repositories'))).toBe(false);
       expect(insertedQueries.some((q) => q.text.includes('INSERT INTO personas'))).toBe(true);
       expect(insertedQueries.some((q) => q.text.includes('INSERT INTO providers'))).toBe(true);
-      expect(insertedQueries.some((q) => q.text.includes('INSERT INTO review_logs'))).toBe(true);
-
-      const repoInsert = insertedQueries.find((q) => q.text.includes('INSERT INTO repositories'));
-      expect(repoInsert?.params[0]).toBe('repo-1');
-      expect(repoInsert?.params[1]).toBe('seed-org');
-      expect(repoInsert?.params[2]).toBe('seed-repo-1');
-
-      const logInsert = insertedQueries.find((q) => q.text.includes('INSERT INTO review_logs'));
-      expect(logInsert?.params[0]).toBe('log-1');
-      expect(logInsert?.params[5]).toBe('SHIP');
+      expect(insertedQueries.some((q) => q.text.includes('INSERT INTO review_logs'))).toBe(false);
     });
 
     it('skips seeding when database tables already contain entries (count > 0)', async () => {
@@ -374,7 +368,7 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
       vi.spyOn(store, 'getPool').mockReturnValue({ connect: async () => mockClient } as any);
 
       const seedData: DashboardData = {
-        repositories: [{ owner: 'seed-org', repo: 'seed-repo-1', automationEnabled: true, updatedAt: '2026-01-01T00:00:00Z' }],
+        repositories: [{ owner: 'synthetic', repo: 'seed-repo-1', automationEnabled: true, updatedAt: '2026-01-01T00:00:00Z' }],
         settings: {
           defaultModelOverrides: {},
           memoryEngineSettings: { autoSuppressNits: true, learningConfidenceThreshold: 80, maxLearningsPerRepo: 100 },
@@ -464,7 +458,7 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
 
       const store = new DashboardStore(tempStorePath);
       store.recordReviewRun({
-        repo: 'exampleorg/example-api',
+        repo: 'synthetic/example-api',
         prNumber: 99,
         headSha: 'head99',
         personas: ['security'],
@@ -474,7 +468,7 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
 
       expect(saveLogSpy).toHaveBeenCalled();
       const passedLog = saveLogSpy.mock.calls[0][0];
-      expect(passedLog.repo).toBe('exampleorg/example-api');
+      expect(passedLog.repo).toBe('synthetic/example-api');
       expect(passedLog.prNumber).toBe(99);
       expect(passedLog.arbiterVerdict).toBe('SHIP');
     });

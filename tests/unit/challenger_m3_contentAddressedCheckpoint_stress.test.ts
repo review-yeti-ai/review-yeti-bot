@@ -11,11 +11,13 @@ import {
 import {
   TaskSourceDelivery,
   validateTaskSourceReceipt,
+  type TaskSourceReceipt,
 } from '../../src/review/taskSourceDelivery';
 import { runPublishingReviewWorker, parseChangedFiles } from '../../src/cli/publishingReview';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { ComposedRuntimeResourceObserver } from '../../src/panel/composedResourceReceipt';
 import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
+import { preparedCheckpointHistory } from '../support/preparedCheckpointHistory';
 import type { ReviewTask } from '../../src/panel/reviewTask';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
 
@@ -598,6 +600,13 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
       currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: '', githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
+      ...preparedCheckpointHistory({
+        policyDigest: prepared.policy.effectivePolicyDigest,
+        configDigest: prepared.policy.effectiveConfigDigest,
+        currentHeadSha: COMMIT_SHA_B,
+        priorHeadSha: COMMIT_SHA_A,
+        baseSha: BASE_SHA_A,
+      }),
       panelRunner: vi.fn(async () => ({
         applicablePersonaIds: ['sec-lane'],
         personas: [{ id: 'sec-lane', findings: [] }],
@@ -671,8 +680,10 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
       `diff --git a/src/f4.ts b/src/f4.ts\n@@ -1 +1 @@\n-f4_old\n+f4_new\n`,
       `diff --git a/src/f5.ts b/src/f5.ts\n@@ -1 +1 @@\n-f5_old\n+f5_new\n`,
     ].join('');
+    const parsedFilesB = parseChangedFiles(diffB).files;
 
     let receivedResumedCompletedTasks: any[] = [];
+    const returnedSourceDelivery: Array<{ id: string; sourceDelivery: TaskSourceReceipt }> = [];
     const composedReviewRunner = vi.fn(async (options: any) => {
       receivedResumedCompletedTasks = options.checkpoint?.resumed?.completedTasks ?? [];
       const budget = options.providerAttemptBudget;
@@ -693,17 +704,50 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
       observer.setPlan(plan);
       for (const t of plan) {
         observer.markTaskStarted(t.id);
-        const receipt = completedTasksA.find((c) => c.id === t.id)?.sourceDelivery;
-        if (receipt) observer.markTaskOutcome(t.id, 'completed', receipt);
+        const retained = receivedResumedCompletedTasks.find((completed) => completed.id === t.id);
+        let receipt: TaskSourceReceipt;
+        if (retained) {
+          const rebound = validateTaskSourceReceipt(retained.sourceDelivery, {
+            taskId: t.id,
+            paths: t.paths,
+            files: parsedFilesB,
+            headSha: COMMIT_SHA_B,
+            baseSha: BASE_SHA_A,
+            allowContentAddressed: true,
+          });
+          if (!rebound) throw new Error(`Retained task ${t.id} has no valid current-source receipt`);
+          receipt = rebound;
+        } else {
+          const file = parsedFilesB.find((candidate) => candidate.path === t.paths[0]);
+          if (!file?.patch) throw new Error(`Regenerated task ${t.id} has no current source patch`);
+          const delivery = new TaskSourceDelivery({
+            taskId: t.id,
+            paths: t.paths,
+            files: parsedFilesB,
+            headSha: COMMIT_SHA_B,
+            baseSha: BASE_SHA_A,
+            prefix: file.patch,
+            inlinedPaths: t.paths,
+          });
+          delivery.beginAttempt();
+          receipt = delivery.acknowledgeRequest([{ role: 'user', content: file.patch }]);
+        }
+        returnedSourceDelivery.push({ id: t.id, sourceDelivery: receipt });
+        observer.markTaskOutcome(t.id, 'completed', receipt);
       }
       const resources = observer.snapshot('terminal');
       if (resources) options.resourceObservationCapture(resources);
       return {
         taskPlan: plan,
         applicablePersonaIds: plan.map((p) => p.id),
-        personas: plan.map((p) => ({ id: p.id, decision: 'APPROVE', findings: [], sourceDelivery: completedTasksA[0].sourceDelivery })),
+        personas: plan.map((p) => ({
+          id: p.id,
+          decision: 'APPROVE',
+          findings: [],
+          sourceDelivery: returnedSourceDelivery.find((completed) => completed.id === p.id)!.sourceDelivery,
+        })),
         optionalFailures: [],
-        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true, coverageMode: 'file_coverage' },
         arbiter: { verdict: 'SHIP' },
         composedResourceObservation: resources,
       };
@@ -730,6 +774,26 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
     // Assert exactly 4 tasks (1, 2, 4, 5) were retained, and task-3 was invalidated!
     const retainedIds = receivedResumedCompletedTasks.map((t) => t.id).sort();
     expect(retainedIds).toEqual(['task-1', 'task-2', 'task-4', 'task-5']);
+    expect(returnedSourceDelivery.map(({ id }) => id).sort()).toEqual(plan.map(({ id }) => id).sort());
+    for (const { id, sourceDelivery } of returnedSourceDelivery) {
+      expect(validateTaskSourceReceipt(sourceDelivery, {
+        taskId: id,
+        paths: plan.find((task) => task.id === id)!.paths,
+        files: parsedFilesB,
+        headSha: COMMIT_SHA_B,
+        baseSha: BASE_SHA_A,
+      })).not.toBeNull();
+    }
+    const regeneratedTaskReceipt = returnedSourceDelivery.find(({ id }) => id === 'task-3')!.sourceDelivery;
+    expect(regeneratedTaskReceipt).toMatchObject({ headSha: COMMIT_SHA_B, baseSha: BASE_SHA_A, complete: true });
+    expect(validateTaskSourceReceipt(completedTasksA.find(({ id }) => id === 'task-3')!.sourceDelivery, {
+      taskId: 'task-3',
+      paths: ['src/f3.ts'],
+      files: parsedFilesB,
+      headSha: COMMIT_SHA_B,
+      baseSha: BASE_SHA_A,
+      allowContentAddressed: true,
+    })).toBeNull();
   });
 
   // --------------------------------------------------------------------------
@@ -795,6 +859,13 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
           checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn() },
           currentPullRequestVerifier: vi.fn(async () => undefined),
           composedReviewRunner: vi.fn(),
+          ...preparedCheckpointHistory({
+            policyDigest: prepared.policy.effectivePolicyDigest,
+            configDigest: prepared.policy.effectiveConfigDigest,
+            currentHeadSha: COMMIT_SHA_B,
+            priorHeadSha: COMMIT_SHA_A,
+            baseSha: BASE_SHA_A,
+          }),
           reviewCheckpoint: { read: vi.fn(async () => ({ checkpoint, disputedFindingRechecks: [] })), write: vi.fn() },
           reviewCompletion: { reportReviewResult: vi.fn() },
           groundedVerifierClient: groundedFixtureClient,
@@ -875,6 +946,13 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
           checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn() },
           currentPullRequestVerifier: vi.fn(async () => undefined),
           composedReviewRunner: vi.fn(),
+          ...preparedCheckpointHistory({
+            policyDigest: prepared.policy.effectivePolicyDigest,
+            configDigest: prepared.policy.effectiveConfigDigest,
+            currentHeadSha: COMMIT_SHA_B,
+            priorHeadSha: COMMIT_SHA_A,
+            baseSha: BASE_SHA_A,
+          }),
           reviewCheckpoint: { read: vi.fn(async () => ({ checkpoint, disputedFindingRechecks: [] })), write: vi.fn() },
           reviewCompletion: { reportReviewResult: vi.fn() },
           groundedVerifierClient: groundedFixtureClient,
@@ -892,4 +970,3 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
     ).rejects.toThrow('Review execution checkpoint does not match this exact-head review');
   });
 });
-

@@ -13,6 +13,7 @@ import { MAX_PERSONAS, MAX_TEXT_CHARACTERS, deriveCanonicalWorkerReviewEvidence 
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from '../../src/review/groundedEvidenceV2';
 import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
+import { preparedCheckpointHistory } from '../support/preparedCheckpointHistory';
 import { resolveComposedEngineMaxFindings, resolveComposedProviderId } from '../../src/panel/composedEngine';
 import {
   classifyFailure,
@@ -3864,7 +3865,29 @@ describe('telemetry integration with protected composed closeout', () => {
       unreportedLanes: [{ id: 'testing', error: 'evidence cutoff', failureClass: 'timeout' }],
       gracefulExit: { reason: 'evidence_deadline', completedTaskIds: ['security-auth'], pendingTaskIds: ['testing'], checkpointRevision: 2 },
       quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false }, arbiter: { verdict: 'SHIP' } };
-    return { input, transport, reportReviewResult, plan, finding, partial };
+    const retryHistory = preparedCheckpointHistory({
+      policyDigest: prepared.policy.effectivePolicyDigest,
+      configDigest: prepared.policy.effectiveConfigDigest,
+      currentHeadSha: HEAD,
+      baseSha: BASE,
+    });
+    const retryCheckpoint = {
+      version: 'ReviewExecutionCheckpoint.v1' as const,
+      runId: input.REVIEW_RUN_ID!,
+      repositoryId: Number(input.REVIEW_REPOSITORY_ID),
+      owner: 'exampleorg',
+      repo: 'example-meta',
+      prNumber: Number(input.REVIEW_PR_NUMBER),
+      headSha: HEAD,
+      baseSha: BASE,
+      policyDigest: prepared.policy.effectivePolicyDigest,
+      configDigest: prepared.policy.effectiveConfigDigest,
+      executionAttempt: 2,
+      revision: 2,
+      plan,
+      completedTasks: [],
+    };
+    return { input, transport, reportReviewResult, plan, finding, partial, retryHistory, retryCheckpoint };
   };
 
   it('forwards satisfied disputed-finding receipt ids to the durable checkpoint adapter', async () => {
@@ -3879,14 +3902,48 @@ describe('telemetry integration with protected composed closeout', () => {
     });
 
     await runPublishingReviewWorker(f.input, deps({ composedReviewRunner, reviewCheckpoint: {
-      read: vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] })), write,
-    }, reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
+      read: vi.fn(async () => ({ checkpoint: f.retryCheckpoint, disputedFindingRechecks: [] })), write,
+    }, ...f.retryHistory, reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
     sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF,
       diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
 
     expect(write).toHaveBeenCalledOnce();
+    expect(composedReviewRunner).toHaveBeenCalledOnce();
+    expect(composedReviewRunner.mock.calls[0]?.[0].checkpoint?.resumed).toMatchObject({
+      runId: f.retryCheckpoint.runId,
+      headSha: HEAD,
+      baseSha: BASE,
+      policyDigest: f.retryCheckpoint.policyDigest,
+      configDigest: f.retryCheckpoint.configDigest,
+    });
     expect(write.mock.calls[0]?.[0]).toMatchObject({ executionAttempt: 3,
       satisfiedFindingRecheckIds: [requestId] });
+  });
+
+  it('starts a fresh full review on attempt 1 when checkpoint storage is unavailable', async () => {
+    const f = fixture();
+    const input = { ...f.input, REVIEW_EXECUTION_ATTEMPT: '1' };
+    const read = vi.fn(async () => { throw new Error('checkpoint store unavailable'); });
+    let resumedCheckpoint: unknown;
+    const composedReviewRunner = vi.fn(async (options: any) => {
+      resumedCheckpoint = options.checkpoint?.resumed;
+      return f.partial;
+    });
+
+    const result = await runPublishingReviewWorker(input, deps({
+      ...f.retryHistory,
+      composedReviewRunner,
+      reviewCheckpoint: { read, write: vi.fn(async () => 3) },
+      reviewCompletion: { reportReviewResult: f.reportReviewResult },
+      zoektGrounding: vi.fn(async () => ({})),
+      sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF,
+        diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })),
+    }) as never);
+
+    expect(result).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', failureClass: 'timeout' });
+    expect(read).toHaveBeenCalledOnce();
+    expect(composedReviewRunner).toHaveBeenCalledOnce();
+    expect(resumedCheckpoint).toBeNull();
   });
 
   it.each(['resolved', 'rejected'] as const)('keeps a potential blocker incomplete after late %s cancellation without independent proof', async (settlement) => {
@@ -3909,8 +3966,8 @@ describe('telemetry integration with protected composed closeout', () => {
       return f.partial;
     });
     const task = runPublishingReviewWorker(f.input, deps({ client, composedReviewRunner, reviewCheckpoint: {
-      read: vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] })), write,
-    },
+      read: vi.fn(async () => ({ checkpoint: f.retryCheckpoint, disputedFindingRechecks: [] })), write,
+    }, ...f.retryHistory,
       reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
       sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
     try {
@@ -3947,6 +4004,8 @@ describe('telemetry integration with protected composed closeout', () => {
         snapshot: () => { if (kind === 'throwing') throw new Error('SECRET optional diagnostics'); return kind === 'malformed' ? { rawPrompt: 'SECRET' } as never : undefined; } }));
       try {
         const result = await runPublishingReviewWorker(f.input, deps({ composedReviewRunner: vi.fn(async () => f.partial),
+          ...f.retryHistory,
+          reviewCheckpoint: { read: vi.fn(async () => ({ checkpoint: f.retryCheckpoint, disputedFindingRechecks: [] })), write: vi.fn(async () => 3) },
           reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
           sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
         expect(result).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 0, failureClass: 'timeout' });
@@ -4043,7 +4102,7 @@ describe('telemetry integration with protected composed closeout', () => {
         applicablePersonaIds: ['task-a'],
         personas: [{ id: 'task-a', decision: 'APPROVE', findings: [], sourceDelivery: receipt }],
         optionalFailures: [],
-        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true, coverageMode: 'file_coverage' },
         arbiter: { verdict: 'SHIP' },
         composedResourceObservation: resources,
       };
@@ -4090,6 +4149,13 @@ describe('telemetry integration with protected composed closeout', () => {
     const result = await runPublishingReviewWorker(
       workerInput,
       deps({
+        ...preparedCheckpointHistory({
+          policyDigest: prepared.policy.effectivePolicyDigest,
+          configDigest: prepared.policy.effectiveConfigDigest,
+          currentHeadSha: COMMIT_SHA_AMENDED,
+          priorHeadSha: COMMIT_SHA_ORIGINAL,
+          baseSha: BASE,
+        }),
         composedReviewRunner,
         findingThreadReader: vi.fn(async (_pr: unknown, expectedHeadSha: string) => ({
           source: 'service' as const,

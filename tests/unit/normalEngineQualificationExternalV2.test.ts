@@ -138,8 +138,10 @@ describe('current-source external v2 worker adapter', () => {
     await chmod(storeRoot, 0o700);
     const fakeFetch = vi.fn(async () => new Response('{}', { status: 200 }));
     let passedEnv: NodeJS.ProcessEnv | undefined;
+    let childRuntimeCredential: string | undefined;
     const runCase = vi.fn(async (env, dependencies) => {
       passedEnv = env;
+      childRuntimeCredential = env.OPENAI_API_KEY;
       await dependencies.providerFetchImplementation!(`${inferenceBaseUrl}/chat/completions`, {
         headers: { 'x-request-id': '123e4567-e89b-42d3-a456-426614174000' },
       });
@@ -161,9 +163,12 @@ describe('current-source external v2 worker adapter', () => {
       await persistFakeReceipt(storeRoot, receipt);
       return receipt as never;
     });
-    const executor = createBoundExternalNormalV2CaseExecutor({ baseEnv: bindings({ GH_TOKEN: 'must-not-forward',
-      REVIEW_NORMAL_ENGINE_QUALIFICATION_EXPECTED_VERDICT: 'must-not-forward' }), fetchImplementation: fakeFetch as never,
-      readInferenceKeyInMemory: () => 'qualification-test-key',
+    const baseEnv = bindings({ GH_TOKEN: 'must-not-forward',
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_EXPECTED_VERDICT: 'must-not-forward' });
+    baseEnv.OPENAI_API_KEY = 'ambient-env-key-must-not-be-used';
+    const credentialReader = vi.fn(() => 'qualification-test-key');
+    const executor = createBoundExternalNormalV2CaseExecutor({ baseEnv, fetchImplementation: fakeFetch as never,
+      readInferenceKeyInMemory: credentialReader,
       runCase: runCase as never });
     let clientCallCount = 0;
     let blockedClientCallCount = 0;
@@ -175,6 +180,11 @@ describe('current-source external v2 worker adapter', () => {
 
     expect(runCase).toHaveBeenCalledOnce();
     expect(fakeFetch).toHaveBeenCalledOnce();
+    expect(credentialReader).toHaveBeenCalledOnce();
+    expect(childRuntimeCredential).toBe('qualification-test-key');
+    expect(passedEnv?.OPENAI_API_KEY).toBeUndefined();
+    expect(JSON.stringify(receipt)).not.toContain('qualification-test-key');
+    expect(baseEnv.OPENAI_API_KEY).toBe('ambient-env-key-must-not-be-used');
     expect(clientCallCount).toBe(1);
     expect(passedEnv).not.toHaveProperty('GH_TOKEN');
     expect(passedEnv).not.toHaveProperty('REVIEW_NORMAL_ENGINE_QUALIFICATION_EXPECTED_VERDICT');
@@ -270,6 +280,38 @@ describe('current-source external v2 worker adapter', () => {
     await rm(storeRoot, { recursive: true, force: true });
   });
 
+  it('strictly accepts private inference credentials only for arms that make real provider calls', async () => {
+    const module = await import('../../src/qualification/normalEngineQualificationExternalV2');
+    const parse = (module as unknown as { parseExternalNormalV2ImageCaseRequest?:
+      (value: unknown) => { projection: { arm: string }; inferenceCredential?: string } }).parseExternalNormalV2ImageCaseRequest;
+    expect(parse).toBeTypeOf('function');
+    if (!parse) throw new Error('external normal v2 case request parser is unavailable');
+
+    const credential = 'qualification-synthetic-secret-do-not-log';
+    const baseRequest = { projection, clientCallAllocation: 58, deadlineAt: Date.now() + 240_000 };
+    expect(parse({ ...baseRequest, inferenceCredential: credential })).toMatchObject({
+      projection: { arm: 'p2-only' }, inferenceCredential: credential,
+    });
+    expect(() => parse(baseRequest)).toThrow('external_normal_v2_child_case_request_invalid');
+    for (const malformed of ['', '   ', 'key\nwith-break', 'x'.repeat(8_193)]) {
+      expect(() => parse({ ...baseRequest, inferenceCredential: malformed }))
+        .toThrow('external_normal_v2_child_case_request_invalid');
+    }
+    expect(() => parse({ ...baseRequest, inferenceCredential: credential, extra: 'unexpected' }))
+      .toThrow('external_normal_v2_child_case_request_invalid');
+
+    const controlProjection = { ...projection, arm: 'provider-failure' };
+    const controlRequest = { projection: controlProjection, clientCallAllocation: 1, deadlineAt: Date.now() + 30_000 };
+    expect(parse(controlRequest)).toMatchObject({ projection: { arm: 'provider-failure' } });
+    expect(() => parse({ ...controlRequest, inferenceCredential: credential }))
+      .toThrow('external_normal_v2_child_case_request_invalid');
+
+    for (const arm of ['preflight-source-coverage-control', 'repair-head-history-unavailable']) {
+      expect(parse({ projection: { ...projection, arm }, clientCallAllocation: 0,
+        deadlineAt: Date.now() + 15_000 })).toMatchObject({ projection: { arm } });
+    }
+  });
+
   it('fails closed unless the trusted prepared budget is 100 total including the 12-call verifier reserve', () => {
     expect(trustedPreparedBudget(bindings())).toEqual({ total: 100, investigation: 88, verifier: 12, maxTasks: 8 });
     const invalid = bindings();
@@ -312,9 +354,10 @@ describe('current-source external v2 worker adapter', () => {
       return child;
     }) as never;
     try {
+      const noCredentialRead = vi.fn(() => { throw new Error('control arm must not read the inference key'); });
       const adapter = createPinnedWorkerImageExternalNormalV2Adapter({ policyInputRoot: policyRoot, baseEnv: bindings(), privateBinding,
         assertImageAvailable(ref) { inspected.push(ref); },
-        readInferenceKeyInMemory() { throw new Error('auth-control must not read the inference key'); },
+        readInferenceKeyInMemory: noCredentialRead,
         spawnImplementation });
       const proof = await adapter.preflight({ phaseId: 'ws5-current-source-external-v2', phasePlanSha256: '4'.repeat(64),
         sourceRevision: runtime.sourceRevision, workerImageDigest: runtime.workerImageDigest,
@@ -342,21 +385,57 @@ describe('current-source external v2 worker adapter', () => {
       expect(dockerCalls[1].env).not.toHaveProperty('KUBECONFIG');
       expect(dockerCalls[1].env.OPENAI_API_KEY).toBeUndefined();
       expect(dockerCalls[1].stdin).not.toContain('qualification-test-key');
+      for (const [arm, caseId, inputPath] of [
+        ['preflight-source-coverage-control', 'ws5-current-source-coverage-control', 'inputs/source_coverage_control.json'],
+        ['repair-head-history-unavailable', 'ws5-current-required-history-unavailable', 'inputs/history_unavailable.json'],
+      ]) {
+        const zeroCallProjection = { ...projection, arm, caseId,
+          inputPath: `eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/${inputPath}`,
+          inputSha256: '9'.repeat(64) };
+        await adapter.executeCase(zeroCallProjection, { signal: new AbortController().signal,
+          deadlineAt: Date.now() + 15_000, captureOutsideChild: true, artifactStoreRoot: phaseRoot,
+          clientCallAllocation: 0, recordClientCall() { throw new Error('zero-call control made a request'); },
+          get clientCallCount() { return 0; }, get blockedClientCallCount() { return 0; } });
+      }
+      expect(noCredentialRead).not.toHaveBeenCalled();
+      expect(dockerCalls).toHaveLength(4);
+      for (const controlCall of dockerCalls.slice(1)) {
+        expect(controlCall.args).not.toContain('OPENAI_API_KEY');
+        expect(controlCall.env).not.toHaveProperty('OPENAI_API_KEY');
+        expect(controlCall.stdin).not.toContain('inferenceCredential');
+      }
+      const normalCredentialReader = vi.fn(() => 'qualification-synthetic-secret-do-not-log');
       const normalAdapter = createPinnedWorkerImageExternalNormalV2Adapter({ policyInputRoot: policyRoot, baseEnv: bindings(), privateBinding,
-        assertImageAvailable() {}, readInferenceKeyInMemory() { return 'private-test-key'; }, spawnImplementation });
+        assertImageAvailable() {}, readInferenceKeyInMemory: normalCredentialReader, spawnImplementation });
       const normalResult = await normalAdapter.executeCase(projection, { signal: new AbortController().signal,
         deadlineAt: Date.now() + 240_000, captureOutsideChild: true, artifactStoreRoot: phaseRoot,
         clientCallAllocation: 58, recordClientCall() { throw new Error('host must not proxy child HTTP attempts'); },
         get clientCallCount() { return 0; }, get blockedClientCallCount() { return 0; } });
       expect(normalResult).toEqual(caseResult);
-      const normalChild = dockerCalls[2];
-      expect(normalChild.args).toContain('--env');
-      expect(normalChild.args).toContain('OPENAI_API_KEY');
-      expect(normalChild.args).not.toContain('private-test-key');
-      expect(normalChild.env.OPENAI_API_KEY).toBe('private-test-key');
+      const normalChild = dockerCalls[4];
+      expect(normalCredentialReader).toHaveBeenCalledOnce();
+      expect(normalChild.args).toContain('--interactive');
+      expect(normalChild.args).not.toContain('OPENAI_API_KEY');
+      expect(normalChild.env).not.toHaveProperty('OPENAI_API_KEY');
+      expect(normalChild.stdin).toContain('"inferenceCredential":"qualification-synthetic-secret-do-not-log"');
+      expect(JSON.parse(normalChild.stdin)).toMatchObject({ inferenceCredential: 'qualification-synthetic-secret-do-not-log' });
+      expect(JSON.stringify(normalResult)).not.toContain('qualification-synthetic-secret-do-not-log');
+      expect(JSON.stringify(caseResult)).not.toContain('qualification-synthetic-secret-do-not-log');
       expect(normalChild.env).not.toHaveProperty('credentialBindingSha256');
       expect(normalChild.stdin).not.toContain(privateBinding.credentialBindingSha256);
-      expect(normalChild.stdin).not.toContain('private-test-key');
+
+      const launchesBeforeInvalidCredentials = dockerCalls.length;
+      for (const malformedCredential of ['', '   ', 'invalid\ncredential', 'x'.repeat(8_193)]) {
+        const invalidAdapter = createPinnedWorkerImageExternalNormalV2Adapter({ policyInputRoot: policyRoot,
+          baseEnv: bindings(), privateBinding, assertImageAvailable() {},
+          readInferenceKeyInMemory: () => malformedCredential, spawnImplementation });
+        await expect(invalidAdapter.executeCase(projection, { signal: new AbortController().signal,
+          deadlineAt: Date.now() + 240_000, captureOutsideChild: true, artifactStoreRoot: phaseRoot,
+          clientCallAllocation: 58, recordClientCall() { throw new Error('invalid credential made a provider request'); },
+          get clientCallCount() { return 0; }, get blockedClientCallCount() { return 0; } }))
+          .rejects.toThrow('external_normal_v2_parent_inference_credential_invalid');
+      }
+      expect(dockerCalls).toHaveLength(launchesBeforeInvalidCredentials);
     } finally {
       await Promise.all([rm(policyRoot, { recursive: true, force: true }), rm(phaseRoot, { recursive: true, force: true })]);
     }

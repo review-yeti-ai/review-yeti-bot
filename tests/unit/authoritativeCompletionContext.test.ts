@@ -5,7 +5,7 @@ import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadErr
   from '../../src/github/authoritativeReadFailure';
 import { AuthoritativePublishingResolver } from '../../src/review/authoritativePublishingResolver';
 import { createAuthoritativeCompletionContext, type AuthoritativeCompletionContextOptions } from '../../src/review/authoritativeCompletionContext';
-import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
+import { buildAuthoritativeReviewIdentity, fingerprintEffectiveReviewConfig } from '../../src/review/authoritativeReviewIdentity';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { sha256 } from '../../src/review/reviewCore';
 import { deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
@@ -373,11 +373,25 @@ describe('service-owned authoritative completion context', () => {
 
   it('derives a legacy-severity composed V2 worker receipt with the service-prepared config', async () => {
     const f = fixture({}, composedPrepared());
+    const legacyPrepared = structuredClone(f.stored);
+    const legacyConfig = legacyPrepared.config as unknown as Record<string, unknown>;
+    delete legacyConfig.swarm_context_isolation;
+    const legacyComposed = legacyConfig.composed as Record<string, unknown>;
+    delete legacyComposed.swarm_context_isolation;
+    delete legacyComposed.quorum_policy;
+    legacyPrepared.policy.effectiveConfigDigest = fingerprintEffectiveReviewConfig({
+      config: legacyPrepared.config, transport: legacyPrepared.transport,
+    });
+    f.getStoredPrepared.mockResolvedValue(legacyPrepared);
+    f.resolve.mockResolvedValue(resolution(legacyPrepared));
     const context = await f.context(f.gate);
-    const configuration = f.stored.config.review_configuration_receipt;
+    const configuration = legacyPrepared.config.review_configuration_receipt;
     if (!configuration) throw new Error('composed prepared config lacks its effective configuration receipt');
+    expect(legacyPrepared.config.composed?.swarm_context_isolation).toBeUndefined();
+    expect(legacyPrepared.config.composed?.quorum_policy).toBeUndefined();
+    expect(configuration.effective.composed_budget.configured_overrides).toEqual({});
     const coordinates = { runId: f.gate.coordinates.runId, ...target,
-      policyDigest: f.gate.coordinates.policyDigest, configDigest: f.stored.policy.effectiveConfigDigest,
+      policyDigest: f.gate.coordinates.policyDigest, configDigest: legacyPrepared.policy.effectiveConfigDigest,
       executionAttempt: f.gate.coordinates.executionAttempt };
     const task = { id: 'task-a', dimension: 'security' as const, paths: ['src/a.ts'],
       question: 'Could this source change violate its contract?', rationale: 'The changed source must be checked.' };

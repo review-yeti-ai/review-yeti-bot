@@ -4,10 +4,24 @@ import { createApp } from '../../src/app';
 import { dashboardStore } from '../../src/persistence/dashboardStore';
 
 const app = createApp();
+const monitoredRepositoryFixtures = [
+  { owner: 'synthetic', repo: 'example-api' },
+  { owner: 'synthetic', repo: 'example-meta' },
+  { owner: 'synthetic', repo: 'sample-bot' },
+] as const;
 
 describe('Milestone 1: Data Model, Store & API Synchronization', () => {
   beforeEach(() => {
-    // Reset GitHub App Config and repo state for deterministic test execution
+    // Seed neutral repository fixtures instead of relying on product defaults.
+    for (const { owner, repo } of monitoredRepositoryFixtures) {
+      dashboardStore.updateRepository(owner, repo, {
+        private: false,
+        automationEnabled: true,
+        strictnessProfile: 'balanced',
+        defaultBranch: 'main',
+      });
+    }
+
     dashboardStore.updateGitHubAppConfig({
       appId: '1029384',
       installationId: '59302194',
@@ -62,22 +76,22 @@ describe('Milestone 1: Data Model, Store & API Synchronization', () => {
         .patch('/api/github/app-config/monitored-repos')
         .set('Authorization', 'Bearer demo_token_public')
         .send({
-          full_name: 'exampleorg/example-api',
+          full_name: 'synthetic/example-api',
           automationEnabled: false,
           strictnessProfile: 'assertive',
         });
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.repository.full_name).toBe('exampleorg/example-api');
+      expect(res.body.repository.full_name).toBe('synthetic/example-api');
       expect(res.body.repository.automationEnabled).toBe(false);
       expect(res.body.repository.strictnessProfile).toBe('assertive');
 
       // Verify updated state in store
       const repos = dashboardStore.getRepositories();
-      const ciscoCdr = repos.find((r) => r.full_name === 'exampleorg/example-api');
-      expect(ciscoCdr?.automationEnabled).toBe(false);
-      expect(ciscoCdr?.strictnessProfile).toBe('assertive');
+      const repository = repos.find((r) => r.full_name === 'synthetic/example-api');
+      expect(repository?.automationEnabled).toBe(false);
+      expect(repository?.strictnessProfile).toBe('assertive');
     });
   });
 

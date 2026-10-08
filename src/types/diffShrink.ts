@@ -43,17 +43,17 @@ export interface DiffShrinkDisclosure {
   estimatedTokensBefore: number;
   estimatedTokensAfter: number;
   /**
-   * REL-1141: changed files the lanes did NOT receive in full for reasons
-   * outside diff shrinking (hidden, summarized, truncated, unavailable, or
-   * reduced by the review budget). The applicability snapshot is reconciled
-   * against actually executed budget packs; budget signatures/listings remain
-   * distinct from oversized-lockfile summaries. Absent without a decision.
-   * The summary claims "every change was sent in full" only when it
-   * is present and empty.
+   * REL-1141: changed files the current effective input did NOT receive in full
+   * for reasons outside diff shrinking (hidden, summarized, truncated,
+   * unavailable, or reduced by the review budget). The applicability snapshot
+   * is reconciled against actually executed budget packs; budget
+   * signatures/listings remain distinct from oversized-lockfile summaries.
+   * Composed-engine PLAN input and original WORK source have separate scopes;
+   * WORK completeness is established by TaskSourceDelivery receipts.
+   * Absent without a decision.
    */
   notSentInFull?: Array<{ path: string; why: NotSentInFullReason }>;
 }
 
 export type NotSentInFullReason = 'filtered' | 'summarized' | 'truncated' | 'unavailable' | 'unreviewable'
   | 'budget-signatures' | 'budget-listed';
-
