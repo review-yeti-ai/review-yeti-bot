@@ -199,7 +199,7 @@ describe('isolated qualification service authority', () => {
   const repository = 'review-yeti-ai/review-yeti-qualification';
   const repositoryId = 1_409_547_157;
   const identity = { repositoryId, owner: 'review-yeti-ai', repo: 'review-yeti-qualification' };
-  const qualificationPolicy = { allowAppGate: true, repositoryIds: new Set(['1339040553', String(repositoryId)]) };
+  const qualificationPolicy = { allowAppGate: true, repositoryIds: new Set(['73011', String(repositoryId)]) };
   const qualificationEnv = (overrides: Record<string, string | undefined> = {}) => env({
     REVIEW_YETI_QUALIFICATION_INSTANCE: 'true',
     REVIEW_YETI_PASSTHROUGH: 'false',
@@ -230,7 +230,7 @@ describe('isolated qualification service authority', () => {
       { ...identity, repo: 'review-yeti-bot' },
     ]) }],
     ['the repository owner binding is wrong', { AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES: JSON.stringify([
-      { ...identity, owner: 'calltelemetry' },
+      { ...identity, owner: 'wrong-owner' },
     ]) }],
     ['the repository identity is missing', { AUTHORITATIVE_REVIEW_REPOSITORY_IDENTITIES: undefined }],
     ['the existing App is not configured', { GITHUB_APP_ID: '4552718' }],
