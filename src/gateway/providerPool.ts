@@ -86,3 +86,4 @@ export class ProviderPool {
 }
 
 export const providerPool = new ProviderPool();
+(globalThis as any).__ct_providerPool = providerPool;

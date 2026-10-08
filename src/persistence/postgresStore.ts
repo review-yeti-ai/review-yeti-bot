@@ -1,5 +1,5 @@
 import { Pool, PoolClient } from 'pg';
-import {
+import type {
   DashboardData,
   PlatformSettings,
   RepoDashboardSetting,
@@ -1203,3 +1203,4 @@ export class PostgresStore {
 }
 
 export const postgresStore = new PostgresStore();
+(globalThis as any).__ct_postgresStore = postgresStore;

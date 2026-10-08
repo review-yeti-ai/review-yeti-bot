@@ -16,6 +16,9 @@ export default (defineConfig as any)({
   // REL-582: `cacheDir` is a Vite root option, not a `test.*` one. It sat under `test:` and was
   // silently accepted only because vite's types were unresolvable under `moduleResolution: node`.
   cacheDir: 'node_modules/.vitest',
+  experimental: {
+    fsModuleCache: true,
+  },
   oxc: {
     jsx: {
       runtime: 'automatic',

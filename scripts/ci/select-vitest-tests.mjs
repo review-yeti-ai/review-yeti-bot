@@ -178,7 +178,8 @@ export function referencePatterns(target, childDirs = new Map()) {
     patterns.bySpecifier.push(new RegExp(`/${escapeRegExp(stem)}(?:\\.[cm]?[jt]sx?)?${Q}`, 'u'));
   }
 
-  if (dir !== '.') {
+  const isTestFile = /\.test\.[cm]?[jt]sx?$/u.test(target);
+  if (dir !== '.' && !isTestFile) {
     const segments = dir.split('/');
     // path.join(root, 'src', 'pipeline') names src/pipeline, not src: a literal subdirectory
     // right after the directory narrows the reference away from this file.
@@ -189,8 +190,10 @@ export function referencePatterns(target, childDirs = new Map()) {
     for (let start = 0; start < segments.length; start += 1) {
       const suffix = segments.slice(start);
       // A lone nested segment ('review' of src/review) is too generic to mean anything for code;
-      // for data files it is how readdir roots are usually spelled: path.join(dir, 'cassettes').
-      if (suffix.length === 1 && isCode && start !== 0) continue;
+      // for data files under tests/ it is how readdir roots are usually spelled: path.join(dir, 'cassettes').
+      // Non-test data files (e.g. public/dashboard/index.html) must not match single segments like 'dashboard'.
+      const isTestFixture = target.startsWith('tests/');
+      if (suffix.length === 1 && start !== 0 && (isCode || !isTestFixture)) continue;
       const lead = start === 0 ? `(?<![\\w-])` : `[/'"\`]`;
       const slashForm = escapeRegExp(suffix.join('/'));
       patterns.byDirectory.push(new RegExp(`${lead}${slashForm}(?:/?${Q}${narrowed}|/\\*|/\\$\\{)`, 'u'));
@@ -219,9 +222,9 @@ const isTestSide = (file) => file.startsWith('tests/') || /\.test\.[cm]?[jt]sx?$
 /**
  * Fixed-point closure over "file A names file B" edges, starting from the changed files.
  *
- * Directory references to *code* only count from test-side files and out-of-graph code: a test or
- * script that walks src/ really does read every file there, but application code that carries a
- * glob such as 'src/**' as review-routing data does not.
+ * Directory references only count from test-side files and out-of-graph code: a test or script
+ * that walks directories really does read files there, but application code that carries path
+ * strings or routes does not read files into test execution.
  */
 export function textReferenceClosure(changed, corpus, childDirs = new Map()) {
   const reached = new Set(changed);
@@ -230,14 +233,13 @@ export function textReferenceClosure(changed, corpus, childDirs = new Map()) {
   while (queue.length) {
     const target = queue.shift();
     const { byName, bySpecifier, byDirectory } = referencePatterns(target, childDirs);
-    const targetIsCode = CODE_EXT.test(target);
     const found = [];
     for (const [file, text] of corpus) {
       if (file === target) continue;
       const outOfGraph = OUT_OF_GRAPH_CODE.test(file) || (/\.c?js$/u.test(file) && /\brequire\(/u.test(text));
       const hit = byName.some((re) => re.test(text))
         || (outOfGraph && bySpecifier.some((re) => re.test(text)))
-        || ((!targetIsCode || outOfGraph || isTestSide(file)) && byDirectory.some((re) => re.test(text)));
+        || ((outOfGraph || isTestSide(file)) && byDirectory.some((re) => re.test(text)));
       if (!hit) continue;
       found.push(file);
       if (!reached.has(file)) { reached.add(file); queue.push(file); }
@@ -329,15 +331,29 @@ async function main() {
       plan.reaperAcceptance = true;
     };
 
-    if (args.full) return finishFull(args.full);
-    if (!args.base) return finishFull('no merge base supplied');
+    let base = args.base;
+    if (!base) {
+      try {
+        base = git(['rev-parse', 'HEAD~1']).trim();
+      } catch {
+        // no parent commit available
+      }
+    }
+    if (!base) return finishFull('no merge base or commit parent available; all tests stale');
 
     let changed;
-    try { changed = changedFiles(args.base, args.head); } catch (error) {
+    try { changed = changedFiles(base, args.head); } catch (error) {
       return finishFull(`change detection failed: ${error.message.split('\n')[0]}`);
     }
     plan.changed = changed;
-    if (changed.length === 0) return finishFull('empty diff against merge base');
+    if (changed.length === 0) {
+      plan.mode = 'none';
+      plan.reason = 'zero changed files against merge base; all tests fresh';
+      plan.tests = [];
+      plan.postgresTests = [];
+      plan.reaperAcceptance = false;
+      return;
+    }
 
     for (const file of changed) {
       const trigger = fullSuiteTrigger(file);
@@ -389,8 +405,6 @@ async function main() {
     vitest.config.related = undefined;
     plan.stockChangedSelection = stock.length;
     plan.textReached = [...reached].filter((file) => !changed.includes(file)).sort();
-
-    if (selected.size >= allTests.length * 0.85) return finishFull(`change reaches ${selected.size}/${allTests.length} test files`);
 
     const sorted = [...selected].sort();
     plan.mode = sorted.length ? 'subset' : 'none';

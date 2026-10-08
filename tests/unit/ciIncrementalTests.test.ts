@@ -151,6 +151,16 @@ describe('CI incremental test selection (REL-1074)', () => {
       expect(reached).toContain('tests/unit/glob.test.ts');
       expect(reached).not.toContain('tests/unit/elsewhere.test.ts');
     });
+
+    it('does not match non-test asset directory segments into application code', () => {
+      const corpus = corpusOf({
+        'src/persistence/dashboardStore.ts': "const route = '/dashboard';",
+        'tests/unit/dashboardUi.test.ts': "const page = path.join(root, 'public', 'dashboard');",
+      });
+      const { reached } = textReferenceClosure(['public/dashboard/index.html'], corpus);
+      expect(reached).not.toContain('src/persistence/dashboardStore.ts');
+      expect(reached).toContain('tests/unit/dashboardUi.test.ts');
+    });
   });
 
   describe('plan outputs', () => {
@@ -222,9 +232,9 @@ describe('CI incremental test selection (REL-1074)', () => {
       expect(script).toContain('exit "$failed"');
     });
 
-    it('runs the full suite for every event except a pull request', () => {
+    it('never forces full suite by command, always selecting stale tests', () => {
       const plan = jobs['test-plan'].steps.find((step: any) => step.id === 'plan').run as string;
-      expect(plan).toMatch(/if \[ "\$EVENT_NAME" != "pull_request" \]; then\s+node scripts\/ci\/select-vitest-tests\.mjs --full/u);
+      expect(plan).not.toContain('--full');
       expect(workflow.on.schedule).toHaveLength(1);
       expect(workflow.on.push.branches).toEqual(['main']);
     });

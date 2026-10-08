@@ -36,6 +36,7 @@ export class CircularSpanBufferExporter extends InMemorySpanExporter {
 }
 
 export const inMemorySpanExporter = new CircularSpanBufferExporter(500);
+(globalThis as any).__ct_inMemorySpanExporter = inMemorySpanExporter;
 
 function hrTimeToISO(hrTime: [number, number]): string {
   const ms = hrTime[0] * 1000 + hrTime[1] / 1e6;
