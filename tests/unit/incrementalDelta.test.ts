@@ -77,8 +77,7 @@ function prior(overrides: Partial<PriorReviewRecord> = {}): PriorReviewRecord {
     runId: PRIOR_RUN, executionAttempt: 1, repositoryId: 42, prNumber: 7,
     headSha: PREV_HEAD, baseSha: PREV_BASE, policyDigest: POLICY, configDigest: CONFIG,
     completionDigest: 'e'.repeat(64), ageMs: 60_000, coverageComplete: true, shipComplete: true,
-    findingPaths: ['src/open.ts'], chainDepth: 0, taskCount: 5,
-    findings: [openFindingFrom({ path: 'src/open.ts', line: 11, severity: 'P2', title: 'Open defect' })],
+    findingPaths: [], chainDepth: 0, taskCount: 5, findings: [],
     ...overrides,
   };
 }
@@ -299,17 +298,21 @@ describe('decideIncrementalReview with the delta scope', () => {
       ...(delta ? { delta } : {}),
     });
 
-  it('delta-scopes a touched file the previous review covered with no open finding', () => {
+  it('delta-scopes touched files from a complete finding-free prior', () => {
     const decision = decide([TOUCHED]);
     expect(decision).toMatchObject({
       mode: 'incremental', deltaPaths: ['src/touched.ts'], chainDepth: 1,
-      carriedForwardPaths: ['src/renamed.ts', 'src/unchanged.ts'], openFindingPaths: ['src/open.ts'],
+      carriedForwardPaths: ['src/open.ts', 'src/renamed.ts', 'src/unchanged.ts'], openFindingPaths: [],
     });
   });
 
-  it('never delta-scopes an open-finding file, a renamed path, or a file new to the pull request', () => {
+  it('requires full coverage for prior findings while still excluding renamed and new paths from delta scope', () => {
+    const withOpenFinding = decide([TOUCHED], { findingPaths: ['src/open.ts'], findings: [
+      openFindingFrom({ path: 'src/open.ts', line: 11, severity: 'P2', title: 'Open defect' }),
+    ] });
+    expect(withOpenFinding).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
     const decision = decide([{ path: 'src/open.ts' }, { path: 'src/renamed.ts', previousPath: 'src/old.ts' }, TOUCHED]);
-    expect(decision).toMatchObject({ mode: 'incremental', deltaPaths: ['src/touched.ts'] });
+    expect(decision).toMatchObject({ mode: 'incremental', deltaPaths: ['src/open.ts', 'src/touched.ts'] });
     const brandNew = decideIncrementalReview({
       prior: prior(), maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS, current,
       currentPaths: [...CURRENT_PATHS, 'src/new.ts'],
@@ -320,7 +323,8 @@ describe('decideIncrementalReview with the delta scope', () => {
   });
 
   it('is exactly the REL-1084 decision, with no delta paths, when the sub-flag is off', () => {
-    expect(decide([TOUCHED], {}, null)).toMatchObject({ mode: 'incremental', reviewPaths: ['src/open.ts', 'src/touched.ts'] });
+    expect(decide([TOUCHED], {}, null)).toMatchObject({ mode: 'incremental', reviewPaths: ['src/touched.ts'],
+      carriedForwardPaths: ['src/open.ts', 'src/renamed.ts', 'src/unchanged.ts'], openFindingPaths: [] });
     expect(decide([TOUCHED], {}, null)).not.toHaveProperty('deltaPaths');
     expect(decide([TOUCHED], {}, null)).not.toHaveProperty('chainDepth');
   });
@@ -355,20 +359,20 @@ describe('planIncrementalReview with the delta scope', () => {
     env, repository: 'acme/app', current, currentPaths: CURRENT_PATHS, base: base(prior()), reader: reader(map, detailed),
   });
 
-  it('builds the delta files, open findings, chain depth and previous task count from validated patches', async () => {
+  it('builds delta files, chain depth and previous task count from validated patches', async () => {
     const result = await plan(ENV);
     expect(result?.scope).toMatchObject({
-      carriedForwardPaths: ['src/renamed.ts', 'src/unchanged.ts'], openFindingPaths: ['src/open.ts'],
+      carriedForwardPaths: ['src/open.ts', 'src/renamed.ts', 'src/unchanged.ts'], openFindingPaths: [],
       deltaFiles: [{ path: 'src/touched.ts', patch: DELTA_PATCH, hunks: 1 }], chainDepth: 1, previousTaskCount: 5,
     });
-    expect(result?.scope?.openFindings).toHaveLength(1);
+    expect(result?.scope?.openFindings).toEqual([]);
   });
 
   it('leaves a file whole when its patch or status is unusable, never failing the review', async () => {
     for (const entry of [{ path: 'src/touched.ts', status: 'modified' }, { path: 'src/touched.ts', status: 'renamed', patch: DELTA_PATCH }]) {
       const result = await plan(ENV, world([entry as Entry]));
       expect(result?.scope?.deltaFiles).toEqual([]);
-      expect(result?.scope?.carriedForwardPaths).toEqual(['src/renamed.ts', 'src/unchanged.ts']);
+      expect(result?.scope?.carriedForwardPaths).toEqual(['src/open.ts', 'src/renamed.ts', 'src/unchanged.ts']);
     }
     const noDetailed = await plan(ENV, world(), false);
     expect(noDetailed?.scope?.deltaFiles).toEqual([]);
@@ -390,7 +394,7 @@ describe('planIncrementalReview with the delta scope', () => {
   it('adds no delta fields when the sub-flag is off', async () => {
     const result = await plan({ REVIEW_YETI_INCREMENTAL: 'acme/app' });
     expect(result?.scope).toEqual({
-      previous: expect.any(Object), carriedForwardPaths: ['src/renamed.ts', 'src/unchanged.ts'], openFindingPaths: ['src/open.ts'],
+      previous: expect.any(Object), carriedForwardPaths: ['src/open.ts', 'src/renamed.ts', 'src/unchanged.ts'], openFindingPaths: [],
     });
   });
 });
@@ -475,7 +479,7 @@ describe('the delta claim', () => {
       expect(result).toEqual({ verified: true, reason: 'verified', deltaFiles: [{ path: 'src/touched.ts', patch: DELTA_PATCH, hunks: 1 }] });
     });
 
-    it('refuses a delta path the decision does not permit (an open file, a renamed file, or one it never saw)', async () => {
+    it('refuses a delta path the decision does not permit (an unchanged file, a renamed file, or one it never saw)', async () => {
       for (const path of ['src/open.ts', 'src/unchanged.ts', 'src/missing.ts']) {
         expect(await verify({ carriedForwardPaths: ['src/renamed.ts'], deltaPaths: [path], chainDepth: 1 })).toMatchObject({ verified: false, reason: 'claim-mismatch' });
       }
@@ -495,6 +499,14 @@ describe('the delta claim', () => {
       expect(await verify({ deltaPaths: ['src/touched.ts'], chainDepth: 3 })).toMatchObject({ verified: false, reason: 'claim-mismatch' });
       expect(await verify({ deltaPaths: ['src/touched.ts'], chainDepth: 5 }, world(), { chainDepth: 4 }))
         .toMatchObject({ verified: false, reason: 'chain-cap-reached' });
+    });
+
+    it('refuses every reuse claim when a prior finding lacks caller/contract closure', async () => {
+      const open = prior({ findingPaths: ['src/open.ts'], findings: [
+        openFindingFrom({ path: 'src/open.ts', line: 11, severity: 'P2', title: 'Open defect' }),
+      ] });
+      expect(await verify({ carriedForwardPaths: ['src/unchanged.ts'] }, world(), open))
+        .toEqual({ verified: false, reason: 'prior-findings-require-full-review' });
     });
 
     it('still verifies a plain REL-1084 claim, carrying less than permitted', async () => {

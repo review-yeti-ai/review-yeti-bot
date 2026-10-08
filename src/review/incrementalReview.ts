@@ -33,11 +33,16 @@
  *   that touches a reviewed file, policy or config digests changed, the prior
  *   review is older than the configured age, the prior review is not
  *   verified coverage is incomplete, a comparison is incomplete, nothing left to carry, and any
- *   error. Each is the review that runs today.
- * - Open findings. Any file with a finding from the prior review, of any
- *   severity and from any lane, is always re-reviewed in full.
- * - Disclosure. The check summary lists every carried-forward file and every
- *   file re-reviewed because of an open finding (`renderIncrementalSummary`).
+ *   error. A prior finding also forces a full review because the stored
+ *   cross-head receipt does not prove its complete affected caller/contract
+ *   closure. Each is the review that runs today.
+ * - Repair findings stay contextual. A complete failed review may supply
+ *   history to the new model decision, but neither its finding paths nor its
+ *   prior gate decision authorize coverage reuse while semantic relationships
+ *   remain unproven.
+ * - Disclosure. The check summary lists carried-forward and open-finding files
+ *   when scoped reuse is permitted; a full fallback names its reason
+ *   (`renderIncrementalSummary`).
  */
 import { z } from 'zod';
 import type {
@@ -398,6 +403,7 @@ export type IncrementalFallbackReason =
   | 'same-head'
   | 'prior-identity-mismatch'
   | 'prior-coverage-incomplete'
+  | 'prior-findings-require-full-review'
   | 'policy-or-config-changed'
   | 'prior-too-old'
   | 'not-ancestor'
@@ -468,6 +474,14 @@ export function incrementalPrecheck(input: {
   if (!Number.isSafeInteger(input.maxAgeMs) || input.maxAgeMs <= 0 || prior.ageMs > input.maxAgeMs) return full('prior-too-old');
   // ADR 0771: with the delta scope on, every (maxChain + 1)th head is reviewed in full to re-ground it.
   if (input.delta && (prior.chainDepth ?? 0) >= input.delta.maxChain) return full('chain-cap-reached');
+  // The prior incremental receipt lists finding paths, but does not bind each finding's affected
+  // callers/contracts to a complete semantic dependency closure. Re-reviewing only the finding's
+  // path can therefore carry an unchanged caller after a related contract changes. Until that
+  // closure is part of the trusted receipt, preserve the full finding history as context and read
+  // the complete current diff again. This reuses no prior approval or coverage claim.
+  if (prior.findingPaths.length > 0 || (prior.findings?.length ?? 0) > 0) {
+    return full('prior-findings-require-full-review');
+  }
   return null;
 }
 
@@ -893,6 +907,7 @@ const FALLBACK_TEXT: Record<IncrementalFallbackReason, string> = {
   'same-head': 'the previous review was of this same head',
   'prior-identity-mismatch': 'the previous review record did not match this pull request',
   'prior-coverage-incomplete': 'the previous review did not complete full current-source coverage',
+  'prior-findings-require-full-review': 'the previous review contained findings without a complete affected caller/contract receipt',
   'policy-or-config-changed': 'the review policy or persona configuration changed',
   'prior-too-old': 'the previous review is older than the configured age',
   'not-ancestor': 'the previously reviewed head is not an ancestor of this head (force-push or rebase)',

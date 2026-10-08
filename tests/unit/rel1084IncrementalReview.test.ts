@@ -100,7 +100,7 @@ function prior(overrides: Partial<PriorReviewRecord> = {}): PriorReviewRecord {
     runId: PRIOR_RUN, executionAttempt: 1, repositoryId: 42, prNumber: 7,
     headSha: PREV_HEAD, baseSha: PREV_BASE, policyDigest: POLICY, configDigest: CONFIG,
     completionDigest: 'e'.repeat(64), ageMs: 60_000, coverageComplete: true, shipComplete: true,
-    findingPaths: ['src/open.ts'],
+    findingPaths: [],
     ...overrides,
   };
 }
@@ -250,7 +250,7 @@ describe('prior review record', () => {
       status: 'COMPLETE', findings: [] }] }), { expectedPersonaIds: ['documentation-only'] }))?.shipComplete).toBe(false);
   });
 
-  it('retains complete coverage separately from failed approval so blockers remain repair context', async () => {
+  it('keeps a failed blocker as repair context but requires a full fresh coverage decision', async () => {
     const completion = priorCompletion({ personas: [
       { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE',
         findings: [{ severity: 'P1', path: 'src/open.ts', line: 11, title: 'Unchecked input', body: 'b' }] },
@@ -259,8 +259,7 @@ describe('prior review record', () => {
     const record = priorReviewRecordFromRows(rows(completion));
     expect(record).toMatchObject({ coverageComplete: true, shipComplete: false, findingPaths: ['src/open.ts'] });
     const decision = await decide({ priorRecord: record });
-    expect(decision).toMatchObject({ mode: 'incremental', openFindingPaths: ['src/open.ts'] });
-    expect(decision.mode === 'incremental' && decision.carriedForwardPaths).not.toContain('src/open.ts');
+    expect(decision).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
 
     const incomplete = { ...prior(), coverageComplete: false, shipComplete: false } as unknown as PriorReviewRecord;
     expect(await decide({ priorRecord: incomplete })).toEqual({ mode: 'full', reason: 'prior-coverage-incomplete' });
@@ -538,14 +537,55 @@ describe('incremental decision', () => {
     });
   });
 
-  it('always re-reviews a file carrying an open finding from the prior review (planted open finding)', async () => {
-    const decision = await decide();
-    expect(decision).toMatchObject({
-      mode: 'incremental',
-      reviewPaths: ['src/changed.ts', 'src/open.ts'],
-      carriedForwardPaths: ['src/unchanged.ts'],
-      openFindingPaths: ['src/open.ts'],
+  it('falls back to a full review when a prior finding has no proven caller/contract closure', async () => {
+    const decision = await decide({ priorRecord: prior({ findingPaths: ['src/open.ts'], findings: [
+      { id: `f_${'2'.repeat(12)}`, path: 'src/open.ts', severity: 'P1', title: 'Open authorization finding' },
+    ] }) });
+    expect(decision).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
+  });
+
+  it('keeps an unchanged caller in the full diff when a changed contract has prior finding context', async () => {
+    const contractPath = 'src/auth/contract.ts';
+    const callerPath = 'src/api/unchanged-caller.ts';
+    const unrelatedPath = 'src/format.ts';
+    const reviewDiff = modified(contractPath, 'AUTH_CONTRACT')
+      + modified(callerPath, 'CALLER')
+      + modified(unrelatedPath, 'FORMAT');
+    const currentPaths = [contractPath, callerPath, unrelatedPath];
+    const previous = prior({ shipComplete: false, findingPaths: ['src/auth/contract.ts'], findings: [
+      { id: `f_${'1'.repeat(12)}`, path: contractPath, severity: 'P1', title: 'Authorization contract regression' },
+    ] });
+    const comparisons = world({
+      [`${PREV_HEAD}...${HEAD}`]: comparison('ahead', [contractPath]),
+      [`${PREV_BASE}...${PREV_HEAD}`]: comparison('ahead', currentPaths),
+      [`${BASE}...${HEAD}`]: comparison('ahead', currentPaths),
     });
+    const comparisonReader = reader(comparisons);
+    const plan = await planIncrementalReview({ env: { REVIEW_YETI_INCREMENTAL: 'true' }, repository: 'example/project',
+      current, currentPaths, base: { read: async () => ({ prior: previous, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS }) },
+      reader: comparisonReader });
+    const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'test', model: 'test-model' };
+    const roster = resolveWorkerConfig({ REVIEW_PERSONAS: 'security,architecture,testing' }, transport)
+      .personas.filter((persona) => persona.enabled);
+    const fullFiles = resolveScopedReviewApplicability(roster, files(reviewDiff), {
+      pathFilters: [], incremental: plan?.scope ?? undefined,
+    });
+
+    expect(plan).toMatchObject({ scope: null, decision: { mode: 'full', reason: 'prior-findings-require-full-review' } });
+    expect(comparisonReader.calls).toEqual([]);
+    expect(fullFiles.incremental).toBeNull();
+    expect(fullFiles.effectiveFiles.map((file) => file.path).sort()).toEqual([...currentPaths].sort());
+    expect(fullFiles.effectiveFiles.find((file) => file.path === callerPath)?.patch).toContain('+const CALLER = 2;');
+    expect(fullFiles.effectiveFiles.find((file) => file.path === callerPath)?.patch).not.toContain('unchanged since');
+  });
+
+  it('can reuse complete finding-free coverage from a failed review without reusing its approval', async () => {
+    const previous = prior({ shipComplete: false, findingPaths: [], findings: [] });
+    const decision = await decide({ priorRecord: previous });
+
+    expect(decision).toMatchObject({ mode: 'incremental', carriedForwardPaths: ['src/open.ts', 'src/unchanged.ts'] });
+    expect(decision).not.toHaveProperty('shipComplete');
+    expect(previous.shipComplete).toBe(false);
   });
 
   it('falls back to a full review on a force-push or rebase (previous head not an ancestor)', async () => {
@@ -846,7 +886,7 @@ describe('worker planning', () => {
       priorRunId: prior().runId, priorHeadSha: PREV_HEAD, currentHeadSha: HEAD });
     expect(plan?.historyAncestry?.comparisonDigest).toMatch(/^[a-f0-9]{64}$/u);
     expect(plan?.scope).toEqual({
-      previous: SCOPE.previous, carriedForwardPaths: ['src/unchanged.ts'], openFindingPaths: ['src/open.ts'],
+      previous: SCOPE.previous, carriedForwardPaths: ['src/open.ts', 'src/unchanged.ts'], openFindingPaths: [],
     });
   });
 
@@ -975,15 +1015,14 @@ describe('publishing worker wiring', () => {
   it('passes the scope to the engine, discloses carried files and reports the carry-forward claim', async () => {
     const { panelOptions, summary, evidence } = await runWorker(workerEnv({ REVIEW_YETI_INCREMENTAL: 'acme/app' }));
     expect(panelOptions.incremental).toEqual({
-      previous: SCOPE.previous, carriedForwardPaths: ['src/unchanged.ts'], openFindingPaths: ['src/open.ts'],
+      previous: SCOPE.previous, carriedForwardPaths: ['src/open.ts', 'src/unchanged.ts'], openFindingPaths: [],
     });
     expect(summary).toContain('Incremental re-review');
-    expect(summary).toContain('Carried forward, unchanged since that head, content not sent (1): `src/unchanged.ts`');
-    expect(summary).toContain('still open (1): `src/open.ts`');
+    expect(summary).toContain('Carried forward, unchanged since that head, content not sent (2): `src/open.ts`, `src/unchanged.ts`');
     expect(evidence?.result.incremental).toEqual({
       version: 'IncrementalReview.v1', previousRunId: PRIOR_RUN, previousExecutionAttempt: 1,
       previousHeadSha: PREV_HEAD, previousBaseSha: PREV_BASE, previousCompletionDigest: 'e'.repeat(64),
-      carriedForwardPaths: ['src/unchanged.ts'],
+      carriedForwardPaths: ['src/open.ts', 'src/unchanged.ts'],
     });
   });
 
@@ -1035,8 +1074,12 @@ describe('trusted verification of a carry-forward claim', () => {
     expect(await verify()).toEqual({ verified: true, reason: 'verified' });
   });
 
-  it('refuses a claim that carries a file with an open finding (planted)', async () => {
-    expect(await verify({ claimPaths: ['src/unchanged.ts', 'src/open.ts'] })).toEqual({ verified: false, reason: 'claim-mismatch' });
+  it('refuses every carry claim when a prior finding has no proven caller/contract closure', async () => {
+    const record = prior({ findingPaths: ['src/open.ts'], findings: [
+      { id: `f_${'3'.repeat(12)}`, path: 'src/open.ts', severity: 'P1', title: 'Open authorization finding' },
+    ] });
+    expect(await verify({ record, claimPaths: ['src/unchanged.ts'] }))
+      .toEqual({ verified: false, reason: 'prior-findings-require-full-review' });
   });
 
   it('refuses a claim that names a different prior record than the service selected', async () => {

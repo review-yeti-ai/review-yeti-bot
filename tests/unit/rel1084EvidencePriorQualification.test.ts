@@ -252,7 +252,7 @@ describe('a non-authoritative prior built by the real worker', () => {
     expect(decision.mode === 'cache' && decision.permitted.map((entry) => entry.path)).toEqual(['src/same.ts', 'src/stable.ts']);
   });
 
-  it('#1034 shape: a raw P1 published as P2 qualifies; its file is re-reviewed, the rest carried forward', async () => {
+  it('#1034 shape: a raw P1 published as P2 retains its path and forces fresh current-source coverage', async () => {
     const evidence = await realPriorEvidence({ 'sec-lane': [
       { severity: 'P1', path: 'src/stable.ts', line: 11,
         title: 'Naming regression: canReadStable grants non-admin callers protected data',
@@ -274,10 +274,7 @@ describe('a non-authoritative prior built by the real worker', () => {
     expect(publishedFindingSeverity(evidence.result.personas.flatMap((lane) => lane.findings)[0]!)).toBe('P2');
     const rows = storedRows(evidence);
     expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });
-    expect(decideNext(rows)).toMatchObject({
-      mode: 'incremental', reviewPaths: ['src/changed.ts', 'src/stable.ts'], carriedForwardPaths: ['src/same.ts'],
-      openFindingPaths: ['src/stable.ts'],
-    });
+    expect(decideNext(rows)).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
   });
 
   it('keeps authoritative-gate runs on the gate record: an authoritative current or prior run refuses evidence', async () => {
@@ -293,7 +290,7 @@ describe('a non-authoritative prior built by the real worker', () => {
 });
 
 describe('negative proof: a non-authoritative prior that must not be rested on', () => {
-  it('a P1 that survives calibration: the failed check retains full coverage as repair context', async () => {
+  it('a P1 that survives calibration: the failed check retains history but forces a fresh full review', async () => {
     const evidence = await realPriorEvidence({ 'sec-lane': [
       { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Non-admin caller can read protected data',
         body: 'The changed guard returns true when isAdmin is false.', blockerEvidence: accessControlBlockerEvidence('src/stable.ts') },
@@ -301,7 +298,7 @@ describe('negative proof: a non-authoritative prior that must not be rested on',
     expect(evidence.conclusion).toBe('failure');
     const rows = storedRows(evidence);
     expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'run-not-succeeded' });
-    expect(decideNext(rows)).toMatchObject({ mode: 'incremental', openFindingPaths: ['src/stable.ts'] });
+    expect(decideNext(rows)).toEqual({ mode: 'full', reason: 'prior-findings-require-full-review' });
     expect(priorReviewRecordFromRows(storedRows(evidence, { status: 'succeeded' })))
       .toMatchObject({ shipComplete: false, shipIncompleteReason: 'evidence-conclusion-not-success' });
     const forged = edited(evidence, (copy) => { copy.conclusion = 'success'; });

@@ -772,6 +772,7 @@ const FALLBACK_TEXT: Record<VerdictCacheFallbackReason, string> = {
   'same-head': 'the previous review was of this same head',
   'prior-identity-mismatch': 'the previous review record did not match this pull request',
   'prior-coverage-incomplete': 'the previous review did not complete full current-source coverage',
+  'prior-findings-require-full-review': 'the previous review contained findings without a complete affected caller/contract receipt',
   'prior-not-ship-complete': 'the previous review was not a complete SHIP',
   'policy-or-config-changed': 'the review policy or persona configuration changed',
   'prior-too-old': 'the previous review is older than the configured age',
