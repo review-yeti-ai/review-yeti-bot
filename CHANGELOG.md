@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.121.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.121.0...v1.121.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **qualification:** bind dispatch to trusted origin digest ([#1440](https://github.com/review-yeti-ai/review-yeti-bot/issues/1440)) ([74560e8](https://github.com/review-yeti-ai/review-yeti-bot/commit/74560e80bb5b9bcab2e2a8de307404d8086ca5ab))
+* **review:** bound reproduction and qualify dispatch routing ([#1438](https://github.com/review-yeti-ai/review-yeti-bot/issues/1438)) ([2e7da7e](https://github.com/review-yeti-ai/review-yeti-bot/commit/2e7da7ea9f68af53d14649312237c4896c198584))
+
 ## [1.121.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.120.5...v1.121.0) (2026-10-08)
 
 
