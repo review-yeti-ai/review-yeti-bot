@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
-const CENTRAL_REPOSITORY = 'exampleorg/review-yeti-central';
+const CENTRAL_REPOSITORY = 'exampleorg/devops';
+const CENTRAL_REPOSITORY_ID = 73011;
+const CENTRAL_REPOSITORY_OWNER_ID = 73010;
 const TARGET_REPOSITORY = 'review-yeti-ai/review-yeti-qualification';
 const TARGET_ID = 1_409_547_157;
 const TARGET_INSTALLATION_ID = 152_783_031;
@@ -28,8 +30,8 @@ describe('isolated qualification DOKS admission', () => {
     }));
     const claims = callerKind === 'central' ? {
       repository: CENTRAL_REPOSITORY,
-      repository_id: '1339040553',
-      repository_owner_id: '57884877',
+       repository_id: String(CENTRAL_REPOSITORY_ID),
+       repository_owner_id: String(CENTRAL_REPOSITORY_OWNER_ID),
       run_id: RUN_ID,
       run_attempt: '1',
       event_name: 'repository_dispatch',
