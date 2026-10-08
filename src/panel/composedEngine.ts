@@ -29,7 +29,7 @@ import { CtReviewConfigV3, ProviderId } from '../config/schema';
 import type { WorkerPanelDeadlineBudget } from '../config/workerTerminalDeadline';
 import { resolvePreChecksConfig } from '../config/schema';
 import { executeZoektPreCheck, formatZoektPreCheckPrompt, ZoektPreCheckResult } from '../services/zoektPreCheckService';
-import { runPreCheckAnalyzers, formatCandidateHypothesesPrompt, PreCheckSummary } from '../sandbox/analyzerRunner';
+import { runPreCheckAnalyzers, formatCandidateHypothesesPrompt, PreCheckSummary, normalizeRepoPath } from '../sandbox/analyzerRunner';
 import {
   executeSymbolResolutionAppendix,
   formatSymbolResolutionAppendixPrompt,
@@ -953,6 +953,7 @@ function buildStaticPrefix(input: {
         ...(input.baseSha ? [`Base SHA: ${input.baseSha}`] : []),
         `Head SHA: ${input.headSha}`,
         ``,
+        `=== PULL REQUEST AST & FILE-TREE OUTLINE ===`,
         input.astOutline.summaryText + lockfileSection,
       ].join('\n');
     } else {
@@ -1126,6 +1127,46 @@ export function buildTaskScopedPrefix(input: {
   });
   const taskOutline = generateTaskScopedASTOutline(fullOutline, { task: input.task });
 
+  let scopedPreCheckEvidence = input.preCheckEvidence;
+  if (input.preCheckEvidence?.analyzers && Array.isArray(input.preCheckEvidence.analyzers.hypotheses)) {
+    const taskPaths = (Array.isArray(input.task.paths) && input.task.paths.length > 0)
+      ? input.task.paths
+      : scopedFiles.map((f) => f.path);
+    const taskPathsSet = new Set(taskPaths);
+    const scopedHypotheses = input.preCheckEvidence.analyzers.hypotheses.filter((h) => {
+      if (taskPathsSet.has(h.path)) return true;
+      const normH = normalizeRepoPath(h.path);
+      for (const p of taskPaths) {
+        const normP = normalizeRepoPath(p);
+        if (normH === normP || normH.endsWith('/' + normP) || normP.endsWith('/' + normH)) {
+          return true;
+        }
+      }
+      return false;
+    });
+    scopedPreCheckEvidence = {
+      ...scopedPreCheckEvidence,
+      analyzers: {
+        ...input.preCheckEvidence.analyzers,
+        hypotheses: scopedHypotheses,
+        hypothesesCount: scopedHypotheses.length,
+      },
+    };
+  }
+  if (scopedPreCheckEvidence?.zoekt && Array.isArray(scopedPreCheckEvidence.zoekt.symbols)) {
+    const scopedSymbols = scopedPreCheckEvidence.zoekt.symbols.filter((sym) =>
+      scopedFiles.some((f) => sym.sourcePath === f.path || normalizeRepoPath(sym.sourcePath) === normalizeRepoPath(f.path))
+    );
+    scopedPreCheckEvidence = {
+      ...scopedPreCheckEvidence,
+      zoekt: {
+        ...scopedPreCheckEvidence.zoekt,
+        symbols: scopedSymbols,
+        matchedSymbolsCount: scopedSymbols.length,
+      },
+    };
+  }
+
   const reviewPrefix = buildStaticPrefix({
     phase: 'work',
     taskPathCount: input.task.paths.length,
@@ -1140,7 +1181,7 @@ export function buildTaskScopedPrefix(input: {
     prNumber: input.prNumber,
     repositoryVisibility: input.repositoryVisibility,
     rules: input.rules,
-    preCheckEvidence: input.preCheckEvidence,
+    preCheckEvidence: scopedPreCheckEvidence,
     astOutline: taskOutline,
   });
   const manifest = buildTaskChangedPathManifest({
@@ -1708,6 +1749,7 @@ async function runTaskWorkPhase(input: {
       activeTurns: TASK_COMPACTION_ACTIVE_TURNS,
       retainSmallToolResults: true,
       toolCalls: toolCallsLog,
+      ephemeralTools: ['get_hunk', 'get_diff'],
     });
     let turn: TurnCallResult;
     try {
@@ -2218,8 +2260,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       `[HUMAN REVIEWER GUIDANCE${g.createdBy ? ` (${g.createdBy})` : ''}]: ${g.guidanceText}`
     );
 
-    const swarmIsolation = config.composed?.swarm_context_isolation === true
-      || (options as any).swarmContextIsolation === true;
+    const swarmIsolation = (options as any).swarmContextIsolation !== undefined
+      ? (options as any).swarmContextIsolation === true
+      : (config.composed?.swarm_context_isolation ?? (config as any).swarm_context_isolation ?? true);
 
     const planFiles = budgeted ? budgeted.promptFiles : effectiveFiles;
     const planTreeOutline = swarmIsolation
@@ -2428,22 +2471,37 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       requests.push(recheck);
       rechecksByTask.set(recheck.taskId, requests);
     }
-    if (resumedPlan?.valid && options.checkpoint?.resumed) {
-      const planIds = new Set(planOutcome.tasks.map((task) => task.id));
+    if (options.checkpoint?.resumed) {
+      const planTasks = planOutcome.tasks;
+      const priorPlanTasks = options.checkpoint.resumed.plan ?? [];
       for (const task of retainedCheckpointTasks) {
-        if (!planIds.has(task.id)) continue;
         try {
-          const planned = planOutcome.tasks.find(value => value.id === task.id)!;
-          if (!task.charterDigest || task.charterDigest !== checkpointCharterDigests.get(task.id)) continue;
-          const receipt = validateTaskSourceReceipt(task.sourceDelivery, {taskId:task.id, paths:planned.paths,
-            files:changedFiles, headSha, baseSha:options.baseSha});
+          const priorTask = priorPlanTasks.find((candidate) => candidate.id === task.id);
+          const planned = planTasks.find((candidate) => candidate.id === task.id
+            || (priorTask && candidate.dimension === priorTask.dimension && canonicalJson(candidate.paths) === canonicalJson(priorTask.paths))
+            || ((task as any).dimension && candidate.dimension === (task as any).dimension && canonicalJson(candidate.paths) === canonicalJson((task as any).paths)));
+          if (!planned || completedCheckpointTasks.has(planned.id)) continue;
+          if (task.id === planned.id && task.charterDigest && checkpointCharterDigests.has(planned.id)
+            && task.charterDigest !== checkpointCharterDigests.get(planned.id)) continue;
+
+          const deliveryToValidate = task.sourceDelivery?.taskId !== planned.id && task.sourceDelivery
+            ? { ...task.sourceDelivery, taskId: planned.id }
+            : task.sourceDelivery;
+          const receipt = validateTaskSourceReceipt(deliveryToValidate, {
+            taskId: planned.id,
+            paths: planned.paths,
+            files: changedFiles,
+            headSha,
+            baseSha: options.baseSha,
+            allowContentAddressed: true,
+          });
           // Old checkpoints retain observations, but cannot prove original
           // source delivery. Re-run their tasks within the existing budgets.
           if (!receipt) continue;
-          completedCheckpointTasks.set(task.id, validateFindings(task.findings, changedFiles));
-          sourceDeliveries.set(task.id, receipt);
-          resourceObserver.markTaskStarted(task.id);
-          resourceObserver.markTaskOutcome(task.id, 'completed', receipt);
+          completedCheckpointTasks.set(planned.id, validateFindings(task.findings, changedFiles));
+          sourceDeliveries.set(planned.id, receipt);
+          resourceObserver.markTaskStarted(planned.id);
+          resourceObserver.markTaskOutcome(planned.id, 'completed', receipt);
         } catch {
           // A stale or invalid checkpoint never becomes review evidence.
         }
@@ -3022,7 +3080,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       // 2. Wait for active tasks to settle
       await Promise.allSettled([...activeTasks.values()].map((active) => active.settled));
       throwIfPanelAborted(signal);
-      const failed = [...activeTasks.values()].find((active) => active.status === 'rejected' && active.error !== stop);
+      const failed = [...activeTasks.values()].find(
+        (active) => active.status === 'rejected' && !(active.error instanceof PanelCancellationError) && active.error !== stop,
+      );
       if (failed) throw failed.error;
 
       // Use the normal owner for fulfilled usage/reservations, exactly once. Aborted branches
@@ -3223,7 +3283,37 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         }
         // Charge actual usage exactly once, refund the whole cohort, then fold in plan order.
         totalTurnsUsed += cohortActualTurns;
-        for (const result of settled) foldSettledTask(result);
+        for (const result of settled) {
+          foldSettledTask(result);
+          if (result.outcome.type === 'complete' && result.outcome.findings.some((f) => f.severity === 'P0')) {
+            blockerFindingDetected = true;
+          }
+        }
+
+        if (blockerFindingDetected) {
+          logger.info('[composed] blocker finding detected in retained cohort; triggering early exit', {
+            event: 'composed_retained_cohort_early_exit',
+            nextTaskIndex,
+            totalPlanned: planOutcome.tasks.length,
+          });
+          const stop = new PanelCancellationError();
+          taskAbort.abort(stop);
+          const handledIds = new Set([
+            ...personas.map((p) => p.id),
+            ...optionalFailures.map((f) => f.id),
+            ...unreportedLanes.map((u) => u.id),
+          ]);
+          for (let i = 0; i < planOutcome.tasks.length; i++) {
+            const task = planOutcome.tasks[i];
+            if (!handledIds.has(task.id)) {
+              unreportedLanes.push(unreportedLaneFailure(task, 'findings_stop'));
+              handledIds.add(task.id);
+            }
+          }
+          skipRemainingForAbort();
+          if (options.checkpoint) saveCheckpoint();
+          break;
+        }
       }
     };
 
@@ -3352,11 +3442,13 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       });
     }
 
-    const quorumPolicy = config.composed?.quorum_policy ?? (config as any).quorum_policy ?? (options as any).quorumPolicy;
+    const quorumPolicy = config.composed?.quorum_policy
+      ?? (config as any).quorum_policy
+      ?? (options as any).quorumPolicy;
     const fileCoverage = validateFileCoverageQuorum(
       { tasks: planOutcome.tasks },
       personas as any,
-      options.changedFiles,
+      effectiveFilePaths ?? options.changedFiles,
       {
         minFileCoveragePct: quorumPolicy?.min_file_coverage_pct,
         enforceSecurityFloor: quorumPolicy?.enforce_security_floor,
@@ -3373,8 +3465,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         quorumSatisfied = true;
         blockerFastPathActive = true;
       } else if (quorumPolicy.mode === 'file_coverage') {
-        quorumSatisfied = fileCoverage.satisfied;
-        fileCoverageActive = fileCoverage.satisfied;
+        quorumSatisfied = fileCoverage.satisfied && !maxFindingsReached;
+        fileCoverageActive = fileCoverage.satisfied && !maxFindingsReached;
       } else if (quorumPolicy.mode === 'blocker_fast_path') {
         quorumSatisfied = blockerFindingDetected || legacySatisfied;
         blockerFastPathActive = blockerFindingDetected;
@@ -3410,7 +3502,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         required: 1,
         distinctProviders: [providerId],
         satisfied: quorumSatisfied,
-        coverageMode: (quorumPolicy?.mode ?? 'all_tasks') as 'file_coverage' | 'all_tasks',
+        coverageMode: (quorumPolicy?.mode ?? 'file_coverage') as 'file_coverage' | 'all_tasks',
         blockerFastPath: blockerFastPathActive,
         fileCoverage,
       },

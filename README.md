@@ -24,9 +24,13 @@ Review Yeti convenes a panel of specialized AI reviewers—each with a dedicated
 
 - 🖥️ **Interactive Web Portal & Analytics Dashboard**: Modern web interface featuring Live Review Inspector with real-time SSE reasoning traces, Executive & Engineering spend analytics, GitHub OAuth repository management, and Human-in-the-Loop verdict overrides ([Cloudflare Guide](docs/CLOUDFLARE_PORTAL_SETUP.md)).
 - 👥 **Multi-Persona Review Panel**: Dedicated reviewers for Security & Tenancy, System Architecture, Performance, QA & Testing, and Dependency Safety.
-- 🔍 **Deterministic Pre-Check Engine**:
+- 🔄 **Finding-Centric Incremental State Machine**: Decouples coverage verification from verdicts. When fixing prior blocking findings, Review Yeti routes only the modified lines to `recheck_lane` and auto-resolves fixed threads with commit references, eliminating whole-PR re-reviews and finding churn.
+- 🌐 **Unbounded AST Streaming & Diff Compaction (No 25k Wall)**: Eliminates monolithic diff prefill and artificial 25k token ceilings. Personas inspect path-bounded AST outlines, fetch hunks on-demand (`get_hunk`), and evict raw diffs post-turn (`[DIFF_EVICTION_RECEIPT]`), maintaining a flat token footprint (<86 tok/turn) and scaling across multi-megabyte enterprise PRs.
+- ⚡ **Content-Addressed Subtask Checkpoints**: Reviewer task checkpoints key on `(filePath, contentHash, laneId)`. Routine `git rebase`, squashing, and amends replay cached reviewer outputs for all untouched files in **0 GPU tokens** and ~1-2ms.
+- 🛑 **Blocker Fast-Path Quorum**: Default `file_coverage` quorum mode halts remaining exploratory/style lanes immediately upon discovering any verified P0 blocker, aborting active model streams via `taskAbort.abort()` to surface blockers in seconds.
+- 🔍 **Deterministic Pre-Check Engine & SAST Candidate Hypotheses**:
   - **Zoekt Cross-File Symbol Discovery**: Deterministically queries code symbols across repository indexes to discover call sites, definitions, and types before persona evaluation turns.
-  - **Zero-Compilation Sandbox Analyzers**: Executes fast, compilation-free static analyzers (`eslint`, `semgrep`, `gitleaks`) on modified PR hunks. Outputs are formatted as structured candidate hypotheses that personas verify, eliminating SAST false positives.
+  - **Zero-Compilation Sandbox Analyzers**: Executes fast, compilation-free static analyzers (`eslint`, `semgrep`, `gitleaks`) on modified PR hunks. Outputs are formatted as structured candidate hypotheses that personas verify, eliminating SAST false positives while isolating documentation and license lanes.
 - ⚡ **Native Apply Suggestions**: Automatic reviews can include GitHub's **Apply suggestion** button for complete, self-contained fixes. Single-line and multiline replacements preserve indentation and support deletions. Suggestions are attached only to validated new-file diff ranges; uncertain fixes, file-level findings, and architectural advice remain prose. All severities publish inline; P2 findings do not change the verdict. A single sticky overview replaces its contents on each push or rerun, without accumulating verdict comments or history.
 - 💬 **Interactive PR Chat Mentoring**: Mention `@review-yeti explain`, `@review-yeti fix`, `@review-yeti ignore`, or `@review-yeti mute` in review threads ([Guide](docs/INTERACTIVE_CHAT.md)).
 - 💻 **Local Pre-Commit CLI & Git Hook**: Evaluate staged changes in < 5s with sub-10ms credential detection and blocking P0 checks via `git yeti pre-commit` ([Guide](docs/CLI_REFERENCE.md)).
@@ -52,30 +56,35 @@ Review Yeti convenes a panel of specialized AI reviewers—each with a dedicated
 graph TD
     PR[Developer Opens / Updates PR] --> Choice{Execution Mode}
 
-    subgraph Mode 1: Ephemeral Action
-        Choice -->|Zero Infra| GHA[GitHub Actions Runner]
-        GHA --> Panel1[Parallel AI Personas Panel]
+    subgraph Ingestion & Checkpointing
+        Choice -->|Delta Check| Diff[AST File-Tree Dispatcher]
+        Diff --> CacheCheck{Cache Replay?}
+        CacheCheck -->|Untouched Files: 0 Tokens| Replay[(Content-Addressed Cache: filePath + contentHash)]
+        CacheCheck -->|Modified Hunks| Dispatch[Parallel AI Personas Panel]
     end
 
-    subgraph Mode 2: Kubernetes Worker
-        Choice -->|Zero Runner Waste| Shim[GHA Dispatch Shim < 10s]
-        Shim -->|review-status: DISPATCHED| CheckRun1[GitHub Check Run: PENDING]
-        Shim -->|Async Admission| K8S[Kubernetes Review Cluster]
-        K8S -->|Ephemeral Worker Pod| Panel2[Parallel AI Personas Panel]
-    end
-
-    subgraph The Review Yeti Core
-        Panel1 --> Arb[Arbitration & Consensus Engine]
-        Panel2 --> Arb
+    subgraph Review Yeti Next-Gen Core
+        Dispatch --> Tool[On-Demand get_hunk & Ephemeral Compaction]
+        Tool --> FastPath{P0 Blocker?}
+        FastPath -->|YES| EarlyExit[🛑 Blocker Fast-Path: Abort Streams]
+        FastPath -->|NO| Arb[Arbitration & File-Coverage Quorum]
+        Replay --> Arb
+        EarlyExit --> Arb
         Arb --> Verdict{Verdict}
         Verdict -->|0 Critical Issues| Ship[🟢 SHIP]
         Verdict -->|Non-blocking nits| Fix[🟡 FIX_FIRST]
-        Verdict -->|P0 or Quorum P1s| Block[🔴 BLOCK]
+        Verdict -->|P0 or Critical Quorum| Block[🔴 BLOCK]
+    end
+
+    subgraph Finding-Centric State Machine
+        PR -->|Push Bug Fix| Recheck[recheck_lane: Only Modified Lines]
+        Recheck -->|Verify Resolution| Resolve[Mark Thread Resolved in Commit]
     end
 
     Ship --> Output[Post Consolidated PR Comment & Update Check Run]
     Fix --> Output
     Block --> Output
+    Resolve --> Output
 ```
 
 ---
@@ -251,7 +260,10 @@ with:
 | :--- | :--- | :--- | :--- |
 | **`SHIP`** 🟢 | 0 P0s, 0 P1s, minimal P2s | `success` | Approved. Safe to merge! |
 | **`FIX_FIRST`** 🟡 | 0 P0s, 1+ P1s (or high P2 volume) | `neutral` / `failure` | Non-blocking recommendations to resolve before release. |
-| **`BLOCK`** 🔴 | 1+ P0s, or P1 quorum reached | `failure` | Merge blocked until critical issues are fixed. |
+| **`BLOCK`** 🔴 | 1+ P0s, or critical quorum | `failure` | Merge blocked until critical issues are fixed. Triggers **Blocker Fast-Path** early exit. |
+
+> [!TIP]
+> **Iterative Bug Fixes & Auto-Resolution**: When you push a commit addressing a blocking finding, Review Yeti does *not* rerun a full, expensive review. The **`recheck_lane`** inspects only the modified lines, marks the prior finding as **Resolved in commit `<sha>`**, and automatically promotes the check run to `SHIP`.
 
 ---
 
@@ -259,11 +271,19 @@ with:
 
 ### 1. Repository Configuration (`.ct-review.yaml`)
 
-Define enabled personas, diff limits, and path filters at your repository root:
+Define enabled personas, diff limits, swarm isolation, and quorum policies at your repository root:
 
 ```yaml
 # .ct-review.yaml
 version: 3
+
+# Next-Gen Review Architecture (Enabled by default)
+composed:
+  swarm_context_isolation: true   # Unbounded AST streaming & ephemeral get_hunk compaction
+
+quorum_policy:
+  mode: file_coverage             # "file_coverage" | "all_tasks" | "blocker_fast_path"
+  blocker_fast_path_enabled: true # Immediately halt non-critical lanes upon P0 blocker
 
 personas:
   - id: security

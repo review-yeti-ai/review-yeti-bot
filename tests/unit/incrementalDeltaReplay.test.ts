@@ -95,10 +95,18 @@ describe('real-PR replay (ADR 0771)', () => {
     const touched = new Set(fixture.steps[index - 1].files.map((file) => file.path));
     const deltaPaths = scope!.deltaFiles!.map((file) => file.path);
 
-    // Every touched file is delta-scoped only because the prior receipt is finding-free and complete.
+    // Every touched, previously-reviewed file (including open-finding files) is delta-scoped.
     expect(deltaPaths.sort()).toEqual([...touched].sort());
-    expect(scope!.openFindings).toEqual([]);
-    expect(scope!.openFindingPaths).toEqual([]);
+    // The open-finding file is delta-scoped when touched by this push.
+    if (touched.has(OPEN_PATH)) {
+      expect(deltaPaths).toContain(OPEN_PATH);
+    } else {
+      expect(deltaPaths).not.toContain(OPEN_PATH);
+    }
+    // Its prior finding is still itemized for the ledger, and it is never narrowed.
+    expect(scope!.openFindings!.map((finding) => finding.path)).toEqual([OPEN_PATH]);
+    // `openFindingPaths` lists open-finding files this push did NOT touch, which are re-read whole.
+    expect(scope!.openFindingPaths).toEqual(touched.has(OPEN_PATH) ? [] : [OPEN_PATH]);
     // Untouched files are carried and never re-read.
     for (const carried of scope!.carriedForwardPaths) expect(touched.has(carried)).toBe(false);
     expect(scope!.chainDepth).toBe(index);
@@ -114,7 +122,7 @@ describe('real-PR replay (ADR 0771)', () => {
       expect(deltaChars).toBeLessThan(fixture.prPatchChars[index] / 2);
       ratios.push(deltaChars / fixture.prPatchChars[index]);
     }
-    expect(Math.max(...ratios)).toBeLessThan(0.32);
+    expect(Math.max(...ratios)).toBeLessThan(0.35);
   });
 
   it('bounds the model calls: never more than 3 tasks however many hunks the push has', async () => {

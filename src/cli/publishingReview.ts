@@ -799,19 +799,15 @@ function rawPublicationRoster(
     || ((panelResult?.quorum as any)?.coverageMode === 'file_coverage' && (panelResult?.quorum as any)?.satisfied === true);
 
   const configuredIds = panelResult.applicablePersonaIds;
-  const expectedLaneCount = configuredRosterValid
-    ? (isBlockerFastPath || isFileCoverageQuorum ? completedLaneCount : configuredIds.length)
-    : null;
-  const arbitrationExpectedCount = configuredRosterValid
-    ? (isBlockerFastPath || isFileCoverageQuorum ? completedLaneCount : configuredIds.length)
-    : 0;
+  const expectedLaneCount = configuredRosterValid ? configuredIds.length : null;
+  const arbitrationExpectedCount = configuredRosterValid ? configuredIds.length : 0;
   const configuredSet = new Set(configuredRosterValid ? configuredIds : []);
   const returnedSet = new Set(returnedIds);
   const rosterValid = configuredRosterValid
     && returnedLaneCountValid
     && returnedIds.every((id) => isRosterId(id) && configuredSet.has(id))
     && !hasDuplicate(returnedIds)
-    && (isBlockerFastPath || isFileCoverageQuorum || configuredIds.every((id) => returnedSet.has(id)));
+    && configuredIds.every((id) => returnedSet.has(id));
 
   return {
     mode: notApplicable
@@ -2022,8 +2018,10 @@ export async function runPublishingReviewWorker(
     const authenticatedDisputes = historySnapshotBound && authenticatedDisputeProjection?.status === 'complete'
       ? authenticatedDisputeProjection : undefined;
     const authenticatedDisputePaths = historySnapshotBound ? authenticatedDisputeProjection?.paths ?? [] : [];
-    const historyAllowsCheckpointReuse = planningHistoryContext.status === 'complete'
-      && planningHistoryContext.evidenceSemanticsCompatibility.compatibleForCheckpointReuse;
+    const historyAllowsCheckpointReuse = (planningHistoryContext.status === 'complete'
+      && (planningHistoryContext.evidenceSemanticsCompatibility.compatibleForCheckpointReuse
+        || planningHistoryContext.evidenceSemanticsCompatibility.compatibleForContinuity))
+      || lifecycleHistory.status === 'unavailable';
     const historyAllowsCoverageReuse = planningHistoryContext.status === 'complete'
       && planningHistoryContext.evidenceSemanticsCompatibility.compatibleForCoverageReuse;
     let historyAffectedPaths = [...new Set([
@@ -2052,13 +2050,37 @@ export async function runPublishingReviewWorker(
         });
       }
     }
-    if (resumedCheckpoint && (resumedCheckpoint.runId !== identity.runId
-      || resumedCheckpoint.repositoryId !== identity.repositoryId || resumedCheckpoint.owner !== identity.owner
-      || resumedCheckpoint.repo !== identity.repoName || resumedCheckpoint.prNumber !== identity.prNumber
-      || resumedCheckpoint.headSha !== identity.headSha || resumedCheckpoint.baseSha !== identity.baseSha
-      || resumedCheckpoint.policyDigest !== value(env, 'REVIEW_POLICY_DIGEST')
-      || resumedCheckpoint.configDigest !== value(env, 'REVIEW_CONFIG_DIGEST'))) {
+    const isExactHead = Boolean(
+      resumedCheckpoint &&
+      resumedCheckpoint.runId === identity.runId &&
+      resumedCheckpoint.repositoryId === identity.repositoryId &&
+      resumedCheckpoint.owner === identity.owner &&
+      resumedCheckpoint.repo === identity.repoName &&
+      resumedCheckpoint.prNumber === identity.prNumber &&
+      resumedCheckpoint.headSha === identity.headSha &&
+      resumedCheckpoint.baseSha === identity.baseSha &&
+      resumedCheckpoint.policyDigest === value(env, 'REVIEW_POLICY_DIGEST') &&
+      resumedCheckpoint.configDigest === value(env, 'REVIEW_CONFIG_DIGEST')
+    );
+    const isContentAddressedPrior = Boolean(
+      resumedCheckpoint &&
+      !isExactHead &&
+      identity.executionAttempt === 1 &&
+      resumedCheckpoint.repositoryId === identity.repositoryId &&
+      resumedCheckpoint.owner === identity.owner &&
+      resumedCheckpoint.repo === identity.repoName &&
+      resumedCheckpoint.prNumber === identity.prNumber &&
+      resumedCheckpoint.policyDigest === value(env, 'REVIEW_POLICY_DIGEST') &&
+      resumedCheckpoint.configDigest === value(env, 'REVIEW_CONFIG_DIGEST')
+    );
+    if (resumedCheckpoint && !isExactHead && !isContentAddressedPrior) {
+      if (identity.executionAttempt > 1) {
+        throw new Error('Exact-head checkpoint and disputed finding requests are required for a safe retry');
+      }
       throw new Error('Review execution checkpoint does not match this exact-head review');
+    }
+    if (identity.executionAttempt > 1 && resumedCheckpoint && !isExactHead) {
+      throw new Error('Exact-head checkpoint and disputed finding requests are required for a safe retry');
     }
     if (disputedFindingRechecks.length > 0) {
       if (!resumedCheckpoint) throw new Error('Disputed finding re-review has no exact-head task checkpoint');
@@ -2072,6 +2094,50 @@ export async function runPublishingReviewWorker(
         completedTasks: remainingCheckpointTasksAfterRechecks(
           resumedCheckpoint.completedTasks, disputedFindingRechecks, resumedCheckpoint.plan,
         ),
+      };
+    }
+    if (resumedCheckpoint && isContentAddressedPrior) {
+      const currentPatchDigests = new Map(
+        changedFiles.map((file) => [file.path, sha256(file.patch ?? '')])
+      );
+      const currentPatchLengths = new Map(
+        changedFiles.map((file) => [file.path, (file.patch ?? '').length])
+      );
+      const currentPathSet = new Set(changedFiles.map((file) => file.path));
+
+      const modifiedPaths = changedFiles.filter((file) => {
+        const curDigest = currentPatchDigests.get(file.path);
+        const curLength = currentPatchLengths.get(file.path);
+        for (const task of resumedCheckpoint!.completedTasks) {
+          const fileReceipt = task.sourceDelivery?.files?.find((rf) => rf.path === file.path);
+          if (fileReceipt && (fileReceipt.patchDigest !== curDigest || fileReceipt.totalChars !== curLength)) {
+            return true;
+          }
+        }
+        return false;
+      }).map((file) => file.path);
+
+      const removedPaths = resumedCheckpoint.plan
+        .flatMap((t) => t.paths)
+        .filter((path) => !currentPathSet.has(path));
+
+      const pathsToInvalidate = [...new Set([...modifiedPaths, ...removedPaths])];
+      if (pathsToInvalidate.length > 0) {
+        resumedCheckpoint = {
+          ...resumedCheckpoint,
+          completedTasks: remainingCheckpointTasksForPaths(
+            resumedCheckpoint.completedTasks,
+            resumedCheckpoint.plan,
+            pathsToInvalidate,
+          ),
+        };
+      }
+      resumedCheckpoint = {
+        ...resumedCheckpoint,
+        runId: identity.runId,
+        headSha: identity.headSha,
+        baseSha: identity.baseSha,
+        executionAttempt: identity.executionAttempt,
       };
     }
     if (resumedCheckpoint && historyAffectedPaths.length > 0) {
@@ -2960,11 +3026,13 @@ export async function runPublishingReviewWorker(
       const gracefulPartial = panelResult.gracefulExit?.reason === 'evidence_deadline';
       const rawFindings = (Array.isArray(panelResult.personas) ? panelResult.personas : [])
         .flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
-      const isBlockerFastPath = (panelResult as any).blockerFastPath === true
-        || (panelResult?.quorum as any)?.blockerFastPath === true;
-      const isFileCoverageQuorum = (panelResult as any).fileCoverageSatisfied === true
-        || ((panelResult?.quorum as any)?.coverageMode === 'file_coverage' && (panelResult?.quorum as any)?.satisfied === true);
-      const panelQuorumSatisfied = panelResult?.quorum?.satisfied === true
+      const isFindingsStop = Array.isArray(panelResult.unreportedLanes)
+        && panelResult.unreportedLanes.some((lane: any) => lane.failureReason === 'findings_stop' || lane.error?.includes('findings stop'));
+      const isBlockerFastPath = !isFindingsStop && ((panelResult as any).blockerFastPath === true
+        || (panelResult?.quorum as any)?.blockerFastPath === true);
+      const isFileCoverageQuorum = !isFindingsStop && ((panelResult as any).fileCoverageSatisfied === true
+        || ((panelResult?.quorum as any)?.coverageMode === 'file_coverage' && (panelResult?.quorum as any)?.satisfied === true));
+      const panelQuorumSatisfied = (!isFindingsStop && panelResult?.quorum?.satisfied === true)
         || isBlockerFastPath
         || isFileCoverageQuorum;
       // REL-1092: analyzable files whose changed text GitHub omitted (the pull-files
@@ -2989,9 +3057,9 @@ export async function runPublishingReviewWorker(
       // findings and quorum under the same P0/P1 policy as the service Gate.
       const canonical = computeArbitration(rawRoster.lanes, rawRoster.arbitrationExpectedCount, {
         changedFiles,
-        coverageComplete: (isBlockerFastPath || rawRoster.rosterValid) && panelQuorumSatisfied
-          && (isBlockerFastPath || coverageGaps.length === 0)
-          && (isBlockerFastPath || groundedReviewComplete)
+        coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied
+          && coverageGaps.length === 0
+          && groundedReviewComplete
           && !gracefulPartial
           // Fast-ship is a classifier bypass, not complete P0/P1 review evidence. Under an
           // explicit v2 policy it cannot produce a merge-eligible receipt.
@@ -3013,7 +3081,7 @@ export async function runPublishingReviewWorker(
         failedLaneCount: rawRoster.failedLaneCount,
         rosterValid: rawRoster.rosterValid,
         quorumSatisfied: canonical.quorumSatisfied,
-        fullPanelComplete: isBlockerFastPath || (rawRoster.mode === 'panel' && canonical.quorumSatisfied && groundedReviewComplete),
+        fullPanelComplete: rawRoster.mode === 'panel' && canonical.quorumSatisfied && groundedReviewComplete,
       };
       const fastShipApproved = isFastShip && canonical.quorumSatisfied;
       const verdict = canonical.verdict;
@@ -3050,7 +3118,7 @@ export async function runPublishingReviewWorker(
           schemaVersion: 'review-yeti-decision.v2',
           policyVersion: reviewDecisionPolicy,
           policyDigest: value(env, 'REVIEW_POLICY_DIGEST'),
-          coverageComplete: (isBlockerFastPath || coverageGaps.length === 0) && !gracefulPartial && (isBlockerFastPath || groundedReviewComplete),
+          coverageComplete: coverageGaps.length === 0 && !gracefulPartial && groundedReviewComplete,
           quorumSatisfied: (isBlockerFastPath || rawRoster.rosterValid) && panelQuorumSatisfied && canonical.quorumSatisfied,
           infrastructureFailure: rawRoster.failedLaneCount > 0,
           expectedLanes: rawRoster.arbitrationExpectedCount,
@@ -3457,8 +3525,8 @@ export async function runPublishingReviewWorker(
           // push this past `resultSchema.personas`'s own bound.
           personas: [...personas, ...errors, ...shadowPersonas, ...shadowErrors, ...shadowRunFailure].slice(0, MAX_PERSONAS),
           ...(reviewEngine === 'composed' && panelResult.taskPlan ? { taskPlan: panelResult.taskPlan } : {}),
-          coverageComplete: (isBlockerFastPath || coverageGaps.length === 0) && !gracefulPartial && (isBlockerFastPath || groundedReviewComplete),
-          quorumSatisfied: (panelResult.quorum?.satisfied === true || isBlockerFastPath || isFileCoverageQuorum) && !unreportedNoVerdict && !gracefulPartial,
+          coverageComplete: coverageGaps.length === 0 && !gracefulPartial && groundedReviewComplete,
+          quorumSatisfied: ((!isFindingsStop && panelResult.quorum?.satisfied === true) || isBlockerFastPath || isFileCoverageQuorum) && !unreportedNoVerdict && !gracefulPartial,
           ...(deletionClassification && deletionClassification.status !== 'disabled' && deletionClassification.totalFiles > 0
             ? { deletionClassification: {
               version: deletionClassification.version, digest: deletionClassification.digest, status: deletionClassification.status,

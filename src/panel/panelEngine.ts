@@ -2839,7 +2839,7 @@ async function runPersona(
         scopedFiles.some((f) => pathMatches(sym.sourcePath, f.path) || f.path === sym.sourcePath || isSameFile(sym.sourcePath, f.path))
       );
       scopedPreCheckEvidence = {
-        ...preCheckEvidence,
+        ...scopedPreCheckEvidence,
         zoekt: {
           ...preCheckEvidence.zoekt,
           symbols: scopedSymbols,
@@ -3012,7 +3012,7 @@ async function runPersona(
             domainLanes,
             pathInstructions: config.path_instructions,
             rules: [...(config.rules || []), ...memoryRules, ...steeringRules],
-            preCheckEvidence: preCheckEvidence,
+            preCheckEvidence: scopedPreCheckEvidence,
             outputSchema: {
               decision: ['json_object', 'json_schema'].includes(
                 String(requestPolicy?.responseFormat?.type || '').toLowerCase(),

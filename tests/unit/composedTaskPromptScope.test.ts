@@ -143,7 +143,7 @@ describe('composed WORK task prompt scope', () => {
     const sourcePath = 'src/auth/policy.ts';
     const assignedPath = 'src/generated/policySnapshot.ts';
     const files = [
-      { path: sourcePath, patch: '@@ -1,1 +1,2 @@\n+export const offTaskPolicyEvidence = false;' },
+      { path: sourcePath, patch: '@@ -1,1 +1,3 @@\n+// offTaskPolicyEvidence: raw diff canary\n+export const allowedPolicy = false;' },
       { path: assignedPath, patch: '@@ -0,0 +1,1 @@\n+export const policySnapshot = true;' },
     ];
     const requests: any[] = [];
@@ -197,9 +197,10 @@ describe('composed WORK task prompt scope', () => {
 
     expect(planRequest.messages[0].content).toContain('PLAN PHASE: inspect the whole admitted pull request');
     expect(planText).toContain('PLAN CONTEXT: WHOLE ADMITTED PULL REQUEST');
+    expect(planText).toContain('=== PULL REQUEST AST & FILE-TREE OUTLINE ===');
     expect(planText).toContain(sourcePath);
     expect(planText).toContain(assignedPath);
-    expect(planText).toContain('offTaskPolicyEvidence');
+    expect(planText).not.toContain('offTaskPolicyEvidence');
 
     expect(workRequest.messages[0].content).toContain('WORK PHASE: execute only the single engine-assigned task');
     expect(workRequest.messages[0].content).not.toContain('You review the WHOLE pull request');

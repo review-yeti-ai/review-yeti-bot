@@ -81,6 +81,15 @@ Open a pull request on your repository. Review Yeti will automatically:
 3. Reconcile findings through automated arbitration.
 4. Post a clean, consolidated review comment with clear severity ratings (P0, P1, P2) and an actionable verdict (`SHIP`, `FIX_FIRST`, or `BLOCK`).
 
+### 4. What to Expect During Iterative Development 🔄
+
+Review Yeti is engineered for rapid developer turnaround and friction-free iteration:
+
+- **Iterative Bug Remediation (No Full Re-Reviews)**: When you push a commit addressing a finding, Review Yeti does not re-review your entire pull request. The **`recheck_lane`** evaluates only the modified lines against unresolved findings, marks the threads **Resolved in commit `<sha>`**, and promotes your check run to `SHIP`.
+- **Zero-Token Cache Replay on Rebases & Amends**: Running `git rebase main` or `git commit --amend` produces a new commit SHA, but Review Yeti's **content-addressed checkpoints** `(filePath, contentHash, laneId)` recognize that untouched files didn't change. Untouched files replay from cache in **0 GPU tokens** and < 2ms.
+- **Arbitrarily Large Enterprise PRs (No 25k Wall)**: Legacy 25k context ceilings are gone. Review Yeti slices large diffs into compact AST outlines and fetches code on demand via `get_hunk`, evicting raw code post-turn to support multi-megabyte refactors without context exhaustion.
+- **Blocker Fast-Path Exits**: Critical P0 regressions halt remaining non-critical lanes immediately, aborting active model streams via `taskAbort.abort()` to alert you to critical blockers in seconds.
+
 ---
 
 ## 💻 Local Developer Superpowers: Pre-Commit CLI & Hooks

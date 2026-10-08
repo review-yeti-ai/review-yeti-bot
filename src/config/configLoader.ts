@@ -172,6 +172,7 @@ export function createDefaultV3Config(): CtReviewConfigV3 {
         enabled: true,
       },
     },
+    swarm_context_isolation: true,
     on_pr_close: {
       create_followup_prs: [],
       sync_productlane: false,

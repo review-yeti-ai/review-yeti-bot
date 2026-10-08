@@ -96,10 +96,18 @@ CodeRabbit-mirrored top-level sections:
 ```yaml
 version: 3
 profile: "balanced"          # "chill" | "balanced" | "assertive"
-quorum: 4
 mascot: true
 confidence_threshold: 80
 reviewer_effort: "high"
+
+# Next-Gen Swarm Architecture & Gating
+composed:
+  swarm_context_isolation: true   # default: true (unbounded AST outline streaming & get_hunk)
+  inline_token_budget: 25000      # default: 25000 (task-scoped inline token budget)
+
+quorum_policy:
+  mode: "file_coverage"           # "file_coverage" (default) | "all_tasks" | "blocker_fast_path"
+  blocker_fast_path_enabled: true # default: true (halts lanes immediately on P0 blocker)
 
 reviews: { ... }
 chat: { ... }
@@ -113,6 +121,23 @@ reviewers: { ... }
 path_instructions: [ ... ]
 rules: [ ... ]
 ```
+
+## 🌐 Next-Gen Swarm Architecture & Quorum Policies
+
+### `composed`
+- `composed.swarm_context_isolation` (boolean, default: `true`):
+  When enabled, Review Yeti replaces monolithic diff broadcasting with path-bounded AST file-tree outlines. Subagents retrieve code lines on-demand using `get_hunk(filePath, startLine, endLine)` and evict raw diffs from history post-turn (`[DIFF_EVICTION_RECEIPT]`), eliminating 25k token walls and supporting arbitrarily large PRs.
+- `composed.inline_token_budget` (number, default: `25000`):
+  Sets the token budget for inline task-scoped hunks before falling back to on-demand retrieval.
+
+### `quorum_policy`
+- `quorum_policy.mode` (`"file_coverage"` | `"all_tasks"` | `"blocker_fast_path"`, default: `"file_coverage"`):
+  - `"file_coverage"`: Quorum is satisfied when every touched file in the PR has been evaluated by at least one relevant persona domain.
+  - `"all_tasks"`: Legacy mode requiring 100% of planned persona tasks to complete.
+  - `"blocker_fast_path"`: Quorum short-circuits immediately as soon as a P0 blocker is detected, or falls back to legacy completion.
+- `quorum_policy.blocker_fast_path_enabled` (boolean, default: `true`):
+  When enabled, any confirmed P0 blocker immediately halts remaining exploratory/style lanes and aborts active model streams via `taskAbort.abort()` / `AbortController`.
+
 
 ## V4 Execution Policy
 

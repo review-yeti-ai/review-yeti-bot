@@ -145,6 +145,34 @@ describe('source delivery receipts', () => {
     expect(taskSourceReceiptSchema.safeParse({...receipt,complete:false}).success).toBe(false);
   });
 
+  it('validates across differing headSha or baseSha when allowContentAddressed is true and file digests match', () => {
+    const receipt = tracker(true).acknowledgeRequest(messages(INLINE_PREFIX));
+    const OTHER_HEAD = 'c'.repeat(40);
+    const OTHER_BASE = 'd'.repeat(40);
+
+    const rebound = validateTaskSourceReceipt(receipt, {
+      ...binding,
+      headSha: OTHER_HEAD,
+      baseSha: OTHER_BASE,
+      allowContentAddressed: true,
+    });
+    expect(rebound).not.toBeNull();
+    expect(rebound?.headSha).toBe(OTHER_HEAD);
+    expect(rebound?.baseSha).toBe(OTHER_BASE);
+    expect(rebound?.taskId).toBe(binding.taskId);
+    expect(rebound?.complete).toBe(true);
+
+    const changedPatchBinding = {
+      ...binding,
+      headSha: OTHER_HEAD,
+      files: [{ ...files[0], patch: 'different-patch' }],
+      allowContentAddressed: true,
+    };
+    expect(validateTaskSourceReceipt(receipt, changedPatchBinding)).toBeNull();
+    expect(validateTaskSourceReceipt(receipt, { ...binding, headSha: OTHER_HEAD, taskId: 'other-task', allowContentAddressed: true })).toBeNull();
+    expect(validateTaskSourceReceipt(receipt, { ...binding, headSha: OTHER_HEAD, paths: ['src/other.ts'], allowContentAddressed: true })).toBeNull();
+  });
+
   it('reports actual delivered task counts and bounds safe disclosure output', () => {
     const full=tracker(true).acknowledgeRequest(messages(INLINE_PREFIX));
     const partial={...tracker().snapshot(),taskId:'missing-task'};

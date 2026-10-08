@@ -50,17 +50,26 @@ function originalPatch(file: SourceFile | undefined): string | null {
 /** Rebind a retained receipt to exact original task source before reusing it. */
 export function validateTaskSourceReceipt(value: unknown, input: {
   taskId: string; paths: readonly string[]; files: readonly SourceFile[]; headSha: string; baseSha?: string;
+  allowContentAddressed?: boolean;
 }): TaskSourceReceipt | null {
   const parsed = taskSourceReceiptSchema.safeParse(value);
   if (!parsed.success) return null;
   const receipt = parsed.data;
-  if (!receipt.complete || receipt.taskId !== input.taskId || receipt.headSha !== input.headSha
-    || receipt.baseSha !== (input.baseSha ?? null) || receipt.files.length !== input.paths.length) return null;
+  const shaMatch = receipt.headSha === input.headSha && receipt.baseSha === (input.baseSha ?? null);
+  if (!receipt.complete || receipt.taskId !== input.taskId
+    || (!shaMatch && !input.allowContentAddressed) || receipt.files.length !== input.paths.length) return null;
   const expected = new Map(input.files.map(file => [file.path, originalPatch(file)]));
   for (const file of receipt.files) {
     const patch = expected.get(file.path);
     if (!input.paths.includes(file.path) || patch === null || patch === undefined
       || file.patchDigest !== digest(patch) || file.totalChars !== patch.length) return null;
+  }
+  if (!shaMatch) {
+    return {
+      ...receipt,
+      headSha: input.headSha,
+      baseSha: input.baseSha ?? null,
+    };
   }
   return receipt;
 }
