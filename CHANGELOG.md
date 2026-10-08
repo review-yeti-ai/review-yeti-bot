@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.122.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.0...v1.122.1) (2026-10-08)
+
+
+### Performance
+
+* **ci:** cache frontend build artifacts and pin 2-worker concurrency for CI runners ([#1444](https://github.com/review-yeti-ai/review-yeti-bot/issues/1444)) ([af8c68b](https://github.com/review-yeti-ai/review-yeti-bot/commit/af8c68b43b57686233c37d5255b01b64efdcdcf7))
+
 ## [1.122.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.121.1...v1.122.0) (2026-10-08)
 
 
