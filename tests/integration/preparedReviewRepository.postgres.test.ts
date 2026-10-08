@@ -124,6 +124,10 @@ describeWithPostgres('prepared review policy immutable Postgres storage', () => 
     const composed = config.composed as Record<string, unknown>;
     delete composed.swarm_context_isolation;
     delete composed.quorum_policy;
+    const configuredOverrides = legacy.config.review_configuration_receipt!
+      .effective.composed_budget.configured_overrides as Record<string, unknown>;
+    delete configuredOverrides.swarm_context_isolation;
+    delete configuredOverrides.quorum_policy;
     rehashConfig(legacy);
 
     const saved = await savePreparedPublishingPolicy(pool!, legacy);
