@@ -199,10 +199,16 @@ describe('REL-1141: the exact openclaw-linear-plugin#30 shape', () => {
           config: roster(), changedFiles: pr30(), repository: 'exampleorg/openclaw-linear-plugin', headSha: HEAD,
           client: approvingPanelClient(prompts), requestPolicy: { responseFormat: { type: 'json_object' } }, deterministicRoster: true,
         })
-        : await executeComposedReview({
-          config: roster(), changedFiles: pr30(), repository: 'exampleorg/openclaw-linear-plugin', headSha: HEAD,
-          client: composedClient(['package.json', 'package-lock.json'], prompts),
-        });
+        : await (() => {
+          const config = roster();
+          // This test exercises the canonical summary delivered in PLAN. Swarm-isolated planning
+          // is covered separately and intentionally receives only the AST outline there.
+          config.composed = { ...config.composed, swarm_context_isolation: false } as typeof config.composed;
+          return executeComposedReview({
+            config, changedFiles: pr30(), repository: 'exampleorg/openclaw-linear-plugin', headSha: HEAD,
+            client: composedClient(['package.json', 'package-lock.json'], prompts),
+          });
+        })();
       expect(prompts.join('\n')).toContain('import-meta-resolve@4.2.0');
       expect((result as PanelResult).summarizedLockfiles?.map((file) => file.path)).toEqual(['package-lock.json']);
       expect((result as PanelResult).omittedSourcePaths ?? []).toEqual([]);
