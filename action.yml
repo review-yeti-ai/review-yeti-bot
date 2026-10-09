@@ -105,7 +105,8 @@ inputs:
   execution-backend:
     description: >-
       Review execution location: local runs the existing panel on this runner; doks only admits
-      the immutable request to the Review Yeti DOKS queue; mars admits to the DO Managed Agents queue.
+      the immutable request to the Review Yeti DOKS queue; mars admits to the DO Managed Agents queue;
+      edge admits to the Cloudflare Worker Review Yeti queue.
       Remote callers must grant permissions: id-token: write and rely on the later Review Yeti App gate
       for a terminal result.
     required: false
@@ -113,8 +114,18 @@ inputs:
   doks-dispatch-url:
     description: >-
       Review Yeti DOKS admission endpoint, supplied by the calling workflow (required when execution-backend is
-      doks or mars). Ordinary dispatch uses /api/dispatch/action. The isolated qualification endpoint is
+      doks, mars, or edge). Ordinary dispatch uses /api/dispatch/action. The isolated qualification endpoint is
       accepted only for the exact qualification repository when its runtime image digest is also supplied.
+    required: false
+    default: ''
+  dispatch-url:
+    description: >-
+      Alias for doks-dispatch-url / edge-dispatch-url. Review Yeti admission endpoint.
+    required: false
+    default: ''
+  edge-dispatch-url:
+    description: >-
+      Alias for doks-dispatch-url. Cloudflare edge admission endpoint.
     required: false
     default: ''
   qualification-runtime-image-digest:
@@ -476,9 +487,9 @@ runs:
       run: |
         set -euo pipefail
         case "$EXECUTION_BACKEND" in
-          local|doks|mars) ;;
+          local|doks|mars|edge) ;;
           *)
-            echo "::error::execution-backend must be local, doks, or mars"
+            echo "::error::execution-backend must be local, doks, mars, or edge"
             exit 1
             ;;
         esac
@@ -518,7 +529,7 @@ runs:
       if: ${{ inputs.execution-backend != 'local' }}
       shell: bash
       env:
-        DOKS_DISPATCH_URL: ${{ inputs.doks-dispatch-url }}
+        DOKS_DISPATCH_URL: ${{ inputs.dispatch-url || inputs.edge-dispatch-url || inputs.doks-dispatch-url }}
         DOKS_OIDC_AUDIENCE: review-yeti-doks-dispatch
         DOKS_PUBLISH_MODE: ${{ inputs.doks-publish-mode }}
         QUALIFICATION_RUNTIME_IMAGE_DIGEST: ${{ inputs.qualification-runtime-image-digest }}

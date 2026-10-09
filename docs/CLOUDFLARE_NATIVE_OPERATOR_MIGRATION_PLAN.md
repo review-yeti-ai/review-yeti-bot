@@ -125,12 +125,16 @@ flowchart TD
 * Support unprefixed tool aliases and legacy alias routing in `McpRouter`.
 * Validate conformance with Model Context Protocol specification.
 
-### Phase 4: DNS & Ingress Cutover
-* Update default dispatch URL in `review-yeti-bot/action.yml` to `https://review-bot.example.com`.
-* Update GitHub App webhook URL to `https://review-bot.example.com/api/webhooks/github`.
-* Observe 100% production traffic running directly on Cloudflare Edge.
+### Phase 4: DNS & Ingress Cutover (Complete)
+* Added first-class `edge` execution backend to `action.yml` along with `dispatch-url` and `edge-dispatch-url` aliases.
+* Updated Cloudflare Edge Ingress:
+  * Bound worker route `review-bot.<domain>/*` directly to `review-yeti-cf-orchestrator` at Cloudflare Edge.
+  * Updated WAF skip rules for edge-native machine callbacks (`/api/*`, `/mcp*`, `/health`, `/ready`).
+  * Cloudflare Edge Worker now intercepts 100% of ingress traffic before it reaches the legacy DOKS origin.
+  * Verified live responses for `/health`, `/ready`, `/api/mcp`, `/api/webhooks/github` (fail-closed HMAC rejection), and `/api/dispatch/action`.
+* Enabled automatic edge worker deployment in `.github/workflows/cf-orchestrator-ci.yaml`.
 
-### Phase 5: DOKS Decommission & Cluster Quota Reclamation
+### Phase 5: DOKS Decommission & Cluster Quota Reclamation (Next)
 * Remove `clusters/doks-nyc1/apps/ct-review-system/` from Flux in deployment infrastructure.
 * Land ADR documenting the 100% Cloudflare-Native architecture.
 * Delete the `ct-review-system` namespace on DOKS.
