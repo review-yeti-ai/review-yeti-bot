@@ -530,6 +530,7 @@ test('R2 runner joins a failed loaded-worker sidecar through the exact R2 collec
       'prepared-host/prepared-73004-default.json'), 'utf8'),
   };
   const caseMounts = [];
+  let forwardedChildAllocation;
   let childEnvHasInferenceKey = false;
   let argsContainSyntheticCredential = false;
   const spawnImplementation = (command, args, options) => {
@@ -555,7 +556,8 @@ test('R2 runner joins a failed loaded-worker sidecar through the exact R2 collec
         let request;
         try { request = JSON.parse(stdin.toString('utf8')); }
         finally { stdin.fill(0); }
-        assert.equal(request.clientCallAllocation, 58, 'the loaded worker adapter retains its internal envelope');
+        const parsedImageRequest = loadedHostAdapter.parseExternalNormalV2ImageCaseRequest(request);
+        forwardedChildAllocation = parsedImageRequest.clientCallAllocation;
         assert.equal(request.projection.stepId, 'r2-s001');
         assert.equal(request.projection.caseId, 'ws5-r2-c001');
         assert.equal(request.projection.arm, 'p2-only');
@@ -650,6 +652,8 @@ test('R2 runner joins a failed loaded-worker sidecar through the exact R2 collec
     assert.equal(result.status, 'failed', 'a worker failure remains failed after exact R2 capture');
     assert.equal(result.phaseId, 'ws5-current-source-external-v2-r2');
     assert.equal(result.clientCalls, 25);
+    assert.equal(forwardedChildAllocation, 53,
+      'the coordinator allocation must reach and pass the loaded child parser unchanged');
     assert.equal(result.unknownClientCallUpperBound, 0);
     assert.equal(result.phaseAttemptAllocation.spent, 25);
     assert.equal(result.phaseAttemptAllocation.declared, 267);

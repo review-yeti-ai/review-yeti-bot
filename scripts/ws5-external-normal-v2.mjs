@@ -1988,7 +1988,7 @@ function externalNormalExecutionProfile(trustedR2Execution) {
         || step.clientCallAllocation > 53) throw new Error('external_normal_r2_step_call_allocation_invalid');
       return step.clientCallAllocation;
     },
-    workerCallAllocationForStep: (step) => step.clientCallAllocation === 53 ? 58 : step.clientCallAllocation,
+    workerCallAllocationForStep: (step) => step.clientCallAllocation,
     wallReservationForStep: (step) => {
       if (!Number.isSafeInteger(step?.reservationMs) || step.reservationMs < 1) {
         throw new Error('external_normal_r2_step_reservation_invalid');
