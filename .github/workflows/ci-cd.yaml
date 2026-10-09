@@ -323,6 +323,11 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=3072
         run: npm run build
 
+      - name: Run WS5 external coordinator tests
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: node --test tests/unit/ws5ExternalNormalV2.test.mjs
+
       - name: Verify frontend artifacts before caching
         run: node scripts/verify-frontend-artifacts.js
 
