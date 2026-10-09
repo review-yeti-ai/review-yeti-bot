@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { canonicalJson, changedLineNumbers, sha256, type ReviewChangedFile } from './reviewCore';
 import { affectedContextDigest } from './semanticContext';
 import { findingClaimType, findingFingerprintForClaimType, normalizeFindingSeverity,
@@ -35,6 +36,90 @@ export const GROUNDED_VERIFICATION_VERSION = GROUNDED_VERIFICATION_V2_VERSION;
 export const GROUNDED_MAX_ASSIGNMENTS = 24;
 export const GROUNDED_DEFAULT_BUDGET = Object.freeze({ totalCalls: 100, callsPerTask: 12, concurrency: 18,
   callTimeoutMs: 180_000, stageBudgetMs: 300_000 });
+export const GROUNDED_VERIFIER_DIAGNOSTIC_VERSION = 'GroundedVerifierDiagnostic.v1' as const;
+const groundedVerifierDiagnosticStages = ['source', 'budget', 'response', 'verifier'] as const;
+const groundedVerifierDiagnosticCodes = [
+  'source_tools_unavailable', 'source_fetch_failed', 'source_fetch_unavailable', 'source_binding_invalid',
+  'source_window_unavailable', 'source_prefetch_budget_exhausted', 'source_evidence_limit_exceeded',
+  'source_context_unavailable', 'verification_call_budget_exhausted', 'verification_stage_budget_exhausted',
+  'response_size_limit', 'response_invalid_json', 'response_schema_invalid', 'citation_alias_invalid',
+  'candidate_evidence_missing', 'confirmation_fields_missing', 'confirmation_root_cause_invalid',
+  'confirmation_anchor_invalid', 'confirmation_anchor_unbound', 'confirmation_citation_binding_invalid',
+  'confirmation_causal_path_invalid',
+  'confirmation_causal_citation_missing', 'confirmation_cross_file_binding_invalid',
+  'confirmation_source_state_invalid', 'confirmation_delta_invalid', 'confirmation_delta_citation_missing',
+  'confirmation_citations_inconsistent', 'contradiction_evidence_missing', 'model_reported_insufficient',
+  'response_status_unsupported', 'route_context_invalid', 'adjudicator_unavailable',
+  'verifier_response_missing', 'verifier_request_failed', 'verification_execution_failed',
+] as const;
+const groundedVerifierDiagnosticFieldGroups = [
+  'source_provider', 'source_snapshot', 'source_diff', 'source_window', 'import_resolution_budget',
+  'import_context', 'source_evidence_bound', 'verification_budget', 'json', 'response_object',
+  'citations', 'candidate_and_diff_citations', 'confirmation_fields', 'root_cause', 'cause_anchor',
+  'causal_path', 'source_state', 'causal_delta', 'verification_route', 'adjudicator',
+  'verifier_transport', 'verifier_response', 'verification_execution', 'status', 'response_body',
+] as const;
+const groundedVerifierDiagnosticTriplets = new Set([
+  'source:source_tools_unavailable:source_provider', 'source:source_fetch_failed:source_snapshot',
+  'source:source_fetch_unavailable:source_snapshot', 'source:source_binding_invalid:source_diff',
+  'source:source_window_unavailable:source_window', 'source:source_prefetch_budget_exhausted:import_resolution_budget',
+  'source:source_evidence_limit_exceeded:source_evidence_bound', 'source:source_context_unavailable:import_context',
+  'budget:verification_call_budget_exhausted:verification_budget',
+  'budget:verification_stage_budget_exhausted:verification_budget',
+  'response:response_size_limit:response_body', 'response:response_invalid_json:json',
+  'response:response_schema_invalid:response_object', 'response:citation_alias_invalid:citations',
+  'response:candidate_evidence_missing:candidate_and_diff_citations',
+  'response:confirmation_fields_missing:confirmation_fields', 'response:confirmation_root_cause_invalid:root_cause',
+  'response:confirmation_anchor_invalid:cause_anchor', 'response:confirmation_anchor_unbound:cause_anchor',
+  'response:confirmation_citation_binding_invalid:cause_anchor', 'response:confirmation_causal_path_invalid:causal_path',
+  'response:confirmation_causal_citation_missing:causal_path',
+  'response:confirmation_cross_file_binding_invalid:causal_path',
+  'response:confirmation_source_state_invalid:source_state', 'response:confirmation_delta_invalid:causal_delta',
+  'response:confirmation_delta_citation_missing:causal_delta',
+  'response:confirmation_citations_inconsistent:citations',
+  'response:contradiction_evidence_missing:candidate_and_diff_citations',
+  'response:model_reported_insufficient:status', 'response:response_status_unsupported:status',
+  'verifier:route_context_invalid:verification_route', 'verifier:adjudicator_unavailable:adjudicator',
+  'verifier:verifier_response_missing:response_body', 'verifier:verifier_request_failed:verifier_transport',
+  'verifier:verification_execution_failed:verification_execution',
+]);
+export const groundedVerifierDiagnosticSchema = z.object({
+  version: z.literal(GROUNDED_VERIFIER_DIAGNOSTIC_VERSION),
+  stage: z.enum(groundedVerifierDiagnosticStages),
+  code: z.enum(groundedVerifierDiagnosticCodes),
+  fieldGroup: z.enum(groundedVerifierDiagnosticFieldGroups),
+}).strict().superRefine((diagnostic, context) => {
+  if (!groundedVerifierDiagnosticTriplets.has(`${diagnostic.stage}:${diagnostic.code}:${diagnostic.fieldGroup}`)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['fieldGroup'],
+      message: 'verifier diagnostic stage, code, and field group must be an admitted tuple' });
+  }
+});
+export type GroundedVerifierDiagnostic = z.infer<typeof groundedVerifierDiagnosticSchema>;
+
+function verifierDiagnostic(stage: GroundedVerifierDiagnostic['stage'], code: GroundedVerifierDiagnostic['code'],
+  fieldGroup: GroundedVerifierDiagnostic['fieldGroup']): GroundedVerifierDiagnostic {
+  return { version: GROUNDED_VERIFIER_DIAGNOSTIC_VERSION, stage, code, fieldGroup };
+}
+
+/** Convert only fixed source-resolver reason classes into safe receipt codes. */
+function sourceFailureDiagnostic(reason: string): GroundedVerifierDiagnostic {
+  if (reason === 'bounded import-resolution probe budget exhausted') {
+    return verifierDiagnostic('source', 'source_prefetch_budget_exhausted', 'import_resolution_budget');
+  }
+  if (reason.includes('candidate diff') || reason.includes('admitted revisions') || reason.includes('pinned to the admitted')) {
+    return verifierDiagnostic('source', 'source_binding_invalid', 'source_diff');
+  }
+  if (reason.includes('exceed') || reason.includes('over-budget') || reason.includes('cannot be retrieved')) {
+    return verifierDiagnostic('source', 'source_evidence_limit_exceeded', 'source_evidence_bound');
+  }
+  if ((reason.includes('source') && reason.includes('unavailable')) || reason.includes('candidate is unavailable')) {
+    return verifierDiagnostic('source', 'source_fetch_unavailable', 'source_snapshot');
+  }
+  if (reason.includes('window') || reason.includes('citation') || reason.includes('anchor')) {
+    return verifierDiagnostic('source', 'source_window_unavailable', 'source_window');
+  }
+  return verifierDiagnostic('source', 'source_context_unavailable', 'import_context');
+}
 const MAX_CONTRACT_IMPORTS = 12;
 const MAX_EVIDENCE_FILES = MAX_CONTRACT_IMPORTS + 1;
 /** Separate pinned-source API probe ceiling; it is not charged as a verifier model call. */
@@ -223,6 +308,8 @@ export interface GroundedVerificationOutcome {
   rootCauseEvidenceKey?: string | null;
   scopeDecision?: FindingChangeScopeDecision;
   verifierRoute?: GroundedVerifierRouteV1;
+  /** Enum-only explanation for an insufficient result; never contains model or source text. */
+  diagnostic?: GroundedVerifierDiagnostic;
 }
 
 export interface GroundedVerificationOutcomeV2 extends GroundedVerificationOutcome {
@@ -524,6 +611,7 @@ interface WindowedRetrievedFile {
 interface WindowedRetrievedEvidence {
   complete: boolean;
   reason?: string;
+  diagnostic?: GroundedVerifierDiagnostic;
   evidence: WindowedRetrievedFile[];
   candidateSide?: 'head' | 'base';
   candidateHunkDigest?: string;
@@ -663,7 +751,8 @@ async function retrieveWindowedIndependentEvidence(input: {
   const path = normalizedPath(input.candidate.path);
   const changedByPath = changedPathMap(input.changedFiles);
   const changedFile = changedByPath.get(path);
-  const fail = (reason: string, causalDiffPaths: string[] = []): WindowedRetrievedEvidence => ({ complete: false, reason,
+  const fail = (reason: string, causalDiffPaths: string[] = [], diagnostic = sourceFailureDiagnostic(reason)): WindowedRetrievedEvidence => ({ complete: false, reason,
+    diagnostic,
     evidence, causalDiffPaths, citations: [...citationsById.values()].sort((left, right) => left.id.localeCompare(right.id)),
     aliases: new Map(), windowsByCitationId });
   if (!input.provider.readFileAt || !changedFile) return fail('candidate source tools or changed file are unavailable');
@@ -856,11 +945,15 @@ async function retrieveWindowedIndependentEvidence(input: {
       || referenceSearch.repository !== input.repository || referenceSearch.sourcePath !== path
       || referenceSearch.symbol !== removedExport.symbol || referenceSearch.side !== 'head'
       || referenceSearch.revisionSha !== input.headSha || !Array.isArray(referenceSearch.candidatePaths)
-      || referenceSearch.candidatePaths.length > MAX_CONTRACT_IMPORTS
-      || new Set(referenceSearch.candidatePaths).size !== referenceSearch.candidatePaths.length
+      || new Set(referenceSearch.candidatePaths).size !== referenceSearch.candidatePaths.length) {
+      return fail('bounded reverse-reference search returned an invalid or over-budget envelope', [...causalDiffPaths],
+        verifierDiagnostic('source', 'source_context_unavailable', 'import_context'));
+    }
+    if (referenceSearch.candidatePaths.length > MAX_CONTRACT_IMPORTS
       || referenceSearch.scannedFileCount > MAX_CONTRACT_IMPORTS
       || referenceSearch.scannedBytes > MAX_TOTAL_EVIDENCE_BYTES) {
-      return fail('bounded reverse-reference search returned an invalid or over-budget envelope', [...causalDiffPaths]);
+      return fail('bounded reverse-reference search returned an invalid or over-budget envelope', [...causalDiffPaths],
+        verifierDiagnostic('source', 'source_prefetch_budget_exhausted', 'import_resolution_budget'));
     }
     let verifiedCaller = false;
     for (const callerPath of [...referenceSearch.candidatePaths].sort((left, right) => left < right ? -1 : left > right ? 1 : 0)) {
@@ -1021,7 +1114,7 @@ function parseVerifierResponse(raw: string, input: {
   causalDiffPaths: string[];
   changedFiles: readonly ReviewChangedFile[];
 }): { status: GroundedVerificationOutcome['status']; reason: string; evidence?: GroundedVerifiedEvidence;
-  candidateSide?: 'head' | 'base' } {
+  candidateSide?: 'head' | 'base'; diagnostic?: GroundedVerifierDiagnostic } {
   if (raw.length > MAX_RESPONSE_CHARS) return { status: 'insufficient', reason: 'verifier response exceeded its evidence bound' };
   let parsed: Record<string, unknown>;
   try {
@@ -1181,29 +1274,40 @@ function sourceReference(retrieval: WindowedRetrievedEvidence, id: string): Grou
   return retrieval.citations.find((citation) => citation.id === id);
 }
 
+function insufficientV2(reason: string, code: GroundedVerifierDiagnostic['code'],
+  fieldGroup: GroundedVerifierDiagnostic['fieldGroup']): {
+    status: 'insufficient'; reason: string; diagnostic: GroundedVerifierDiagnostic;
+  } {
+  return { status: 'insufficient', reason, diagnostic: verifierDiagnostic('response', code, fieldGroup) };
+}
+
 function parseV2VerifierResponse(raw: string, input: { candidate: GroundedFindingCandidate;
   retrieval: WindowedRetrievedEvidence }): { status: GroundedVerificationOutcome['status']; reason: string;
-  candidateSide?: 'head' | 'base'; evidence?: GroundedVerifiedEvidenceV2Parsed } {
-  if (raw.length > MAX_RESPONSE_CHARS) return { status: 'insufficient', reason: 'verifier response exceeded its evidence bound' };
+  candidateSide?: 'head' | 'base'; evidence?: GroundedVerifiedEvidenceV2Parsed; diagnostic?: GroundedVerifierDiagnostic } {
+  if (raw.length > MAX_RESPONSE_CHARS) return insufficientV2('verifier response exceeded its evidence bound',
+    'response_size_limit', 'response_body');
   let parsed: Record<string, unknown>;
   try {
     const value = JSON.parse(raw);
     if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error('invalid_object');
     parsed = value as Record<string, unknown>;
-  } catch { return { status: 'insufficient', reason: 'verifier response was not strict JSON' }; }
+  } catch { return insufficientV2('verifier response was not strict JSON', 'response_invalid_json', 'json'); }
   const status = parsed.status;
   const commonKeys = new Set(['status', 'explanation', 'citations']);
   const confirmedKeys = new Set(['status', 'violatedInvariant', 'failurePath', 'benignCheck', 'changeConnection',
     'rootCause', 'causeAnchor', 'causalPath', 'baseState', 'headState', 'causalDelta', 'citations']);
   const permitted = status === 'confirmed' ? confirmedKeys : commonKeys;
-  if (Object.keys(parsed).some((key) => !permitted.has(key))) return { status: 'insufficient', reason: 'verifier response contained unsupported fields' };
+  if (Object.keys(parsed).some((key) => !permitted.has(key))) return insufficientV2(
+    'verifier response contained unsupported fields', 'response_schema_invalid', 'response_object');
   const aliases = v2AliasList(parsed.citations, input.retrieval);
-  if (!aliases) return { status: 'insufficient', reason: 'verifier cited an unknown or duplicate evidence alias' };
+  if (!aliases) return insufficientV2('verifier cited an unknown or duplicate evidence alias',
+    'citation_alias_invalid', 'citations');
   const usedCitationIds = durableIds(aliases, input.retrieval);
   const citedReferences = usedCitationIds.map((id) => sourceReference(input.retrieval, id)!);
   const sourceWindowManifestDigest = groundedCitationManifestDigest(citedReferences);
   const candidateSide = input.retrieval.candidateSide;
-  if (!candidateSide) return { status: 'insufficient', reason: 'candidate hunk mapping is unavailable' };
+  if (!candidateSide) return insufficientV2('candidate hunk mapping is unavailable',
+    'candidate_evidence_missing', 'candidate_and_diff_citations');
   const candidatePath = input.candidate.path;
   const selected = input.retrieval.evidence.find((row) => row.path === candidatePath);
   const candidateWindow = (candidateSide === 'head' ? selected?.headWindows : selected?.baseWindows)
@@ -1226,10 +1330,13 @@ function parseV2VerifierResponse(raw: string, input: { candidate: GroundedFindin
     sourceWindowManifestDigest,
   };
   if (status === 'confirmed') {
-    if (!candidateEvidencePresent) return { status: 'insufficient', reason: 'confirmation omitted the exact candidate window, mapped counterpart, or causal hunk' };
+    if (!candidateEvidencePresent) return insufficientV2(
+      'confirmation omitted the exact candidate window, mapped counterpart, or causal hunk',
+      'candidate_evidence_missing', 'candidate_and_diff_citations');
     const requiredText = ['violatedInvariant', 'failurePath', 'benignCheck', 'changeConnection'];
     if (requiredText.some((key) => typeof parsed[key] !== 'string' || !String(parsed[key]).trim())) {
-      return { status: 'insufficient', reason: 'confirmation omitted its invariant or failure path' };
+      return insufficientV2('confirmation omitted its invariant or failure path',
+        'confirmation_fields_missing', 'confirmation_fields');
     }
     const rootCause = parsed.rootCause;
     const causeAnchor = parsed.causeAnchor;
@@ -1242,22 +1349,26 @@ function parseV2VerifierResponse(raw: string, input: { candidate: GroundedFindin
     if (!rootCause || typeof rootCause !== 'object' || Array.isArray(rootCause)
       || Object.keys(rootCause).some((key) => !['componentId', 'behaviorId', 'contractId', 'failureModeId'].includes(key))
       || ['componentId', 'behaviorId', 'contractId', 'failureModeId'].some((key) => !slug((rootCause as Record<string, unknown>)[key]))) {
-      return { status: 'insufficient', reason: 'confirmation omitted its structured root-cause tuple' };
+      return insufficientV2('confirmation omitted its structured root-cause tuple',
+        'confirmation_root_cause_invalid', 'root_cause');
     }
     if (!causeAnchor || typeof causeAnchor !== 'object' || Array.isArray(causeAnchor)
       || Object.keys(causeAnchor).some((key) => !['componentPath', 'side', 'startLine', 'endLine', 'citationIds'].includes(key))) {
-      return { status: 'insufficient', reason: 'confirmation omitted its bounded source anchor' };
+      return insufficientV2('confirmation omitted its bounded source anchor',
+        'confirmation_anchor_invalid', 'cause_anchor');
     }
     const anchor = causeAnchor as Record<string, unknown>;
     if (typeof anchor.componentPath !== 'string' || normalizedPath(anchor.componentPath) !== anchor.componentPath
       || !['head', 'base'].includes(String(anchor.side)) || !Number.isSafeInteger(anchor.startLine)
       || !Number.isSafeInteger(anchor.endLine) || Number(anchor.startLine) < 1 || Number(anchor.endLine) < Number(anchor.startLine)
       || Number(anchor.endLine) - Number(anchor.startLine) + 1 > 20) {
-      return { status: 'insufficient', reason: 'cause anchor path, side, or span is invalid' };
+      return insufficientV2('cause anchor path, side, or span is invalid',
+        'confirmation_anchor_invalid', 'cause_anchor');
     }
     const anchorAliases = v2AliasList(anchor.citationIds, input.retrieval);
     if (!anchorAliases || anchorAliases.some((alias) => !aliases.includes(alias))) {
-      return { status: 'insufficient', reason: 'cause anchor citations are outside the verifier citation set' };
+      return insufficientV2('cause anchor citations are outside the verifier citation set',
+        'confirmation_citation_binding_invalid', 'cause_anchor');
     }
     const anchorIds = durableIds(anchorAliases, input.retrieval);
     let anchorContentDigest: string | undefined;
@@ -1269,25 +1380,30 @@ function parseV2VerifierResponse(raw: string, input: { candidate: GroundedFindin
       const digest = groundedSourceLineDigest(window, Number(anchor.startLine), Number(anchor.endLine));
       if (digest) { anchorContentDigest = digest; break; }
     }
-    if (!anchorContentDigest) return { status: 'insufficient', reason: 'cause anchor is outside every cited exact source window' };
+    if (!anchorContentDigest) return insufficientV2('cause anchor is outside every cited exact source window',
+      'confirmation_anchor_unbound', 'cause_anchor');
 
     if (!causalPath || typeof causalPath !== 'object' || Array.isArray(causalPath)
       || Object.keys(causalPath).some((key) => !['relation', 'candidatePath', 'componentPath', 'citationIds'].includes(key))) {
-      return { status: 'insufficient', reason: 'confirmation omitted caller/component source linkage' };
+      return insufficientV2('confirmation omitted caller/component source linkage',
+        'confirmation_causal_path_invalid', 'causal_path');
     }
     const causal = causalPath as Record<string, unknown>;
     if (!['same-component', 'dependency-edge', 'contract-edge', 'unrelated', 'unknown'].includes(String(causal.relation))
       || causal.candidatePath !== candidatePath || causal.componentPath !== anchor.componentPath) {
-      return { status: 'insufficient', reason: 'caller/component source linkage is invalid' };
+      return insufficientV2('caller/component source linkage is invalid',
+        'confirmation_causal_path_invalid', 'causal_path');
     }
     const causalAliases = v2AliasList(causal.citationIds, input.retrieval);
     if (!causalAliases || causalAliases.some((alias) => !aliases.includes(alias))
       || !durableIds(causalAliases, input.retrieval).some((id) => id === candidateDiff?.id)) {
-      return { status: 'insufficient', reason: 'causal linkage omitted the exact current hunk citation' };
+      return insufficientV2('causal linkage omitted the exact current hunk citation',
+        'confirmation_causal_citation_missing', 'causal_path');
     }
     if (causal.relation === 'same-component' && causal.componentPath !== candidatePath
       || (causal.relation === 'dependency-edge' || causal.relation === 'contract-edge') && causal.componentPath === candidatePath) {
-      return { status: 'insufficient', reason: 'caller/component relation disagrees with its paths' };
+      return insufficientV2('caller/component relation disagrees with its paths',
+        'confirmation_causal_path_invalid', 'causal_path');
     }
     if (causal.relation === 'dependency-edge' || causal.relation === 'contract-edge') {
       const edges = durableIds(causalAliases, input.retrieval).map((id) => sourceReference(input.retrieval, id)?.window)
@@ -1297,10 +1413,12 @@ function parseV2VerifierResponse(raw: string, input: { candidate: GroundedFindin
         && window.mapping.edge.importerPath === candidatePath && window.mapping.edge.resolvedPath === causal.componentPath
         && window.mapping.edge.originRegionDigest === input.retrieval.candidateHunkDigest);
       if (boundEdges.length === 0) {
-        return { status: 'insufficient', reason: 'cross-file caller edge is not bound to the changed source hunk' };
+        return insufficientV2('cross-file caller edge is not bound to the changed source hunk',
+          'confirmation_cross_file_binding_invalid', 'causal_path');
       }
       if (new Set(boundEdges.map((window) => (window.mapping as Extract<GroundedSourceWindowV1['mapping'], { kind: 'dependency-contract' }>).edge.contractId)).size !== 1) {
-        return { status: 'insufficient', reason: 'cross-file caller edge is ambiguous' };
+        return insufficientV2('cross-file caller edge is ambiguous',
+          'confirmation_cross_file_binding_invalid', 'causal_path');
       }
     }
 
@@ -1322,26 +1440,31 @@ function parseV2VerifierResponse(raw: string, input: { candidate: GroundedFindin
     };
     const parsedBaseState = parseState(baseState, 'baseState');
     const parsedHeadState = parseState(headState, 'headState');
-    if (!parsedBaseState || !parsedHeadState) return { status: 'insufficient', reason: 'base/head assertions lack exact side evidence' };
+    if (!parsedBaseState || !parsedHeadState) return insufficientV2('base/head assertions lack exact side evidence',
+      'confirmation_source_state_invalid', 'source_state');
     if (!causalDelta || typeof causalDelta !== 'object' || Array.isArray(causalDelta)
       || Object.keys(causalDelta).some((key) => !['kind', 'materiality', 'citationIds'].includes(key))) {
-      return { status: 'insufficient', reason: 'confirmation omitted its causal delta' };
+      return insufficientV2('confirmation omitted its causal delta',
+        'confirmation_delta_invalid', 'causal_delta');
     }
     const delta = causalDelta as Record<string, unknown>;
     if (!['introduced', 'materially-worsened', 'unaffected', 'unknown'].includes(String(delta.kind))
       || (delta.materiality !== undefined && !['reachability', 'impact', 'frequency', 'attack-surface'].includes(String(delta.materiality)))
       || (delta.kind === 'materially-worsened' && delta.materiality === undefined)) {
-      return { status: 'insufficient', reason: 'causal delta or materiality is invalid' };
+      return insufficientV2('causal delta or materiality is invalid',
+        'confirmation_delta_invalid', 'causal_delta');
     }
     const deltaAliases = v2AliasList(delta.citationIds, input.retrieval);
     if (!deltaAliases || deltaAliases.some((alias) => !aliases.includes(alias))
       || !durableIds(deltaAliases, input.retrieval).some((id) => sourceReference(input.retrieval, id)?.side === 'diff')) {
-      return { status: 'insufficient', reason: 'causal delta lacks an exact diff citation' };
+      return insufficientV2('causal delta lacks an exact diff citation',
+        'confirmation_delta_citation_missing', 'causal_delta');
     }
     const nestedIds = [...anchorIds, ...durableIds(causalAliases, input.retrieval),
       ...parsedBaseState.citationIds, ...parsedHeadState.citationIds, ...durableIds(deltaAliases, input.retrieval)];
     if (nestedIds.some((id) => !usedCitationIds.includes(id))) {
-      return { status: 'insufficient', reason: 'structured source claims cite evidence omitted from the verifier citation list' };
+      return insufficientV2('structured source claims cite evidence omitted from the verifier citation list',
+        'confirmation_citations_inconsistent', 'citations');
     }
     let sourceBoundContractId = (rootCause as Record<string, unknown>).contractId as string;
     if (causal.relation === 'dependency-edge' || causal.relation === 'contract-edge') {
@@ -1351,7 +1474,8 @@ function parseV2VerifierResponse(raw: string, input: { candidate: GroundedFindin
           && window.mapping.edge.resolvedPath === anchor.componentPath
           && window.mapping.edge.originRegionDigest === input.retrieval.candidateHunkDigest);
       if (!edgeWindow || edgeWindow.mapping.kind !== 'dependency-contract') {
-        return { status: 'insufficient', reason: 'cross-file contract identity is not source-bound' };
+        return insufficientV2('cross-file contract identity is not source-bound',
+          'confirmation_cross_file_binding_invalid', 'causal_path');
       }
       sourceBoundContractId = edgeWindow.mapping.edge.contractId;
     }
@@ -1379,15 +1503,18 @@ function parseV2VerifierResponse(raw: string, input: { candidate: GroundedFindin
   }
   if (status === 'contradicted') {
     if (typeof parsed.explanation !== 'string' || !parsed.explanation.trim() || !candidateEvidencePresent) {
-      return { status: 'insufficient', reason: 'contradiction lacked exact candidate-side windows and causal diff' };
+      return insufficientV2('contradiction lacked exact candidate-side windows and causal diff',
+        'contradiction_evidence_missing', 'candidate_and_diff_citations');
     }
     const evidence: GroundedVerifiedEvidenceV2Parsed = { semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
       explanation: parsed.explanation.slice(0, 2_000), citations: manifest.citations, usedCitationIds,
       causalDiffPaths: input.retrieval.causalDiffPaths, sourceWindowManifestDigest };
     return { status: 'contradicted', reason: evidence.explanation, candidateSide, evidence };
   }
-  if (status === 'insufficient') return { status: 'insufficient', reason: 'verifier reported insufficient evidence' };
-  return { status: 'insufficient', reason: 'verifier response did not match the grounded verification contract' };
+  if (status === 'insufficient') return insufficientV2('verifier reported insufficient evidence',
+    'model_reported_insufficient', 'status');
+  return insufficientV2('verifier response did not match the grounded verification contract',
+    'response_status_unsupported', 'status');
 }
 
 function classifyGroundedEvidenceScope(input: { candidate: GroundedFindingCandidate;
@@ -1427,11 +1554,11 @@ function classifyGroundedEvidenceScope(input: { candidate: GroundedFindingCandid
 }
 
 function insufficientOutcome(candidate: GroundedFindingCandidate, changedFiles: readonly ReviewChangedFile[], reason: string,
-  relatedDiffPaths: string[] = []): GroundedVerificationOutcome {
+  relatedDiffPaths: string[] = [], diagnostic?: GroundedVerifierDiagnostic): GroundedVerificationOutcome {
   return { fingerprint: candidate.fingerprint, path: candidate.path, line: candidate.line, title: candidate.title,
     claimType: candidate.claimType, severity: candidate.severity,
     status: 'insufficient', reason, affectedContextDigest: groundedAffectedContextDigest(candidate, changedFiles, relatedDiffPaths),
-    relatedDiffPaths };
+    relatedDiffPaths, ...(diagnostic ? { diagnostic } : {}) };
 }
 
 type GroundedVerifierRouteSelection = Pick<GroundedVerifierRouteV1,
@@ -1587,33 +1714,50 @@ export async function runIndependentGroundedVerification(input: GroundedVerifica
       const taskId = assignmentByPath.get(candidate.path) ?? `source_partition_unknown`;
       const taskCalls = perTaskCalls.get(taskId) ?? 0;
       if (calls >= totalCalls || taskCalls >= callsPerTask) {
-        outcomes[index] = insufficientOutcome(candidate, input.changedFiles, 'grounded verification call budget was exhausted');
+        outcomes[index] = insufficientOutcome(candidate, input.changedFiles, 'grounded verification call budget was exhausted', [],
+          verificationVersion === GROUNDED_VERIFICATION_VERSION
+            ? verifierDiagnostic('budget', 'verification_call_budget_exhausted', 'verification_budget') : undefined);
         continue;
       }
       if (input.signal?.aborted || Date.now() - startedAt >= stageBudgetMs) {
-        outcomes[index] = insufficientOutcome(candidate, input.changedFiles, 'grounded verification stage was interrupted or exhausted');
+        outcomes[index] = insufficientOutcome(candidate, input.changedFiles,
+          'grounded verification stage was interrupted or exhausted', [],
+          verificationVersion === GROUNDED_VERIFICATION_VERSION
+            ? verifierDiagnostic('budget', 'verification_stage_budget_exhausted', 'verification_budget') : undefined);
         continue;
       }
       if (!input.provider) {
-        outcomes[index] = insufficientOutcome(candidate, input.changedFiles, 'independent repository source tools are unavailable');
+        outcomes[index] = insufficientOutcome(candidate, input.changedFiles,
+          'independent repository source tools are unavailable', [],
+          verificationVersion === GROUNDED_VERIFICATION_VERSION
+            ? verifierDiagnostic('source', 'source_tools_unavailable', 'source_provider') : undefined);
         continue;
       }
       let currentCandidateSide: 'head' | 'base' | undefined;
       let currentVerifierRoute: GroundedVerifierRouteV1 | undefined;
       let currentRouteSelection: GroundedVerifierRouteSelection | undefined;
       let currentReproductionReceipt: GroundedReproductionReceiptV1 | undefined;
+      let failureStage: 'source' | 'verifier' | 'response' = 'source';
       try {
         let retrievedV1: Awaited<ReturnType<typeof retrieveIndependentEvidence>> | undefined;
         let retrievedV2: WindowedRetrievedEvidence | undefined;
         let causalDiffPaths: string[];
         let messages: Array<{ role: 'system' | 'user'; content: string }>;
         if (verificationVersion === GROUNDED_VERIFICATION_VERSION) {
-          retrievedV2 = await retrieveWindowedIndependentEvidence({ candidate, changedFiles: input.changedFiles,
-            provider: input.provider, repository: input.repository, headSha: input.headSha, baseSha: input.baseSha,
-            resolutionProbeBudget });
+          try {
+            retrievedV2 = await retrieveWindowedIndependentEvidence({ candidate, changedFiles: input.changedFiles,
+              provider: input.provider, repository: input.repository, headSha: input.headSha, baseSha: input.baseSha,
+              resolutionProbeBudget });
+          } catch {
+            outcomes[index] = insufficientOutcome(candidate, input.changedFiles,
+              'independent verifier or source tool failed', [],
+              verifierDiagnostic('source', 'source_fetch_failed', 'source_snapshot'));
+            continue;
+          }
           if (!retrievedV2.complete) {
             outcomes[index] = insufficientOutcome(candidate, input.changedFiles,
-              retrievedV2.reason ?? 'independent source-window evidence is incomplete', retrievedV2.causalDiffPaths);
+              retrievedV2.reason ?? 'independent source-window evidence is incomplete', retrievedV2.causalDiffPaths,
+              retrievedV2.diagnostic ?? verifierDiagnostic('source', 'source_context_unavailable', 'import_context'));
             continue;
           }
           currentCandidateSide = retrievedV2.candidateSide;
@@ -1681,14 +1825,18 @@ export async function runIndependentGroundedVerification(input: GroundedVerifica
         const remaining = stageBudgetMs - (Date.now() - startedAt);
         if (remaining < 1_000) {
           outcomes[index] = insufficientOutcome(candidate, input.changedFiles,
-            'grounded verification stage budget was exhausted', causalDiffPaths);
+            'grounded verification stage budget was exhausted', causalDiffPaths,
+            verificationVersion === GROUNDED_VERIFICATION_VERSION
+              ? verifierDiagnostic('budget', 'verification_stage_budget_exhausted', 'verification_budget') : undefined);
           continue;
         }
         // Charge the governed budget only when a real independent model request will be sent.
         // Source retrieval failures remain visible as insufficient without burning a turn.
         if (calls >= totalCalls || (perTaskCalls.get(taskId) ?? 0) >= callsPerTask) {
           outcomes[index] = insufficientOutcome(candidate, input.changedFiles,
-            'grounded verification call budget was exhausted', causalDiffPaths);
+            'grounded verification call budget was exhausted', causalDiffPaths,
+            verificationVersion === GROUNDED_VERIFICATION_VERSION
+              ? verifierDiagnostic('budget', 'verification_call_budget_exhausted', 'verification_budget') : undefined);
           continue;
         }
 
@@ -1700,7 +1848,8 @@ export async function runIndependentGroundedVerification(input: GroundedVerifica
           const dispute = authenticatedDisputeMatch(candidate, input);
           if ('invalid' in dispute) {
             outcomes[index] = insufficientOutcome(candidate, input.changedFiles,
-              'authenticated disputed-blocker context is ambiguous or malformed', causalDiffPaths);
+              'authenticated disputed-blocker context is ambiguous or malformed', causalDiffPaths,
+              verifierDiagnostic('verifier', 'route_context_invalid', 'verification_route'));
             continue;
           }
           const alternate = input.disputedBlockerAdjudicator;
@@ -1709,7 +1858,8 @@ export async function runIndependentGroundedVerification(input: GroundedVerifica
           if (dispute.matched && alternate) {
             if (!configuredAlternateModel || typeof alternate.client?.complete !== 'function') {
               outcomes[index] = insufficientOutcome(candidate, input.changedFiles,
-                'configured disputed-blocker adjudicator is unavailable; primary fallback is disabled', causalDiffPaths);
+                'configured disputed-blocker adjudicator is unavailable; primary fallback is disabled', causalDiffPaths,
+                verifierDiagnostic('verifier', 'adjudicator_unavailable', 'adjudicator'));
               continue;
             }
             selectedClient = alternate.client;
@@ -1741,17 +1891,21 @@ export async function runIndependentGroundedVerification(input: GroundedVerifica
           version: 'GroundedVerifierRequestContext.v1', findingFingerprint: candidate.fingerprint,
           severity: candidate.severity, ...routeSelection,
         } : undefined;
+        failureStage = 'verifier';
         const response = requestContext
           ? await selectedClient.complete(verifierRequest, requestContext)
           : await selectedClient.complete(verifierRequest);
         if (routeSelection) currentVerifierRoute = groundedVerifierRouteReceipt(routeSelection, response?.model,
           'The client response did not include a non-empty model-reported name.');
+        failureStage = 'response';
         const parsed = response?.content
           ? verificationVersion === GROUNDED_VERIFICATION_VERSION && retrievedV2
             ? parseV2VerifierResponse(response.content, { candidate, retrieval: retrievedV2 })
             : parseVerifierResponse(response.content, { candidate, evidence: retrievedV1!.evidence,
               causalDiffPaths, changedFiles: input.changedFiles })
-          : { status: 'insufficient' as const, reason: 'independent verifier returned no content' };
+          : { status: 'insufficient' as const, reason: 'independent verifier returned no content',
+            ...(verificationVersion === GROUNDED_VERIFICATION_VERSION ? { diagnostic: verifierDiagnostic(
+              'verifier', 'verifier_response_missing', 'response_body') } : {}) };
         const affectedContextDigest = groundedAffectedContextDigest(candidate, input.changedFiles, causalDiffPaths);
         let evidence: GroundedVerifiedEvidence | undefined;
         let scopeDecision: FindingChangeScopeDecision | undefined;
@@ -1774,13 +1928,18 @@ export async function runIndependentGroundedVerification(input: GroundedVerifica
           ...(parsed.candidateSide ?? currentCandidateSide ? { candidateSide: parsed.candidateSide ?? currentCandidateSide } : {}),
           ...(scopeDecision ? { scopeDecision } : {}),
           ...(currentVerifierRoute ? { verifierRoute: currentVerifierRoute } : {}),
+          ...(parsed.diagnostic ? { diagnostic: parsed.diagnostic } : {}),
           ...(evidenceDigest ? { evidenceDigest } : {}), ...(evidence ? { evidence } : {}) };
       } catch {
         if (currentRouteSelection) currentVerifierRoute = groundedVerifierRouteReceipt(currentRouteSelection, null,
           'The verifier call failed before a response was observed.');
         outcomes[index] = { ...insufficientOutcome(candidate, input.changedFiles, 'independent verifier or source tool failed'),
           ...(currentCandidateSide ? { candidateSide: currentCandidateSide } : {}),
-          ...(currentVerifierRoute ? { verifierRoute: currentVerifierRoute } : {}) };
+          ...(currentVerifierRoute ? { verifierRoute: currentVerifierRoute } : {}),
+          ...(verificationVersion === GROUNDED_VERIFICATION_VERSION ? { diagnostic: failureStage === 'source'
+            ? verifierDiagnostic('source', 'source_fetch_failed', 'source_snapshot')
+            : failureStage === 'verifier' ? verifierDiagnostic('verifier', 'verifier_request_failed', 'verifier_transport')
+              : verifierDiagnostic('verifier', 'verification_execution_failed', 'verification_execution') } : {}) };
       }
     }
   }
