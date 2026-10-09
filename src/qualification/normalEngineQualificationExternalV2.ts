@@ -50,7 +50,17 @@ interface ExternalNormalV2Context {
   readonly blockedClientCallCount: number;
 }
 
+export interface ExternalNormalV2RouteIdentity {
+  schemaVersion: 'ReviewYetiExternalNormalQualificationRouteIdentity.v1';
+  routingRuleId: string;
+  routingRuleName: string;
+  provider: string;
+  model: string;
+  sourceConfigurationSha256: string;
+}
+
 interface ExternalNormalV2MjsRunner {
+  validateExternalNormalV2RouteIdentity(value: unknown): ExternalNormalV2RouteIdentity;
   runExternalNormalQualificationV2(input: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
@@ -1155,6 +1165,7 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
 export async function runCurrentSourceExternalNormalV2FromProcess(input: {
   captureExactLogs?: (request: Record<string, unknown>) => Promise<unknown>;
   privateBinding?: ExternalNormalV2PrivateBinding;
+  routeIdentity?: ExternalNormalV2RouteIdentity;
   readInferenceKeyInMemory?: (signal?: AbortSignal) => Promise<string> | string;
   readManagementAuthInMemory?: (signal?: AbortSignal) => Promise<{ username: string; password: string }>
     | { username: string; password: string };
@@ -1178,6 +1189,10 @@ export async function runCurrentSourceExternalNormalV2FromProcess(input: {
   let privateBinding: ExternalNormalV2PrivateBinding;
   try { privateBinding = validateExternalNormalV2PrivateBinding(input.privateBinding, baseEnv); }
   catch { return { status: 'private_binding_rejected', clientCalls: 0 }; }
+  if (!input.routeIdentity) return { status: 'route_identity_required', clientCalls: 0 };
+  let routeIdentity: ExternalNormalV2RouteIdentity;
+  try { routeIdentity = runner.validateExternalNormalV2RouteIdentity(input.routeIdentity); }
+  catch { return { status: 'route_identity_rejected', clientCalls: 0 }; }
   if (!input.readInferenceKeyInMemory || (!input.captureExactLogs && !input.readManagementAuthInMemory)) {
     return { status: 'private_parent_callbacks_required', clientCalls: 0 };
   }
@@ -1195,14 +1210,14 @@ export async function runCurrentSourceExternalNormalV2FromProcess(input: {
   const canCollectLogs = typeof captureExactLogs === 'function';
   const policyInputRoot = authorization && canCollectLogs ? requiredEnv(baseEnv, 'REVIEW_YETI_EXTERNAL_NORMAL_V2_POLICY_ROOT') : undefined;
   if (!policyInputRoot) {
-    return runner.runExternalNormalQualificationV2({ repositoryRoot: process.cwd(), privateBinding, authorization,
+    return runner.runExternalNormalQualificationV2({ repositoryRoot: process.cwd(), privateBinding, routeIdentity, authorization,
       executeCase: async () => { throw new Error('external_normal_v2_authorized_policy_root_required'); }, captureExactLogs,
       preflightExecution: async () => { throw new Error('external_normal_v2_authorized_policy_root_required'); } });
   }
   const adapter = createPinnedWorkerImageExternalNormalV2Adapter({ baseEnv, policyInputRoot, privateBinding,
     readInferenceKeyInMemory: input.readInferenceKeyInMemory });
   return runner.runExternalNormalQualificationV2({ repositoryRoot: process.cwd(), ...(policyInputRoot ? { policyInputRoot } : {}),
-    phaseRoot, privateBinding,
+    phaseRoot, privateBinding, routeIdentity,
     authorization, executeCase: adapter.executeCase, captureExactLogs, preflightExecution: adapter.preflight });
 }
 

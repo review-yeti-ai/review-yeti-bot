@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { verifyQualificationFixtureAllowlist } from '../../scripts/normal-engine-qualification-fixtures.mjs';
@@ -47,6 +47,12 @@ function privateBinding(canonicalPath = path.join(tmpdir(), 'ws5-private-phase-r
   };
 }
 
+function routeIdentityFixture() {
+  return { schemaVersion: runner.EXTERNAL_NORMAL_V2_ROUTE_IDENTITY_SCHEMA,
+    routingRuleId: '11111111-1111-4111-8111-111111111111', routingRuleName: 'fixture-reviewer-route',
+    provider: 'fixture-provider', model: 'fixture-model', sourceConfigurationSha256: 'b'.repeat(64) };
+}
+
 const fixtureBytes = (value) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 
 async function createCoordinatorHarness(repositoryRoot) {
@@ -61,6 +67,7 @@ async function createCoordinatorHarness(repositoryRoot) {
   await chmod(policyInputRoot, 0o700);
 
   const transport = { selectedBaseUrl: 'https://gateway.example.invalid/v1', modelAlias: 'fixture-reviewer' };
+  const routeIdentity = routeIdentityFixture();
   const sourceDescriptor = { repository: 'exampleorg/review-policy-fixture', repositoryId: 73,
     sourceRef: 'b'.repeat(40), path: 'policy/candidate.json', candidateHead: 'd'.repeat(40),
     preparedFixtureReviewHead: 'e'.repeat(40) };
@@ -183,20 +190,13 @@ async function createCoordinatorHarness(repositoryRoot) {
       v1Promotion: 'fixture-v1-promotion', policyInputDigests, targetProjections },
     runtime };
   assert.doesNotThrow(() => runner.validateExternalNormalV2PrivateBinding(binding));
-  return { tempRoot, phaseRoot, policyInputRoot, binding, template, bundle, planSha256 };
+  return { tempRoot, phaseRoot, policyInputRoot, binding, routeIdentity, template, bundle, planSha256 };
 }
 
-
-async function runLoadedAdapterCollectorHarness({ sidecarMode = 'valid' } = {}) {
-  const repositoryRoot = new URL('../../', import.meta.url).pathname;
-  const harness = await createCoordinatorHarness(repositoryRoot);
-  const syntheticRows = Array.from({ length: 25 }, () => ({ callerRequestId: randomUUID(), bifrostLogRequestId: null,
-    upstreamResponseRequestId: randomUUID() }));
-  for (const row of syntheticRows) row.bifrostLogRequestId = row.callerRequestId;
-  const digest = (value) => createHash('sha256').update(value).digest('hex');
+async function workerBaseEnv(harness) {
   const source = harness.binding.sourceDescriptor;
   const [sourceOwner, sourceRepo] = source.repository.split('/');
-  const baseEnv = {
+  return {
     NODE_ENV: 'test', OPENAI_BASE_URL: harness.binding.transport.selectedBaseUrl,
     REVIEW_MODEL: harness.binding.transport.modelAlias,
     REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: source.repository,
@@ -214,6 +214,16 @@ async function runLoadedAdapterCollectorHarness({ sidecarMode = 'valid' } = {}) 
     REVIEW_PREPARED_CONFIG_JSON: await readFile(path.join(harness.policyInputRoot,
       'prepared-host/prepared-73004-default.json'), 'utf8'),
   };
+}
+
+async function runLoadedAdapterCollectorHarness({ sidecarMode = 'valid' } = {}) {
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const harness = await createCoordinatorHarness(repositoryRoot);
+  const syntheticRows = Array.from({ length: 25 }, () => ({ callerRequestId: randomUUID(), bifrostLogRequestId: null,
+    upstreamResponseRequestId: randomUUID() }));
+  for (const row of syntheticRows) row.bifrostLogRequestId = row.callerRequestId;
+  const digest = (value) => createHash('sha256').update(value).digest('hex');
+  const baseEnv = await workerBaseEnv(harness);
   const caseMounts = [];
   let childEnvHasInferenceKey = false;
   let argsContainSyntheticCredential = false;
@@ -300,13 +310,16 @@ async function runLoadedAdapterCollectorHarness({ sidecarMode = 'valid' } = {}) 
       assert.equal(url.searchParams.get('limit'), '1');
       const callerRequestId = url.searchParams.get('request_id');
       assert.ok(syntheticRows.some((row) => row.callerRequestId === callerRequestId));
-      return new Response(JSON.stringify({ data: [{ id: callerRequestId, provider: 'fixture-provider',
-        alias: harness.binding.transport.modelAlias, model: 'fixture-model', status: 'success' }] }),
+      const expectedRoute = harness.routeIdentity;
+      return new Response(JSON.stringify({ data: [{ id: callerRequestId, parent_request_id: null,
+        routing_rule_id: expectedRoute.routingRuleId, routing_rule_name: expectedRoute.routingRuleName,
+        provider: expectedRoute.provider, alias: null, model: expectedRoute.model, status: 'success',
+        fallback_index: 0, number_of_retries: 0, server_side_fallback_model: null }] }),
       { status: 200, headers: { 'content-type': 'application/json' } });
     },
   });
   const now = Date.now();
-  const boundPlan = runner.bindExternalNormalV2PrivateInputs(harness.template, harness.binding);
+  const boundPlan = runner.bindExternalNormalV2PrivateInputs(harness.template, harness.binding, harness.routeIdentity);
   const canonicalRoot = await realpath(harness.phaseRoot);
   const rootInfo = await lstat(canonicalRoot);
   const outputRootSha256 = runner.sha256(canonicalRoot);
@@ -314,13 +327,13 @@ async function runLoadedAdapterCollectorHarness({ sidecarMode = 'valid' } = {}) 
     uid: rootInfo.uid, gid: rootInfo.gid, mode: rootInfo.mode & 0o777 }));
   const launcherSource = await runner.readExternalNormalV2LauncherSourceDigests(repositoryRoot);
   const tuple = runner.buildExternalNormalV2AuthorizationTuple(boundPlan, harness.planSha256,
-    outputRootSha256, launcherSource.tupleSha256, artifactStoreIdentitySha256, harness.binding);
+    outputRootSha256, launcherSource.tupleSha256, artifactStoreIdentitySha256, harness.binding, harness.routeIdentity);
   const authorization = { schemaVersion: runner.EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA, rootGo: true,
     grantId: randomUUID(), issuedAt: new Date(now - 1_000).toISOString(),
     expiresAt: new Date(now + 60_000).toISOString(), binding: tuple };
   const result = await runner.runExternalNormalQualificationV2({
     repositoryRoot, policyInputRoot: harness.policyInputRoot, phaseRoot: harness.phaseRoot,
-    privateBinding: harness.binding, authorization, now: () => now,
+    privateBinding: harness.binding, routeIdentity: harness.routeIdentity, authorization, now: () => now,
     preflightExecution: async ({ origin, sourceRevision, workerImageDigest, runtimeManifestSha256 }) => ({
       status: 'ready', mode: 'dns_tls_only', originSha256: runner.sha256(origin), sourceRevision,
       workerImageDigest, runtimeManifestSha256, resolvedAddressCount: 1,
@@ -346,17 +359,28 @@ test('joins the actual failed case sidecar through the worker mount and collecto
     assert.equal(result.stepResults[0].terminalStatus, 'failed');
     assert.equal(result.stepResults[0].clientCalls, 25);
     assert.equal(result.stepResults[0].clientCallAllocation, 58);
-    assert.equal(result.exactLogCapture.status, 'captured');
+    assert.equal(result.exactLogCapture.status, 'captured', `safe failure code: ${result.exactLogCapture.failureCode || 'none'}`);
     assert.equal(result.exactLogCapture.queriedCallCount, 25);
     assert.equal(result.exactLogCapture.matchedRows, 25);
     assert.equal(result.exactLogCapture.unqueriedCallCount, 0);
     assert.equal(result.logLedger.matchedRows, 25);
     assert.equal(result.routeIdentityProofs[0].status, 'observed');
+    assert.equal(result.routeIdentityProofs[0].routeExpectationSha256,
+      runner.sha256(runner.canonicalJson(harness.routeIdentity)));
+    assert.equal(result.logLedger.upstreamLedger[0].bifrostAlias, null);
+    assert.equal(result.logLedger.upstreamLedger[0].routingRuleIdSha256,
+      runner.sha256(harness.routeIdentity.routingRuleId));
+    assert.equal(result.logLedger.upstreamLedger[0].routingRuleNameSha256,
+      runner.sha256(harness.routeIdentity.routingRuleName));
+    assert.equal(result.logLedger.upstreamLedger[0].fallbackIndexState, 'number');
+    assert.equal(result.logLedger.upstreamLedger[0].fallbackIndex, 0);
     assert.equal(managementAuthReads, 1);
     assert.equal(childEnvHasInferenceKey, false);
     assert.equal(argsContainSyntheticCredential, false);
     assert.equal(logFetchCalls, 25);
     assert.equal(JSON.stringify(result).includes('callerRequestId'), false);
+    assert.equal(JSON.stringify(result).includes(harness.routeIdentity.routingRuleId), false);
+    assert.equal(JSON.stringify(result).includes(harness.routeIdentity.routingRuleName), false);
   } finally { await rm(harness.tempRoot, { recursive: true, force: true }); }
 });
 
@@ -461,4 +485,37 @@ test('supports a sealed-copy log-only read with separate private input and sanit
   await rm(sourceRoot, { recursive: true, force: true });
   await rm(diagnosticInputRoot, { recursive: true, force: true });
   await rm(outputRoot, { recursive: true, force: true });
+});
+
+test('passes the explicit private route DTO through the supported process wrapper into the MJS coordinator', async () => {
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const harness = await createCoordinatorHarness(repositoryRoot);
+  const now = Date.now();
+  const baseEnv = await workerBaseEnv(harness);
+  baseEnv.REVIEW_YETI_EXTERNAL_NORMAL_V2_ROOT_GO = JSON.stringify({
+    schemaVersion: runner.EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA, rootGo: true, grantId: randomUUID(),
+    issuedAt: new Date(now - 1_000).toISOString(), expiresAt: new Date(now + 60_000).toISOString(), binding: {},
+  });
+  baseEnv.REVIEW_YETI_EXTERNAL_NORMAL_V2_POLICY_ROOT = harness.policyInputRoot;
+  let inferenceKeyReads = 0;
+  let exactLogCaptureCalls = 0;
+  try {
+    const missingRoute = await host.runCurrentSourceExternalNormalV2FromProcess({
+      baseEnv, privateBinding: harness.binding,
+      readInferenceKeyInMemory: () => { inferenceKeyReads += 1; return 'synthetic-wrapper-key'; },
+      captureExactLogs: async () => { exactLogCaptureCalls += 1; return { status: 'no_calls' }; },
+    });
+    assert.deepEqual(missingRoute, { status: 'route_identity_required', clientCalls: 0 });
+
+    const result = await host.runCurrentSourceExternalNormalV2FromProcess({
+      baseEnv, privateBinding: harness.binding, routeIdentity: harness.routeIdentity,
+      readInferenceKeyInMemory: () => { inferenceKeyReads += 1; return 'synthetic-wrapper-key'; },
+      captureExactLogs: async () => { exactLogCaptureCalls += 1; return { status: 'no_calls' }; },
+    });
+    assert.deepEqual(result, { status: 'authorization_rejected', phaseId: 'ws5-current-source-external-v2', clientCalls: 0,
+      planSha256: harness.planSha256 });
+    assert.equal(inferenceKeyReads, 0);
+    assert.equal(exactLogCaptureCalls, 0);
+    assert.deepEqual(await readdir(harness.phaseRoot), []);
+  } finally { await rm(harness.tempRoot, { recursive: true, force: true }); }
 });

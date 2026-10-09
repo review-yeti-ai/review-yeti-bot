@@ -42,6 +42,12 @@ function privateBinding(canonicalPath = path.join(tmpdir(), 'ws5-private-phase-r
   };
 }
 
+function routeIdentityFixture() {
+  return { schemaVersion: runner.EXTERNAL_NORMAL_V2_ROUTE_IDENTITY_SCHEMA,
+    routingRuleId: '11111111-1111-4111-8111-111111111111', routingRuleName: 'fixture-reviewer-route',
+    provider: 'fixture-provider', model: 'fixture-model', sourceConfigurationSha256: 'b'.repeat(64) };
+}
+
 const fixtureBytes = (value) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 
 async function createCoordinatorHarness(repositoryRoot) {
@@ -56,6 +62,7 @@ async function createCoordinatorHarness(repositoryRoot) {
   await chmod(policyInputRoot, 0o700);
 
   const transport = { selectedBaseUrl: 'https://gateway.example.invalid/v1', modelAlias: 'fixture-reviewer' };
+  const routeIdentity = routeIdentityFixture();
   const sourceDescriptor = { repository: 'exampleorg/review-policy-fixture', repositoryId: 73,
     sourceRef: 'b'.repeat(40), path: 'policy/candidate.json', candidateHead: 'd'.repeat(40),
     preparedFixtureReviewHead: 'e'.repeat(40) };
@@ -178,7 +185,7 @@ async function createCoordinatorHarness(repositoryRoot) {
       v1Promotion: 'fixture-v1-promotion', policyInputDigests, targetProjections },
     runtime };
   assert.doesNotThrow(() => runner.validateExternalNormalV2PrivateBinding(binding));
-  return { tempRoot, phaseRoot, policyInputRoot, binding, template, bundle, planSha256 };
+  return { tempRoot, phaseRoot, policyInputRoot, binding, routeIdentity, template, bundle, planSha256 };
 }
 
 test('forwards the frozen arm allocation through the real coordinator executor context', async () => {
@@ -188,7 +195,7 @@ test('forwards the frozen arm allocation through the real coordinator executor c
   let observedContext;
   const now = Date.now();
   try {
-    const boundPlan = runner.bindExternalNormalV2PrivateInputs(harness.template, harness.binding);
+    const boundPlan = runner.bindExternalNormalV2PrivateInputs(harness.template, harness.binding, harness.routeIdentity);
     const canonicalRoot = await realpath(harness.phaseRoot);
     const rootInfo = await lstat(canonicalRoot);
     const outputRootSha256 = runner.sha256(canonicalRoot);
@@ -196,14 +203,14 @@ test('forwards the frozen arm allocation through the real coordinator executor c
       uid: rootInfo.uid, gid: rootInfo.gid, mode: rootInfo.mode & 0o777 }));
     const launcherSource = await runner.readExternalNormalV2LauncherSourceDigests(repositoryRoot);
     const tuple = runner.buildExternalNormalV2AuthorizationTuple(boundPlan, harness.planSha256,
-      outputRootSha256, launcherSource.tupleSha256, artifactStoreIdentitySha256, harness.binding);
+      outputRootSha256, launcherSource.tupleSha256, artifactStoreIdentitySha256, harness.binding, harness.routeIdentity);
     const authorization = { schemaVersion: runner.EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA, rootGo: true,
       grantId: randomUUID(), issuedAt: new Date(now - 1_000).toISOString(),
       expiresAt: new Date(now + 60_000).toISOString(), binding: tuple };
 
     const result = await runner.runExternalNormalQualificationV2({ repositoryRoot,
       policyInputRoot: harness.policyInputRoot, phaseRoot: harness.phaseRoot,
-      privateBinding: harness.binding, authorization, now: () => now,
+      privateBinding: harness.binding, routeIdentity: harness.routeIdentity, authorization, now: () => now,
       captureExactLogs: async () => ({ status: 'no_calls' }),
       preflightExecution: async ({ origin, sourceRevision, workerImageDigest, runtimeManifestSha256 }) => ({
         status: 'ready', mode: 'dns_tls_only', originSha256: runner.sha256(origin), sourceRevision,
@@ -262,7 +269,7 @@ test('binds the private identifier sidecar for a resolved failed worker without 
   let executorCalls = 0;
   const now = Date.now();
   try {
-    const boundPlan = runner.bindExternalNormalV2PrivateInputs(harness.template, harness.binding);
+    const boundPlan = runner.bindExternalNormalV2PrivateInputs(harness.template, harness.binding, harness.routeIdentity);
     const canonicalRoot = await realpath(harness.phaseRoot);
     const rootInfo = await lstat(canonicalRoot);
     const outputRootSha256 = runner.sha256(canonicalRoot);
@@ -270,14 +277,14 @@ test('binds the private identifier sidecar for a resolved failed worker without 
       uid: rootInfo.uid, gid: rootInfo.gid, mode: rootInfo.mode & 0o777 }));
     const launcherSource = await runner.readExternalNormalV2LauncherSourceDigests(repositoryRoot);
     const tuple = runner.buildExternalNormalV2AuthorizationTuple(boundPlan, harness.planSha256,
-      outputRootSha256, launcherSource.tupleSha256, artifactStoreIdentitySha256, harness.binding);
+      outputRootSha256, launcherSource.tupleSha256, artifactStoreIdentitySha256, harness.binding, harness.routeIdentity);
     const authorization = { schemaVersion: runner.EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA, rootGo: true,
       grantId: randomUUID(), issuedAt: new Date(now - 1_000).toISOString(),
       expiresAt: new Date(now + 60_000).toISOString(), binding: tuple };
 
     const result = await runner.runExternalNormalQualificationV2({ repositoryRoot,
       policyInputRoot: harness.policyInputRoot, phaseRoot: harness.phaseRoot,
-      privateBinding: harness.binding, authorization, now: () => now,
+      privateBinding: harness.binding, routeIdentity: harness.routeIdentity, authorization, now: () => now,
       captureExactLogs: async (request) => {
         captureRequest = request;
         const unqueriedCidSha256 = request.calls.map((call) => call.clientRequestIdSha256).sort();
@@ -487,6 +494,32 @@ test('rejects an expected-label marker and keeps worker projections outcome-blin
   assert.equal(JSON.stringify(projected).includes('must never enter worker request'), false);
 });
 
+test('binds a private server-route expectation separately from the requested model alias', async () => {
+  const binding = privateBinding();
+  const routeIdentity = routeIdentityFixture();
+  assert.doesNotThrow(() => runner.validateExternalNormalV2RouteIdentity(routeIdentity));
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const { plan: template } = await runner.readFrozenExternalNormalV2Plan(repositoryRoot);
+  const plan = runner.bindExternalNormalV2PrivateInputs(template, binding, routeIdentity);
+  assert.equal(plan.policy.routeAlias, binding.transport.modelAlias);
+  assert.deepEqual(plan.policy.routeIdentity, routeIdentity);
+  assert.doesNotThrow(() => runner.assertExternalNormalV2PlanMatchesPrivateBinding(plan, binding, routeIdentity));
+  const changedRouteIdentity = { ...routeIdentity, sourceConfigurationSha256: 'c'.repeat(64) };
+  assert.throws(() => runner.assertExternalNormalV2PlanMatchesPrivateBinding(plan, binding, changedRouteIdentity),
+    /private_binding_plan_mismatch/u);
+  assert.throws(() => runner.validateExternalNormalV2RouteIdentity({ ...routeIdentity,
+    sourceConfigurationSha256: 'not-a-digest' }), /route_identity_binding_invalid/u);
+  for (const invalid of [
+    { ...routeIdentity, routingRuleId: 'not-a-uuid' },
+    { ...routeIdentity, routingRuleName: '' },
+    { ...routeIdentity, provider: '' },
+    { ...routeIdentity, model: '' },
+    { ...routeIdentity, sourceConfigurationSha256: 'd'.repeat(63) },
+  ]) {
+    assert.throws(() => runner.validateExternalNormalV2RouteIdentity(invalid), /route_identity_binding_invalid/u);
+  }
+});
+
 test('uses the five-by-58 review allocations plus one-call fault controls and keeps eight attempts unspendable', async () => {
   const root = new URL('../../', import.meta.url).pathname;
   const plan = JSON.parse(await readFile(path.join(root, 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json')));
@@ -503,12 +536,13 @@ test('uses the five-by-58 review allocations plus one-call fault controls and ke
 
 test('ROOTGO binds phase, exact plan, output root, runtime and policy tuple and rejects stale or replayed grants', async () => {
   const binding = privateBinding();
+  const routeIdentity = routeIdentityFixture();
   const repositoryRoot = new URL('../../', import.meta.url).pathname;
   const template = JSON.parse(await readFile(path.join(repositoryRoot, 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json')));
-  const plan = runner.bindExternalNormalV2PrivateInputs(template, binding);
+  const plan = runner.bindExternalNormalV2PrivateInputs(template, binding, routeIdentity);
   const pinnedRootSha = createHash('sha256').update(binding.phaseRoot.canonicalPath).digest('hex');
   const tuple = runner.buildExternalNormalV2AuthorizationTuple(plan, '5'.repeat(64), pinnedRootSha,
-    '0'.repeat(64), pinnedRootSha, binding);
+    '0'.repeat(64), pinnedRootSha, binding, routeIdentity);
   assert.throws(() => runner.validateExternalNormalV2PrivateBinding({
     ...binding, runtime: { finalSourceRevision: binding.runtime.finalSourceRevision,
       workerImageDigest: binding.runtime.workerImageDigest, runtimeManifestSha256: binding.runtime.runtimeManifestSha256 },
@@ -518,13 +552,18 @@ test('ROOTGO binds phase, exact plan, output root, runtime and policy tuple and 
   }), /private_binding_invalid/u);
   const changedAttestationBinding = { ...binding,
     runtime: { ...binding.runtime, publicationAttestationSha256: '4'.repeat(64) } };
-  const changedAttestationPlan = runner.bindExternalNormalV2PrivateInputs(template, changedAttestationBinding);
+  const changedAttestationPlan = runner.bindExternalNormalV2PrivateInputs(template, changedAttestationBinding, routeIdentity);
   const changedAttestationTuple = runner.buildExternalNormalV2AuthorizationTuple(changedAttestationPlan,
-    '5'.repeat(64), pinnedRootSha, '0'.repeat(64), pinnedRootSha, changedAttestationBinding);
+    '5'.repeat(64), pinnedRootSha, '0'.repeat(64), pinnedRootSha, changedAttestationBinding, routeIdentity);
   assert.notEqual(changedAttestationTuple.privateBindingSha256, tuple.privateBindingSha256);
+  const changedRouteIdentity = { ...routeIdentity, sourceConfigurationSha256: 'c'.repeat(64) };
+  const changedRoutePlan = runner.bindExternalNormalV2PrivateInputs(template, binding, changedRouteIdentity);
+  const changedRouteTuple = runner.buildExternalNormalV2AuthorizationTuple(changedRoutePlan,
+    '5'.repeat(64), pinnedRootSha, '0'.repeat(64), pinnedRootSha, binding, changedRouteIdentity);
+  assert.notEqual(changedRouteTuple.policyTupleSha256, tuple.policyTupleSha256);
   assert.throws(() => runner.buildExternalNormalV2AuthorizationTuple({
     ...plan, policy: { ...plan.policy, effectiveConfigSha256: '0'.repeat(64) },
-  }, '5'.repeat(64), pinnedRootSha, '0'.repeat(64), pinnedRootSha, binding), /private_binding_plan_mismatch/u);
+  }, '5'.repeat(64), pinnedRootSha, '0'.repeat(64), pinnedRootSha, binding, routeIdentity), /private_binding_plan_mismatch/u);
   assert.equal(tuple.qualificationArtifactStoreRootSha256, pinnedRootSha);
   assert.equal(tuple.qualificationArtifactStoreIdentitySha256, pinnedRootSha);
   assert.equal(tuple.launcherSourceTupleSha256, '0'.repeat(64));
@@ -537,7 +576,7 @@ test('ROOTGO binds phase, exact plan, output root, runtime and policy tuple and 
   assert.equal(runner.validateRootGoGrant(plan, { ...grant, binding: { ...tuple, phasePlanSha256: '4'.repeat(64) } }, tuple, now), false);
   assert.equal(runner.validateRootGoGrant(plan, { ...grant, expiresAt: new Date(now - 1).toISOString() }, tuple, now), false);
   const freshRootGrantTuple = runner.buildExternalNormalV2AuthorizationTuple(plan, '5'.repeat(64), '6'.repeat(64),
-    '0'.repeat(64), '6'.repeat(64), binding);
+    '0'.repeat(64), '6'.repeat(64), binding, routeIdentity);
   assert.equal(runner.validateRootGoGrant(plan, { ...grant, grantId: randomUUID(), binding: freshRootGrantTuple },
     freshRootGrantTuple, now), false);
   assert.equal(runner.validateExternalNormalV2PhaseRootIdentity(plan, binding.phaseRoot.canonicalPath,
@@ -640,6 +679,10 @@ test('verifies worker artifacts inside the ROOTGO-bound private phase root', asy
 });
 
 test('accepts only one exact Bifrost row for every client CID and keeps cost ledgers separate', () => {
+  const expectedRoute = { schemaVersion: runner.EXTERNAL_NORMAL_V2_ROUTE_IDENTITY_SCHEMA,
+    routingRuleId: '11111111-1111-4111-8111-111111111111',
+    routingRuleName: 'fixture-reviewer-route', provider: 'provider-a', model: 'model-a',
+    sourceConfigurationSha256: 'b'.repeat(64) };
   const calls = [
     { clientRequestIdSha256: 'a'.repeat(64), bifrostLogRequestIdSha256: 'a'.repeat(64),
       upstreamResponseRequestIdSha256: 'c'.repeat(64),
@@ -657,7 +700,12 @@ test('accepts only one exact Bifrost row for every client CID and keeps cost led
     bifrostLogRowIdSha256: call.bifrostLogRequestIdSha256,
     upstreamResponseRequestIdSha256: call.upstreamResponseRequestIdSha256,
     bifrostParentRequestIdSha256: String(index + 5).repeat(64),
-    bifrostLogStatus: 'success', provider: 'provider-a', bifrostAlias: 'fixture-reviewer',
+    parentRequestIdValueSha256: String(index + 5).repeat(64), parentRequestIdState: 'valid',
+    routingRuleIdSha256: runner.sha256(expectedRoute.routingRuleId), routingRuleIdState: 'valid',
+    routingRuleNameSha256: runner.sha256(expectedRoute.routingRuleName), routingRuleNameState: 'valid',
+    fallbackIndex: 0, fallbackIndexState: 'number', numberOfRetries: 0, numberOfRetriesState: 'number',
+    serverSideFallbackModelSha256: null, serverSideFallbackModelState: 'null',
+    bifrostLogStatus: 'success', provider: 'provider-a', bifrostAlias: null,
     resolvedModel: 'model-a', servedModel: null, serviceTier: 'default', speed: 'standard', inferenceGeo: 'global',
     gatewayTokenUsage: { prompt: 10, completion: 5, total: 15 },
     bifrostCalculatedCostUsd: index === 0 ? 0.01 : 0.02 }));
@@ -670,9 +718,9 @@ test('accepts only one exact Bifrost row for every client CID and keeps cost led
   assert.equal(result.upstreamLedger[0].bifrostLogRowIdSha256, calls[0].bifrostLogRequestIdSha256);
   assert.equal(result.upstreamLedger[0].upstreamResponseRequestIdSha256, calls[0].upstreamResponseRequestIdSha256);
   assert.equal(result.upstreamLedger[0].bifrostParentRequestIdSha256, '5'.repeat(64));
-  assert.equal(runner.validateCapturedRouteIdentity(calls, rows, 'fixture-reviewer').status, 'observed');
-  assert.throws(() => runner.validateCapturedRouteIdentity(calls,
-    [rows[0], { ...rows[1], bifrostAlias: 'other-route' }], 'fixture-reviewer'), /route_identity_not_proven/u);
+  assert.equal(runner.validateCapturedRouteIdentity(calls, rows, 'fixture-reviewer', expectedRoute).status, 'observed');
+  assert.equal(runner.validateCapturedRouteIdentity(calls,
+    [rows[0], { ...rows[1], bifrostAlias: 'key-level-model-alias' }], 'fixture-reviewer', expectedRoute).status, 'observed');
   assert.notEqual(result.requestLedgerSha256, result.upstreamLedgerSha256);
   assert.notEqual(result.tokenLedgerSha256, result.actualBilledLedgerSha256);
   assert.throws(() => runner.validateExactLogLedger(calls, { status: 'captured', rows: rows.slice(1) }), /exact_log_rows_missing/u);
@@ -680,6 +728,62 @@ test('accepts only one exact Bifrost row for every client CID and keeps cost led
     /cid_join_mismatch/u);
   assert.throws(() => runner.validateExactLogLedger(calls, { status: 'captured', rows: [rows[0], { ...rows[1], exactRowCount: 2 }] }),
     /row_invalid_or_ambiguous/u);
+});
+
+test('proves the server routing rule separately from the client-requested model alias', () => {
+  const call = { clientRequestIdSha256: 'a'.repeat(64), requestedAlias: 'fixture-reviewer', httpStatus: 200 };
+  const expectedRoute = { schemaVersion: runner.EXTERNAL_NORMAL_V2_ROUTE_IDENTITY_SCHEMA,
+    routingRuleId: '11111111-1111-4111-8111-111111111111',
+    routingRuleName: 'fixture-reviewer-route', provider: 'provider-a', model: 'model-a',
+    sourceConfigurationSha256: 'b'.repeat(64) };
+  const row = { clientRequestIdSha256: call.clientRequestIdSha256, bifrostLogStatus: 'success',
+    bifrostAlias: null, provider: 'provider-a', resolvedModel: 'model-a',
+    routingRuleIdSha256: runner.sha256(expectedRoute.routingRuleId),
+    routingRuleIdState: 'valid', routingRuleNameSha256: runner.sha256(expectedRoute.routingRuleName),
+    routingRuleNameState: 'valid',
+    fallbackIndex: 0, fallbackIndexState: 'number', parentRequestIdState: 'null',
+    bifrostParentRequestIdSha256: null, numberOfRetries: 0, numberOfRetriesState: 'number',
+    serverSideFallbackModel: null, serverSideFallbackModelSha256: null, serverSideFallbackModelState: 'null' };
+
+  assert.equal(runner.validateCapturedRouteIdentity([call], [row], 'fixture-reviewer', expectedRoute).status, 'observed');
+  assert.equal(row.bifrostAlias, null, 'the server route proof must not copy the client model alias into the log alias');
+  assert.equal(runner.validateCapturedRouteIdentity([call], [{ ...row, numberOfRetries: 2 }],
+    'fixture-reviewer', expectedRoute).status, 'observed', 'provider retries are distinct from route fallback');
+  assert.equal(runner.validateCapturedRouteIdentity([call], [{ ...row, parentRequestIdState: 'valid',
+    parentRequestIdValueSha256: 'd'.repeat(64), bifrostParentRequestIdSha256: 'd'.repeat(64) }],
+  'fixture-reviewer', expectedRoute).status, 'observed', 'parent linkage alone is not a routing fallback');
+
+  const missingRuleId = { ...row };
+  delete missingRuleId.routingRuleIdSha256;
+  delete missingRuleId.routingRuleIdState;
+  const missingRuleName = { ...row };
+  delete missingRuleName.routingRuleNameSha256;
+  delete missingRuleName.routingRuleNameState;
+  const invalidRows = [
+    missingRuleId,
+    { ...row, routingRuleIdSha256: null },
+    { ...row, routingRuleIdSha256: 'c'.repeat(64) },
+    missingRuleName,
+    { ...row, routingRuleNameSha256: null },
+    { ...row, routingRuleNameSha256: 'c'.repeat(64) },
+    { ...row, provider: 'provider-b' },
+    { ...row, resolvedModel: 'model-b' },
+    { ...row, bifrostLogStatus: 'error' },
+    { ...row, fallbackIndex: 1 },
+    { ...row, fallbackIndex: 1, parentRequestIdState: 'valid',
+      parentRequestIdValueSha256: 'd'.repeat(64), bifrostParentRequestIdSha256: 'd'.repeat(64) },
+    { ...row, fallbackIndex: null, fallbackIndexState: 'absent' },
+    { ...row, fallbackIndex: null, fallbackIndexState: 'null' },
+    { ...row, serverSideFallbackModel: 'model-b', serverSideFallbackModelState: 'string' },
+  ];
+  for (const invalid of invalidRows) {
+    assert.throws(() => runner.validateCapturedRouteIdentity([call], [invalid], 'fixture-reviewer', expectedRoute),
+      /route_identity_not_proven/u);
+  }
+  assert.throws(() => runner.validateCapturedRouteIdentity([call], [{ ...row,
+    clientRequestIdSha256: 'd'.repeat(64) }], 'fixture-reviewer', expectedRoute), /route_identity_not_proven/u);
+  assert.throws(() => runner.validateCapturedRouteIdentity([{ ...call, requestedAlias: 'other-requested-alias' }],
+    [row], 'fixture-reviewer', expectedRoute), /route_identity_not_proven/u);
 });
 
 test('charges a terminated child to its arm upper bound and marks phase totals unknown', () => {
@@ -721,18 +825,55 @@ test('recovers only digest-checked private IDs and bounds them to the arm alloca
     assert.equal(recovered.sidecarReference.sha256, bodySha);
     assert.equal(recovered.calls[0].clientRequestIdSha256, createHash('sha256').update(rows[0].callerRequestId).digest('hex'));
     assert.equal(JSON.stringify(recovered).includes(rows[0].callerRequestId), false);
-    const collector = createExternalNormalV2ExactLogCollector({ storeRoot: root,
-      managementBaseUrl: 'https://management.example.invalid',
-      readManagementAuthInMemory: () => ({ username: 'u', password: 'p' }),
-      fetchImpl: async () => new Response(JSON.stringify({ data: [{ id: rows[0].callerRequestId,
-        provider: 'provider-a', alias: 'fixture-reviewer', model: 'model-a', status: 'success' }] }),
-      { status: 200, headers: { 'content-type': 'application/json' } }) });
-    const recoveredCapture = await collector({ phaseId: 'ws5-current-source-external-v2', planSha256: 'b'.repeat(64),
-      artifactStoreRoot: root, calls: recovered.calls,
-      stepReceipts: [{ stepId: 'v2-p2-first', runId, artifactReferences: [recovered.sidecarReference] }],
-      deadlineAt: Date.now() + 10_000 });
+    const logRow = { id: rows[0].callerRequestId, parent_request_id: null,
+      routing_rule_id: '11111111-1111-4111-8111-111111111111', routing_rule_name: 'fixture-reviewer-route',
+      provider: 'provider-a', alias: null, model: 'model-a', served_model: null, status: 'success',
+      service_tier: 'default', fallback_index: 0, number_of_retries: 0,
+      server_side_fallback_model: null };
+    const captureRow = async (value) => {
+      const collector = createExternalNormalV2ExactLogCollector({ storeRoot: root,
+        managementBaseUrl: 'https://management.example.invalid',
+        readManagementAuthInMemory: () => ({ username: 'u', password: 'p' }),
+        fetchImpl: async () => new Response(JSON.stringify({ data: [value] }),
+          { status: 200, headers: { 'content-type': 'application/json' } }) });
+      return collector({ phaseId: 'ws5-current-source-external-v2', planSha256: 'b'.repeat(64),
+        artifactStoreRoot: root, calls: recovered.calls,
+        stepReceipts: [{ stepId: 'v2-p2-first', runId, artifactReferences: [recovered.sidecarReference] }],
+        deadlineAt: Date.now() + 10_000 });
+    };
+    const recoveredCapture = await captureRow(logRow);
     assert.equal(recoveredCapture.status, 'captured', JSON.stringify(recoveredCapture));
-    assert.equal(recoveredCapture.rows[0].bifrostAlias, 'fixture-reviewer');
+    assert.equal(recoveredCapture.rows[0].bifrostAlias, null);
+    assert.equal(recoveredCapture.rows[0].routingRuleIdSha256, runner.sha256(logRow.routing_rule_id));
+    assert.equal(recoveredCapture.rows[0].routingRuleNameSha256, runner.sha256(logRow.routing_rule_name));
+    assert.equal(recoveredCapture.rows[0].fallbackIndex, 0);
+    assert.equal(recoveredCapture.rows[0].fallbackIndexState, 'number');
+    assert.equal(recoveredCapture.rows[0].parentRequestIdState, 'null');
+    assert.equal(recoveredCapture.rows[0].numberOfRetries, 0);
+    assert.equal(recoveredCapture.rows[0].numberOfRetriesState, 'number');
+    assert.equal(recoveredCapture.rows[0].serverSideFallbackModelState, 'null');
+    const changedRuleCapture = await captureRow({ ...logRow, routing_rule_id: '22222222-2222-4222-8222-222222222222' });
+    assert.notEqual(changedRuleCapture.rows[0].exactLogRowSha256, recoveredCapture.rows[0].exactLogRowSha256);
+    const changedRuleNameCapture = await captureRow({ ...logRow, routing_rule_name: 'other-route' });
+    assert.notEqual(changedRuleNameCapture.rows[0].exactLogRowSha256, recoveredCapture.rows[0].exactLogRowSha256);
+    const fallbackCapture = await captureRow({ ...logRow, fallback_index: 1 });
+    assert.notEqual(fallbackCapture.rows[0].exactLogRowSha256, recoveredCapture.rows[0].exactLogRowSha256);
+    const parentId = randomUUID();
+    const validParentCapture = await captureRow({ ...logRow, parent_request_id: parentId });
+    assert.equal(validParentCapture.rows[0].parentRequestIdState, 'valid');
+    assert.equal(validParentCapture.rows[0].bifrostParentRequestIdSha256, runner.sha256(parentId.toLowerCase()));
+    assert.equal(JSON.stringify(validParentCapture).includes(parentId), false);
+    const invalidParentCapture = await captureRow({ ...logRow, parent_request_id: 'invalid-parent-id' });
+    assert.equal(invalidParentCapture.rows[0].parentRequestIdState, 'invalid');
+    assert.equal(invalidParentCapture.rows[0].parentRequestIdValueSha256, runner.sha256('invalid-parent-id'));
+    assert.equal(JSON.stringify(invalidParentCapture).includes('invalid-parent-id'), false);
+    const absentParentCapture = await captureRow(Object.fromEntries(Object.entries(logRow).filter(([key]) => key !== 'parent_request_id')));
+    assert.equal(absentParentCapture.rows[0].parentRequestIdState, 'absent');
+    assert.notEqual(absentParentCapture.rows[0].exactLogRowSha256, recoveredCapture.rows[0].exactLogRowSha256);
+    const absentFallbackCapture = await captureRow(Object.fromEntries(Object.entries(logRow).filter(([key]) => key !== 'fallback_index')));
+    assert.equal(absentFallbackCapture.rows[0].fallbackIndexState, 'absent');
+    const nullFallbackCapture = await captureRow({ ...logRow, fallback_index: null });
+    assert.equal(nullFallbackCapture.rows[0].fallbackIndexState, 'null');
     assert.equal(JSON.stringify(recoveredCapture).includes(rows[0].callerRequestId), false);
     assert.equal((await runner.recoverExternalNormalV2PrivateIdentifierSidecar(root, runId, 'single',
       'ws5-current-1dd-v2-provider-failure', 1)).status, 'absent');
