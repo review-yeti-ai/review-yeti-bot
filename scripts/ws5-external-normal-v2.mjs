@@ -23,6 +23,7 @@ export const EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA = 'ReviewYetiExternalNormalQualif
 export const EXTERNAL_NORMAL_V2_PRIVATE_BINDING_SCHEMA = 'ReviewYetiExternalNormalQualificationPrivateBinding.v1';
 export const EXTERNAL_NORMAL_V2_ROUTE_IDENTITY_SCHEMA = 'ReviewYetiExternalNormalQualificationRouteIdentity.v1';
 export const EXTERNAL_NORMAL_R2_ROOT_GO_SCHEMA = 'ReviewYetiExternalNormalQualificationR2RootGo.v1';
+export const EXTERNAL_NORMAL_R2_CONTINUATION_ROOT_GO_SCHEMA = 'ReviewYetiExternalNormalQualificationR2ContinuationRootGo.v1';
 export const EXTERNAL_NORMAL_R2_COHORT_PLAN_SHA256 = R2_COHORT_PLAN_SHA256;
 export const EXTERNAL_NORMAL_R2_INPUT_MANIFEST_SHA256 = R2_INPUT_MANIFEST_SHA256;
 export const EXTERNAL_NORMAL_R2_BUNDLE_PATH = R2_BUNDLE_PATH;
@@ -36,6 +37,17 @@ const HISTORICAL_PHYSICAL_ATTEMPTS = 150;
 const R2_PHASE_CLIENT_CALL_LIMIT = 275;
 const R2_PRIOR_COHORT_CLIENT_CALLS = 25;
 const R2_HISTORICAL_PHYSICAL_ATTEMPTS = HISTORICAL_PHYSICAL_ATTEMPTS + R2_PRIOR_COHORT_CLIENT_CALLS;
+const R2_CONTINUATION_PRIOR_STEP_ID = 'r2-s001';
+const R2_CONTINUATION_STEP_IDS = Object.freeze([
+  'r2-s002', 'r2-s003', 'r2-s004', 'r2-s005', 'r2-s006', 'r2-s007', 'r2-s008', 'r2-s009',
+]);
+const R2_CONTINUATION_PRIOR_KNOWN_CALLS = 13;
+const R2_CONTINUATION_ALLOCATED_CALLS = 214;
+const R2_CONTINUATION_UNSPENDABLE_RESERVE = 48;
+const R2_CONTINUATION_PRIOR_CUMULATIVE_ATTEMPTS = 188;
+const R2_CONTINUATION_PRIOR_OVERALL_BASELINE = R2_HISTORICAL_PHYSICAL_ATTEMPTS;
+const R2_CONTINUATION_PREVIOUS_PHASE_DECLARED = 267;
+const R2_CONTINUATION_PREVIOUS_PHASE_RESERVE = 8;
 const R2_PREPARED_CONFIG_HELPER_SOURCE_FILE_SHA256 = '4ab88f14b6dc7e263b866ae56715d41d25f3ae716b32429f6e92eb991504f4c3';
 const R2_PREPARED_CONFIG_HELPER_COMPILED_FILE_SHA256 = '972c1687e4d24f30352fbe464e4f420461aa2a48dbfab69636b24de9f1fd621d';
 const NORMAL_ARM_MS = 240_000;
@@ -1034,6 +1046,364 @@ export async function validatePreparedExternalNormalR2Grant(input, grant, nowMs 
     authorizationTuple: prepared.tuple };
 }
 
+function parseContinuationReceipt(bytes, expectedName) {
+  if (!(Buffer.isBuffer(bytes) || bytes instanceof Uint8Array) || bytes.byteLength === 0
+    || bytes.byteLength > 256 * 1024) throw new Error('external_normal_r2_continuation_prior_attempt_invalid');
+  try {
+    const parsed = JSON.parse(Buffer.from(bytes).toString('utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('external_normal_r2_continuation_prior_attempt_invalid');
+    }
+    return { parsed, sha256: sha256(Buffer.from(bytes)), name: expectedName };
+  } catch {
+    throw new Error('external_normal_r2_continuation_prior_attempt_invalid');
+  }
+}
+
+function isUuidV4(value) {
+  return typeof value === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
+}
+
+function rejectRawContinuationIdentifiers(value) {
+  const forbidden = new Set(['clientRequestId', 'bifrostLogRequestId', 'upstreamResponseRequestId',
+    'authorization', 'apiKey', 'secretValue', 'rawHeaders', 'responseBody', 'providerCalls']);
+  if (Array.isArray(value)) {
+    for (const item of value) rejectRawContinuationIdentifiers(item);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, item] of Object.entries(value)) {
+    if (forbidden.has(key)) throw new Error('raw_continuation_data');
+    rejectRawContinuationIdentifiers(item);
+  }
+}
+
+function validateR2ContinuationPriorAttempt(priorAttempt, receiptPins, currentPlan, currentOutputRootSha256) {
+  try {
+    if (!hasExactKeys(receiptPins, ['schemaVersion', 'startSha256', 'terminalSha256', 'resultSha256'])
+      || receiptPins.schemaVersion !== 'ReviewYetiExternalNormalR2PriorAttemptReceiptPins.v1'
+      || !['startSha256', 'terminalSha256', 'resultSha256'].every((key) => /^[a-f0-9]{64}$/u
+        .test(receiptPins[key] || ''))
+      || !priorAttempt || typeof priorAttempt !== 'object' || Array.isArray(priorAttempt)
+      || Object.keys(priorAttempt).sort().join('|') !== 'resultBytes|startBytes|terminalBytes') {
+      throw new Error('invalid');
+    }
+    const startFile = parseContinuationReceipt(priorAttempt.startBytes, 'start');
+    const terminalFile = parseContinuationReceipt(priorAttempt.terminalBytes, 'terminal');
+    const startRecord = startFile.parsed;
+    const terminalRecord = terminalFile.parsed;
+    const resultFile = parseContinuationReceipt(priorAttempt.resultBytes, 'result');
+    if (startFile.sha256 !== receiptPins.startSha256
+      || terminalFile.sha256 !== receiptPins.terminalSha256
+      || resultFile.sha256 !== receiptPins.resultSha256) throw new Error('invalid');
+    const result = resultFile.parsed;
+    const startAtMs = Date.parse(startRecord.startedAt);
+    const resultStartedAtMs = Date.parse(result.startedAt);
+    const resultCompletedAtMs = Date.parse(result.completedAt);
+    const terminalEndMs = Date.parse(terminalRecord.endedAt);
+    const previousCallLedger = result.phaseAttemptAllocation;
+    const priorStep = Array.isArray(result.stepResults) && result.stepResults.length === 1
+      ? result.stepResults[0] : null;
+    const priorTransport = result.transportPreflight;
+    const priorArtifactStorePathSha256 = result.artifactStoreBinding?.pathSha256;
+    const exactLogCapture = result.exactLogCapture;
+    const logLedger = result.logLedger;
+    const priorRouteProofs = Array.isArray(result.routeIdentityProofs)
+      ? result.routeIdentityProofs.filter((proof) => proof.stepId === R2_CONTINUATION_PRIOR_STEP_ID) : [];
+    rejectRawContinuationIdentifiers(result);
+    if (startRecord.status !== 'started' || !isUuidV4(startRecord.invocationId)
+      || !isUuidV4(startRecord.previousInvocationId)
+      || startRecord.phaseWallMs !== PHASE_WALL_LIMIT_MS
+      || startRecord.allocatedHttpAttempts !== R2_CONTINUATION_PREVIOUS_PHASE_DECLARED
+      || startRecord.withheldHttpAttempts !== R2_CONTINUATION_PREVIOUS_PHASE_RESERVE
+      || startRecord.remainingHttpAttempts !== R2_PHASE_CLIENT_CALL_LIMIT
+      || startRecord.previousClientCalls !== 0
+      || startRecord.priorCumulativeAttempts !== R2_CONTINUATION_PRIOR_OVERALL_BASELINE
+      || !/^[a-f0-9]{64}$/u.test(startRecord.previousResultSha256 || '')
+      || !/^[a-f0-9]{64}$/u.test(startRecord.manifestSha256 || '')
+      || !/^[a-f0-9]{64}$/u.test(startRecord.bindingSha256 || '')
+      || !/^[a-f0-9]{64}$/u.test(startRecord.tupleSha256 || '')
+      || !/^[a-f0-9]{64}$/u.test(startRecord.readerImplementationSha256 || '')
+      || startRecord.credentialValuesInEnvironmentArgvFilesOrOutput !== false
+      || startRecord.githubAppWrites !== false || startRecord.grantPersistence !== 'none'
+      || terminalRecord.status !== 'incomplete'
+      || terminalRecord.invocationId !== startRecord.invocationId
+      || terminalRecord.startedAt !== startRecord.startedAt
+      || terminalRecord.sourceRevision !== startRecord.sourceRevision
+      || terminalRecord.tupleSha256 !== startRecord.tupleSha256
+      || terminalRecord.resultSha256 !== resultFile.sha256
+      || !Number.isFinite(startAtMs) || !Number.isFinite(resultStartedAtMs)
+      || !Number.isFinite(resultCompletedAtMs) || !Number.isFinite(terminalEndMs)
+      || resultStartedAtMs < startAtMs || resultCompletedAtMs <= resultStartedAtMs
+      || terminalEndMs < resultCompletedAtMs || terminalEndMs - resultCompletedAtMs > 60_000
+      || result.phaseId !== R2_PHASE_ID || result.planSha256 !== R2_COHORT_PLAN_SHA256
+      || result.status !== 'incomplete' || result.clientCalls !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || result.clientCallsKnown !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || result.clientCallCountStatus !== 'exact' || result.unknownClientCallUpperBound !== 0
+      || result.previousPhysicalAttempts !== R2_CONTINUATION_PRIOR_OVERALL_BASELINE
+      || result.overallPhysicalAttempts !== R2_CONTINUATION_PRIOR_CUMULATIVE_ATTEMPTS
+      || result.overallPhysicalAttemptsLowerBound !== R2_CONTINUATION_PRIOR_CUMULATIVE_ATTEMPTS
+      || result.overallPhysicalAttemptsUpperBound !== R2_CONTINUATION_PRIOR_CUMULATIVE_ATTEMPTS
+      || result.remainingOverallPhysicalAttempts !== OVERALL_PHYSICAL_ATTEMPT_CEILING - R2_CONTINUATION_PRIOR_CUMULATIVE_ATTEMPTS
+      || result.overallPhysicalAttemptCeiling !== OVERALL_PHYSICAL_ATTEMPT_CEILING
+      || previousCallLedger?.declared !== R2_CONTINUATION_PREVIOUS_PHASE_DECLARED
+      || previousCallLedger?.spent !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || previousCallLedger?.knownSpent !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || previousCallLedger?.unknownClientCallUpperBound !== 0
+      || previousCallLedger?.possibleSpentUpperBound !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || previousCallLedger?.unidentifiedCountedClientAttempts !== 0
+      || previousCallLedger?.unspendableReserve !== R2_CONTINUATION_PREVIOUS_PHASE_RESERVE
+      || exactLogCapture?.status !== 'captured'
+      || exactLogCapture?.artifactCount !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || exactLogCapture?.queriedCallCount !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || exactLogCapture?.matchedRows !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || exactLogCapture?.unqueriedCallCount !== 0
+      || exactLogCapture?.failureCode !== null
+      || !/^[a-f0-9]{64}$/u.test(exactLogCapture?.artifactSetSha256 || '')
+      || !/^[a-f0-9]{64}$/u.test(exactLogCapture?.unqueriedCidSetSha256 || '')
+      || !Array.isArray(exactLogCapture?.batches) || exactLogCapture.batches.length !== 1
+      || exactLogCapture.batches[0]?.stepId !== R2_CONTINUATION_PRIOR_STEP_ID
+      || exactLogCapture.batches[0]?.status !== 'captured'
+      || exactLogCapture.batches[0]?.artifactCount !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || exactLogCapture.batches[0]?.queriedCallCount !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || exactLogCapture.batches[0]?.matchedRows !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || exactLogCapture.batches[0]?.unqueriedCallCount !== 0
+      || logLedger?.status !== 'captured'
+      || logLedger?.matchedRows !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || !Array.isArray(logLedger.requestLedger) || logLedger.requestLedger.length !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || !Array.isArray(logLedger.upstreamLedger) || logLedger.upstreamLedger.length !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || !Array.isArray(logLedger.tokenLedger) || logLedger.tokenLedger.length !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || !Array.isArray(logLedger.actualBilledLedger) || logLedger.actualBilledLedger.length !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || !Array.isArray(logLedger.bifrostCalculatedCostLedger)
+      || logLedger.bifrostCalculatedCostLedger.length !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || !/^[a-f0-9]{64}$/u.test(logLedger.requestLedgerSha256 || '')
+      || !/^[a-f0-9]{64}$/u.test(logLedger.upstreamLedgerSha256 || '')
+      || !/^[a-f0-9]{64}$/u.test(logLedger.tokenLedgerSha256 || '')
+      || priorRouteProofs.length !== 1 || priorRouteProofs[0]?.status !== 'observed'
+      || priorStep?.stepId !== R2_CONTINUATION_PRIOR_STEP_ID
+      || priorStep?.clientCallAllocation !== 53
+      || priorStep?.clientCalls !== R2_CONTINUATION_PRIOR_KNOWN_CALLS
+      || priorStep?.terminalStatus !== 'incomplete'
+      || priorStep?.assessment?.status !== 'incomplete'
+      || priorStep?.assessment?.reason !== 'normal_gate_did_not_complete_with_canonical_evidence'
+      || priorStep?.outcome?.workerOutcomeClass !== 'incomplete'
+      || priorStep?.outcome?.gateOutcomeClass !== 'incomplete'
+      || priorStep?.outcome?.agreement !== 'agreement'
+      || priorStep?.canonicalReviewEvidence?.decisionClassification !== 'INCOMPLETE_REVIEW'
+      || priorStep?.canonicalReviewEvidence?.coverageComplete !== false
+      || priorStep?.canonicalReviewEvidence?.quorumSatisfied !== false
+      || !Array.isArray(priorStep?.canonicalReviewEvidence?.blockingFindings)
+      || priorStep.canonicalReviewEvidence.blockingFindings.length !== 0
+      || !/^[a-f0-9]{64}$/u.test(priorStep?.receiptSha256 || '')
+      || priorTransport?.status !== 'ready' || priorTransport?.mode !== 'dns_tls_only'
+      || priorTransport.sourceRevision !== startRecord.sourceRevision
+      || priorTransport.workerImageDigest !== startRecord.workerImageIndexDigest
+      || !/^sha256:[a-f0-9]{64}$/u.test(priorTransport.workerImageDigest || '')
+      || !/^[a-f0-9]{64}$/u.test(priorTransport.runtimeManifestSha256 || '')
+      || !/^[a-f0-9]{40}$/u.test(startRecord.sourceRevision || '')
+      || !/^sha256:[a-f0-9]{64}$/u.test(startRecord.workerImageIndexDigest || '')
+      || !/^[a-f0-9]{64}$/u.test(priorArtifactStorePathSha256 || '')
+      || priorArtifactStorePathSha256 === currentOutputRootSha256) {
+      throw new Error('invalid');
+    }
+    const priorElapsedMs = resultCompletedAtMs - resultStartedAtMs;
+    const remainingPhaseWallMs = PHASE_WALL_LIMIT_MS - priorElapsedMs;
+    if (!Number.isSafeInteger(priorElapsedMs) || priorElapsedMs <= 0 || remainingPhaseWallMs <= 0) {
+      throw new Error('invalid');
+    }
+    const remainingStepIds = R2_CONTINUATION_STEP_IDS.slice();
+    const fullStepIds = ['r2-s001', ...remainingStepIds];
+    const continuationAllocatedClientCalls = currentPlan.runs
+      .filter((step) => remainingStepIds.includes(step.stepId))
+      .reduce((sum, step) => sum + step.clientCallAllocation, 0);
+    const fullAllocatedCalls = currentPlan.runs.reduce((sum, step) => sum + step.clientCallAllocation, 0);
+    if (currentPlan.runs.length !== fullStepIds.length
+      || canonicalJson(currentPlan.runs.map((step) => step.stepId)) !== canonicalJson(fullStepIds)
+      || fullAllocatedCalls !== R2_CONTINUATION_PREVIOUS_PHASE_DECLARED
+      || continuationAllocatedClientCalls !== R2_CONTINUATION_ALLOCATED_CALLS
+      || currentPlan.executionEnvelope.perArmClientHttpAttemptAllocation.declaredArmTotal
+        !== R2_CONTINUATION_PREVIOUS_PHASE_DECLARED
+      || currentPlan.executionEnvelope.perArmClientHttpAttemptAllocation.unspendableSharedReserve
+        !== R2_CONTINUATION_PREVIOUS_PHASE_RESERVE) throw new Error('invalid');
+    return {
+      schemaVersion: 'ReviewYetiExternalNormalQualificationR2Continuation.v1',
+      priorStartSha256: startFile.sha256,
+      priorTerminalSha256: terminalFile.sha256,
+      priorResultSha256: resultFile.sha256,
+      priorInvocationIdSha256: sha256(startRecord.invocationId),
+      priorStepIds: [R2_CONTINUATION_PRIOR_STEP_ID],
+      remainingStepIds,
+      remainingStepIdsSha256: sha256(canonicalJson(remainingStepIds)),
+      priorStatus: 'incomplete',
+      priorKnownClientCalls: R2_CONTINUATION_PRIOR_KNOWN_CALLS,
+      priorUnknownClientCallUpperBound: 0,
+      priorElapsedMs,
+      remainingPhaseWallMs,
+      priorCumulativePhysicalAttempts: R2_CONTINUATION_PRIOR_CUMULATIVE_ATTEMPTS,
+      remainingOverallPhysicalAttempts: OVERALL_PHYSICAL_ATTEMPT_CEILING - R2_CONTINUATION_PRIOR_CUMULATIVE_ATTEMPTS,
+      continuationClientCallLimit: R2_CONTINUATION_ALLOCATED_CALLS,
+      continuationAllocatedClientCalls,
+      unspendableRemainingReserve: R2_CONTINUATION_UNSPENDABLE_RESERVE,
+      priorSourceRevision: startRecord.sourceRevision,
+      priorWorkerImageDigest: priorTransport.workerImageDigest,
+      priorRuntimeManifestSha256: priorTransport.runtimeManifestSha256,
+      currentSourceRevision: currentPlan.runtime.finalSourceRevision,
+      currentWorkerImageDigest: currentPlan.runtime.workerImageDigest,
+      currentRuntimeManifestSha256: currentPlan.runtime.runtimeManifestSha256,
+      overallCohortStatus: 'incomplete_prior_attempt',
+      noUnchangedEngineStabilityClaim: true,
+    };
+  } catch {
+    throw new Error('external_normal_r2_continuation_prior_attempt_invalid');
+  }
+}
+
+const R2_CONTINUATION_TUPLE_FIELDS = Object.freeze([
+  'continuationSchemaVersion', 'continuationAttemptId', 'priorStartSha256', 'priorTerminalSha256',
+  'priorResultSha256', 'priorInvocationIdSha256', 'priorStepIdsSha256', 'remainingStepIdsSha256',
+  'priorKnownClientCalls', 'priorUnknownClientCallUpperBound', 'priorElapsedMs', 'remainingPhaseWallMs',
+  'priorCumulativePhysicalAttempts', 'remainingOverallPhysicalAttempts', 'continuationClientCallLimit',
+  'continuationAllocatedClientCalls', 'unspendableRemainingReserve', 'priorSourceRevision',
+  'priorWorkerImageDigest', 'priorRuntimeManifestSha256', 'currentSourceRevision',
+  'currentWorkerImageDigest', 'currentRuntimeManifestSha256', 'overallCohortStatus',
+  'noUnchangedEngineStabilityClaim',
+]);
+
+function buildExternalNormalR2ContinuationAuthorizationTuple(plan, planSha256, outputRootSha256,
+  launcherSourceTupleSha256, artifactStoreIdentitySha256, privateBinding, routeIdentity, admitted, continuation) {
+  const base = buildExternalNormalR2AuthorizationTuple(plan, planSha256, outputRootSha256,
+    launcherSourceTupleSha256, artifactStoreIdentitySha256, privateBinding, routeIdentity, admitted);
+  return {
+    ...base,
+    continuationSchemaVersion: continuation.schemaVersion,
+    continuationAttemptId: continuation.continuationAttemptId,
+    priorStartSha256: continuation.priorStartSha256,
+    priorTerminalSha256: continuation.priorTerminalSha256,
+    priorResultSha256: continuation.priorResultSha256,
+    priorInvocationIdSha256: continuation.priorInvocationIdSha256,
+    priorStepIdsSha256: sha256(canonicalJson(continuation.priorStepIds)),
+    remainingStepIdsSha256: continuation.remainingStepIdsSha256,
+    priorKnownClientCalls: continuation.priorKnownClientCalls,
+    priorUnknownClientCallUpperBound: continuation.priorUnknownClientCallUpperBound,
+    priorElapsedMs: continuation.priorElapsedMs,
+    remainingPhaseWallMs: continuation.remainingPhaseWallMs,
+    priorCumulativePhysicalAttempts: continuation.priorCumulativePhysicalAttempts,
+    remainingOverallPhysicalAttempts: continuation.remainingOverallPhysicalAttempts,
+    continuationClientCallLimit: continuation.continuationClientCallLimit,
+    continuationAllocatedClientCalls: continuation.continuationAllocatedClientCalls,
+    unspendableRemainingReserve: continuation.unspendableRemainingReserve,
+    priorSourceRevision: continuation.priorSourceRevision,
+    priorWorkerImageDigest: continuation.priorWorkerImageDigest,
+    priorRuntimeManifestSha256: continuation.priorRuntimeManifestSha256,
+    currentSourceRevision: continuation.currentSourceRevision,
+    currentWorkerImageDigest: continuation.currentWorkerImageDigest,
+    currentRuntimeManifestSha256: continuation.currentRuntimeManifestSha256,
+    overallCohortStatus: continuation.overallCohortStatus,
+    noUnchangedEngineStabilityClaim: continuation.noUnchangedEngineStabilityClaim,
+  };
+}
+
+export function validateExternalNormalR2ContinuationRootGoGrant(plan, grant, tuple, nowMs = Date.now()) {
+  if (!grant || typeof grant !== 'object' || Array.isArray(grant)) return false;
+  const requiredGrantKeys = ['schemaVersion', 'rootGo', 'grantId', 'issuedAt', 'expiresAt', 'binding'];
+  if (Object.keys(grant).sort().join('|') !== requiredGrantKeys.sort().join('|')
+    || grant.schemaVersion !== EXTERNAL_NORMAL_R2_CONTINUATION_ROOT_GO_SCHEMA || grant.rootGo !== true
+    || !isUuidV4(grant.grantId)) return false;
+  const issuedAt = Date.parse(grant.issuedAt);
+  const expiresAt = Date.parse(grant.expiresAt);
+  if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || issuedAt > nowMs
+    || expiresAt <= nowMs || expiresAt <= issuedAt || expiresAt - issuedAt > 300_000
+    || canonicalJson(grant.binding) !== canonicalJson(tuple)) return false;
+  const continuationBase = {};
+  for (const [key, value] of Object.entries(tuple ?? {})) {
+    if (!R2_CONTINUATION_TUPLE_FIELDS.includes(key)) continuationBase[key] = value;
+  }
+  if (Object.keys(tuple ?? {}).length !== Object.keys(continuationBase).length + R2_CONTINUATION_TUPLE_FIELDS.length
+    || !R2_CONTINUATION_TUPLE_FIELDS.every((field) => Object.hasOwn(tuple, field))) return false;
+  const baseGrant = { ...grant, schemaVersion: EXTERNAL_NORMAL_R2_ROOT_GO_SCHEMA, binding: continuationBase };
+  if (!validateExternalNormalR2RootGoGrant(plan, baseGrant, continuationBase, nowMs)) return false;
+  const expectedRemainingStepIdsSha256 = sha256(canonicalJson(R2_CONTINUATION_STEP_IDS));
+  return tuple.continuationSchemaVersion === 'ReviewYetiExternalNormalQualificationR2Continuation.v1'
+    && isUuidV4(tuple.continuationAttemptId)
+    && ['priorStartSha256', 'priorTerminalSha256', 'priorResultSha256', 'priorInvocationIdSha256',
+      'priorStepIdsSha256', 'remainingStepIdsSha256', 'priorRuntimeManifestSha256', 'currentRuntimeManifestSha256']
+      .every((field) => /^[a-f0-9]{64}$/u.test(tuple[field] || ''))
+    && tuple.remainingStepIdsSha256 === expectedRemainingStepIdsSha256
+    && tuple.priorStepIdsSha256 === sha256(canonicalJson([R2_CONTINUATION_PRIOR_STEP_ID]))
+    && tuple.priorKnownClientCalls === R2_CONTINUATION_PRIOR_KNOWN_CALLS
+    && tuple.priorUnknownClientCallUpperBound === 0
+    && Number.isSafeInteger(tuple.priorElapsedMs) && tuple.priorElapsedMs > 0
+    && tuple.remainingPhaseWallMs === PHASE_WALL_LIMIT_MS - tuple.priorElapsedMs
+    && tuple.remainingPhaseWallMs > 0
+    && tuple.priorCumulativePhysicalAttempts === R2_CONTINUATION_PRIOR_CUMULATIVE_ATTEMPTS
+    && tuple.remainingOverallPhysicalAttempts === OVERALL_PHYSICAL_ATTEMPT_CEILING - tuple.priorCumulativePhysicalAttempts
+    && tuple.continuationClientCallLimit === R2_CONTINUATION_ALLOCATED_CALLS
+    && tuple.continuationAllocatedClientCalls === R2_CONTINUATION_ALLOCATED_CALLS
+    && tuple.unspendableRemainingReserve === R2_CONTINUATION_UNSPENDABLE_RESERVE
+    && /^[a-f0-9]{40}$/u.test(tuple.priorSourceRevision || '')
+    && /^sha256:[a-f0-9]{64}$/u.test(tuple.priorWorkerImageDigest || '')
+    && /^[a-f0-9]{40}$/u.test(tuple.currentSourceRevision || '')
+    && /^sha256:[a-f0-9]{64}$/u.test(tuple.currentWorkerImageDigest || '')
+    && tuple.currentSourceRevision === plan.runtime?.finalSourceRevision
+    && tuple.currentWorkerImageDigest === plan.runtime?.workerImageDigest
+    && tuple.currentRuntimeManifestSha256 === plan.runtime?.runtimeManifestSha256
+    && tuple.overallCohortStatus === 'incomplete_prior_attempt'
+    && tuple.noUnchangedEngineStabilityClaim === true;
+}
+
+async function prepareExternalNormalR2ContinuationExecution(input = {}) {
+  if (!isUuidV4(input.continuationAttemptId)) {
+    throw new Error('external_normal_r2_continuation_attempt_id_invalid');
+  }
+  const prepared = await prepareExternalNormalR2Execution(input);
+  const continuation = validateR2ContinuationPriorAttempt(input.priorAttempt,
+    input.priorAttemptReceiptPins, prepared.plan,
+    prepared.tuple.outputRootSha256);
+  const scheduledRuns = prepared.plan.runs.filter((step) => continuation.remainingStepIds.includes(step.stepId));
+  if (canonicalJson(scheduledRuns.map((step) => step.stepId)) !== canonicalJson(R2_CONTINUATION_STEP_IDS)
+    || scheduledRuns.reduce((sum, step) => sum + step.clientCallAllocation, 0) !== R2_CONTINUATION_ALLOCATED_CALLS
+    || scheduledRuns.some((step) => step.stepId === R2_CONTINUATION_PRIOR_STEP_ID)) {
+    throw new Error('external_normal_r2_continuation_schedule_invalid');
+  }
+  const continuationPlan = {
+    ...prepared.plan,
+    runs: scheduledRuns,
+    executionEnvelope: {
+      ...prepared.plan.executionEnvelope,
+      maxPhaseClientCalls: R2_CONTINUATION_ALLOCATED_CALLS,
+      perArmClientHttpAttemptAllocation: {
+        ...prepared.plan.executionEnvelope.perArmClientHttpAttemptAllocation,
+        declaredArmTotal: R2_CONTINUATION_ALLOCATED_CALLS,
+        unspendableSharedReserve: R2_CONTINUATION_UNSPENDABLE_RESERVE,
+      },
+    },
+  };
+  const continuationBinding = { ...continuation,
+    continuationAttemptId: input.continuationAttemptId };
+  const tuple = buildExternalNormalR2ContinuationAuthorizationTuple(continuationPlan,
+    prepared.planSha256, prepared.tuple.outputRootSha256, prepared.launcherSourceDigests.tupleSha256,
+    prepared.artifactStoreIdentitySha256, input.privateBinding, input.routeIdentity,
+    prepared.admitted, continuationBinding);
+  return { ...prepared, plan: continuationPlan, continuation: continuationBinding, tuple };
+}
+
+export async function prepareExternalNormalR2ContinuationAuthorizationTuple(input) {
+  const prepared = await prepareExternalNormalR2ContinuationExecution(input);
+  return { phaseId: R2_PHASE_ID, phasePlanSha256: R2_COHORT_PLAN_SHA256,
+    sourceBundleSha256: R2_BUNDLE_SHA256, continuationAttemptId: prepared.continuation.continuationAttemptId,
+    continuation: prepared.continuation, authorizationTuple: prepared.tuple };
+}
+
+export async function validatePreparedExternalNormalR2ContinuationGrant(input, grant, nowMs = Date.now()) {
+  const prepared = await prepareExternalNormalR2ContinuationExecution(input);
+  const authorized = validateExternalNormalR2ContinuationRootGoGrant(prepared.plan, grant, prepared.tuple, nowMs);
+  return { status: authorized ? 'authorized' : 'authorization_rejected', phaseId: R2_PHASE_ID,
+    phasePlanSha256: R2_COHORT_PLAN_SHA256, sourceBundleSha256: R2_BUNDLE_SHA256,
+    continuationAttemptId: prepared.continuation.continuationAttemptId,
+    continuation: prepared.continuation, authorizationTuple: prepared.tuple };
+}
+
 export function buildExternalNormalV2AuthorizationTuple(plan, planSha256, outputRootSha256,
   launcherSourceTupleSha256 = '0'.repeat(64), artifactStoreIdentitySha256 = outputRootSha256, privateBinding, routeIdentity) {
   validateExternalNormalV2PrivateBinding(privateBinding);
@@ -1973,11 +2343,16 @@ function externalNormalExecutionProfile(trustedR2Execution) {
   };
   const casesById = new Map(trustedR2Execution.admitted.cases.map((entry) => [entry.caseId, entry]));
   const inputsById = trustedR2Execution.inputByCase;
+  const continuation = trustedR2Execution.continuation ?? null;
   const assessmentStepIds = R2_ASSESSMENT_STEP_IDS;
   return {
-    phaseCallLimit: R2_PHASE_CLIENT_CALL_LIMIT,
-    historicalPhysicalAttempts: R2_HISTORICAL_PHYSICAL_ATTEMPTS,
+    phaseCallLimit: continuation ? continuation.continuationClientCallLimit : R2_PHASE_CLIENT_CALL_LIMIT,
+    declaredClientCallAllocation: continuation ? continuation.continuationAllocatedClientCalls : null,
+    unspendableReserve: continuation ? continuation.unspendableRemainingReserve : null,
+    historicalPhysicalAttempts: continuation ? continuation.priorCumulativePhysicalAttempts : R2_HISTORICAL_PHYSICAL_ATTEMPTS,
     overallPhysicalAttemptCeiling: OVERALL_PHYSICAL_ATTEMPT_CEILING,
+    phaseWallLimitMs: continuation ? continuation.remainingPhaseWallMs : PHASE_WALL_LIMIT_MS,
+    continuation,
     inputForStep: (step) => {
       const source = casesById.get(step.caseId);
       if (!source) throw new Error('external_normal_r2_step_input_identity_invalid');
@@ -2085,14 +2460,20 @@ async function runExternalNormalQualificationCore({
   const artifactStoreIdentitySha256 = sha256(canonicalJson({ pathSha256: outputRootSha256,
     uid: rootInfo.uid, gid: rootInfo.gid, mode: rootInfo.mode & 0o777 }));
   const launcherSourceDigests = await readExternalNormalV2LauncherSourceDigests(repositoryRoot || process.cwd());
-  const tuple = trustedR2Execution
-    ? buildExternalNormalR2AuthorizationTuple(plan, planSha256, outputRootSha256,
+  const tuple = trustedR2Execution?.continuation
+    ? buildExternalNormalR2ContinuationAuthorizationTuple(plan, planSha256, outputRootSha256,
+      launcherSourceDigests.tupleSha256, artifactStoreIdentitySha256, privateBinding, routeIdentity,
+      trustedR2Execution.admitted, profile.continuation)
+    : trustedR2Execution
+      ? buildExternalNormalR2AuthorizationTuple(plan, planSha256, outputRootSha256,
       launcherSourceDigests.tupleSha256, artifactStoreIdentitySha256, privateBinding, routeIdentity,
       trustedR2Execution.admitted)
     : buildExternalNormalV2AuthorizationTuple(plan, planSha256, outputRootSha256,
       launcherSourceDigests.tupleSha256, artifactStoreIdentitySha256, privateBinding, routeIdentity);
-  const validGrant = trustedR2Execution
-    ? validateExternalNormalR2RootGoGrant(plan, authorization, tuple, now())
+  const validGrant = trustedR2Execution?.continuation
+    ? validateExternalNormalR2ContinuationRootGoGrant(plan, authorization, tuple, now())
+    : trustedR2Execution
+      ? validateExternalNormalR2RootGoGrant(plan, authorization, tuple, now())
     : validateRootGoGrant(plan, authorization, tuple, now());
   if (!validGrant) {
     return { status: 'authorization_rejected', phaseId: plan.phaseId, clientCalls: 0, planSha256 };
@@ -2103,7 +2484,7 @@ async function runExternalNormalQualificationCore({
   const started = now();
   let clientCalls = 0;
   let failed = false;
-  let incomplete = false;
+  let incomplete = Boolean(profile.continuation);
   let activeElapsedMs = 0;
   let captureElapsedMs = 0;
   const stepResults = [];
@@ -2119,7 +2500,7 @@ async function runExternalNormalQualificationCore({
       return { ok: true, status: 'no_calls', matchedCount: 0 };
     }
     const captureReserveRemaining = CAPTURE_RESERVE_MS - captureElapsedMs;
-    const phaseRemaining = PHASE_WALL_LIMIT_MS - (now() - started);
+    const phaseRemaining = (profile.phaseWallLimitMs ?? PHASE_WALL_LIMIT_MS) - (now() - started);
     const allowedMs = Math.min(captureReserveRemaining, phaseRemaining);
     if (exactLogCaptureFailure) return { ok: false, status: 'unavailable', matchedCount: 0 };
     if (allowedMs <= 0) {
@@ -2267,7 +2648,7 @@ async function runExternalNormalQualificationCore({
     const currentTime = now();
     const overheadElapsed = Math.max(0, currentTime - started - activeElapsedMs - captureElapsedMs);
     const overheadRemaining = RESERVED_OVERHEAD_MS - overheadElapsed;
-    const remainingMs = PHASE_WALL_LIMIT_MS - (currentTime - started);
+    const remainingMs = (profile.phaseWallLimitMs ?? PHASE_WALL_LIMIT_MS) - (currentTime - started);
     const remainingCaptureReserve = Math.max(0, CAPTURE_RESERVE_MS - captureElapsedMs);
     const requiredMs = reservation + notYetReserved + remainingCaptureReserve + Math.max(0, overheadRemaining);
     if (overheadRemaining < 0 || remainingMs < requiredMs) { incomplete = true; break; }
@@ -2501,13 +2882,28 @@ async function runExternalNormalQualificationCore({
   }
   if (!logLedger || unknownClientCallUpperBound > 0 || exactLogCaptureFailure) incomplete = true;
   const attemptBounds = executionAttemptBounds(clientCalls, unknownClientCallUpperBound, profile);
+  const completedAtMs = now();
+  const { remainingPhaseWallMs: remainingWallAtStartMs, ...continuationMetadata } = profile.continuation ?? {};
+  const continuationSummary = profile.continuation ? {
+    ...continuationMetadata,
+    remainingPhaseWallMsAtContinuationStart: remainingWallAtStartMs,
+    remainingCumulativeWallMsAtCompletion: Math.max(0, remainingWallAtStartMs - (completedAtMs - started)),
+    overallCohortStatus: 'incomplete_prior_attempt',
+    executionStatus: stepResults.length === plan.runs.length
+      ? 'all_scheduled_steps_reached_terminal' : 'stopped_before_schedule_completion',
+    observedStepIds: stepResults.map((row) => row.stepId),
+  } : undefined;
+  const declaredPhaseCallAllocation = Number.isSafeInteger(profile.declaredClientCallAllocation)
+    ? profile.declaredClientCallAllocation : plan.executionEnvelope.perArmClientHttpAttemptAllocation.declaredArmTotal;
+  const unspendableReserve = Number.isSafeInteger(profile.unspendableReserve)
+    ? profile.unspendableReserve : plan.executionEnvelope.perArmClientHttpAttemptAllocation.unspendableSharedReserve;
   const summary = {
     status: failed ? 'failed' : incomplete ? 'incomplete' : 'completed', phaseId: plan.phaseId,
     planSha256, clientCalls: unknownClientCallUpperBound > 0 ? null : clientCalls,
     previousPhysicalAttempts: profile.historicalPhysicalAttempts,
     ...attemptBounds,
     overallPhysicalAttemptCeiling: profile.overallPhysicalAttemptCeiling,
-    phaseAttemptAllocation: { declared: plan.executionEnvelope.perArmClientHttpAttemptAllocation.declaredArmTotal,
+    phaseAttemptAllocation: { declared: declaredPhaseCallAllocation,
       spent: unknownClientCallUpperBound > 0 ? null : clientCalls,
       knownSpent: clientCalls, unknownClientCallUpperBound,
       possibleSpentUpperBound: attemptBounds.possiblePhaseClientCallsUpperBound,
@@ -2517,7 +2913,7 @@ async function runExternalNormalQualificationCore({
       workerAttestorAttemptsBlockedBeforeFetch: stepResults.reduce((sum, row) =>
         sum + (row.workerAttestorAttemptsBlockedBeforeFetch || 0), 0),
       unidentifiedCountedClientAttempts: stepResults.reduce((sum, row) => sum + (row.unidentifiedClientAttempts || 0), 0),
-      unspendableReserve: plan.executionEnvelope.perArmClientHttpAttemptAllocation.unspendableSharedReserve },
+      unspendableReserve },
     verifiedPolicyInputDigests: verifiedPolicyInputs,
     launcherSourceDigests,
     artifactStoreBinding: { pathSha256: outputRootSha256, identitySha256: artifactStoreIdentitySha256,
@@ -2525,6 +2921,7 @@ async function runExternalNormalQualificationCore({
     stepResults: stepResults.map(({ providerCalls: _calls, ...row }) => row), exactLogCapture: captureResult, logLedger,
     routeIdentityProofs,
     transportPreflight,
+    ...(continuationSummary ? { continuation: continuationSummary } : {}),
     expectedAuthRejectionControl: expectedAuthCalls.length === 1 ? {
       clientRequestIdSha256: expectedAuthCalls[0].clientRequestIdSha256,
       requestedAlias: expectedAuthCalls[0].requestedAlias,
@@ -2535,7 +2932,7 @@ async function runExternalNormalQualificationCore({
       billedUsd: null,
       upstreamCompletion: 'unknown',
     } : null,
-    startedAt: new Date(started).toISOString(), completedAt: new Date(now()).toISOString(),
+    startedAt: new Date(started).toISOString(), completedAt: new Date(completedAtMs).toISOString(),
     costAccounting: { workerEstimatedUsd: logLedger?.estimatedUsd ?? null,
       bifrostCalculatedCostUsd: logLedger?.bifrostCalculatedCostUsd ?? null,
       actualProviderBilledUsd: null, actualProviderBilledUsdStatus: 'unknown_without_trusted_invoice_source' },
@@ -2551,6 +2948,12 @@ export async function runExternalNormalQualificationV2(input = {}) {
 export async function runExternalNormalQualificationR2(input = {}) {
   if (typeof input.executeCase !== 'function') throw new Error('external_normal_r2_case_executor_required');
   const trustedR2Execution = await prepareExternalNormalR2Execution(input);
+  return runExternalNormalQualificationCore(input, trustedR2Execution);
+}
+
+export async function runExternalNormalQualificationR2Continuation(input = {}) {
+  if (typeof input.executeCase !== 'function') throw new Error('external_normal_r2_case_executor_required');
+  const trustedR2Execution = await prepareExternalNormalR2ContinuationExecution(input);
   return runExternalNormalQualificationCore(input, trustedR2Execution);
 }
 

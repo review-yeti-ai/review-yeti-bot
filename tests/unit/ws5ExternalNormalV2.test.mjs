@@ -999,6 +999,311 @@ test('surfaces only an allowlisted pre-child diagnostic and drops raw error data
   }), undefined);
 });
 
+function syntheticPriorR2Attempt() {
+  const invocationId = randomUUID();
+  const startedAt = '2026-10-09T10:50:39.210Z';
+  const resultStartedAt = '2026-10-09T10:50:39.242Z';
+  const completedAt = '2026-10-09T10:52:25.975Z';
+  const ledgerRows = Array.from({ length: 13 }, (_, index) => ({ clientRequestIdSha256: index.toString(16).padStart(64, '0') }));
+  const result = {
+    status: 'incomplete', phaseId: 'ws5-current-source-external-v2-r2',
+    planSha256: '37fcfc37440e249e97b892186c2a0683b31654a540e146232ec579012160c233',
+    startedAt: resultStartedAt, completedAt, clientCalls: 13, clientCallsKnown: 13,
+    clientCallCountStatus: 'exact', unknownClientCallUpperBound: 0,
+    previousPhysicalAttempts: 175, overallPhysicalAttempts: 188,
+    overallPhysicalAttemptsLowerBound: 188, overallPhysicalAttemptsUpperBound: 188,
+    remainingOverallPhysicalAttempts: 2512, overallPhysicalAttemptCeiling: 2700,
+    artifactStoreBinding: { pathSha256: 'b'.repeat(64), identitySha256: 'c'.repeat(64), uid: 501, gid: 20, mode: 0o700 },
+    transportPreflight: { status: 'ready', mode: 'dns_tls_only',
+      sourceRevision: R2_RUNTIME_SOURCE_REVISION, workerImageDigest: `sha256:${'1'.repeat(64)}`,
+      runtimeManifestSha256: '2'.repeat(64) },
+    exactLogCapture: { status: 'captured', artifactCount: 13, queriedCallCount: 13, matchedRows: 13,
+      unqueriedCallCount: 0, artifactSetSha256: '3'.repeat(64), unqueriedCidSetSha256: '4'.repeat(64),
+      failureCode: null, batches: [{ stepId: 'r2-s001', status: 'captured', artifactCount: 13,
+        queriedCallCount: 13, matchedRows: 13, unqueriedCallCount: 0 }] },
+    logLedger: { status: 'captured', matchedRows: 13,
+      requestLedger: ledgerRows, upstreamLedger: ledgerRows, tokenLedger: ledgerRows,
+      actualBilledLedger: ledgerRows, bifrostCalculatedCostLedger: ledgerRows,
+      requestLedgerSha256: '5'.repeat(64), upstreamLedgerSha256: '6'.repeat(64), tokenLedgerSha256: '7'.repeat(64) },
+    routeIdentityProofs: [{ stepId: 'r2-s001', status: 'observed' }],
+    phaseAttemptAllocation: { declared: 267, spent: 13, knownSpent: 13,
+      unknownClientCallUpperBound: 0, possibleSpentUpperBound: 13,
+      blockedClientHttpAttemptsBeforeFetch: 0, workerPhysicalAttemptsBlockedBeforeFetch: 0,
+      workerAttestorAttemptsBlockedBeforeFetch: 0, unidentifiedCountedClientAttempts: 0,
+      unspendableReserve: 8 },
+    stepResults: [{ stepId: 'r2-s001', runId: `nq_${'d'.repeat(32)}`,
+      clientCallAllocation: 53, clientCalls: 13,
+      terminalStatus: 'incomplete', receiptSha256: 'e'.repeat(64),
+      assessment: { status: 'incomplete', reason: 'normal_gate_did_not_complete_with_canonical_evidence' },
+      outcome: { workerOutcomeClass: 'incomplete', gateOutcomeClass: 'incomplete', agreement: 'agreement',
+        canonicalEvidenceSha256: 'a'.repeat(64), gateDecisionSha256: 'b'.repeat(64) },
+      canonicalReviewEvidence: { decisionClassification: 'INCOMPLETE_REVIEW',
+        counts: { p0Count: 0, p1Count: 0, p2Count: 0, p3Count: 0, nitCount: 0 },
+        coverageComplete: false, quorumSatisfied: false, blockingFindings: [] } }],
+  };
+  const resultBytes = fixtureBytes(result);
+  const start = {
+    status: 'started', invocationId, startedAt, phaseWallMs: 1_800_000,
+    allocatedHttpAttempts: 267, withheldHttpAttempts: 8, remainingHttpAttempts: 275,
+    priorCumulativeAttempts: 175, previousClientCalls: 0,
+    previousInvocationId: randomUUID(), previousResultSha256: 'f'.repeat(64),
+    sourceRevision: R2_RUNTIME_SOURCE_REVISION, workerImageIndexDigest: `sha256:${'1'.repeat(64)}`,
+    manifestSha256: '6'.repeat(64), bindingSha256: '7'.repeat(64), tupleSha256: '8'.repeat(64),
+    readerImplementationSha256: '9'.repeat(64),
+    credentialValuesInEnvironmentArgvFilesOrOutput: false, githubAppWrites: false, grantPersistence: 'none',
+  };
+  const startBytes = fixtureBytes(start);
+  const terminalBytes = fixtureBytes({ status: 'incomplete', invocationId, startedAt,
+    endedAt: '2026-10-09T10:52:26.000Z', resultSha256: runner.sha256(resultBytes),
+    sourceRevision: R2_RUNTIME_SOURCE_REVISION, tupleSha256: start.tupleSha256 });
+  return { startBytes, terminalBytes, resultBytes };
+}
+
+function pinPriorR2Attempt(priorAttempt) {
+  return {
+    schemaVersion: 'ReviewYetiExternalNormalR2PriorAttemptReceiptPins.v1',
+    startSha256: runner.sha256(priorAttempt.startBytes),
+    terminalSha256: runner.sha256(priorAttempt.terminalBytes),
+    resultSha256: runner.sha256(priorAttempt.resultBytes),
+  };
+}
+
+test('R2 continuation binds the consumed first step and derives only the original unstarted schedule', async () => {
+  assert.equal(typeof runner.prepareExternalNormalR2ContinuationAuthorizationTuple, 'function');
+  assert.equal(typeof runner.runExternalNormalQualificationR2Continuation, 'function');
+  assert.equal(typeof runner.EXTERNAL_NORMAL_R2_CONTINUATION_ROOT_GO_SCHEMA, 'string');
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const bundleRelative = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3';
+  const sourceBundle = JSON.parse(await readFile(path.join(repositoryRoot, bundleRelative, 'source-bundle.json'), 'utf8'));
+  const harness = await createCoordinatorHarness(repositoryRoot, { r2Cases: sourceBundle.cases,
+    runtimeSourceRevision: R2_RUNTIME_SOURCE_REVISION });
+  const priorAttempt = syntheticPriorR2Attempt();
+  const priorAttemptReceiptPins = pinPriorR2Attempt(priorAttempt);
+  const continuationAttemptId = randomUUID();
+  const input = { repositoryRoot, executionPlan: r2PlanTemplate,
+    executionPlanSha256: runner.sha256(r2PlanBytes), executionPlanBytes: r2PlanBytes,
+    sourceBundle, policyInputRoot: harness.policyInputRoot, phaseRoot: harness.phaseRoot,
+    privateBinding: harness.binding, routeIdentity: harness.routeIdentity, priorAttempt,
+    priorAttemptReceiptPins, continuationAttemptId };
+  const expectedRemainingStepIds = ['r2-s002', 'r2-s003', 'r2-s004', 'r2-s005',
+    'r2-s006', 'r2-s007', 'r2-s008', 'r2-s009'];
+  const now = Date.now();
+  let callbacks = 0;
+  try {
+    const prepared = await runner.prepareExternalNormalR2ContinuationAuthorizationTuple(input);
+    assert.equal(prepared.phaseId, 'ws5-current-source-external-v2-r2');
+    assert.equal(prepared.continuationAttemptId, continuationAttemptId);
+    assert.deepEqual(prepared.continuation.priorStepIds, ['r2-s001']);
+    assert.deepEqual(prepared.continuation.remainingStepIds, expectedRemainingStepIds);
+    assert.equal(prepared.continuation.priorStatus, 'incomplete');
+    assert.equal(prepared.continuation.priorKnownClientCalls, 13);
+    assert.equal(prepared.continuation.priorUnknownClientCallUpperBound, 0);
+    assert.equal(prepared.continuation.priorElapsedMs, 106_733);
+    assert.equal(prepared.continuation.continuationClientCallLimit, 214);
+    assert.equal(prepared.continuation.continuationAllocatedClientCalls, 214);
+    assert.equal(prepared.continuation.unspendableRemainingReserve, 48);
+    assert.equal(prepared.continuation.remainingPhaseWallMs, 1_693_267);
+    assert.equal(prepared.continuation.overallCohortStatus, 'incomplete_prior_attempt');
+    assert.equal(prepared.authorizationTuple.priorResultSha256, runner.sha256(priorAttempt.resultBytes));
+    assert.equal(prepared.authorizationTuple.remainingStepIdsSha256,
+      runner.sha256(Buffer.from(runner.canonicalJson(expectedRemainingStepIds))));
+
+    const malformedPrior = syntheticPriorR2Attempt();
+    const malformedResult = JSON.parse(malformedPrior.resultBytes.toString('utf8'));
+    malformedResult.stepResults[0].stepId = 'r2-s002';
+    malformedPrior.resultBytes = fixtureBytes(malformedResult);
+    const malformedTerminal = JSON.parse(malformedPrior.terminalBytes.toString('utf8'));
+    malformedTerminal.resultSha256 = runner.sha256(malformedPrior.resultBytes);
+    malformedPrior.terminalBytes = fixtureBytes(malformedTerminal);
+    await assert.rejects(() => runner.prepareExternalNormalR2ContinuationAuthorizationTuple({
+      ...input, priorAttempt: malformedPrior, priorAttemptReceiptPins: pinPriorR2Attempt(malformedPrior),
+    }), /external_normal_r2_continuation_prior_attempt_invalid/u);
+    const rewritePriorResult = (prior, mutate) => {
+      const result = JSON.parse(prior.resultBytes.toString('utf8'));
+      mutate(result);
+      prior.resultBytes = fixtureBytes(result);
+      const terminal = JSON.parse(prior.terminalBytes.toString('utf8'));
+      terminal.resultSha256 = runner.sha256(prior.resultBytes);
+      prior.terminalBytes = fixtureBytes(terminal);
+      return prior;
+    };
+    const unknownPrior = rewritePriorResult(syntheticPriorR2Attempt(), (result) => {
+      result.unknownClientCallUpperBound = 1;
+      result.clientCallCountStatus = 'lower_bound_child_ledger_unknown';
+      result.phaseAttemptAllocation.unknownClientCallUpperBound = 1;
+    });
+    await assert.rejects(() => runner.prepareExternalNormalR2ContinuationAuthorizationTuple({
+      ...input, priorAttempt: unknownPrior, priorAttemptReceiptPins: pinPriorR2Attempt(unknownPrior),
+    }), /external_normal_r2_continuation_prior_attempt_invalid/u);
+    const sameRootPrior = rewritePriorResult(syntheticPriorR2Attempt(), (result) => {
+      result.artifactStoreBinding.pathSha256 = runner.sha256(harness.phaseRoot);
+    });
+    await assert.rejects(() => runner.prepareExternalNormalR2ContinuationAuthorizationTuple({
+      ...input, priorAttempt: sameRootPrior, priorAttemptReceiptPins: pinPriorR2Attempt(sameRootPrior),
+    }), /external_normal_r2_continuation_prior_attempt_invalid/u);
+    const brokenLinkPrior = syntheticPriorR2Attempt();
+    const brokenTerminal = JSON.parse(brokenLinkPrior.terminalBytes.toString('utf8'));
+    brokenTerminal.resultSha256 = '0'.repeat(64);
+    brokenLinkPrior.terminalBytes = fixtureBytes(brokenTerminal);
+    await assert.rejects(() => runner.prepareExternalNormalR2ContinuationAuthorizationTuple({
+      ...input, priorAttempt: brokenLinkPrior, priorAttemptReceiptPins: pinPriorR2Attempt(brokenLinkPrior),
+    }), /external_normal_r2_continuation_prior_attempt_invalid/u);
+    const coherentRewrite = rewritePriorResult(syntheticPriorR2Attempt(), (result) => {
+      result.auditMarker = 'coherent-rewrite-with-terminal-relinked';
+    });
+    await assert.rejects(() => runner.prepareExternalNormalR2ContinuationAuthorizationTuple({
+      ...input, priorAttempt: coherentRewrite,
+    }), /external_normal_r2_continuation_prior_attempt_invalid/u,
+    'coherent bytes plus a re-linked terminal must still match the privately pinned receipt hashes');
+    assert.deepEqual(await readdir(harness.phaseRoot), []);
+
+    const grant = { schemaVersion: runner.EXTERNAL_NORMAL_R2_CONTINUATION_ROOT_GO_SCHEMA, rootGo: true,
+      grantId: randomUUID(), issuedAt: new Date(now - 1_000).toISOString(),
+      expiresAt: new Date(now + 60_000).toISOString(), binding: prepared.authorizationTuple };
+    const grantValidation = await runner.validatePreparedExternalNormalR2ContinuationGrant(input, grant, now);
+    assert.equal(grantValidation.status, 'authorized');
+    assert.deepEqual(grantValidation.authorizationTuple, prepared.authorizationTuple);
+    const wrongLineageGrant = { ...grant, binding: { ...grant.binding, priorResultSha256: '0'.repeat(64) } };
+    assert.equal((await runner.validatePreparedExternalNormalR2ContinuationGrant(input, wrongLineageGrant, now)).status,
+      'authorization_rejected');
+
+    const privateBinding = harness.binding;
+    const source = privateBinding.sourceDescriptor;
+    const [sourceOwner, sourceRepo] = source.repository.split('/');
+    const baseEnv = {
+      NODE_ENV: 'test', OPENAI_BASE_URL: privateBinding.transport.selectedBaseUrl,
+      REVIEW_MODEL: privateBinding.transport.modelAlias,
+      REVIEW_CONFIG_DIGEST: privateBinding.policy.effectiveConfigSha256,
+      REVIEW_POLICY_DIGEST: privateBinding.policy.effectivePolicySha256,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: source.repository,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID: String(source.repositoryId),
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER: sourceOwner,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO: sourceRepo,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF: source.sourceRef,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH: source.path,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256: source.contentSha256,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_SOURCE_REVISION: privateBinding.runtime.finalSourceRevision,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_WORKER_IMAGE_DIGEST: privateBinding.runtime.workerImageDigest,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256: privateBinding.runtime.runtimeManifestSha256,
+      REVIEW_PREPARED_CONFIG_JSON: await readFile(path.join(harness.policyInputRoot,
+        'prepared-host/prepared-73004-default.json'), 'utf8'),
+    };
+    const syntheticRequestId = randomUUID();
+    const syntheticRequestIdSha256 = runner.sha256(syntheticRequestId.toLowerCase());
+    const syntheticProviderCall = { clientRequestIdSha256: syntheticRequestIdSha256,
+      bifrostLogRequestIdSha256: syntheticRequestIdSha256, upstreamResponseRequestIdSha256: null,
+      requestedAlias: privateBinding.transport.modelAlias, requestedEffort: 'medium',
+      startedAt: new Date(now).toISOString(), requestDigest: runner.sha256('r2-s002-synthetic-request'),
+      httpStatus: 500, fetchFailureClass: null, workerTokenUsage: null, workerEstimatedUsd: null };
+    let forwardedChildAllocation;
+    let childStarts = 0;
+    let inferenceKeyReads = 0;
+    let capturedSyntheticLogs = 0;
+    let childEnvHasInferenceKey = false;
+    let argsContainSyntheticCredential = false;
+    const spawnImplementation = (command, args, options) => {
+      childStarts += 1;
+      assert.equal(command, 'docker');
+      childEnvHasInferenceKey = options?.env?.OPENAI_API_KEY !== undefined;
+      argsContainSyntheticCredential = args.includes('offline-synthetic-inference-key');
+      const child = new EventEmitter();
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.pid = 7453;
+      child.kill = () => true;
+      const stdinChunks = [];
+      child.stdin.on('data', (chunk) => stdinChunks.push(Buffer.from(chunk)));
+      child.stdin.on('finish', () => {
+        void (async () => {
+          const stdin = Buffer.concat(stdinChunks);
+          for (const chunk of stdinChunks) chunk.fill(0);
+          let request;
+          try { request = JSON.parse(stdin.toString('utf8')); }
+          finally { stdin.fill(0); }
+          const parsed = loadedHostAdapter.parseExternalNormalV2ImageCaseRequest(request);
+          forwardedChildAllocation = parsed.clientCallAllocation;
+          assert.equal(request.projection.stepId, 'r2-s002');
+          assert.equal(request.projection.caseId, 'ws5-r2-c001');
+          assert.equal(request.projection.arm, 'p2-only');
+          const receipt = { clientCalls: 1, blockedClientCalls: 0, terminalStatus: 'failed',
+            receiptSha256: runner.sha256('synthetic-r2-s002-worker-failure'),
+            failureCode: 'worker_execution_failed', artifactReferences: [], outcome: null,
+            canonicalReviewEvidence: null, history: null, qualificationControl: null,
+            preflight: null, resourceExhaustion: null, attestorRecordedCalls: 1,
+            providerCalls: [syntheticProviderCall] };
+          child.stdout.write(`__EXTERNAL_NORMAL_V2_RESULT__${JSON.stringify(receipt)}\n`);
+          child.stdout.end();
+          child.emit('close', 0);
+        })().catch((error) => { child.stdout.end(); child.emit('error', error); });
+      });
+      return child;
+    };
+    const adapter = loadedHostAdapter.createPinnedWorkerImageExternalNormalV2Adapter({
+      policyInputRoot: harness.policyInputRoot, baseEnv, privateBinding,
+      readInferenceKeyInMemory: () => { inferenceKeyReads += 1; return 'offline-synthetic-inference-key'; },
+      assertImageAvailable: () => {}, spawnImplementation,
+    });
+
+    const result = await runner.runExternalNormalQualificationR2Continuation({
+      ...input,
+      authorization: { ...grant, rootGo: false },
+      now: () => now,
+      preflightExecution: async () => { callbacks += 1; return { status: 'ready' }; },
+      executeCase: adapter.executeCase,
+      captureExactLogs: async () => { capturedSyntheticLogs += 1; return { status: 'no_calls' }; },
+    });
+    assert.equal(result.status, 'authorization_rejected');
+    assert.equal(callbacks, 0);
+    assert.equal(inferenceKeyReads, 0);
+    assert.equal(childStarts, 0);
+    assert.deepEqual(await readdir(harness.phaseRoot), []);
+
+    const executed = await runner.runExternalNormalQualificationR2Continuation({
+      ...input, authorization: grant, now: () => now,
+      preflightExecution: async ({ origin, sourceRevision, workerImageDigest, runtimeManifestSha256 }) => {
+        callbacks += 1;
+        return { status: 'ready', mode: 'dns_tls_only', originSha256: runner.sha256(origin), sourceRevision,
+          workerImageDigest, runtimeManifestSha256, resolvedAddressCount: 1,
+          resolvedAddressSetSha256: 'a'.repeat(64), tlsAuthorized: true, tlsProtocol: 'TLSv1.3',
+          peerCertificateSha256: 'b'.repeat(64), tlsAddressSha256: 'c'.repeat(64), elapsedMs: 1 };
+      },
+      executeCase: adapter.executeCase,
+      captureExactLogs: async ({ calls }) => {
+        capturedSyntheticLogs += 1;
+        const unqueriedCidSha256 = calls.map((call) => call.clientRequestIdSha256).sort();
+        return { status: 'unavailable', queriedCallCount: 0, matchedRows: 0,
+          unqueriedCallCount: unqueriedCidSha256.length, queriedCidSha256: [], unqueriedCidSha256,
+          unqueriedCidSetSha256: runner.sha256(runner.canonicalJson(unqueriedCidSha256)),
+          rows: [], failureCode: 'synthetic_no_network_capture' };
+      },
+    });
+    assert.equal(callbacks, 1, 'only the DNS/TLS preflight callback runs before adapter construction');
+    assert.equal(childStarts, 1, JSON.stringify({ step: executed.stepResults[0], clientCalls: executed.clientCalls }));
+    assert.equal(forwardedChildAllocation, 53,
+      `the continuation allocation reaches the loaded child parser: ${JSON.stringify(executed.stepResults[0])}`);
+    assert.equal(childStarts, 1);
+    assert.equal(inferenceKeyReads, 1, 'the synthetic key callback is used only after the accepted RootGo');
+    assert.equal(childEnvHasInferenceKey, false);
+    assert.equal(argsContainSyntheticCredential, false);
+    assert.equal(capturedSyntheticLogs, 1);
+    assert.equal(executed.status, 'failed');
+    assert.equal(executed.continuation.overallCohortStatus, 'incomplete_prior_attempt');
+    assert.equal(executed.continuation.executionStatus, 'stopped_before_schedule_completion');
+    assert.deepEqual(executed.continuation.remainingStepIds, expectedRemainingStepIds);
+    assert.deepEqual(executed.stepResults.map((step) => step.stepId), ['r2-s002']);
+    assert.equal(executed.clientCalls, 1);
+    assert.equal(executed.previousPhysicalAttempts, 188);
+    assert.equal(executed.overallPhysicalAttempts, 189);
+    assert.equal(executed.remainingOverallPhysicalAttempts, 2511);
+    assert.equal(executed.phaseAttemptAllocation.declared, 214);
+    assert.equal(executed.phaseAttemptAllocation.spent, 1);
+    assert.equal(executed.phaseAttemptAllocation.unspendableReserve, 48);
+    assert.equal(executed.continuation.noUnchangedEngineStabilityClaim, true);
+  } finally {
+    await rm(harness.tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('surfaces only the allowlisted worker receipt-persistence stage and code', () => {
   assert.deepEqual(runner.safeExternalNormalV2WorkerFailure({ workerFailure: {
     stage: 'case_receipt_persistence', code: 'receipt_write_failed', detail: 'synthetic raw failure',
