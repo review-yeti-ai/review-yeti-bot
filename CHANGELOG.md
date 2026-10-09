@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.123.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.8...v1.123.0) (2026-10-09)
+
+
+### Features
+
+* bind R2 cohort to a versioned host runner ([#1467](https://github.com/review-yeti-ai/review-yeti-bot/issues/1467)) ([f8a0716](https://github.com/review-yeti-ai/review-yeti-bot/commit/f8a07165a478b499536f55a80f0003b8540eaed0))
+
 ## [1.122.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.7...v1.122.8) (2026-10-09)
 
 
