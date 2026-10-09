@@ -505,7 +505,7 @@ describe('current-source external v2 worker adapter', () => {
       ]) {
         await expect(adapter.executeCase(changed, context)).rejects.toThrow('external_normal_v2_worker_projection_invalid');
       }
-      expect(dockerCalls).toHaveLength(1, 'invalid identity and over-cap requests must stop before child launch');
+      expect(dockerCalls).toHaveLength(1);
 
       for (const [stepId, expectedAllocation, credential] of [
         ['r2-s006', 0, undefined], ['r2-s007', 0, undefined], ['r2-s008', 1, undefined],
