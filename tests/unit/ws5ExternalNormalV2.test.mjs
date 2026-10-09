@@ -149,6 +149,7 @@ async function createCoordinatorHarness(repositoryRoot, { r2Cases, runtimeSource
         effective_config_digest: effectiveConfigSha256, provider_attempt_budget: providerAttemptBudget } } })) };
   const projectionsBytes = fixtureBytes(projections);
 
+  const manifestScenarios = r2Cases ? ['default'] : ['default', 'comparison'];
   const preparedManifest = { schema: 'exampleorg.review-yeti-prepared-execution-host-bundle.v1',
     fixture_path: 'review-yeti-v2-prepared-execution-host.fixture.json',
     fixture_sha256: preparedExecutionFixtureSha256,
@@ -160,7 +161,7 @@ async function createCoordinatorHarness(repositoryRoot, { r2Cases, runtimeSource
       source_file_sha256: template.runtime.preparedConfigHelperSourceFileSha256,
       compiled_file_sha256: template.runtime.preparedConfigHelperCompiledFileSha256 },
     transport: { provider: 'bifrost', baseUrl: transport.selectedBaseUrl, model: transport.modelAlias },
-    samples: template.targetProjections.flatMap((target) => ['default', 'comparison'].map((scenario) => ({
+    samples: template.targetProjections.flatMap((target) => manifestScenarios.map((scenario) => ({
       id: target.repositoryId, scenario, path: `prepared-host/prepared-${target.repositoryId}-default.json`,
       prepared_execution_sha256: preparedExecutionSha256, effective_config_digest: effectiveConfigSha256,
       effective_policy_digest: effectivePolicySha256,
@@ -433,6 +434,25 @@ test('R2 parent entry validates the v3 cohort and rejects an invalid grant befor
     assert.equal(preparedManifest.helper.source_sha, R2_RUNTIME_SOURCE_REVISION);
     assert.equal(preparedManifest.helper.source_file_sha256, R2_HELPER_SOURCE_SHA256);
     assert.equal(preparedManifest.helper.compiled_file_sha256, R2_HELPER_COMPILED_SHA256);
+    assert.equal(preparedManifest.samples.length, 3);
+    assert.ok(preparedManifest.samples.every((sample) => sample.scenario === 'default'));
+    const manifestPath = path.join(harness.policyInputRoot,
+      'review-yeti-v2-prepared-execution-host.manifest.json');
+    const invalidManifestBytes = fixtureBytes({ ...preparedManifest,
+      samples: [...preparedManifest.samples, { ...preparedManifest.samples[0], scenario: 'comparison' }] });
+    await writeFile(manifestPath, invalidManifestBytes, { mode: 0o600 });
+    await chmod(manifestPath, 0o600);
+    const invalidBinding = structuredClone(harness.binding);
+    const invalidManifestSha256 = runner.sha256(invalidManifestBytes);
+    invalidBinding.policy.preparedExecutionManifestSha256 = invalidManifestSha256;
+    invalidBinding.policy.policyInputDigests.preparedExecutionManifestPath = invalidManifestSha256;
+    await assert.rejects(() => runner.prepareExternalNormalR2AuthorizationTuple({ repositoryRoot,
+      executionPlan, executionPlanSha256, executionPlanBytes: r2PlanBytes, sourceBundle,
+      policyInputRoot: harness.policyInputRoot, phaseRoot: harness.phaseRoot,
+      privateBinding: invalidBinding, routeIdentity: harness.routeIdentity }),
+    /external_normal_v2_policy_input_contract_invalid/u);
+    await writeFile(manifestPath, fixtureBytes(preparedManifest), { mode: 0o600 });
+    await chmod(manifestPath, 0o600);
     const now = Date.now();
     const rootGo = { schemaVersion: runner.EXTERNAL_NORMAL_R2_ROOT_GO_SCHEMA, rootGo: true,
       grantId: randomUUID(), issuedAt: new Date(now - 1_000).toISOString(),

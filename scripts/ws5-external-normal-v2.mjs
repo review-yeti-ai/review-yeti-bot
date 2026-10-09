@@ -607,6 +607,8 @@ export async function verifyPolicyInputFiles(policyInputRoot, plan, privateBindi
   const [candidate, execution, preparedFixture, projections, preparedManifest] = parsed;
   const source = privateBinding.sourceDescriptor;
   const sourceOwner = source.repository.split('/')[0];
+  const isR2Plan = plan.phaseId === R2_PHASE_ID;
+  const expectedPreparedManifestSampleCount = isR2Plan ? 3 : 6;
   if (source.contentSha256 !== plan.policy.candidateRawSha256
     || candidate.schema !== `${sourceOwner}.review-policy.v1`
     || actualHashes[0] !== plan.policy.candidateRawSha256
@@ -641,7 +643,8 @@ export async function verifyPolicyInputFiles(policyInputRoot, plan, privateBindi
     || !preparedConfigHelperProvenanceMatchesPlan(preparedManifest, plan)
     || preparedManifest.transport.provider !== 'bifrost' || preparedManifest.transport.baseUrl !== privateBinding.transport.selectedBaseUrl
     || preparedManifest.transport.model !== privateBinding.transport.modelAlias
-    || preparedManifest.samples.length !== 6
+    || preparedManifest.samples.length !== expectedPreparedManifestSampleCount
+    || (isR2Plan && preparedManifest.samples.some((sample) => sample.scenario !== 'default'))
     || projections.prepared_execution_fixture_sha256 !== actualHashes[2]
     || projections.prepared_execution_fixture_path !== 'review-yeti-v2-prepared-execution-host.fixture.json'
     || projections.source_revision !== source.sourceRef
