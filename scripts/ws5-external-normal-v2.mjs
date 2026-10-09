@@ -7,7 +7,7 @@ import path from 'node:path';
 
 export const EXTERNAL_NORMAL_V2_PLAN_PATH = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json';
 export const EXTERNAL_NORMAL_V2_BUNDLE_PATH = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json';
-export const EXTERNAL_NORMAL_V2_PLAN_SHA256 = 'c3296f598a273d7a183a06b2e97480ce9b655d7f9e92b158b9d788819bf14d59';
+export const EXTERNAL_NORMAL_V2_PLAN_SHA256 = '2cf0c2455969df0e1a6cdfa4b97ba4c400cad7e1a2da6f52ebb2bd07e159ffc9';
 export const EXTERNAL_NORMAL_V2_BUNDLE_SHA256 = '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1';
 export const EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA = 'ReviewYetiExternalNormalQualificationRootGo.v1';
 export const EXTERNAL_NORMAL_V2_PRIVATE_BINDING_SCHEMA = 'ReviewYetiExternalNormalQualificationPrivateBinding.v1';
@@ -20,6 +20,7 @@ const NORMAL_ARM_MS = 240_000;
 const CAPTURE_RESERVE_MS = 300_000;
 const RESERVED_OVERHEAD_MS = 180_000;
 const REQUIRED_HISTORY_PREFLIGHT_MS = 15_000;
+const TRANSPORT_PREFLIGHT_DEADLINE_MS = 60_000;
 const INPUTS = Object.freeze({
   'ws5-current-1dd-v2-p2': { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json', sha256: '4f476e36aa78b6788bb37c02ba5b2fae899c99eeba7d43dae399507cd93ed216', repositoryId: 73004, arm: 'p2-only', reservationMs: NORMAL_ARM_MS, clientCallAllocation: 58 },
   'ws5-current-1dd-v2-sequence-a': { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/seq_a.json', sha256: '0e3bade3d6d7a148a2a36515ed1b40b9c1ab3f4cc2b2d92343176f2069ca0da9', repositoryId: 73002, arm: 'repair-introduction', reservationMs: NORMAL_ARM_MS, clientCallAllocation: 58 },
@@ -427,7 +428,8 @@ export function validateExternalNormalV2Plan(plan, bundle) {
     || plan.executionEnvelope?.workerContainer?.gatewayManagementCredentialsPassed !== false
     || plan.executionEnvelope?.workerContainer?.inferenceCredentialEnvironmentNameOnly !== 'OPENAI_API_KEY'
     || plan.executionEnvelope?.qualificationArtifactStoreRelativePath !== 'normal-engine-qualification-store'
-    || plan.executionEnvelope?.transportPreflightDeadlineMs !== 15_000
+    || plan.executionEnvelope?.transportPreflightDeadlineMs !== TRANSPORT_PREFLIGHT_DEADLINE_MS
+    || plan.executionEnvelope?.transportPreflightDeadlineMs > RESERVED_OVERHEAD_MS
     || plan.executionEnvelope?.childAbortDrainGraceMs !== 10_000
     || plan.executionEnvelope?.exactLogCaptureReserveMs !== CAPTURE_RESERVE_MS
     || plan.executionEnvelope?.requiredHistoryPreflightReserveMs !== REQUIRED_HISTORY_PREFLIGHT_MS
@@ -778,8 +780,20 @@ export function validateExternalNormalV2PhaseRootIdentity(plan, canonicalPath, i
     && (identity?.mode & 0o777) === pin.mode);
 }
 
+export function externalNormalV2TransportPreflightDeadlineAt(plan, startedAt) {
+  const deadlineMs = plan?.executionEnvelope?.transportPreflightDeadlineMs;
+  const deadlineAt = startedAt + deadlineMs;
+  if (!Number.isSafeInteger(startedAt) || !Number.isSafeInteger(deadlineMs) || deadlineMs < 1
+    || deadlineMs > TRANSPORT_PREFLIGHT_DEADLINE_MS || deadlineMs > RESERVED_OVERHEAD_MS
+    || !Number.isSafeInteger(deadlineAt)) {
+    throw new Error('external_normal_v2_preflight_deadline_invalid');
+  }
+  return deadlineAt;
+}
+
 export function validateExternalNormalV2TransportPreflight(plan, proof) {
   const originHash = sha256(plan.policy.inferenceBaseUrl);
+  const preflightDeadlineMs = plan?.executionEnvelope?.transportPreflightDeadlineMs;
   if (!proof || proof.status !== 'ready' || proof.mode !== 'dns_tls_only'
     || proof.originSha256 !== originHash || proof.workerImageDigest !== plan.runtime.workerImageDigest
     || proof.sourceRevision !== plan.runtime.finalSourceRevision
@@ -789,7 +803,9 @@ export function validateExternalNormalV2TransportPreflight(plan, proof) {
     || proof.tlsAuthorized !== true || !['TLSv1.2', 'TLSv1.3'].includes(proof.tlsProtocol)
     || !/^[a-f0-9]{64}$/u.test(proof.peerCertificateSha256 || '')
     || !/^[a-f0-9]{64}$/u.test(proof.tlsAddressSha256 || '')
-    || !Number.isSafeInteger(proof.elapsedMs) || proof.elapsedMs < 0 || proof.elapsedMs > 15_000) {
+    || !Number.isSafeInteger(preflightDeadlineMs) || preflightDeadlineMs < 1
+    || preflightDeadlineMs > TRANSPORT_PREFLIGHT_DEADLINE_MS || preflightDeadlineMs > RESERVED_OVERHEAD_MS
+    || !Number.isSafeInteger(proof.elapsedMs) || proof.elapsedMs < 0 || proof.elapsedMs > preflightDeadlineMs) {
     return { status: 'unavailable', failureCode: 'container_dns_tls_preflight_invalid' };
   }
   return { status: 'ready', mode: proof.mode, originSha256: proof.originSha256,
@@ -1664,7 +1680,8 @@ export async function runExternalNormalQualificationV2({
     const proof = await preflightExecution({ phaseId: plan.phaseId, phasePlanSha256: planSha256,
       sourceRevision: plan.runtime.finalSourceRevision, workerImageDigest: plan.runtime.workerImageDigest,
       runtimeManifestSha256: plan.runtime.runtimeManifestSha256,
-      origin: plan.policy.inferenceBaseUrl, deadlineAt: preflightStartedAt + 15_000, artifactStoreRoot: canonicalRoot });
+      origin: plan.policy.inferenceBaseUrl,
+      deadlineAt: externalNormalV2TransportPreflightDeadlineAt(plan, preflightStartedAt), artifactStoreRoot: canonicalRoot });
     transportPreflight = validateExternalNormalV2TransportPreflight(plan, proof);
   } catch {
     transportPreflight = { status: 'unavailable', failureCode: 'container_dns_tls_preflight_failed' };

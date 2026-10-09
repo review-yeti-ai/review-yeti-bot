@@ -93,6 +93,18 @@ test('public phase plan is a non-dispatchable template and requires a private ro
   runner.validateExternalNormalV2Plan(plan, bundle);
 });
 
+test('allows the container runtime check within a 60-second preflight bounded by existing overhead', async () => {
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const { plan } = await runner.readFrozenExternalNormalV2Plan(repositoryRoot);
+  assert.equal(plan.executionEnvelope.transportPreflightDeadlineMs, 60_000);
+  assert.equal(plan.executionEnvelope.phaseWallLimitMs, 1_800_000);
+  assert.ok(plan.executionEnvelope.transportPreflightDeadlineMs <= 180_000);
+  assert.equal(runner.externalNormalV2TransportPreflightDeadlineAt(plan, 10_000), 70_000);
+  assert.throws(() => runner.externalNormalV2TransportPreflightDeadlineAt({
+    executionEnvelope: { transportPreflightDeadlineMs: 60_001 },
+  }, 10_000), /preflight_deadline_invalid/u);
+});
+
 test('pins prepared helper provenance to the exact source revision and bytes admitted by the host plan', async () => {
   const repositoryRoot = new URL('../../', import.meta.url).pathname;
   const { plan } = await runner.readFrozenExternalNormalV2Plan(repositoryRoot);
@@ -137,7 +149,7 @@ test('ships only the exact new synthetic v2 source inputs into the worker image'
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json']);
   const expected = new Map([
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json',
-      'c3296f598a273d7a183a06b2e97480ce9b655d7f9e92b158b9d788819bf14d59'],
+      '2cf0c2455969df0e1a6cdfa4b97ba4c400cad7e1a2da6f52ebb2bd07e159ffc9'],
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json',
       '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1'],
     ['eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/p2.json',
@@ -247,13 +259,15 @@ test('ROOTGO binds phase, exact plan, output root, runtime and policy tuple and 
 test('accepts only an in-image DNS plus verified TLS preflight bound to the route and runtime', async () => {
   const plan = { policy: { inferenceBaseUrl: 'https://gateway.example.invalid/v1' },
     runtime: { finalSourceRevision: 'b'.repeat(40), workerImageDigest: `sha256:${'c'.repeat(64)}`,
-      runtimeManifestSha256: 'd'.repeat(64) } };
+      runtimeManifestSha256: 'd'.repeat(64) }, executionEnvelope: { transportPreflightDeadlineMs: 60_000 } };
   const proof = { status: 'ready', mode: 'dns_tls_only', originSha256: createHash('sha256')
     .update(plan.policy.inferenceBaseUrl).digest('hex'), sourceRevision: plan.runtime.finalSourceRevision,
     workerImageDigest: plan.runtime.workerImageDigest, runtimeManifestSha256: plan.runtime.runtimeManifestSha256,
     resolvedAddressCount: 1, resolvedAddressSetSha256: 'e'.repeat(64), tlsAuthorized: true,
-    tlsProtocol: 'TLSv1.3', peerCertificateSha256: 'f'.repeat(64), tlsAddressSha256: '1'.repeat(64), elapsedMs: 250 };
+    tlsProtocol: 'TLSv1.3', peerCertificateSha256: 'f'.repeat(64), tlsAddressSha256: '1'.repeat(64), elapsedMs: 27_363 };
   assert.equal(runner.validateExternalNormalV2TransportPreflight(plan, proof).status, 'ready');
+  assert.equal(runner.validateExternalNormalV2TransportPreflight(plan,
+    { ...proof, elapsedMs: 60_001 }).status, 'unavailable');
   assert.equal(runner.validateExternalNormalV2TransportPreflight(plan,
     { ...proof, tlsAuthorized: false }).status, 'unavailable');
   assert.equal(runner.validateExternalNormalV2TransportPreflight(plan,

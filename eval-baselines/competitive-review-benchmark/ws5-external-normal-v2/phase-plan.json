@@ -173,7 +173,7 @@
       "inferenceCredentialEnvironmentNameOnly": "OPENAI_API_KEY"
     },
     "qualificationArtifactStoreRelativePath": "normal-engine-qualification-store",
-    "transportPreflightDeadlineMs": 15000,
+    "transportPreflightDeadlineMs": 60000,
     "childAbortDrainGraceMs": 10000,
     "phaseWallLimitMs": 1800000,
     "exactLogCaptureReserveMs": 300000,
