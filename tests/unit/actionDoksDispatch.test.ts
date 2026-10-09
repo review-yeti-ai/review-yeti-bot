@@ -451,6 +451,37 @@ describe('DOKS Action dispatch client', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('accepts DISPATCH_URL or EDGE_DISPATCH_URL when DOKS_DISPATCH_URL is empty', async () => {
+    const { dispatchAction } = await import(modulePath);
+    const createFetchMock = () => vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        version: 'ActionDispatchAccepted.v1',
+        status: 'accepted',
+        runId: `run_${'1'.repeat(32)}`,
+      }), {
+        status: 202,
+        headers: { 'content-type': 'application/json' },
+      }));
+
+    const mock1 = createFetchMock();
+    await dispatchAction(environment({
+      DOKS_DISPATCH_URL: '',
+      DISPATCH_URL: 'https://review-bot.example.com/api/dispatch/action',
+    }), mock1);
+    expect(mock1).toHaveBeenNthCalledWith(2, 'https://review-bot.example.com/api/dispatch/action', expect.anything());
+
+    const mock2 = createFetchMock();
+    await dispatchAction(environment({
+      DOKS_DISPATCH_URL: '',
+      EDGE_DISPATCH_URL: 'https://review-yeti.example.com/api/dispatch/action',
+    }), mock2);
+    expect(mock2).toHaveBeenNthCalledWith(2, 'https://review-yeti.example.com/api/dispatch/action', expect.anything());
+  });
+
   it('rejects mutable action refs and unsupported publication modes', async () => {
     const { buildDispatchRequest } = await import(modulePath);
     expect(() => buildDispatchRequest(environment({ ACTION_SHA: 'v1' }))).toThrow(/action sha/i);

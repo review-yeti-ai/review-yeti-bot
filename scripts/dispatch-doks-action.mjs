@@ -524,7 +524,8 @@ function retryWarning(operation, attempt, delayMs, reason) {
 
 export async function dispatchAction(environment = process.env, fetchImpl = fetch, options = {}) {
   const request = buildDispatchRequest(environment);
-  const endpoint = validateDispatchEndpoint(required(environment, 'DOKS_DISPATCH_URL'), request);
+  const rawDispatchUrl = environment.DOKS_DISPATCH_URL || environment.DISPATCH_URL || environment.EDGE_DISPATCH_URL;
+  const endpoint = validateDispatchEndpoint(required({ ...environment, DOKS_DISPATCH_URL: rawDispatchUrl }, 'DOKS_DISPATCH_URL'), request);
   const sleepImpl = options.sleep || sleep;
   const oidcToken = await requestOidcToken(environment, fetchImpl, sleepImpl);
   const requestBody = JSON.stringify(request);

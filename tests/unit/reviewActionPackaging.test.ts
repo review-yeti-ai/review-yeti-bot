@@ -46,6 +46,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('action-sha');
     expect(inputs).toContain('execution-backend');
     expect(inputs).toContain('doks-dispatch-url');
+    expect(inputs).toContain('dispatch-url');
+    expect(inputs).toContain('edge-dispatch-url');
     expect(inputs).toContain('doks-publish-mode');
     expect(inputs).toContain('refresh-requested');
     expect(inputs).toContain('refresh-execution-attempt');
@@ -82,6 +84,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(action.inputs['doks-publish-mode'].default).toBe('app-gate');
     // The endpoint is supplied by the caller; the Action carries no hostname default.
     expect(action.inputs['doks-dispatch-url'].default).toBe('');
+    expect(action.inputs['dispatch-url'].default).toBe('');
+    expect(action.inputs['edge-dispatch-url'].default).toBe('');
 
     const raw = fs.readFileSync(actionPath, 'utf8');
     const dispatcher = fs.readFileSync(path.join(rootRepoDir, 'scripts/dispatch-doks-action.mjs'), 'utf8');
@@ -90,6 +94,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(dispatcher).toContain('ACTIONS_ID_TOKEN_REQUEST_TOKEN');
     expect(raw).toContain("inputs.execution-backend != 'local'");
     expect(raw).toContain("inputs.execution-backend == 'local'");
+    expect(raw).toContain('local|doks|mars|edge');
+    expect(raw).toContain('inputs.dispatch-url || inputs.edge-dispatch-url || inputs.doks-dispatch-url');
     expect(raw).toContain('EXPECTED_GENERATION: ${{ inputs.expected-generation }}');
   });
 
