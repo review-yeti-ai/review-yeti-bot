@@ -326,7 +326,7 @@ jobs:
       - name: Run WS5 external coordinator tests
         env:
           TMPDIR: ${{ runner.temp }}
-        run: node --test tests/unit/ws5ExternalNormalV2.test.mjs
+        run: node --test tests/unit/ws5ExternalNormalV2.test.mjs tests/unit/ws5ExternalNormalV2LoadedCidRecovery.test.mjs
 
       - name: Verify frontend artifacts before caching
         run: node scripts/verify-frontend-artifacts.js

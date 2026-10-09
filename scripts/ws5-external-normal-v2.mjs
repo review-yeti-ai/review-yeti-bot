@@ -61,6 +61,9 @@ const SAFE_PRE_CHILD_FAILURES = new Set([
   'pinned_image:pinned_worker_image_unavailable',
   'container_spawn:docker_launcher_unavailable',
 ]);
+const SAFE_WORKER_FAILURES = new Set([
+  'case_receipt_persistence:receipt_write_failed',
+]);
 
 export function externalNormalV2AttemptBounds(knownClientCalls, unknownClientCallUpperBound = 0) {
   if (!Number.isSafeInteger(knownClientCalls) || knownClientCalls < 0
@@ -91,6 +94,15 @@ export function safeExternalNormalV2PreChildFailure(error) {
   const failure = error.preChildFailure;
   if (!failure || typeof failure !== 'object' || typeof failure.stage !== 'string' || typeof failure.code !== 'string'
     || !SAFE_PRE_CHILD_FAILURES.has(`${failure.stage}:${failure.code}`)) return undefined;
+  return { stage: failure.stage, code: failure.code };
+}
+
+export function safeExternalNormalV2WorkerFailure(result) {
+  const failure = result?.workerFailure;
+  if (!failure || typeof failure !== 'object' || Array.isArray(failure)
+    || Object.keys(failure).sort().join('|') !== 'code|stage'
+    || typeof failure.stage !== 'string' || typeof failure.code !== 'string'
+    || !SAFE_WORKER_FAILURES.has(`${failure.stage}:${failure.code}`)) return undefined;
   return { stage: failure.stage, code: failure.code };
 }
 
@@ -1100,6 +1112,19 @@ export async function recoverExternalNormalV2PrivateIdentifierSidecar(rootPath, 
     candidateCount: calls.length, blockedAttestorTailCount: Math.max(0, rows.length - calls.length), calls };
 }
 
+function privateIdentifierSidecarMatchesProviderCalls(recovered, providerCalls, knownClientCalls) {
+  if (recovered?.status !== 'recovered' || !Number.isSafeInteger(knownClientCalls) || knownClientCalls < 1
+    || recovered.candidateCount !== knownClientCalls || recovered.calls.length !== knownClientCalls
+    || !Array.isArray(providerCalls) || providerCalls.length !== knownClientCalls) return false;
+  const callsByCid = new Map(recovered.calls.map((call) => [call.clientRequestIdSha256, call]));
+  if (callsByCid.size !== recovered.calls.length) return false;
+  return providerCalls.every((call) => {
+    const privateCall = callsByCid.get(call.clientRequestIdSha256);
+    return Boolean(privateCall && privateCall.bifrostLogRequestIdSha256 === call.bifrostLogRequestIdSha256
+      && (privateCall.upstreamResponseRequestIdSha256 ?? null) === (call.upstreamResponseRequestIdSha256 ?? null));
+  });
+}
+
 function validateExecutionReceipt(result, calls) {
   object(result, 'execution_receipt');
   if (!Number.isSafeInteger(result.blockedClientCalls) || result.blockedClientCalls < 0) {
@@ -1168,6 +1193,7 @@ function validateExecutionReceipt(result, calls) {
       firstResponseHttpStatus: result.testBudget.resourceExhaustion.firstResponseHttpStatus,
       firstLogicalCompletionSucceeded: result.testBudget.resourceExhaustion.firstLogicalCompletionSucceeded,
     } : null;
+  const workerFailure = partialFailure ? safeExternalNormalV2WorkerFailure(result) : undefined;
   const canonicalEvidence = result.canonicalReviewEvidence && typeof result.canonicalReviewEvidence === 'object' ? {
     decisionClassification: result.canonicalReviewEvidence.decisionClassification,
     counts: result.canonicalReviewEvidence.counts && typeof result.canonicalReviewEvidence.counts === 'object'
@@ -1196,6 +1222,7 @@ function validateExecutionReceipt(result, calls) {
     attestorRecordedCalls: Number.isSafeInteger(result.attestorRecordedCalls) && result.attestorRecordedCalls >= 0
       ? result.attestorRecordedCalls : providerCalls.length,
     failureCode: partialFailure ? result.failureCode : null,
+    ...(workerFailure ? { workerFailure } : {}),
     unidentifiedClientAttempts: calls - providerCalls.length,
     artifactReferences: artifactReferences.map((row) => ({ path: row.path, sha256: row.sha256,
       ...(row.canonicalSha256 ? { canonicalSha256: row.canonicalSha256 } : {}) })),
@@ -1777,6 +1804,22 @@ export async function runExternalNormalQualificationV2({
       const artifactVerification = result.artifactReferences.length > 0
         ? await verifyExternalNormalV2ArtifactReferences(canonicalRoot, result.artifactReferences, result.receiptSha256)
         : null;
+      let privateIdentifierSidecarStatus;
+      let privateIdentifierSidecarReference;
+      if (result.terminalStatus === 'failed' && result.failureCode === 'worker_execution_failed' && stepCalls > 0) {
+        try {
+          const recovered = await recoverExternalNormalV2PrivateIdentifierSidecar(canonicalRoot, caseRunId,
+            qualificationPhaseForArm(step.arm), step.caseId, armCallAllocation);
+          if (recovered.status === 'recovered'
+            && privateIdentifierSidecarMatchesProviderCalls(recovered, result.providerCalls, stepCalls)) {
+            privateIdentifierSidecarStatus = 'bound';
+            privateIdentifierSidecarReference = recovered.sidecarReference;
+          } else {
+            privateIdentifierSidecarStatus = recovered.status === 'absent' ? 'absent'
+              : recovered.status === 'unavailable' ? 'unavailable' : 'mismatch';
+          }
+        } catch { privateIdentifierSidecarStatus = 'unavailable'; }
+      }
       const bundledCase = bundle.cases.find((candidate) => candidate.caseId === step.caseId);
       const expectedReviewIdentity = bundledCase ? {
         repository: `${bundledCase.repository.owner}/${bundledCase.repository.repo}`,
@@ -1784,7 +1827,11 @@ export async function runExternalNormalQualificationV2({
       } : null;
       const assessment = assessExternalNormalV2StepReceipt(step, result, historyRunId, expectedReviewIdentity);
       stepResultForCapture = { stepId: step.stepId, runId: caseRunId, clientCallAllocation: armCallAllocation,
-        clientCalls: stepCalls, blockedClientCalls: stepBlockedClientCalls, artifactVerification, assessment, ...result };
+        clientCalls: stepCalls, blockedClientCalls: stepBlockedClientCalls, artifactVerification, assessment, ...result,
+        ...(privateIdentifierSidecarReference ? { artifactReferences: [
+          ...result.artifactReferences, privateIdentifierSidecarReference,
+        ] } : {}),
+        ...(privateIdentifierSidecarStatus ? { privateIdentifierSidecarStatus } : {}) };
       stepResults.push(stepResultForCapture);
       if (step.stepId === 'v2-sequence-a' && assessment.status === 'accepted') historyRuns.set(step.stepId, caseRunId);
       if (assessment.status === 'incomplete' || result.terminalStatus === 'failed') incomplete = true;

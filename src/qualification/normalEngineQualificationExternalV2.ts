@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync, spawn, type ChildProcessByStdio } from 'node:child_process';
 import { lookup } from 'node:dns/promises';
-import { lstat, readFile, realpath } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { connect as tlsConnect } from 'node:tls';
 import { pathToFileURL } from 'node:url';
@@ -17,7 +17,8 @@ import {
   persistNormalEngineQualificationReceipt,
   WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE,
 } from './normalEngineQualification';
-import { persistNormalEngineQualificationProviderCapture, runNormalEngineQualificationCase } from './normalEngineQualificationWorker';
+import { NormalEngineQualificationReceiptPersistError, persistNormalEngineQualificationProviderCapture,
+  runNormalEngineQualificationCase } from './normalEngineQualificationWorker';
 
 interface ExternalNormalV2Projection {
   stepId: string;
@@ -374,6 +375,22 @@ async function validateArtifactStoreRoot(storeRoot: string): Promise<string> {
   return canonical;
 }
 
+async function ensureNormalEngineQualificationStoreRoot(phaseRoot: string): Promise<string> {
+  const storeRoot = resolve(phaseRoot, 'normal-engine-qualification-store');
+  try { await mkdir(storeRoot, { mode: 0o700 }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw new Error('external_normal_v2_artifact_store_unavailable');
+  }
+  const [rootInfo, storeInfo] = await Promise.all([lstat(phaseRoot), lstat(storeRoot)]);
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory() || storeInfo.isSymbolicLink() || !storeInfo.isDirectory()
+    || storeInfo.uid !== rootInfo.uid || (storeInfo.mode & 0o077) !== 0 || (storeInfo.mode & 0o700) !== 0o700) {
+    throw new Error('external_normal_v2_artifact_store_invalid');
+  }
+  const canonicalStoreRoot = await realpath(storeRoot);
+  if (canonicalStoreRoot !== storeRoot) throw new Error('external_normal_v2_artifact_store_invalid');
+  return canonicalStoreRoot;
+}
+
 function buildCaseEnvironment(baseEnv: Env, projection: ExternalNormalV2Projection,
   privateBinding: ExternalNormalV2PrivateBinding | undefined, inferenceKey?: string,
   preparedExecutionJson?: string): Env {
@@ -603,7 +620,9 @@ export function createBoundExternalNormalV2CaseExecutor(input: {
         value, runId, phase, caseId, artifactStoreRoot),
       persistProviderIdentifiers: (value, runId, phase, caseId) => persistNormalEngineQualificationProviderIdentifiers(
         value, runId, phase, caseId, artifactStoreRoot),
-    }); } catch {
+    }); } catch (error) {
+      const workerFailure = error instanceof NormalEngineQualificationReceiptPersistError
+        ? error.workerFailure : undefined;
       return {
         clientCalls: context.clientCallCount,
         blockedClientCalls: context.blockedClientCallCount,
@@ -615,6 +634,7 @@ export function createBoundExternalNormalV2CaseExecutor(input: {
         preflight: null, resourceExhaustion: null,
         attestorRecordedCalls: null,
         providerCalls: actualRequestAttempts,
+        ...(workerFailure ? { workerFailure } : {}),
       };
     } finally {
       if (env.OPENAI_API_KEY !== undefined) env.OPENAI_API_KEY = '';
@@ -1093,6 +1113,9 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
       throw new Error('external_normal_v2_arm_execution_envelope_mismatch');
     }
     const phaseRoot = await validateArtifactStoreRoot(context.artifactStoreRoot);
+    // The coordinator owns phaseRoot. The immutable worker writes `/phase/<runId>/...`,
+    // while its artifact references are relative to the phase root and begin with this store name.
+    const workerStoreRoot = await ensureNormalEngineQualificationStoreRoot(phaseRoot);
     const requestedPolicyRoot = resolve(input.policyInputRoot);
     const policyRoot = await realpath(requestedPolicyRoot);
     const policyRootInfo = await lstat(requestedPolicyRoot);
@@ -1117,7 +1140,7 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
         deadlineAt: context.deadlineAt,
         ...(inferenceCredential === undefined ? {} : { inferenceCredential }) });
       return await runPinnedWorkerContainer({ imageRef, mode: '--external-normal-v2-case', workerEnv,
-        phaseRoot, policyInputRoot: policyRoot,
+        phaseRoot: workerStoreRoot, policyInputRoot: policyRoot,
         stdinJson: caseRequestJson,
         signal: context.signal, deadlineAt: context.deadlineAt, spawnImplementation: input.spawnImplementation });
     } finally {

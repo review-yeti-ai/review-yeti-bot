@@ -240,6 +240,105 @@ test('forwards the frozen arm allocation through the real coordinator executor c
   }
 });
 
+test('binds the private identifier sidecar for a resolved failed worker without recounting known calls', async () => {
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const harness = await createCoordinatorHarness(repositoryRoot);
+  const requestIds = Array.from({ length: 25 }, () => randomUUID());
+  const providerCalls = requestIds.map((requestId) => ({
+    clientRequestIdSha256: createHash('sha256').update(requestId.toLowerCase()).digest('hex'),
+    bifrostLogRequestIdSha256: createHash('sha256').update(requestId.toLowerCase()).digest('hex'),
+    upstreamResponseRequestIdSha256: null,
+    requestedAlias: 'fixture-reviewer', requestedEffort: 'medium', startedAt: new Date().toISOString(),
+    requestDigest: createHash('sha256').update(`request:${requestId}`).digest('hex'),
+    httpStatus: 200, fetchFailureClass: null, workerTokenUsage: { prompt: 1, completion: 1, total: 2 },
+    workerEstimatedUsd: null,
+  }));
+  const sidecarRows = requestIds.map((requestId) => ({ callerRequestId: requestId,
+    bifrostLogRequestId: requestId, upstreamResponseRequestId: null }));
+  const sidecarBytes = Buffer.from(`${JSON.stringify(sidecarRows, null, 2)}\n`);
+  const sidecarSha256 = runner.sha256(sidecarBytes);
+  let sidecarPath;
+  let captureRequest;
+  let executorCalls = 0;
+  const now = Date.now();
+  try {
+    const boundPlan = runner.bindExternalNormalV2PrivateInputs(harness.template, harness.binding);
+    const canonicalRoot = await realpath(harness.phaseRoot);
+    const rootInfo = await lstat(canonicalRoot);
+    const outputRootSha256 = runner.sha256(canonicalRoot);
+    const artifactStoreIdentitySha256 = runner.sha256(runner.canonicalJson({ pathSha256: outputRootSha256,
+      uid: rootInfo.uid, gid: rootInfo.gid, mode: rootInfo.mode & 0o777 }));
+    const launcherSource = await runner.readExternalNormalV2LauncherSourceDigests(repositoryRoot);
+    const tuple = runner.buildExternalNormalV2AuthorizationTuple(boundPlan, harness.planSha256,
+      outputRootSha256, launcherSource.tupleSha256, artifactStoreIdentitySha256, harness.binding);
+    const authorization = { schemaVersion: runner.EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA, rootGo: true,
+      grantId: randomUUID(), issuedAt: new Date(now - 1_000).toISOString(),
+      expiresAt: new Date(now + 60_000).toISOString(), binding: tuple };
+
+    const result = await runner.runExternalNormalQualificationV2({ repositoryRoot,
+      policyInputRoot: harness.policyInputRoot, phaseRoot: harness.phaseRoot,
+      privateBinding: harness.binding, authorization, now: () => now,
+      captureExactLogs: async (request) => {
+        captureRequest = request;
+        const unqueriedCidSha256 = request.calls.map((call) => call.clientRequestIdSha256).sort();
+        return { status: 'unavailable', queriedCallCount: 0, matchedRows: 0,
+          unqueriedCallCount: unqueriedCidSha256.length, queriedCidSha256: [], unqueriedCidSha256,
+          unqueriedCidSetSha256: createHash('sha256').update(runner.canonicalJson(unqueriedCidSha256)).digest('hex'),
+          rows: [], failureCode: 'synthetic_log_capture_unavailable' };
+      },
+      preflightExecution: async ({ origin, sourceRevision, workerImageDigest, runtimeManifestSha256 }) => ({
+        status: 'ready', mode: 'dns_tls_only', originSha256: runner.sha256(origin), sourceRevision,
+        workerImageDigest, runtimeManifestSha256, resolvedAddressCount: 1,
+        resolvedAddressSetSha256: '8'.repeat(64), tlsAuthorized: true, tlsProtocol: 'TLSv1.3',
+        peerCertificateSha256: '9'.repeat(64), tlsAddressSha256: 'a'.repeat(64), elapsedMs: 1,
+      }),
+      executeCase: async (projection, context) => {
+        executorCalls += 1;
+        assert.equal(projection.stepId, 'v2-p2-first');
+        assert.equal(context.clientCallAllocation, 58);
+        sidecarPath = `normal-engine-qualification-store/${projection.runId}/single/${projection.caseId}`
+          + '/provider-identifiers.record/provider-identifiers.json';
+        const absoluteSidecarPath = path.join(canonicalRoot, sidecarPath);
+        await mkdir(path.dirname(absoluteSidecarPath), { recursive: true, mode: 0o700 });
+        await writeFile(absoluteSidecarPath, sidecarBytes, { mode: 0o600 });
+        await chmod(absoluteSidecarPath, 0o600);
+        await writeFile(path.join(path.dirname(absoluteSidecarPath), 'provider-identifiers.sha256'),
+          `${sidecarSha256}\n`, { mode: 0o600 });
+        await chmod(path.join(path.dirname(absoluteSidecarPath), 'provider-identifiers.sha256'), 0o600);
+        return { clientCalls: 25, blockedClientCalls: 0, terminalStatus: 'failed',
+          receiptSha256: 'b'.repeat(64), failureCode: 'worker_execution_failed', artifactReferences: [],
+          workerFailure: { stage: 'case_receipt_persistence', code: 'receipt_write_failed' },
+          providerCalls, outcome: null, history: null, qualificationControl: null, preflight: null,
+          resourceExhaustion: null, attestorRecordedCalls: 25 };
+      },
+    });
+
+    assert.equal(executorCalls, 1, 'a failed first step must stop the remaining arms');
+    assert.equal(result.status, 'failed');
+    assert.equal(result.clientCalls, 25);
+    assert.equal(result.unknownClientCallUpperBound, 0);
+    assert.equal(result.phaseAttemptAllocation.spent, 25);
+    assert.equal(result.phaseAttemptAllocation.possibleSpentUpperBound, 25);
+    assert.equal(result.stepResults.length, 1);
+    assert.equal(result.stepResults[0].terminalStatus, 'failed');
+    assert.equal(result.stepResults[0].failureCode, 'worker_execution_failed');
+    assert.deepEqual(result.stepResults[0].workerFailure,
+      { stage: 'case_receipt_persistence', code: 'receipt_write_failed' });
+    assert.equal(result.stepResults[0].assessment.status, 'incomplete');
+    assert.equal(result.stepResults[0].outcome, null);
+    assert.equal(result.stepResults[0].canonicalReviewEvidence, null);
+    assert.ok(captureRequest, 'exact log capture must still be attempted for known provider calls');
+    assert.equal(captureRequest.calls.length, 25);
+    assert.deepEqual(captureRequest.stepReceipts[0].artifactReferences,
+      [{ path: sidecarPath, sha256: sidecarSha256 }]);
+    assert.deepEqual(result.stepResults[0].artifactReferences,
+      [{ path: sidecarPath, sha256: sidecarSha256 }]);
+    for (const requestId of requestIds) assert.equal(JSON.stringify(result).includes(requestId), false);
+  } finally {
+    await rm(harness.tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('does not invoke a worker without a root-go receipt bound to the exact phase', async () => {
   assert.ok(runner, 'the current-source external v2 runner module must exist');
   assert.equal(typeof runner.runExternalNormalQualificationV2, 'function');
@@ -490,6 +589,18 @@ test('surfaces only an allowlisted pre-child diagnostic and drops raw error data
     clientAttemptsMayHaveBeenSent: true,
     preChildFailure: { stage: 'container_spawn', code: 'docker_launcher_unavailable' },
   }), undefined);
+});
+
+test('surfaces only the allowlisted worker receipt-persistence stage and code', () => {
+  assert.deepEqual(runner.safeExternalNormalV2WorkerFailure({ workerFailure: {
+    stage: 'case_receipt_persistence', code: 'receipt_write_failed', detail: 'synthetic raw failure',
+  } }), undefined, 'extra worker failure fields must be discarded fail-closed');
+  assert.deepEqual(runner.safeExternalNormalV2WorkerFailure({ workerFailure: {
+    stage: 'case_receipt_persistence', code: 'receipt_write_failed',
+  } }), { stage: 'case_receipt_persistence', code: 'receipt_write_failed' });
+  assert.equal(runner.safeExternalNormalV2WorkerFailure({ workerFailure: {
+    stage: 'worker_runtime', code: 'unrecognized',
+  } }), undefined);
 });
 
 test('requires a private canonical phase root and rejects nested symlinks', async () => {

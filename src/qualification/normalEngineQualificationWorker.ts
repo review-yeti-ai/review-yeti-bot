@@ -724,6 +724,15 @@ export interface NormalEngineQualificationWorkerDependencies {
   }) => Promise<NormalEngineQualificationPlanReceipt['historyArtifacts']>;
 }
 
+export class NormalEngineQualificationReceiptPersistError extends Error {
+  readonly workerFailure = { stage: 'case_receipt_persistence', code: 'receipt_write_failed' } as const;
+
+  constructor() {
+    super('normal_engine_qualification_case_receipt_persist_failed');
+    this.name = 'NormalEngineQualificationReceiptPersistError';
+  }
+}
+
 const PROVIDER_FAILURE_INVALID_KEY = 'qualification-invalid-bifrost-inference-key';
 const COMPOSED_ENGINE_AMBIENT_OVERRIDE_KEYS = [
   'COMPOSED_ENGINE_MAX_TURNS',
@@ -1522,7 +1531,11 @@ export async function runNormalEngineQualificationCase(
       canonicalEvidenceSha256, gateDecisionSha256);
     if (state) await store.persistInitial(state);
   }
-  await (dependencies.persistCaseReceipt || persistNormalEngineQualificationReceipt)(qualificationReceipt);
+  try {
+    await (dependencies.persistCaseReceipt || persistNormalEngineQualificationReceipt)(qualificationReceipt);
+  } catch {
+    throw new NormalEngineQualificationReceiptPersistError();
+  }
   return qualificationReceipt;
 }
 
