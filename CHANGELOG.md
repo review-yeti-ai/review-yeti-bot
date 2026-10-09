@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.127.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.126.0...v1.127.0) (2026-10-09)
+
+
+### Features
+
+* **edge:** implement authoritative GitHub App check run & sticky comment publisher (Phase 2) [no-linear] ([#1478](https://github.com/review-yeti-ai/review-yeti-bot/issues/1478)) ([472c9eb](https://github.com/review-yeti-ai/review-yeti-bot/commit/472c9ebc9ce753b92db5c1370f90b12c82bf2379))
+
 ## [1.126.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.125.0...v1.126.0) (2026-10-09)
 
 
