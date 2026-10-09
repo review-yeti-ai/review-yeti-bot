@@ -19,6 +19,7 @@ import {
   type OperatorPassthroughRetireRequired,
   type OperatorPassthroughReconcilePending,
   type OperatorPassthroughOperationScope,
+  type OperatorPassthroughPublicationFailure,
 } from './operatorPassthrough';
 
 type Client = Pick<GitHubReviewGateClient, 'createOperatorPending' | 'reconcileOperator' | 'updateOperatorExisting'>;
@@ -72,8 +73,16 @@ export class OperatorPassthroughPublisher {
   async runOnce(publicationId?: string, scope?: OperatorPassthroughOperationScope): Promise<{
     status: 'idle' | 'published' | 'stale-claim' | 'retry'; publicationId?: string;
     preflightResetUnconfirmed?: true;
+    failure?: OperatorPassthroughPublicationFailure;
   }> {
     let claim: OperatorPassthroughPublicationClaim | null = null;
+    let safeFailure: OperatorPassthroughPublicationFailure | undefined;
+    const phase: { value: 'candidate_check' | 'client_preparation' | 'check_reconciliation' | 'check_creation' | 'check_update' } = {
+      value: 'candidate_check',
+    };
+    const failure = (stage: OperatorPassthroughPublicationClaim['stage'] | 'receipt',
+      classification: OperatorPassthroughPublicationFailure['classification']): OperatorPassthroughPublicationFailure =>
+      ({ stage, classification });
     try {
       claim = await awaitOperatorPassthroughOperation(
         () => scope
@@ -93,11 +102,13 @@ export class OperatorPassthroughPublisher {
           const isPreflightDeadline = (error: unknown): boolean => error instanceof OperatorPassthroughPreflightDeadlineExceededError;
           assertOperatorPassthroughOperationActive(scope);
           if (!current.retiring && this.options.candidateIsCurrent) {
+            phase.value = 'candidate_check';
             let candidateIsCurrent: boolean;
             try {
               candidateIsCurrent = await preflight((child) => this.options.candidateIsCurrent!(current, child));
             } catch (error) {
               if (isParentDeadline(error)) throw new OperatorPassthroughOperationDeadlineExceededError();
+              safeFailure = failure(current.stage, isPreflightDeadline(error) ? 'preflight_timeout' : 'candidate_check');
               return timeoutResult();
             }
             if (!candidateIsCurrent) {
@@ -105,10 +116,12 @@ export class OperatorPassthroughPublisher {
             }
           }
           assertOperatorPassthroughOperationActive(scope);
+          phase.value = 'client_preparation';
           let client: Client;
           try { client = await preflight((child) => this.options.clientFor(current, child, scope)); }
           catch (error) {
             if (isParentDeadline(error)) throw new OperatorPassthroughOperationDeadlineExceededError();
+            safeFailure = failure(current.stage, isPreflightDeadline(error) ? 'preflight_timeout' : 'client_preparation');
             return timeoutResult();
           }
 
@@ -118,30 +131,38 @@ export class OperatorPassthroughPublisher {
           if (knownCheckId !== null) check = { id: knownCheckId };
           else if (current.mayCreate) {
             // Before a POST, every delayed lookup is fenced by the same budget.
+            phase.value = 'check_reconciliation';
             try { check = await preflight((child) => client.reconcileOperator(coordinates, child?.signal)); }
             catch (error) {
               if (isParentDeadline(error)) throw new OperatorPassthroughOperationDeadlineExceededError();
+              safeFailure = failure(current.stage, isPreflightDeadline(error) ? 'preflight_timeout' : 'check_reconciliation');
               return timeoutResult();
             }
             if (!check) {
               // Once invoked, a timed-out create is ambiguous. The committed
               // `creating` claim remains and the next pass may only reconcile.
               assertOperatorPassthroughOperationActive(scope);
+              phase.value = 'check_creation';
               check = await awaitOperatorPassthroughOperation(
                 () => client.createOperatorPending(coordinates, { status: 'in_progress' }), scope);
             }
           } else {
+            phase.value = 'check_reconciliation';
             try { check = await preflight((child) => client.reconcileOperator(coordinates, child?.signal)); }
             catch (error) {
               if (isParentDeadline(error)) throw new OperatorPassthroughOperationDeadlineExceededError();
-              if (isPreflightDeadline(error)) return timeoutResult();
+              safeFailure = failure(current.stage, isPreflightDeadline(error) ? 'preflight_timeout' : 'check_reconciliation');
               return timeoutResult();
             }
           }
           assertOperatorPassthroughOperationActive(scope);
-          if (!check) return { kind: 'reconcile-pending', retryDelayMs: this.retryDelayMs };
+          if (!check) {
+            safeFailure = failure(current.stage, 'unknown_create');
+            return { kind: 'reconcile-pending', retryDelayMs: this.retryDelayMs };
+          }
 
           const metadata = current.retiring ? retirementMetadata(current) : operatorPassthroughCheckMetadata(current, current.stage);
+          phase.value = 'check_update';
           return await awaitOperatorPassthroughOperation(() => client.updateOperatorExisting({
             coordinates,
             checkId: check!.id,
@@ -156,22 +177,26 @@ export class OperatorPassthroughPublisher {
         : this.options.repository.publishLocked(claim!, publish, this.now);
       const result = await awaitOperatorPassthroughOperation(publishOperation, scope);
       if (result === 'stale-claim') {
+        safeFailure = failure(claim.stage, 'stale_claim');
         await awaitOperatorPassthroughOperation(
           () => scope
             ? this.options.repository.retryPublication(claim!, this.now(), this.retryDelayMs, scope)
             : this.options.repository.retryPublication(claim!, this.now(), this.retryDelayMs), scope);
       }
-      return { status: result, publicationId: claim.publicationId };
+      return { status: result, publicationId: claim.publicationId,
+        ...(result === 'published' ? {} : { failure: safeFailure ?? failure(claim.stage, 'transport') }) };
     } catch (error) {
       if (error instanceof OperatorPassthroughPreflightResetUnconfirmedError) {
+        safeFailure = failure(claim?.stage ?? 'receipt', 'preflight_reset_unconfirmed');
         // Do not run retryPublication: the durable stage may still be creating
         // and must remain reserved for reconciliation only until confirmed.
         return { status: 'retry', ...(claim ? { publicationId: claim.publicationId } : {}),
-          preflightResetUnconfirmed: true };
+          preflightResetUnconfirmed: true, failure: safeFailure };
       }
       if (error instanceof OperatorPassthroughOperationDeadlineExceededError
         || operatorPassthroughOperationExpired(scope)) {
-        return { status: 'retry', ...(claim ? { publicationId: claim.publicationId } : {}) };
+        safeFailure = failure(claim?.stage ?? 'receipt', 'receipt_deadline');
+        return { status: 'retry', ...(claim ? { publicationId: claim.publicationId } : {}), failure: safeFailure };
       }
       // Errors from GitHub may contain bearer tokens or response bodies.
       if (claim) {
@@ -180,7 +205,13 @@ export class OperatorPassthroughPublisher {
             ? this.options.repository.retryPublication(claim!, this.now(), this.retryDelayMs, scope)
             : this.options.repository.retryPublication(claim!, this.now(), this.retryDelayMs), scope).catch(() => false);
       }
-      return { status: 'retry', ...(claim ? { publicationId: claim.publicationId } : {}) };
+      const identityMismatch = error instanceof Error
+        && error.message === 'Operator passthrough check publication identity/state mismatch';
+      const classification = identityMismatch ? 'identity_mismatch'
+        : phase.value === 'check_creation' ? 'check_creation'
+          : phase.value === 'check_update' ? 'check_update' : 'transport';
+      safeFailure = failure(claim?.stage ?? 'receipt', classification);
+      return { status: 'retry', ...(claim ? { publicationId: claim.publicationId } : {}), failure: safeFailure };
     }
   }
 }
