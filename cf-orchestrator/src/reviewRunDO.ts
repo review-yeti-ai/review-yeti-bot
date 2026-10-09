@@ -1,5 +1,10 @@
 import type { Env, ReviewRunSpec, ReviewRunState } from './types.js';
 import { fetchLivePullRequestDiff } from './auth/githubEdgeAuth.js';
+import {
+  getInstallationToken,
+  completeChecks,
+  publishStickyComment,
+} from './github/index.js';
 
 interface InternalReviewRunState extends ReviewRunState {
   jobId?: string;
@@ -230,6 +235,87 @@ export class ReviewRunDO {
     this.runState.completedAt = Date.now();
     await this.state.storage.put('runState', this.runState);
     return { accepted: true };
+  }
+
+  async publishArtifacts(params?: {
+    verdict?: 'success' | 'action_required' | 'neutral' | 'failure' | 'cancelled' | 'timed_out';
+    summaryMarkdown?: string;
+    findings?: any[];
+    metrics?: any;
+    runnerCost?: any;
+    detailsUrl?: string;
+  }): Promise<{
+    published: boolean;
+    workerCheckId?: number;
+    gateCheckId?: number;
+    commentId?: number;
+    error?: string;
+  }> {
+    await this.ensureInitialized();
+    if (!this.runState?.spec) {
+      return { published: false, error: 'no_run_spec' };
+    }
+
+    const { owner, repo, prNumber, headSha, runId, installationId } = this.runState.spec;
+    if (!owner || !repo || !prNumber || !headSha) {
+      return { published: false, error: 'incomplete_run_spec' };
+    }
+
+    let token: string | null = null;
+    try {
+      token = await getInstallationToken(this.env, owner, repo, installationId);
+    } catch {
+      token = null;
+    }
+
+    if (!token || token.startsWith('ghs_dummy_') || token.startsWith('ghs_ephemeral_')) {
+      return { published: false, error: 'no_valid_token' };
+    }
+
+    const verdict = params?.verdict ||
+      (this.runState.phase === 'Completed' ? 'success' : this.runState.phase === 'Cancelled' ? 'cancelled' : 'failure');
+    const findings = params?.findings || [];
+    const summaryMarkdown = params?.summaryMarkdown;
+
+    // 1. Complete both checks ("Review Yeti" and "Review Yeti Gate")
+    const checkResult = await completeChecks({
+      owner,
+      repo,
+      headSha,
+      runId,
+      token,
+      verdict,
+      summaryMarkdown,
+      findings,
+      detailsUrl: params?.detailsUrl,
+    });
+
+    // 2. Publish Sticky Comment
+    const commentResult = await publishStickyComment({
+      owner,
+      repo,
+      prNumber,
+      headSha,
+      token,
+      verdict,
+      findings,
+      metrics: params?.metrics,
+      runnerCost: params?.runnerCost,
+    });
+
+    await this.publishEvent('publication:complete', {
+      workerCheckId: checkResult.workerCheckId,
+      gateCheckId: checkResult.gateCheckId,
+      commentId: commentResult.commentId,
+      verdict,
+    });
+
+    return {
+      published: true,
+      workerCheckId: checkResult.workerCheckId,
+      gateCheckId: checkResult.gateCheckId,
+      commentId: commentResult.commentId,
+    };
   }
 
   async getStatus(): Promise<{
@@ -680,6 +766,12 @@ export class ReviewRunDO {
       const receipt = body?.receipt !== undefined ? body.receipt : body;
       const epoch = body?.epoch;
       const res = await this.submitReceipt(receipt, epoch);
+      return Response.json(res);
+    }
+
+    if (request.method === 'POST' && path === '/publish') {
+      const body = (await request.json().catch(() => ({}))) as any;
+      const res = await this.publishArtifacts(body);
       return Response.json(res);
     }
 
