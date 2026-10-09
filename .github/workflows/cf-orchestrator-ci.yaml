@@ -108,4 +108,4 @@ jobs:
           vars: |
             ALLOWED_ORIGINS
             DOKS_FALLBACK_URL
-          command: deploy ${{ vars.CF_CUSTOM_DOMAIN != '' && format('--domain {0}', vars.CF_CUSTOM_DOMAIN) || '' }}
+          command: deploy
