@@ -66,7 +66,7 @@ export function createGetCloudflareStatusTool(options?: { cfOrchestratorUrl?: st
       return buildToolResultJson({
         timestamp: new Date().toISOString(),
         environment: 'production',
-        parallelMode: true,
+        parallelMode: false,
         repoGate: {
           activeSlotsUsed: 0,
           concurrencyCap: 5,
@@ -87,7 +87,7 @@ export function createGetCloudflareStatusTool(options?: { cfOrchestratorUrl?: st
         shadowParity: {
           status: 'MATCHING',
           consecutiveMatches: 100,
-          doksFallbackConfigured: true,
+          doksFallbackConfigured: false,
           dataSource: 'baseline_sample_telemetry',
         },
         compute_plane: {

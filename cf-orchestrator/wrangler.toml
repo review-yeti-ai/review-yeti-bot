@@ -70,8 +70,8 @@ id = "dbd1e6d53ed2470cb11cec13a7949cff"
 # Environment Variables
 [vars]
 ENVIRONMENT = "production"
-PARALLEL_MODE = "true"
-PARALLEL_CHECK_NAME = "Review Yeti (Cloudflare Canary)"
+PARALLEL_MODE = "false"
+PARALLEL_CHECK_NAME = "Review Yeti"
 PILOT_REPOSITORIES = "all"
 DEFAULT_WORKER_IMAGE = "ghcr.io/review-yeti-ai/review-yeti-worker:latest"
 MAX_CONCURRENT_JOBS = "5"
