@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.125.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.124.0...v1.125.0) (2026-10-09)
+
+
+### Features
+
+* **qualification:** add receipt-bound R2 continuation ([#1473](https://github.com/review-yeti-ai/review-yeti-bot/issues/1473)) ([ee97f3b](https://github.com/review-yeti-ai/review-yeti-bot/commit/ee97f3bb756ae281e32bf2d1eacf41af016da0a9))
+
 ## [1.124.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.123.0...v1.124.0) (2026-10-09)
 
 
