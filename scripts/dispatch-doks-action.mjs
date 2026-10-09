@@ -379,7 +379,7 @@ async function requestOidcToken(environment, fetchImpl, sleepImpl) {
   return body.value;
 }
 
-function validateReceipt(body) {
+export function validateReceipt(body) {
   const valid = body?.version === 'ActionDispatchAccepted.v1'
     && (body.status === 'accepted' || body.status === 'duplicate')
     && typeof body.runId === 'string'
@@ -388,7 +388,7 @@ function validateReceipt(body) {
   return { version: body.version, status: body.status, runId: body.runId };
 }
 
-function parsePassthroughReceipt(body) {
+export function parsePassthroughReceipt(body) {
   const candidateUnavailable = body?.candidateState === 'unavailable';
   const candidateStateValid = candidateUnavailable || body?.candidateState === undefined || body?.candidateState === 'current';
   const candidateCoordinatesValid = candidateUnavailable
@@ -485,7 +485,7 @@ function parsePassthroughReceipt(body) {
   };
 }
 
-function validatePassthroughReceipt(body, request) {
+export function validatePassthroughReceipt(body, request) {
   const receipt = parsePassthroughReceipt(body);
   // The delivery identifier binds the caller run id/attempt to repository, PR and head.
   // The remaining receipt coordinates must match the exact request; eventName is the
@@ -503,7 +503,7 @@ function validatePassthroughReceipt(body, request) {
   return receipt;
 }
 
-function validateDispatchOutputReceipt(body) {
+export function validateDispatchOutputReceipt(body) {
   if (body?.version === 'ActionDispatchAccepted.v1') return validateReceipt(body);
   if (body?.version === 'ActionDispatchPassthrough.v1') return parsePassthroughReceipt(body);
   throw new Error('DOKS dispatch returned an invalid dispatch receipt');
