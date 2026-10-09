@@ -276,6 +276,24 @@ test('accepts only an in-image DNS plus verified TLS preflight bound to the rout
     { ...proof, sourceRevision: 'a'.repeat(40) }).status, 'unavailable');
 });
 
+test('surfaces only an allowlisted pre-child diagnostic and drops raw error data', () => {
+  const known = runner.safeExternalNormalV2PreChildFailure({
+    clientAttemptsMayHaveBeenSent: false,
+    preChildFailure: { stage: 'case_environment', code: 'required_binding_missing', detail: 'must not escape' },
+    message: 'synthetic raw error content',
+  });
+  assert.deepEqual(known, { stage: 'case_environment', code: 'required_binding_missing' });
+  assert.equal(runner.safeExternalNormalV2PreChildFailure({
+    clientAttemptsMayHaveBeenSent: false,
+    preChildFailure: { stage: 'case_environment', code: 'unrecognized' },
+    message: 'synthetic raw error content',
+  }), undefined);
+  assert.equal(runner.safeExternalNormalV2PreChildFailure({
+    clientAttemptsMayHaveBeenSent: true,
+    preChildFailure: { stage: 'container_spawn', code: 'docker_launcher_unavailable' },
+  }), undefined);
+});
+
 test('requires a private canonical phase root and rejects nested symlinks', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'ws5-v2-root-'));
   try {

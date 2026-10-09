@@ -433,9 +433,150 @@ describe('current-source external v2 worker adapter', () => {
           deadlineAt: Date.now() + 240_000, captureOutsideChild: true, artifactStoreRoot: phaseRoot,
           clientCallAllocation: 58, recordClientCall() { throw new Error('invalid credential made a provider request'); },
           get clientCallCount() { return 0; }, get blockedClientCallCount() { return 0; } }))
-          .rejects.toThrow('external_normal_v2_parent_inference_credential_invalid');
+          .rejects.toMatchObject({ message: 'external_normal_v2_parent_inference_credential_invalid',
+            clientAttemptsMayHaveBeenSent: false,
+            preChildFailure: { stage: 'inference_credential', code: 'inference_credential_unavailable' } });
       }
       expect(dockerCalls).toHaveLength(launchesBeforeInvalidCredentials);
+    } finally {
+      await Promise.all([rm(policyRoot, { recursive: true, force: true }), rm(phaseRoot, { recursive: true, force: true })]);
+    }
+  });
+
+  it('forwards the validated nonsecret case bindings and reaches the image case executor with stdin credentials', async () => {
+    const policyRoot = await mkdtemp(path.join(tmpdir(), 'external-v2-case-abi-inputs-'));
+    const phaseRoot = await mkdtemp(path.join(tmpdir(), 'external-v2-case-abi-phase-'));
+    await Promise.all([chmod(policyRoot, 0o700), chmod(phaseRoot, 0o700)]);
+    const canonicalPolicyRoot = await realpath(policyRoot);
+    const canonicalPhaseRoot = await realpath(phaseRoot);
+    const preparedJson = bindings().REVIEW_PREPARED_CONFIG_JSON!;
+    const preparedDirectory = path.join(policyRoot, 'prepared-host');
+    const preparedPath = path.join(preparedDirectory, 'prepared-73004-default.json');
+    const preparedSha256 = createHash('sha256').update(preparedJson).digest('hex');
+    const privateBindingForCase = {
+      ...privateBinding,
+      phaseRoot: { ...privateBinding.phaseRoot, canonicalPath: canonicalPhaseRoot },
+      policy: { ...privateBinding.policy, preparedExecutionSha256: preparedSha256,
+        targetProjections: privateBinding.policy.targetProjections.map((target) => ({
+          ...target, preparedExecutionSha256: preparedSha256,
+        })) },
+    };
+    const caseProjection = { ...projection,
+      policy: { ...projection.policy, preparedExecutionSha256: preparedSha256 } };
+    await mkdir(preparedDirectory, { recursive: true, mode: 0o700 });
+    await chmod(preparedDirectory, 0o700);
+    await writeFile(preparedPath, preparedJson, { mode: 0o600 });
+    await chmod(preparedPath, 0o600);
+
+    const dockerCalls: Array<{ args: string[]; env: NodeJS.ProcessEnv; stdin: string }> = [];
+    const spawnImplementation = ((command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+      expect(command).toBe('docker');
+      const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; kill: () => void };
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.kill = () => undefined;
+      let stdin = '';
+      child.stdin.on('data', (chunk: Buffer) => { stdin += chunk.toString('utf8'); });
+      child.stdin.on('finish', () => {
+        dockerCalls.push({ args, env: { ...options.env }, stdin });
+        const result = { clientCalls: 0, blockedClientCalls: 0, terminalStatus: 'incomplete',
+          receiptSha256: '3'.repeat(64), failureCode: 'worker_execution_failed', artifactReferences: [], providerCalls: [] };
+        child.stdout.end(`__EXTERNAL_NORMAL_V2_RESULT__${JSON.stringify(result)}\n`);
+        child.stdout.once('end', () => child.emit('close', 0));
+      });
+      return child;
+    }) as never;
+
+    try {
+      const syntheticCredential = 'qualification-synthetic-case-abi-key';
+      const hostBindings = bindings({ GH_TOKEN: 'host-only-token',
+        REVIEW_NORMAL_ENGINE_QUALIFICATION_EXPECTED_VERDICT: 'host-only-label' });
+      const adapter = createPinnedWorkerImageExternalNormalV2Adapter({ policyInputRoot: policyRoot,
+        baseEnv: hostBindings, privateBinding: privateBindingForCase,
+        assertImageAvailable() {}, readInferenceKeyInMemory: () => syntheticCredential, spawnImplementation });
+      const context = { signal: new AbortController().signal, deadlineAt: Date.now() + 240_000,
+        captureOutsideChild: true as const, artifactStoreRoot: phaseRoot, clientCallAllocation: 58,
+        recordClientCall() { throw new Error('the synthetic case must not fetch'); },
+        get clientCallCount() { return 0; }, get blockedClientCallCount() { return 0; } };
+      await adapter.executeCase(caseProjection, context);
+
+      expect(dockerCalls).toHaveLength(1);
+      const child = dockerCalls[0];
+      let observedImageEnv: NodeJS.ProcessEnv | undefined;
+      const imageRunCase = vi.fn(async (env: NodeJS.ProcessEnv) => {
+        observedImageEnv = { NODE_ENV: env.NODE_ENV, OPENAI_BASE_URL: env.OPENAI_BASE_URL, REVIEW_MODEL: env.REVIEW_MODEL,
+          REVIEW_CONFIG_DIGEST: env.REVIEW_CONFIG_DIGEST, REVIEW_POLICY_DIGEST: env.REVIEW_POLICY_DIGEST,
+          REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: env.REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET,
+          REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID: env.REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID,
+          inferenceCredentialPresent: env.OPENAI_API_KEY ? 'yes' : undefined } as NodeJS.ProcessEnv;
+        throw new Error('synthetic pre-provider case stub');
+      });
+      const imageExecutor = createBoundExternalNormalV2CaseExecutor({ baseEnv: child.env, policyInputRoot: policyRoot,
+        readInferenceKeyInMemory: () => syntheticCredential, runCase: imageRunCase as never });
+      const imageResult = await imageExecutor(caseProjection, context);
+      expect(imageRunCase).toHaveBeenCalledOnce();
+      expect(imageResult).toMatchObject({ clientCalls: 0, terminalStatus: 'failed', failureCode: 'worker_execution_failed' });
+      expect(imageResult.providerCalls).toEqual([]);
+      expect(observedImageEnv).toMatchObject({ OPENAI_BASE_URL: inferenceBaseUrl, REVIEW_MODEL: testRouteAlias,
+        REVIEW_CONFIG_DIGEST: configSha, REVIEW_POLICY_DIGEST: privateBinding.policy.effectivePolicySha256,
+        REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: policySource.repository,
+        REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID: String(policySource.repositoryId),
+        inferenceCredentialPresent: 'yes' });
+
+      const envNames = child.args.flatMap((arg, index) => arg === '--env' ? [child.args[index + 1]] : []);
+      const requiredNames = ['OPENAI_BASE_URL', 'REVIEW_MODEL', 'REVIEW_CONFIG_DIGEST', 'REVIEW_POLICY_DIGEST',
+        'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET', 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID',
+        'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER', 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO',
+        'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF', 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH',
+        'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256'];
+      expect(envNames).toEqual(expect.arrayContaining(requiredNames));
+      expect(child.env.OPENAI_BASE_URL).toBe(inferenceBaseUrl);
+      expect(child.env.REVIEW_MODEL).toBe(testRouteAlias);
+      expect(child.env.REVIEW_CONFIG_DIGEST).toBe(configSha);
+      expect(child.env.REVIEW_POLICY_DIGEST).toBe(privateBinding.policy.effectivePolicySha256);
+      expect(child.env.REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET).toBe(policySource.repository);
+      expect(child.env.REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID).toBe(String(policySource.repositoryId));
+      expect(child.env.REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER).toBe('exampleorg');
+      expect(child.env.REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO).toBe('review-yeti-policy-fixture');
+      expect(child.env.REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF).toBe(policySource.sourceRef);
+      expect(child.env.REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH).toBe(policySource.path);
+      expect(child.env.REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256).toBe(candidateSha);
+      expect(child.env.OPENAI_API_KEY).toBeUndefined();
+      expect(child.args).not.toContain('OPENAI_API_KEY');
+      expect(child.args.join(' ')).not.toContain(syntheticCredential);
+      expect(child.stdin).toContain(`"inferenceCredential":"${syntheticCredential}"`);
+      expect(Buffer.byteLength(child.stdin)).toBeLessThan(64 * 1024);
+      expect(child.env.GH_TOKEN).toBeUndefined();
+      expect(child.env.REVIEW_NORMAL_ENGINE_QUALIFICATION_EXPECTED_VERDICT).toBeUndefined();
+      expect(child.env.REVIEW_PREPARED_CONFIG_JSON).toBeUndefined();
+    } finally {
+      await Promise.all([rm(policyRoot, { recursive: true, force: true }), rm(phaseRoot, { recursive: true, force: true })]);
+    }
+  });
+
+  it('reports a finite pre-child Docker launcher diagnostic without forwarding raw errors', async () => {
+    const policyRoot = await mkdtemp(path.join(tmpdir(), 'external-v2-case-spawn-inputs-'));
+    const phaseRoot = await mkdtemp(path.join(tmpdir(), 'external-v2-case-spawn-phase-'));
+    await Promise.all([chmod(policyRoot, 0o700), chmod(phaseRoot, 0o700)]);
+    try {
+      const spawnImplementation = ((command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+        expect(command).toBe('docker');
+        expect(args).not.toContain('OPENAI_API_KEY');
+        expect(options.env.OPENAI_API_KEY).toBeUndefined();
+        throw new Error('synthetic raw launcher detail must not escape');
+      }) as never;
+      const adapter = createPinnedWorkerImageExternalNormalV2Adapter({ policyInputRoot: policyRoot,
+        baseEnv: bindings(), privateBinding, assertImageAvailable() {},
+        readInferenceKeyInMemory: () => 'qualification-synthetic-spawn-key', spawnImplementation });
+      const error = await adapter.executeCase(projection, { signal: new AbortController().signal,
+        deadlineAt: Date.now() + 240_000, captureOutsideChild: true, artifactStoreRoot: phaseRoot,
+        clientCallAllocation: 58, recordClientCall() { throw new Error('no provider call expected'); },
+        get clientCallCount() { return 0; }, get blockedClientCallCount() { return 0; } })
+        .then(() => undefined, (reason) => reason);
+      expect(error).toMatchObject({ message: 'external_normal_v2_docker_launcher_unavailable',
+        clientAttemptsMayHaveBeenSent: false,
+        preChildFailure: { stage: 'container_spawn', code: 'docker_launcher_unavailable' } });
+      expect(error.message).not.toContain('synthetic raw launcher detail must not escape');
     } finally {
       await Promise.all([rm(policyRoot, { recursive: true, force: true }), rm(phaseRoot, { recursive: true, force: true })]);
     }
