@@ -29,6 +29,7 @@ const QUALIFICATION_SELECTION_PURPOSE = 'qualification-only-target-binding' as c
 export const NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT = 'configured-disputed-blocker-adjudicator-v1' as const;
 export type NormalEngineQualificationConfigurationVariant = 'prepared-policy-default-v1'
   | typeof NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT;
+export type NormalEngineQualificationCoverageControlPath = 'src/modules/module-01.ts' | 'src/queue/selector.ts';
 const RUN_ID_PATTERN = /^nq_[a-f0-9]{32}$/u;
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/u;
@@ -59,6 +60,7 @@ export interface FixturePin {
   prNumber: number;
   baseSha: string;
   headSha: string;
+  coverageControlPath?: NormalEngineQualificationCoverageControlPath;
 }
 
 export interface NormalEngineQualificationHistoryLineage {
@@ -207,7 +209,8 @@ const FIXTURE_PINS: readonly FixturePin[] = [
     sha256: '6cf9a5f6c493f1db2f91f8abc907e9d4f9f9ad1d3c62296298326cb18f78897c',
     schemaVersion: 'WS5LargeCrossfileInput.v1', bundleVersion: EXTERNAL_V2_BUNDLE_VERSION, bundleSha256: EXTERNAL_V2_BUNDLE_SHA256,
     repository: { repositoryId: 73003, owner: 'synthetic', repo: 'fixture-large-crossfile' }, prNumber: 42,
-    baseSha: 'f83c7fbab1909ebc8e3b1a905c4d93a6ffdf8448', headSha: 'cef2d6d195ad1ec19ec6a745363a804fd679b369' },
+    baseSha: 'f83c7fbab1909ebc8e3b1a905c4d93a6ffdf8448', headSha: 'cef2d6d195ad1ec19ec6a745363a804fd679b369',
+    coverageControlPath: 'src/modules/module-01.ts' as const },
   { caseId: 'ws5-current-1dd-v2-provider-failure', path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/provider_failure.json',
     sha256: '76278ffbbb439e4e4d7b77dabe6022c01cf2c33d61753127cc82c542a9d1e2bd',
     schemaVersion: 'WS5P2DisplaySortInput.v1', bundleVersion: EXTERNAL_V2_BUNDLE_VERSION, bundleSha256: EXTERNAL_V2_BUNDLE_SHA256,
@@ -237,7 +240,8 @@ const FIXTURE_PINS: readonly FixturePin[] = [
     sha256: 'e3cfadf9e9937c66d4c8fdfd90d97668fc691a185bba6960cb8379b276b9cb97',
     schemaVersion: 'WS5RepairReviewInput.v1', bundleVersion: EXTERNAL_V3_BUNDLE_VERSION, bundleSha256: EXTERNAL_V3_BUNDLE_SHA256,
     repository: { repositoryId: 73003, owner: 'synthetic', repo: 'fixture-large-crossfile' }, prNumber: 53,
-    baseSha: 'a3e317cb730f8001039869c522d79f5793ccdc85', headSha: 'ebd7011b8170dd4b650ce924c335a6cd84fccbfe' },
+    baseSha: 'a3e317cb730f8001039869c522d79f5793ccdc85', headSha: 'ebd7011b8170dd4b650ce924c335a6cd84fccbfe',
+    coverageControlPath: 'src/queue/selector.ts' as const },
 ].sort((left, right) => left.caseId < right.caseId ? -1 : left.caseId > right.caseId ? 1 : 0);
 
 const LIFECYCLE_PINS = FIXTURE_PINS.filter((pin) => pin.bundleVersion === FIXTURE_BUNDLE_VERSION);
@@ -535,7 +539,7 @@ export interface NormalEngineQualificationReceipt {
             fullContentSha256: string; regionDigest: string } | null }> } | null }>;
   } | null;
   preflight?: { control: 'source-coverage-unavailable'; sourceCoverage: 'unavailable';
-    withheldPath: 'src/modules/module-01.ts'; physicalClientCalls: 0 } | { control: 'required-history-unavailable-transport';
+    withheldPath: NormalEngineQualificationCoverageControlPath; physicalClientCalls: 0 } | { control: 'required-history-unavailable-transport';
     historyStatus: 'unavailable'; historyFailureClass: 'transport'; historySourceRunIdSha256: string; physicalClientCalls: 0 };
   composedLimits: {
     configuredTotalTurns: number;
@@ -852,7 +856,7 @@ const qualificationReceiptSchema = z.object({
   }).strict(),
   preflight: z.discriminatedUnion('control', [
     z.object({ control: z.literal('source-coverage-unavailable'), sourceCoverage: z.literal('unavailable'),
-      withheldPath: z.literal('src/modules/module-01.ts'), physicalClientCalls: z.literal(0) }).strict(),
+      withheldPath: z.enum(['src/modules/module-01.ts', 'src/queue/selector.ts']), physicalClientCalls: z.literal(0) }).strict(),
     z.object({ control: z.literal('required-history-unavailable-transport'), historyStatus: z.literal('unavailable'),
       historyFailureClass: z.literal('transport'), historySourceRunIdSha256: digestSchema, physicalClientCalls: z.literal(0) }).strict(),
   ]).optional(),
@@ -982,6 +986,22 @@ export function assertNormalEngineQualificationReceipt(input: unknown): NormalEn
     || parsed.data.target.prNumber !== pin.prNumber || parsed.data.target.baseSha !== pin.baseSha
     || parsed.data.target.headSha !== pin.headSha) {
     throw new Error('normal-engine qualification fixture identity is invalid');
+  }
+  const coveragePreflight = parsed.data.preflight?.control === 'source-coverage-unavailable'
+    ? parsed.data.preflight : undefined;
+  if ((coveragePreflight && (parsed.data.arm !== 'preflight-source-coverage-control'
+      || !pin.coverageControlPath || coveragePreflight.withheldPath !== pin.coverageControlPath
+      || coveragePreflight.physicalClientCalls !== 0 || parsed.data.provider.calls.length !== 0
+      || parsed.data.terminal.status !== 'incomplete'
+      || parsed.data.outcome.workerOutcomeClass !== 'incomplete'
+      || parsed.data.outcome.gateOutcomeClass !== 'incomplete'
+      || parsed.data.outcome.agreement !== 'incomplete'))
+    || (parsed.data.qualificationControl === 'source-coverage-unavailable' && !coveragePreflight)) {
+    throw new Error('normal-engine qualification source coverage control binding is invalid');
+  }
+  if (parsed.data.arm === 'preflight-source-coverage-control' && !coveragePreflight
+    && parsed.data.terminal.status !== 'failed') {
+    throw new Error('normal-engine qualification source coverage control lacks observed failure evidence');
   }
   if (parsed.data.policy.targetRepository !== `${parsed.data.policy.source.owner}/${parsed.data.policy.source.repo}`) {
     throw new Error('normal-engine qualification policy target/source binding is invalid');
@@ -1622,6 +1642,17 @@ export function qualificationArmAllowedForFixture(caseId: string, arm: NormalEng
 export function qualificationFixturePin(caseId: string): FixturePin | undefined {
   const pin = FIXTURE_PINS.find((entry) => entry.caseId === caseId);
   return pin ? { ...pin, repository: { ...pin.repository } } : undefined;
+}
+
+export function normalEngineQualificationCoverageControlPathForCase(
+  caseId: string,
+): NormalEngineQualificationCoverageControlPath | undefined {
+  const pin = FIXTURE_PINS.find((entry) => entry.caseId === caseId);
+  if (!pin || (pin.bundleVersion !== EXTERNAL_V2_BUNDLE_VERSION
+    && pin.bundleVersion !== EXTERNAL_V3_BUNDLE_VERSION)) {
+    return undefined;
+  }
+  return pin.coverageControlPath;
 }
 
 export function validateQualificationFixtureInput(caseId: string): void {

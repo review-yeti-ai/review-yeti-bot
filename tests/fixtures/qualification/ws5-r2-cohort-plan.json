@@ -1,0 +1,304 @@
+{
+  "schemaVersion": "WS5NextExternalNormalV2CohortDraft.v1",
+  "phaseId": "ws5-current-source-external-v2-r2",
+  "status": "offline-draft-nondispatchable-awaiting-worker-fixture-admission-and-final-source-image-binding",
+  "dispatchAuthorization": false,
+  "rootGo": false,
+  "inferenceHttpRequests": 0,
+  "managementLogGets": 0,
+  "workerDispatches": 0,
+  "targetScope": {
+    "syntheticOnly": true,
+    "githubOrAppWrites": 0,
+    "newRepositoryIds": false,
+    "newSyntheticPullRequestNumbers": [51, 52, 53],
+    "noActualGitHubPullRequests": true
+  },
+  "inputs": {
+    "manifestPath": "input-manifest.json",
+    "manifestSha256": "fa792e36e552e025b9756a3d7ab58bc02db31f5d51b52156ec76d9be1500649f",
+    "allInputsSynthetic": true,
+    "oracleLabelsIncluded": false,
+    "inputCount": 4
+  },
+  "sourceBundle": {
+    "schemaVersion": "WS5ExternalNormalBundle.v3",
+    "draftArtifactPath": "source-bundle.json",
+    "futureRepositoryPath": "eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/source-bundle.json",
+    "rawSha256": "d83b08f04890604fd1bfe98105e6db7ad70945afb1e5471218ca62d2204cc3bc",
+    "caseCount": 4,
+    "containsOutcomeLabels": false,
+    "workerImageAdmissionPending": true
+  },
+  "workerInputBoundary": {
+    "childReceivesSourceInputAndConstrainedExecutionProjection": true,
+    "planManifestAndReviewOracleMountedToWorker": false,
+    "sourceBundleManifestMountedToWorker": false,
+    "childInputs": [
+      "inputs/input-001.json",
+      "inputs/input-002.json",
+      "inputs/input-003.json",
+      "inputs/input-004.json"
+    ],
+    "opaqueCaseIds": true,
+    "opaqueStepIds": true,
+    "neutralSyntheticCommitMessages": true,
+    "projectionFieldsAreRunnerMetadataNotModelPromptFields": [
+      "stepId",
+      "caseId",
+      "arm",
+      "historyMode",
+      "targetRepositoryId",
+      "inputSha256",
+      "runId",
+      "runtime",
+      "policy"
+    ],
+    "privateExpectedOutcomeLabelsInChildInput": false,
+    "modelPromptContainsProjectionMetadata": false,
+    "promptBoundaryMustBeReverifiedAgainstMergedConsumerFix": true
+  },
+  "targets": [
+    {
+      "repositoryId": 73004,
+      "repository": "synthetic/fixture-display-sort",
+      "prNumber": 51,
+      "caseId": "ws5-r2-c001",
+      "inputPath": "inputs/input-001.json",
+      "inputSha256": "54bb996bbd1caee73b313bc25676253469bdc9f40496ed937a0cfad32c29b162",
+      "baseSha": "9d9232e0fae8d370ef2570c1129f836b9b1a1c36",
+      "headSha": "5440774cbd3465150755f08a917bf724c92a372d"
+    },
+    {
+      "repositoryId": 73002,
+      "repository": "synthetic/fixture-sequence",
+      "prNumber": 52,
+      "caseId": "ws5-r2-c002",
+      "inputPath": "inputs/input-002.json",
+      "inputSha256": "f1b5a2f7b838cacd039972da5de7cb066ca838882e31e840190850591ae5c37f",
+      "baseSha": "b2beab2ab2c6369a0d6352a78af795d92246b7f3",
+      "headSha": "e62ac7e8846d80864cacc65699268097caa31223"
+    },
+    {
+      "repositoryId": 73002,
+      "repository": "synthetic/fixture-sequence",
+      "prNumber": 52,
+      "caseId": "ws5-r2-c003",
+      "inputPath": "inputs/input-003.json",
+      "inputSha256": "6fcfa7a254eb960ae3a2ef79358e06205e6812c748e353679ead1578b11a1e84",
+      "baseSha": "e62ac7e8846d80864cacc65699268097caa31223",
+      "headSha": "81d910d8a133563e76e5a700ba65fb58b7dcdc72"
+    },
+    {
+      "repositoryId": 73003,
+      "repository": "synthetic/fixture-large-crossfile",
+      "prNumber": 53,
+      "caseId": "ws5-r2-c004",
+      "inputPath": "inputs/input-004.json",
+      "inputSha256": "e3cfadf9e9937c66d4c8fdfd90d97668fc691a185bba6960cb8379b276b9cb97",
+      "baseSha": "a3e317cb730f8001039869c522d79f5793ccdc85",
+      "headSha": "ebd7011b8170dd4b650ce924c335a6cd84fccbfe"
+    }
+  ],
+  "routeBinding": {
+    "status": "host-route-consumer-fix-merged; final source/image/runtime binding remains pending",
+    "consumerFixSourceRevision": "84918c4234841b85688208122249cc87bcfb8aaf",
+    "consumerFixSourceTree": "84640baba5ea143f37b5275fbc71d6cd41501ee5",
+    "consumerFixPublicationStatus": "host source merged; current image publication is still pending",
+    "samePreviouslyApprovedTransportProfileOnly": true,
+    "routeIdentityDtoSchema": "ReviewYetiExternalNormalQualificationRouteIdentity.v1",
+    "requiredFields": [
+      "routingRuleId",
+      "routingRuleName",
+      "provider",
+      "model",
+      "sourceConfigurationSha256"
+    ],
+    "actualPrivateRouteValuesIncluded": false,
+    "routeProofRequirement": "Every successful normal call must exact-join its caller CID and prove the admitted alias/provider/resolved-model identity. Missing identity stops later normal arms; do not infer a Bifrost alias from the worker request or resolved provider/model."
+  },
+  "privateLauncherContract": {
+    "status": "required-before-final-binding",
+    "routeIdentityDtoIsSeparateFromAdapterPrivateBindingV1": true,
+    "routeIdentityDtoPassedThrough": [
+      "private parent case factory",
+      "buildExternalNormalV2AuthorizationTuple",
+      "runExternalNormalQualificationV2"
+    ],
+    "rootGoTupleBindsRouteIdentityDto": true,
+    "missingOrWrongDtoMustBeRejected": true,
+    "old9945AndAttempt4LaunchersAreIneligible": true,
+    "hostCoordinatorModuleBindingSeparateFromWorkerModuleBinding": true
+  },
+  "runtimeBinding": {
+    "status": "deferred-until-worker-fixture-admission-and-publisher-image-are-frozen",
+    "workerFixtureAdmission": "new source-owned typed pins are required for opaque case IDs and these new input hashes",
+    "legacyFixturePinsMayBeRebound": false,
+    "sourceCommit": null,
+    "sourceTree": null,
+    "workerImageIndexDigest": null,
+    "workerPlatformDigest": null,
+    "workerRuntimeManifestSha256": null,
+    "hostCoordinatorSourceAndBuildSha256": null,
+    "preparedPolicyAndConfigDigests": null,
+    "phaseRootPathAndIdentity": null,
+    "phaseRootMustBeFreshAndEmpty": true,
+    "previousRootsMayBeReused": false
+  },
+  "serviceBudget": {
+    "capabilityVersion": "ReviewProviderAttemptBudget.v1",
+    "totalLimitPerNormalReview": 100,
+    "investigationLimit": 88,
+    "verifierReserve": 12,
+    "totalIncludesVerifierReserve": true,
+    "operatorOverride": "unset",
+    "centralPolicyMaxTasks": 8,
+    "maxReviewAssignments": 24
+  },
+  "physicalCallEnvelope": {
+    "authorizedCohortCap": 300,
+    "alreadyConsumedWithinCohort": 25,
+    "remainingWithinCohort": 275,
+    "normalArms": 5,
+    "outerCapPerNormalArm": 53,
+    "normalArmAllocationTotal": 265,
+    "providerAuthControlCap": 1,
+    "resourceExhaustionControlCap": 1,
+    "coverageHoleControlCap": 0,
+    "requiredHistoryUnavailableControlCap": 0,
+    "allocatedNewCalls": 267,
+    "unspendableReserve": 8,
+    "maximumCurrentCohortSpendIncludingPrior25": 292,
+    "historicalConsumptionBeforeCurrentCohort": 150,
+    "maximumAuditedCumulativePhysicalAttempts": 442,
+    "overallHistoricalCeiling": 2700,
+    "unsuccessfulClientAttemptsCountTowardCap": true,
+    "stopBeforeAnyRequestWhenArmCapReached": true,
+    "noAutomaticRetries": true,
+    "noExtraCallsToFinishAnIncompleteArm": true,
+    "normalArmAt53WithoutTerminalReceipt": "incomplete/ABSTAIN; do not continue or extend"
+  },
+  "timeEnvelope": {
+    "phaseWallLimitMs": 1800000,
+    "normalArmActiveDeadlineMs": 240000,
+    "normalArmActiveReservationTotalMs": 1200000,
+    "providerAuthControlReservationMs": 30000,
+    "resourceExhaustionControlReservationMs": 60000,
+    "coverageHoleControlReservationMs": 15000,
+    "requiredHistoryControlReservationMs": 15000,
+    "sharedExactLogCaptureActiveReserveMs": 300000,
+    "orchestrationAndTeardownReserveMs": 180000,
+    "sumOfReservationsMs": 1800000,
+    "captureDoesNotExtendChildDeadline": true,
+    "normalCallsSerial": true
+  },
+  "steps": [
+    {
+      "stepId": "r2-s001",
+      "kind": "normal-review",
+      "caseId": "ws5-r2-c001",
+      "inputPath": "inputs/input-001.json",
+      "inputSha256": "54bb996bbd1caee73b313bc25676253469bdc9f40496ed937a0cfad32c29b162",
+      "historyMode": "complete-empty-context",
+      "clientCallCap": 53
+    },
+    {
+      "stepId": "r2-s002",
+      "kind": "normal-review-repeat",
+      "caseId": "ws5-r2-c001",
+      "inputPath": "inputs/input-001.json",
+      "inputSha256": "54bb996bbd1caee73b313bc25676253469bdc9f40496ed937a0cfad32c29b162",
+      "repeatOfStepId": "r2-s001",
+      "historyMode": "complete-empty-context",
+      "clientCallCap": 53
+    },
+    {
+      "stepId": "r2-s003",
+      "kind": "normal-review",
+      "caseId": "ws5-r2-c002",
+      "inputPath": "inputs/input-002.json",
+      "inputSha256": "f1b5a2f7b838cacd039972da5de7cb066ca838882e31e840190850591ae5c37f",
+      "historySequenceId": "ws5-r2-h001",
+      "historyMode": "no-history; persist completed A receipt for B context only",
+      "clientCallCap": 53
+    },
+    {
+      "stepId": "r2-s004",
+      "kind": "normal-review-repair-head",
+      "caseId": "ws5-r2-c003",
+      "inputPath": "inputs/input-003.json",
+      "inputSha256": "6fcfa7a254eb960ae3a2ef79358e06205e6812c748e353679ead1578b11a1e84",
+      "historySequenceId": "ws5-r2-h001",
+      "historySourceStepId": "r2-s003",
+      "historyMode": "load only the completed A receipt with matching new ancestry/runtime/policy; approval is never reusable",
+      "clientCallCap": 53
+    },
+    {
+      "stepId": "r2-s005",
+      "kind": "normal-review-full-source-contrast",
+      "caseId": "ws5-r2-c003",
+      "inputPath": "inputs/input-003.json",
+      "inputSha256": "6fcfa7a254eb960ae3a2ef79358e06205e6812c748e353679ead1578b11a1e84",
+      "historySequenceId": "ws5-r2-h001",
+      "historyMode": "empty context; inspect full current source for same B head",
+      "pairedStepId": "r2-s004",
+      "clientCallCap": 53
+    },
+    {
+      "stepId": "r2-s006",
+      "kind": "zero-call-source-coverage-control",
+      "caseId": "ws5-r2-c004",
+      "inputPath": "inputs/input-004.json",
+      "inputSha256": "e3cfadf9e9937c66d4c8fdfd90d97668fc691a185bba6960cb8379b276b9cb97",
+      "fault": { "readPath": "src/queue/selector.ts", "availability": "unavailable" },
+      "expectedTransportCalls": 0,
+      "expectedDisposition": "incomplete-or-abstain-before-planning"
+    },
+    {
+      "stepId": "r2-s007",
+      "kind": "zero-call-required-history-control",
+      "caseId": "ws5-r2-c003",
+      "inputPath": "inputs/input-003.json",
+      "inputSha256": "6fcfa7a254eb960ae3a2ef79358e06205e6812c748e353679ead1578b11a1e84",
+      "historySequenceId": "ws5-r2-h001",
+      "historySourceStepId": "r2-s003",
+      "fault": { "historyRead": "typed-transport-unavailable-before-task-planning" },
+      "expectedTransportCalls": 0,
+      "expectedDisposition": "incomplete-or-abstain"
+    },
+    {
+      "stepId": "r2-s008",
+      "kind": "one-call-invalid-inference-credential-control",
+      "caseId": "ws5-r2-c001",
+      "inputPath": "inputs/input-001.json",
+      "inputSha256": "54bb996bbd1caee73b313bc25676253469bdc9f40496ed937a0cfad32c29b162",
+      "historyMode": "complete-empty-context",
+      "clientCallCap": 1,
+      "credentialMode": "fixed-disposable-invalid-sentinel-in-child-memory; do not read real inference key",
+      "expectedTerminal": "one HTTP 401 and incomplete/ABSTAIN; no approval",
+      "bifrostRow": "best-effort only for this expected pre-logging authentication failure"
+    },
+    {
+      "stepId": "r2-s009",
+      "kind": "one-call-resource-exhaustion-control",
+      "caseId": "ws5-r2-c001",
+      "inputPath": "inputs/input-001.json",
+      "inputSha256": "54bb996bbd1caee73b313bc25676253469bdc9f40496ed937a0cfad32c29b162",
+      "historyMode": "complete-empty-context",
+      "clientCallCap": 1,
+      "expectedTerminal": "one actual request, then bounded exhaustion; incomplete/ABSTAIN and no approval"
+    }
+  ],
+  "captureAndStopRules": {
+    "normalArmOrderIsSerial": true,
+    "captureEachNormalArmBeforeStartingTheNext": true,
+    "successfulCallsRequireExactCidRow": true,
+    "successfulCallsRequireRouteIdentityProof": true,
+    "unknownCidOrRouteIdentityStopsLaterNormalArms": true,
+    "workerFailureNeverRecastAsSuccessfulReview": true,
+    "recordActualCallsTokensAndWallTimeOnly": true,
+    "bifrostCostIsCalculatedEstimateNotInvoice": true,
+    "actualProviderBilledUsdUnknownUnlessTrustedInvoiceEvidenceExists": true,
+    "servedProviderModelEffortUnknownUnlessDirectlyObserved": true
+  }
+}

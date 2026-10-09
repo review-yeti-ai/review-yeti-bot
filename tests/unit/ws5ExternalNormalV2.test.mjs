@@ -1,15 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { verifyQualificationFixtureAllowlist } from '../../scripts/normal-engine-qualification-fixtures.mjs';
 import { createExternalNormalV2ExactLogCollector } from '../../scripts/ws5-external-bifrost-log-collector.mjs';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 const runnerUrl = pathToFileURL(new URL('../../scripts/ws5-external-normal-v2.mjs', import.meta.url).pathname);
 const runner = await import(runnerUrl.href).catch(() => null);
+const r2PlanBytes = await readFile(new URL('../fixtures/qualification/ws5-r2-cohort-plan.json', import.meta.url));
+const r2PlanTemplate = JSON.parse(r2PlanBytes.toString('utf8'));
+const require = createRequire(import.meta.url);
+const loadedHostAdapter = require('../../dist/qualification/normalEngineQualificationExternalV2.js');
+await import('./ws5ExternalNormalR2Plan.test.mjs');
 
 function privateBinding(canonicalPath = path.join(tmpdir(), 'ws5-private-phase-root')) {
   return {
@@ -50,8 +58,17 @@ function routeIdentityFixture() {
 
 const fixtureBytes = (value) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 
-async function createCoordinatorHarness(repositoryRoot) {
-  const { plan: template, bundle, planSha256 } = await runner.readFrozenExternalNormalV2Plan(repositoryRoot);
+async function createCoordinatorHarness(repositoryRoot, { r2Cases } = {}) {
+  const { plan: frozenTemplate, bundle, planSha256 } = await runner.readFrozenExternalNormalV2Plan(repositoryRoot);
+  const r2Targets = new Map((r2Cases ?? []).map((entry) => [entry.repository.repositoryId, entry]));
+  const template = r2Targets.size === 0 ? frozenTemplate : {
+    ...frozenTemplate,
+    targetProjections: frozenTemplate.targetProjections.map((target) => {
+      const source = r2Targets.get(target.repositoryId);
+      return source ? { ...target, repository: `${source.repository.owner}/${source.repository.repo}`,
+        prNumber: source.prNumber } : target;
+    }),
+  };
   const tempRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'ws5-v2-allocation-forwarding-')));
   const phaseRoot = path.join(tempRoot, 'phase-root');
   const policyInputRoot = path.join(tempRoot, 'policy-inputs');
@@ -361,6 +378,284 @@ test('does not invoke a worker without a root-go receipt bound to the exact phas
   assert.equal(workerInvocations, 0);
   assert.equal(result.status, 'authorization_required');
   assert.equal(result.clientCalls, 0);
+});
+
+test('R2 parent entry validates the v3 cohort and rejects an invalid grant before callbacks', async () => {
+  assert.ok(runner, 'the current-source external runner module must exist');
+  assert.equal(typeof runner.runExternalNormalQualificationR2, 'function');
+  assert.equal(typeof runner.validateExternalNormalR2CohortPlan, 'function');
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const bundleRelative = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3';
+  const sourceBundlePath = path.join(repositoryRoot, bundleRelative, 'source-bundle.json');
+  const sourceBundle = JSON.parse(await readFile(sourceBundlePath, 'utf8'));
+  const harness = await createCoordinatorHarness(repositoryRoot, { r2Cases: sourceBundle.cases });
+  const executionPlanSha256 = runner.sha256(r2PlanBytes);
+  assert.equal(executionPlanSha256, '37fcfc37440e249e97b892186c2a0683b31654a540e146232ec579012160c233');
+  let callbacks = 0;
+  try {
+    const executionPlan = structuredClone(r2PlanTemplate);
+    const admitted = runner.validateExternalNormalR2CohortPlan(executionPlan, sourceBundle,
+      executionPlanSha256, r2PlanBytes);
+    assert.equal(admitted.phaseId, 'ws5-current-source-external-v2-r2');
+    assert.equal(admitted.runs.length, 9);
+    assert.deepEqual(admitted.runs.map((step) => step.stepId), [
+      'r2-s001', 'r2-s002', 'r2-s003', 'r2-s004', 'r2-s005', 'r2-s006', 'r2-s007', 'r2-s008', 'r2-s009',
+    ]);
+    assert.deepEqual([...new Set(admitted.runs.map((step) => step.caseId))].sort(), [
+      'ws5-r2-c001', 'ws5-r2-c002', 'ws5-r2-c003', 'ws5-r2-c004',
+    ]);
+    assert.equal(admitted.executionEnvelope.maxPhaseClientCalls, 275);
+    assert.deepEqual(admitted.runs.map((step) => step.clientCallAllocation), [53, 53, 53, 53, 53, 0, 0, 1, 1]);
+
+    const prepared = await runner.prepareExternalNormalR2AuthorizationTuple({ repositoryRoot,
+      executionPlan, executionPlanSha256, executionPlanBytes: r2PlanBytes,
+      sourceBundle, policyInputRoot: harness.policyInputRoot, phaseRoot: harness.phaseRoot,
+      privateBinding: harness.binding, routeIdentity: harness.routeIdentity });
+    assert.equal(prepared.phaseId, 'ws5-current-source-external-v2-r2');
+    assert.equal(prepared.phasePlanSha256, '37fcfc37440e249e97b892186c2a0683b31654a540e146232ec579012160c233');
+    assert.equal(prepared.sourceBundleSha256, 'd83b08f04890604fd1bfe98105e6db7ad70945afb1e5471218ca62d2204cc3bc');
+    assert.equal(prepared.authorizationTuple.phaseId, prepared.phaseId);
+    assert.equal(prepared.authorizationTuple.phasePlanSha256, prepared.phasePlanSha256);
+    assert.equal(prepared.authorizationTuple.sourceBundleSha256, prepared.sourceBundleSha256);
+    assert.equal(prepared.authorizationTuple.inputManifestSha256,
+      'fa792e36e552e025b9756a3d7ab58bc02db31f5d51b52156ec76d9be1500649f');
+    assert.equal(prepared.authorizationTuple.privateBindingSha256, runner.sha256(runner.canonicalJson(harness.binding)));
+    const now = Date.now();
+    const rootGo = { schemaVersion: runner.EXTERNAL_NORMAL_R2_ROOT_GO_SCHEMA, rootGo: true,
+      grantId: randomUUID(), issuedAt: new Date(now - 1_000).toISOString(),
+      expiresAt: new Date(now + 60_000).toISOString(), binding: prepared.authorizationTuple };
+    const grantValidation = await runner.validatePreparedExternalNormalR2Grant({ repositoryRoot,
+      executionPlan, executionPlanSha256: prepared.phasePlanSha256, executionPlanBytes: r2PlanBytes, sourceBundle,
+      policyInputRoot: harness.policyInputRoot, phaseRoot: harness.phaseRoot,
+      privateBinding: harness.binding, routeIdentity: harness.routeIdentity }, rootGo, now);
+    assert.equal(grantValidation.status, 'authorized');
+    assert.deepEqual(grantValidation.authorizationTuple, prepared.authorizationTuple);
+    const wrongGrant = { ...rootGo, binding: { ...prepared.authorizationTuple, sourceBundleSha256: '0'.repeat(64) } };
+    assert.equal((await runner.validatePreparedExternalNormalR2Grant({ repositoryRoot,
+      executionPlan, executionPlanSha256: prepared.phasePlanSha256, executionPlanBytes: r2PlanBytes, sourceBundle,
+      policyInputRoot: harness.policyInputRoot, phaseRoot: harness.phaseRoot,
+      privateBinding: harness.binding, routeIdentity: harness.routeIdentity }, wrongGrant, now)).status,
+    'authorization_rejected');
+    assert.deepEqual(await readdir(harness.phaseRoot), []);
+
+    const result = await runner.runExternalNormalQualificationR2({
+      repositoryRoot,
+      executionPlan,
+      executionPlanSha256,
+      executionPlanBytes: r2PlanBytes,
+      sourceBundle,
+      policyInputRoot: harness.policyInputRoot,
+      phaseRoot: harness.phaseRoot,
+      privateBinding: harness.binding,
+      routeIdentity: harness.routeIdentity,
+      authorization: { schemaVersion: runner.EXTERNAL_NORMAL_R2_ROOT_GO_SCHEMA, rootGo: false,
+        grantId: randomUUID(), issuedAt: new Date(Date.now() - 1_000).toISOString(),
+        expiresAt: new Date(Date.now() + 60_000).toISOString(), binding: {} },
+      executeCase: async () => { callbacks += 1; return null; },
+      captureExactLogs: async () => { callbacks += 1; return { status: 'no_calls' }; },
+      preflightExecution: async () => { callbacks += 1; return { status: 'ready' }; },
+    });
+    assert.equal(result.status, 'authorization_rejected');
+    assert.equal(result.phaseId, 'ws5-current-source-external-v2-r2');
+    assert.equal(result.planSha256, '37fcfc37440e249e97b892186c2a0683b31654a540e146232ec579012160c233');
+    assert.equal(result.clientCalls, 0);
+    assert.equal(callbacks, 0);
+    assert.deepEqual(await readdir(harness.phaseRoot), []);
+  } finally {
+    await rm(harness.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('R2 runner joins a failed loaded-worker sidecar through the exact R2 collector binding', async () => {
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const bundleRelative = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3';
+  const sourceBundle = JSON.parse(await readFile(path.join(repositoryRoot, bundleRelative, 'source-bundle.json'), 'utf8'));
+  const harness = await createCoordinatorHarness(repositoryRoot, { r2Cases: sourceBundle.cases });
+  const syntheticRows = Array.from({ length: 25 }, () => ({ callerRequestId: randomUUID(),
+    bifrostLogRequestId: null, upstreamResponseRequestId: null }));
+  for (const row of syntheticRows) row.bifrostLogRequestId = row.callerRequestId;
+  const digest = (value) => runner.sha256(value);
+  const source = harness.binding.sourceDescriptor;
+  const [sourceOwner, sourceRepo] = source.repository.split('/');
+  const baseEnv = {
+    NODE_ENV: 'test', OPENAI_BASE_URL: harness.binding.transport.selectedBaseUrl,
+    REVIEW_MODEL: harness.binding.transport.modelAlias,
+    REVIEW_CONFIG_DIGEST: harness.binding.policy.effectiveConfigSha256,
+    REVIEW_POLICY_DIGEST: harness.binding.policy.effectivePolicySha256,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: source.repository,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID: String(source.repositoryId),
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER: sourceOwner,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO: sourceRepo,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF: source.sourceRef,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH: source.path,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256: source.contentSha256,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_SOURCE_REVISION: harness.binding.runtime.finalSourceRevision,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_WORKER_IMAGE_DIGEST: harness.binding.runtime.workerImageDigest,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256: harness.binding.runtime.runtimeManifestSha256,
+    REVIEW_PREPARED_CONFIG_JSON: await readFile(path.join(harness.policyInputRoot,
+      'prepared-host/prepared-73004-default.json'), 'utf8'),
+  };
+  const caseMounts = [];
+  let childEnvHasInferenceKey = false;
+  let argsContainSyntheticCredential = false;
+  const spawnImplementation = (command, args, options) => {
+    assert.equal(command, 'docker');
+    const caseMount = args.find((value) => value.startsWith('type=bind,source=') && value.endsWith(',target=/phase'));
+    assert.ok(caseMount, 'R2 child must mount the isolated phase store at /phase');
+    const sourcePath = caseMount.slice('type=bind,source='.length, caseMount.lastIndexOf(',target=/phase'));
+    caseMounts.push(sourcePath);
+    childEnvHasInferenceKey = options?.env?.OPENAI_API_KEY !== undefined;
+    argsContainSyntheticCredential = args.includes('offline-synthetic-inference-key');
+
+    const child = new EventEmitter();
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.pid = 4519;
+    child.kill = () => true;
+    const stdinChunks = [];
+    child.stdin.on('data', (chunk) => stdinChunks.push(Buffer.from(chunk)));
+    child.stdin.on('finish', () => {
+      void (async () => {
+        const stdin = Buffer.concat(stdinChunks);
+        for (const chunk of stdinChunks) chunk.fill(0);
+        let request;
+        try { request = JSON.parse(stdin.toString('utf8')); }
+        finally { stdin.fill(0); }
+        assert.equal(request.clientCallAllocation, 58, 'the loaded worker adapter retains its internal envelope');
+        assert.equal(request.projection.stepId, 'r2-s001');
+        assert.equal(request.projection.caseId, 'ws5-r2-c001');
+        assert.equal(request.projection.arm, 'p2-only');
+        const runId = request.projection.runId;
+        const caseId = request.projection.caseId;
+        const artifactDirectory = path.join(sourcePath, runId, 'single', caseId, 'provider-identifiers.record');
+        await mkdir(artifactDirectory, { recursive: true, mode: 0o700 });
+        const sidecarBody = `${JSON.stringify(syntheticRows, null, 2)}\n`;
+        const sidecarDigest = digest(sidecarBody);
+        await writeFile(path.join(artifactDirectory, 'provider-identifiers.json'), sidecarBody, { mode: 0o600 });
+        await chmod(path.join(artifactDirectory, 'provider-identifiers.json'), 0o600);
+        await writeFile(path.join(artifactDirectory, 'provider-identifiers.sha256'), `${sidecarDigest}\n`, { mode: 0o600 });
+        await chmod(path.join(artifactDirectory, 'provider-identifiers.sha256'), 0o600);
+        const providerCalls = syntheticRows.map((row, index) => ({
+          clientRequestIdSha256: digest(row.callerRequestId.toLowerCase()),
+          bifrostLogRequestIdSha256: digest(row.bifrostLogRequestId.toLowerCase()),
+          upstreamResponseRequestIdSha256: null,
+          requestedAlias: harness.binding.transport.modelAlias, requestedEffort: 'medium',
+          startedAt: new Date(1_800_000_000_000 + index).toISOString(),
+          requestDigest: digest(`r2-offline-request-${index}`), httpStatus: 200, fetchFailureClass: null,
+          workerTokenUsage: null, workerEstimatedUsd: null,
+        }));
+        const receipt = {
+          clientCalls: 25, blockedClientCalls: 0, terminalStatus: 'failed',
+          receiptSha256: digest('r2-synthetic-worker-failure-after-25-calls'),
+          failureCode: 'worker_execution_failed', artifactReferences: [],
+          outcome: null, canonicalReviewEvidence: null, history: null, qualificationControl: null,
+          preflight: null, resourceExhaustion: null, attestorRecordedCalls: 25, providerCalls,
+        };
+        child.stdout.write(`__EXTERNAL_NORMAL_V2_RESULT__${JSON.stringify(receipt)}\n`);
+        child.stdout.end();
+        child.emit('close', 0);
+      })().catch((error) => { child.stdout.end(); child.emit('error', error); });
+    });
+    return child;
+  };
+
+  let managementAuthReads = 0;
+  let logFetchCalls = 0;
+  const adapter = loadedHostAdapter.createPinnedWorkerImageExternalNormalV2Adapter({
+    policyInputRoot: harness.policyInputRoot,
+    baseEnv,
+    privateBinding: harness.binding,
+    readInferenceKeyInMemory: () => 'offline-synthetic-inference-key',
+    assertImageAvailable: () => {},
+    spawnImplementation,
+  });
+  const collector = createExternalNormalV2ExactLogCollector({
+    managementBaseUrl: harness.binding.managementBaseUrl,
+    storeRoot: harness.phaseRoot,
+    readManagementAuthInMemory: () => { managementAuthReads += 1;
+      return { username: 'offline-user', password: 'offline-password' }; },
+    fetchImpl: async (input) => {
+      logFetchCalls += 1;
+      const url = new URL(String(input));
+      assert.equal(url.searchParams.get('limit'), '1');
+      const callerRequestId = url.searchParams.get('request_id');
+      assert.ok(syntheticRows.some((row) => row.callerRequestId === callerRequestId));
+      return new Response(JSON.stringify({ data: [{ id: callerRequestId,
+        routing_rule_id: harness.routeIdentity.routingRuleId,
+        routing_rule_name: harness.routeIdentity.routingRuleName,
+        provider: harness.routeIdentity.provider,
+        alias: null,
+        model: harness.routeIdentity.model,
+        status: 'success', fallback_index: 0, parent_request_id: null, number_of_retries: 0,
+        server_side_fallback_model: null }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  try {
+    const prepared = await runner.prepareExternalNormalR2AuthorizationTuple({ repositoryRoot,
+      executionPlan: r2PlanTemplate, executionPlanSha256: runner.sha256(r2PlanBytes), executionPlanBytes: r2PlanBytes,
+      sourceBundle, policyInputRoot: harness.policyInputRoot, phaseRoot: harness.phaseRoot,
+      privateBinding: harness.binding, routeIdentity: harness.routeIdentity });
+    const now = Date.now();
+    const authorization = { schemaVersion: runner.EXTERNAL_NORMAL_R2_ROOT_GO_SCHEMA, rootGo: true,
+      grantId: randomUUID(), issuedAt: new Date(now - 1_000).toISOString(),
+      expiresAt: new Date(now + 60_000).toISOString(), binding: prepared.authorizationTuple };
+    const result = await runner.runExternalNormalQualificationR2({
+      repositoryRoot, executionPlan: r2PlanTemplate, executionPlanSha256: prepared.phasePlanSha256,
+      executionPlanBytes: r2PlanBytes, sourceBundle,
+      policyInputRoot: harness.policyInputRoot, phaseRoot: harness.phaseRoot,
+      privateBinding: harness.binding, routeIdentity: harness.routeIdentity, authorization,
+      now: () => now, executeCase: adapter.executeCase, captureExactLogs: collector,
+      preflightExecution: async ({ origin, sourceRevision, workerImageDigest, runtimeManifestSha256 }) => ({
+        status: 'ready', mode: 'dns_tls_only', originSha256: runner.sha256(origin), sourceRevision,
+        workerImageDigest, runtimeManifestSha256, resolvedAddressCount: 1,
+        resolvedAddressSetSha256: '8'.repeat(64), tlsAuthorized: true, tlsProtocol: 'TLSv1.3',
+        peerCertificateSha256: '9'.repeat(64), tlsAddressSha256: 'a'.repeat(64), elapsedMs: 1,
+      }),
+    });
+    assert.deepEqual(caseMounts, [path.join(harness.phaseRoot, 'normal-engine-qualification-store')]);
+    assert.equal(result.status, 'failed', 'a worker failure remains failed after exact R2 capture');
+    assert.equal(result.phaseId, 'ws5-current-source-external-v2-r2');
+    assert.equal(result.clientCalls, 25);
+    assert.equal(result.unknownClientCallUpperBound, 0);
+    assert.equal(result.phaseAttemptAllocation.spent, 25);
+    assert.equal(result.phaseAttemptAllocation.declared, 267);
+    assert.equal(result.overallPhysicalAttempts, 200);
+    assert.equal(result.stepResults.length, 1, 'later R2 arms must stop after the worker failure');
+    assert.equal(result.stepResults[0].stepId, 'r2-s001');
+    assert.equal(result.stepResults[0].clientCallAllocation, 53);
+    assert.equal(result.stepResults[0].terminalStatus, 'failed');
+    assert.equal(result.exactLogCapture.status, 'captured');
+    assert.equal(result.exactLogCapture.queriedCallCount, 25);
+    assert.equal(result.exactLogCapture.matchedRows, 25);
+    assert.equal(result.exactLogCapture.unqueriedCallCount, 0);
+    assert.equal(result.logLedger.matchedRows, 25);
+    assert.equal(result.routeIdentityProofs[0].status, 'observed');
+    assert.equal(managementAuthReads, 1);
+    assert.equal(logFetchCalls, 25);
+    assert.equal(childEnvHasInferenceKey, false);
+    assert.equal(argsContainSyntheticCredential, false);
+    assert.equal(JSON.stringify(result).includes(syntheticRows[0].callerRequestId), false);
+  } finally { await rm(harness.tempRoot, { recursive: true, force: true }); }
+});
+
+test('R2 cohort admission rejects altered case IDs, input hashes, and call caps', async () => {
+  assert.ok(runner, 'the current-source external runner module must exist');
+  assert.equal(typeof runner.validateExternalNormalR2CohortPlan, 'function');
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const sourceBundle = JSON.parse(await readFile(path.join(repositoryRoot,
+    'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/source-bundle.json'), 'utf8'));
+  const plan = structuredClone(r2PlanTemplate);
+  const descriptorSha256 = runner.sha256(r2PlanBytes);
+  const changedCase = structuredClone(plan);
+  changedCase.steps[0].caseId = 'ws5-r2-c002';
+  assert.throws(() => runner.validateExternalNormalR2CohortPlan(changedCase, sourceBundle, descriptorSha256, r2PlanBytes));
+  const changedInputHash = structuredClone(plan);
+  changedInputHash.steps[0].inputSha256 = '0'.repeat(64);
+  assert.throws(() => runner.validateExternalNormalR2CohortPlan(changedInputHash, sourceBundle, descriptorSha256, r2PlanBytes));
+  const changedCap = structuredClone(plan);
+  changedCap.steps[0].clientCallCap = 54;
+  assert.throws(() => runner.validateExternalNormalR2CohortPlan(changedCap, sourceBundle, descriptorSha256, r2PlanBytes));
+  assert.throws(() => runner.validateExternalNormalR2CohortPlan(plan, sourceBundle, '0'.repeat(64), r2PlanBytes));
 });
 
 test('public phase plan is a non-dispatchable template and requires a private root binding', async () => {
@@ -847,19 +1142,27 @@ test('recovers only digest-checked private IDs and bounds them to the arm alloca
       provider: 'provider-a', alias: null, model: 'model-a', served_model: null, status: 'success',
       service_tier: 'default', fallback_index: 0, number_of_retries: 0,
       server_side_fallback_model: null };
-    const captureRow = async (value) => {
+    const captureRow = async (value, { phaseId = 'ws5-current-source-external-v2',
+      planSha256 = 'b'.repeat(64), stepId = 'v2-p2-first' } = {}) => {
       const collector = createExternalNormalV2ExactLogCollector({ storeRoot: root,
         managementBaseUrl: 'https://management.example.invalid',
         readManagementAuthInMemory: () => ({ username: 'u', password: 'p' }),
         fetchImpl: async () => new Response(JSON.stringify({ data: [value] }),
           { status: 200, headers: { 'content-type': 'application/json' } }) });
-      return collector({ phaseId: 'ws5-current-source-external-v2', planSha256: 'b'.repeat(64),
+      return collector({ phaseId, planSha256,
         artifactStoreRoot: root, calls: recovered.calls,
-        stepReceipts: [{ stepId: 'v2-p2-first', runId, artifactReferences: [recovered.sidecarReference] }],
+        stepReceipts: [{ stepId, runId, artifactReferences: [recovered.sidecarReference] }],
         deadlineAt: Date.now() + 10_000 });
     };
     const recoveredCapture = await captureRow(logRow);
     assert.equal(recoveredCapture.status, 'captured', JSON.stringify(recoveredCapture));
+    const r2Capture = await captureRow(logRow, { phaseId: runner.EXTERNAL_NORMAL_R2_PHASE_ID,
+      planSha256: runner.EXTERNAL_NORMAL_R2_COHORT_PLAN_SHA256, stepId: 'r2-s001' });
+    assert.equal(r2Capture.status, 'captured', JSON.stringify(r2Capture));
+    await assert.rejects(captureRow(logRow, { phaseId: runner.EXTERNAL_NORMAL_R2_PHASE_ID,
+      planSha256: '0'.repeat(64), stepId: 'r2-s001' }), /exact_log_capture_request_invalid/u);
+    await assert.rejects(captureRow(logRow, { phaseId: 'ws5-arbitrary-phase',
+      planSha256: 'b'.repeat(64), stepId: 'r2-s001' }), /exact_log_capture_request_invalid/u);
     assert.equal(recoveredCapture.rows[0].bifrostAlias, null);
     assert.equal(recoveredCapture.rows[0].routingRuleIdSha256, runner.sha256(logRow.routing_rule_id));
     assert.equal(recoveredCapture.rows[0].routingRuleNameSha256, runner.sha256(logRow.routing_rule_name));

@@ -4,6 +4,16 @@ import { createHash } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { lstat, mkdir, open, readFile, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import {
+  R2_BUNDLE_PATH,
+  R2_BUNDLE_SHA256,
+  R2_COHORT_PLAN_SHA256,
+  R2_INPUT_MANIFEST_SHA256,
+  R2_PHASE_ID,
+  validateExternalNormalR2CohortPlan,
+} from './ws5-external-normal-r2-plan.mjs';
+
+export { validateExternalNormalR2CohortPlan };
 
 export const EXTERNAL_NORMAL_V2_PLAN_PATH = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json';
 export const EXTERNAL_NORMAL_V2_BUNDLE_PATH = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json';
@@ -12,11 +22,20 @@ export const EXTERNAL_NORMAL_V2_BUNDLE_SHA256 = '99b707383ec16eea3ef81994c623e95
 export const EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA = 'ReviewYetiExternalNormalQualificationRootGo.v1';
 export const EXTERNAL_NORMAL_V2_PRIVATE_BINDING_SCHEMA = 'ReviewYetiExternalNormalQualificationPrivateBinding.v1';
 export const EXTERNAL_NORMAL_V2_ROUTE_IDENTITY_SCHEMA = 'ReviewYetiExternalNormalQualificationRouteIdentity.v1';
+export const EXTERNAL_NORMAL_R2_ROOT_GO_SCHEMA = 'ReviewYetiExternalNormalQualificationR2RootGo.v1';
+export const EXTERNAL_NORMAL_R2_COHORT_PLAN_SHA256 = R2_COHORT_PLAN_SHA256;
+export const EXTERNAL_NORMAL_R2_INPUT_MANIFEST_SHA256 = R2_INPUT_MANIFEST_SHA256;
+export const EXTERNAL_NORMAL_R2_BUNDLE_PATH = R2_BUNDLE_PATH;
+export const EXTERNAL_NORMAL_R2_BUNDLE_SHA256 = R2_BUNDLE_SHA256;
+export const EXTERNAL_NORMAL_R2_PHASE_ID = R2_PHASE_ID;
 
 const PHASE_WALL_LIMIT_MS = 1_800_000;
 const CLIENT_CALL_LIMIT = 300;
 const OVERALL_PHYSICAL_ATTEMPT_CEILING = 2_700;
 const HISTORICAL_PHYSICAL_ATTEMPTS = 150;
+const R2_PHASE_CLIENT_CALL_LIMIT = 275;
+const R2_PRIOR_COHORT_CLIENT_CALLS = 25;
+const R2_HISTORICAL_PHYSICAL_ATTEMPTS = HISTORICAL_PHYSICAL_ATTEMPTS + R2_PRIOR_COHORT_CLIENT_CALLS;
 const NORMAL_ARM_MS = 240_000;
 const CAPTURE_RESERVE_MS = 300_000;
 const RESERVED_OVERHEAD_MS = 180_000;
@@ -46,6 +65,7 @@ const NORMAL_STEP_IDS = new Set([
 ]);
 const LAUNCHER_SOURCE_PATHS = Object.freeze([
   'scripts/ws5-external-normal-v2.mjs',
+  'scripts/ws5-external-normal-r2-plan.mjs',
   'scripts/ws5-external-bifrost-log-collector.mjs',
   'src/qualification/normalEngineQualificationExternalV2.ts',
   'dist/qualification/normalEngineQualificationExternalV2.js',
@@ -83,6 +103,26 @@ export function externalNormalV2AttemptBounds(knownClientCalls, unknownClientCal
     overallPhysicalAttemptsUpperBound: HISTORICAL_PHYSICAL_ATTEMPTS + knownClientCalls + unknownClientCallUpperBound,
     remainingOverallPhysicalAttempts: unknown ? null
       : OVERALL_PHYSICAL_ATTEMPT_CEILING - HISTORICAL_PHYSICAL_ATTEMPTS - knownClientCalls,
+    possiblePhaseClientCallsUpperBound: knownClientCalls + unknownClientCallUpperBound,
+  };
+}
+
+function executionAttemptBounds(knownClientCalls, unknownClientCallUpperBound, profile) {
+  if (!Number.isSafeInteger(knownClientCalls) || knownClientCalls < 0
+    || !Number.isSafeInteger(unknownClientCallUpperBound) || unknownClientCallUpperBound < 0
+    || knownClientCalls + unknownClientCallUpperBound > profile.phaseCallLimit) {
+    throw new Error('external_normal_v2_attempt_bounds_invalid');
+  }
+  const unknown = unknownClientCallUpperBound > 0;
+  return {
+    clientCallsKnown: knownClientCalls,
+    clientCallCountStatus: unknown ? 'lower_bound_child_ledger_unknown' : 'exact',
+    unknownClientCallUpperBound,
+    overallPhysicalAttempts: unknown ? null : profile.historicalPhysicalAttempts + knownClientCalls,
+    overallPhysicalAttemptsLowerBound: profile.historicalPhysicalAttempts + knownClientCalls,
+    overallPhysicalAttemptsUpperBound: profile.historicalPhysicalAttempts + knownClientCalls + unknownClientCallUpperBound,
+    remainingOverallPhysicalAttempts: unknown ? null
+      : profile.overallPhysicalAttemptCeiling - profile.historicalPhysicalAttempts - knownClientCalls,
     possiblePhaseClientCallsUpperBound: knownClientCalls + unknownClientCallUpperBound,
   };
 }
@@ -732,6 +772,257 @@ export async function readFrozenExternalNormalV2Plan(repositoryRoot) {
   return { plan, bundle, planSha256: sha256(planBytes), bundleSha256: sha256(bundleBytes) };
 }
 
+const R2_ASSESSMENT_STEP_IDS = Object.freeze({
+  'r2-s001': 'v2-p2-first',
+  'r2-s002': 'v2-p2-repeat',
+  'r2-s003': 'v2-sequence-a',
+  'r2-s004': 'v2-sequence-b-history',
+  'r2-s005': 'v2-sequence-b-full-source',
+  'r2-s006': 'v2-coverage-hole-control',
+  'r2-s007': 'v2-required-history-unavailable-control',
+  'r2-s008': 'v2-provider-failure-control',
+  'r2-s009': 'v2-resource-exhaustion-control',
+});
+
+function createExternalNormalR2ExecutionPlan(template, admitted, bundle, privateBinding, routeIdentity) {
+  const bound = bindExternalNormalV2PrivateInputs(template, privateBinding, routeIdentity);
+  const casesByRepository = new Map();
+  for (const entry of admitted.cases) {
+    if (!casesByRepository.has(entry.repository.repositoryId)) {
+      casesByRepository.set(entry.repository.repositoryId, entry);
+    }
+  }
+  const targetProjections = bound.targetProjections.map((target) => {
+    const source = casesByRepository.get(target.repositoryId);
+    if (!source) throw new Error('external_normal_r2_policy_target_set_invalid');
+    return { ...target, repository: `${source.repository.owner}/${source.repository.repo}`, prNumber: source.prNumber };
+  });
+  if (targetProjections.length !== 3 || casesByRepository.size !== 3) {
+    throw new Error('external_normal_r2_policy_target_set_invalid');
+  }
+  const sourceBundle = { ...bundle, version: bundle.schemaVersion, path: R2_BUNDLE_PATH, sha256: R2_BUNDLE_SHA256 };
+  const allocations = admitted.executionEnvelope.perArmClientCallAllocations;
+  const reservations = admitted.executionEnvelope.perArmTimeReservationMs;
+  const executionEnvelope = {
+    ...bound.executionEnvelope,
+    maxPhaseClientCalls: admitted.executionEnvelope.maxPhaseClientCalls,
+    perArmClientCallAllocations: allocations,
+    perArmTimeReservationMs: reservations,
+    normalArmActiveReservationTotalMs: admitted.executionEnvelope.normalArmActiveReservationTotalMs,
+    reservationLedgerMs: admitted.executionEnvelope.reservationLedgerMs,
+    perArmClientHttpAttemptAllocation: {
+      normalArms: admitted.executionEnvelope.perArmClientHttpAttemptAllocation.outerCapPerNormalArm,
+      outerCapPerNormalArm: admitted.executionEnvelope.perArmClientHttpAttemptAllocation.outerCapPerNormalArm,
+      normalArmAllocationTotal: admitted.executionEnvelope.perArmClientHttpAttemptAllocation.normalArmAllocationTotal,
+      providerFailureControl: admitted.executionEnvelope.perArmClientHttpAttemptAllocation.providerAuthControl,
+      resourceExhaustionControl: admitted.executionEnvelope.perArmClientHttpAttemptAllocation.resourceExhaustionControl,
+      coveragePreflightControl: admitted.executionEnvelope.perArmClientHttpAttemptAllocation.coveragePreflightControl,
+      requiredHistoryPreflightControl: admitted.executionEnvelope.perArmClientHttpAttemptAllocation.requiredHistoryPreflightControl,
+      declaredArmTotal: admitted.executionEnvelope.declaredArmTotal,
+      unspendableSharedReserve: admitted.executionEnvelope.unspendableSharedReserve,
+      synchronousBlockBeforeFetch: true,
+    },
+    phaseWallLimitMs: admitted.executionEnvelope.phaseWallLimitMs,
+    exactLogCaptureReserveMs: admitted.executionEnvelope.exactLogCaptureReserveMs,
+    requiredHistoryPreflightReserveMs: admitted.executionEnvelope.reservationLedgerMs.requiredHistoryPreflightControl,
+    orchestrationAndTeardownReserveMs: admitted.executionEnvelope.orchestrationAndTeardownReserveMs,
+    transportPreflightDeadlineMs: TRANSPORT_PREFLIGHT_DEADLINE_MS,
+    captureOutsideChildDeadline: true,
+    concurrency: 1,
+    automaticRetries: 0,
+  };
+  const runs = admitted.runs;
+  return {
+    ...bound,
+    phaseId: admitted.phaseId,
+    status: 'frozen-ready-awaiting-root-go',
+    dispatchAuthorization: false,
+    sourceBundle,
+    targetProjections,
+    runs,
+    executionEnvelope,
+    physicalAttemptAccounting: {
+      historicalConsumedAttempts: R2_HISTORICAL_PHYSICAL_ATTEMPTS,
+      newPhaseMaximum: admitted.executionEnvelope.maxPhaseClientCalls,
+      overallCeiling: OVERALL_PHYSICAL_ATTEMPT_CEILING,
+      newAttemptsDoNotResetHistoricalConsumption: true,
+    },
+  };
+}
+
+async function readFrozenExternalNormalR2Inputs(repositoryRoot, executionPlan, sourceBundle, executionPlanSha256,
+  executionPlanBytes) {
+  const root = repositoryRoot || process.cwd();
+  const admitted = validateExternalNormalR2CohortPlan(executionPlan, sourceBundle, executionPlanSha256, executionPlanBytes);
+  const bundleBytes = await readRepositoryFileWithoutSymlinks(root, R2_BUNDLE_PATH);
+  if (sha256(bundleBytes) !== R2_BUNDLE_SHA256) throw new Error('external_normal_r2_bundle_digest_mismatch');
+  let parsedBundle;
+  try { parsedBundle = JSON.parse(bundleBytes.toString('utf8')); }
+  catch { throw new Error('external_normal_r2_bundle_json_invalid'); }
+  if (canonicalJson(parsedBundle) !== canonicalJson(sourceBundle)) {
+    throw new Error('external_normal_r2_caller_bundle_mismatch');
+  }
+  const inputByCase = new Map();
+  for (const entry of admitted.cases) {
+    const bytes = await readRepositoryFileWithoutSymlinks(root, entry.inputPath);
+    if (sha256(bytes) !== entry.inputSha256) throw new Error(`external_normal_r2_input_digest_mismatch:${entry.caseId}`);
+    let parsed;
+    try { parsed = JSON.parse(bytes.toString('utf8')); }
+    catch { throw new Error(`external_normal_r2_input_json_invalid:${entry.caseId}`); }
+    assertNoOutcomeLabels(parsed, `input.${entry.caseId}`);
+    const source = parsed?.source;
+    if (parsed?.schemaVersion !== entry.schemaVersion || parsed?.caseId !== entry.caseId
+      || canonicalJson(source?.repository) !== canonicalJson(entry.repository)
+      || source?.prNumber !== entry.prNumber || source?.baseSha !== entry.baseSha || source?.headSha !== entry.headSha) {
+      throw new Error(`external_normal_r2_input_identity_invalid:${entry.caseId}`);
+    }
+    inputByCase.set(entry.caseId, parsed);
+  }
+  return { admitted, bundle: parsedBundle, inputByCase, planSha256: R2_COHORT_PLAN_SHA256 };
+}
+
+async function readPinnedExternalNormalR2PolicyTemplate(repositoryRoot) {
+  const bytes = await readRepositoryFileWithoutSymlinks(repositoryRoot, EXTERNAL_NORMAL_V2_PLAN_PATH);
+  if (sha256(bytes) !== EXTERNAL_NORMAL_V2_PLAN_SHA256) {
+    throw new Error('external_normal_r2_policy_template_digest_mismatch');
+  }
+  try { return JSON.parse(bytes.toString('utf8')); }
+  catch { throw new Error('external_normal_r2_policy_template_invalid'); }
+}
+
+function buildExternalNormalR2AuthorizationTuple(plan, planSha256, outputRootSha256,
+  launcherSourceTupleSha256, artifactStoreIdentitySha256, privateBinding, routeIdentity, admitted) {
+  validateExternalNormalV2PrivateBinding(privateBinding);
+  assertExternalNormalV2PlanMatchesPrivateBinding(plan, privateBinding, routeIdentity);
+  const inputs = admitted.cases.map(({ caseId, inputSha256 }) => ({ caseId, inputSha256 }))
+    .sort((left, right) => left.caseId.localeCompare(right.caseId));
+  const runtime = plan.runtime || {};
+  const policy = plan.policy || {};
+  const runtimeTuple = { sourceRevision: runtime.finalSourceRevision, workerImageDigest: runtime.workerImageDigest,
+    runtimeManifestSha256: runtime.runtimeManifestSha256, budgetFixSource: runtime.currentBudgetFixCandidate,
+    preparedConfigHelperSourceRevision: runtime.preparedConfigHelperSourceRevision,
+    preparedConfigHelperSourceFileSha256: runtime.preparedConfigHelperSourceFileSha256,
+    preparedConfigHelperCompiledFileSha256: runtime.preparedConfigHelperCompiledFileSha256,
+    workerImageRepository: runtime.workerImageRepository, executionMode: runtime.executionMode,
+    executionNetwork: runtime.executionNetwork, executionUser: runtime.executionUser,
+    artifactStoreBinding: runtime.artifactStoreBinding };
+  const policyTuple = { candidateHead: policy.candidateHead, candidateRawSha256: policy.candidateRawSha256,
+    candidateGitBlob: policy.candidateGitBlob, preparedFixtureReviewHead: policy.preparedFixtureReviewHead,
+    executionPlanFixtureSha256: policy.executionPlanFixtureSha256,
+    executionPlanNormalizedSha256: policy.executionPlanNormalizedSha256,
+    syntheticProjectionFixtureSha256: policy.syntheticProjectionFixtureSha256, routeAlias: policy.routeAlias,
+    requestedEffort: policy.requestedEffort, inferenceBaseUrl: policy.inferenceBaseUrl,
+    preparedExecutionFixtureSha256: policy.preparedExecutionFixtureSha256,
+    preparedExecutionSha256: policy.preparedExecutionSha256,
+    centralEffectiveConfigProjectionSha256: policy.centralEffectiveConfigProjectionSha256,
+    effectiveConfigSha256: policy.effectiveConfigSha256, effectivePolicySha256: policy.effectivePolicySha256,
+    routeIdentitySha256: sha256(canonicalJson(policy.routeIdentity)),
+    servedProviderModelEffort: policy.servedProviderModelEffort, v1Promotion: policy.v1Promotion,
+    policyInputDigestsSha256: sha256(canonicalJson(privateBinding.policy.policyInputDigests)),
+    targetProjectionPinsSha256: sha256(canonicalJson(privateBinding.policy.targetProjections)),
+    policySource: policy.policySource };
+  return {
+    phaseId: R2_PHASE_ID,
+    phasePlanSha256: planSha256,
+    cohortDescriptorSha256: R2_COHORT_PLAN_SHA256,
+    sourceBundleSha256: R2_BUNDLE_SHA256,
+    sourceInputSetSha256: sha256(canonicalJson(inputs)),
+    inputManifestSha256: R2_INPUT_MANIFEST_SHA256,
+    runtimeTupleSha256: sha256(canonicalJson(runtimeTuple)),
+    policyTupleSha256: sha256(canonicalJson(policyTuple)),
+    routeIdentitySha256: sha256(canonicalJson(routeIdentity)),
+    phaseRootCanonicalPathSha256: sha256(plan.artifactRoots.phaseRoot.canonicalPath),
+    phaseRootIdentitySpecSha256: sha256(canonicalJson(plan.artifactRoots.phaseRoot)),
+    privateBindingSha256: sha256(canonicalJson(privateBinding)),
+    effectiveConfigSha256: policy.effectiveConfigSha256,
+    outputRootSha256,
+    qualificationArtifactStoreRootSha256: outputRootSha256,
+    qualificationArtifactStoreIdentitySha256: artifactStoreIdentitySha256,
+    launcherSourceTupleSha256,
+  };
+}
+
+export function validateExternalNormalR2RootGoGrant(plan, grant, tuple, nowMs = Date.now()) {
+  if (!grant || typeof grant !== 'object' || Array.isArray(grant)) return false;
+  const keys = ['schemaVersion', 'rootGo', 'grantId', 'issuedAt', 'expiresAt', 'binding'];
+  if (Object.keys(grant).sort().join('|') !== keys.sort().join('|')
+    || grant.schemaVersion !== EXTERNAL_NORMAL_R2_ROOT_GO_SCHEMA || grant.rootGo !== true
+    || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(grant.grantId || '')) return false;
+  const issuedAt = Date.parse(grant.issuedAt);
+  const expiresAt = Date.parse(grant.expiresAt);
+  return Number.isFinite(issuedAt) && Number.isFinite(expiresAt) && issuedAt <= nowMs
+    && expiresAt > nowMs && expiresAt > issuedAt && expiresAt - issuedAt <= 300_000
+    && canonicalJson(grant.binding) === canonicalJson(tuple)
+    && plan.phaseId === R2_PHASE_ID && tuple.phaseId === R2_PHASE_ID
+    && tuple.phasePlanSha256 === R2_COHORT_PLAN_SHA256
+    && tuple.cohortDescriptorSha256 === R2_COHORT_PLAN_SHA256
+    && tuple.sourceBundleSha256 === R2_BUNDLE_SHA256
+    && tuple.inputManifestSha256 === R2_INPUT_MANIFEST_SHA256
+    && /^[a-f0-9]{64}$/u.test(tuple.privateBindingSha256 || '')
+    && /^[a-f0-9]{64}$/u.test(tuple.routeIdentitySha256 || '')
+    && tuple.outputRootSha256 === tuple.phaseRootCanonicalPathSha256
+    && tuple.qualificationArtifactStoreRootSha256 === tuple.outputRootSha256
+    && tuple.effectiveConfigSha256 === plan.policy?.effectiveConfigSha256
+    && /^[a-f0-9]{64}$/u.test(tuple.runtimeTupleSha256 || '')
+    && /^[a-f0-9]{64}$/u.test(tuple.policyTupleSha256 || '')
+    && /^[a-f0-9]{64}$/u.test(tuple.sourceInputSetSha256 || '')
+    && /^[a-f0-9]{64}$/u.test(tuple.launcherSourceTupleSha256 || '')
+    && tuple.phaseRootCanonicalPathSha256 === sha256(plan.artifactRoots?.phaseRoot?.canonicalPath || '')
+    && tuple.phaseRootIdentitySpecSha256 === sha256(canonicalJson(plan.artifactRoots?.phaseRoot));
+}
+
+async function prepareExternalNormalR2Execution({ repositoryRoot, executionPlan, executionPlanSha256, executionPlanBytes,
+  sourceBundle, policyInputRoot, phaseRoot, privateBinding, routeIdentity } = {}) {
+  const root = repositoryRoot || process.cwd();
+  const r2 = await readFrozenExternalNormalR2Inputs(root, executionPlan, sourceBundle, executionPlanSha256, executionPlanBytes);
+  // Only the exact shared runtime/policy shell is inherited; R2 admission and execution always
+  // use the independently pinned v3 bundle and nine-step plan above.
+  const frozenTemplate = await readPinnedExternalNormalR2PolicyTemplate(root);
+  validateExternalNormalV2PrivateBinding(privateBinding);
+  validateExternalNormalV2RouteIdentity(routeIdentity);
+  const plan = createExternalNormalR2ExecutionPlan(frozenTemplate, r2.admitted, r2.bundle,
+    privateBinding, routeIdentity);
+  if (plan.status !== 'frozen-ready-awaiting-root-go' || plan.dispatchAuthorization !== false
+    || !plan.runtime?.finalSourceRevision || !plan.runtime?.workerImageDigest || !plan.runtime?.runtimeManifestSha256
+    || !plan.policy?.effectiveConfigSha256 || !plan.targetProjections.every((target) =>
+      target.effectiveConfigSha256 === plan.policy.effectiveConfigSha256)) {
+    throw new Error('external_normal_r2_candidate_not_frozen');
+  }
+  assertExternalNormalV2PlanMatchesPrivateBinding(plan, privateBinding, routeIdentity);
+  const verifiedPolicyInputs = await verifyPolicyInputFiles(policyInputRoot, plan, privateBinding);
+  if (phaseRoot && phaseRoot !== privateBinding.phaseRoot.canonicalPath) {
+    throw new Error('external_normal_r2_phase_root_binding_rejected');
+  }
+  const canonicalRoot = await canonicalizePhaseRoot(privateBinding.phaseRoot.canonicalPath);
+  const rootInfo = await lstat(canonicalRoot);
+  if (!validateExternalNormalV2PhaseRootIdentity(plan, canonicalRoot, rootInfo)) {
+    throw new Error('external_normal_r2_phase_root_binding_rejected');
+  }
+  const outputRootSha256 = sha256(canonicalRoot);
+  const artifactStoreIdentitySha256 = sha256(canonicalJson({ pathSha256: outputRootSha256,
+    uid: rootInfo.uid, gid: rootInfo.gid, mode: rootInfo.mode & 0o777 }));
+  const launcherSourceDigests = await readExternalNormalV2LauncherSourceDigests(root);
+  const tuple = buildExternalNormalR2AuthorizationTuple(plan, r2.planSha256, outputRootSha256,
+    launcherSourceDigests.tupleSha256, artifactStoreIdentitySha256, privateBinding, routeIdentity, r2.admitted);
+  return { plan, bundle: r2.bundle, planSha256: r2.planSha256, admitted: r2.admitted,
+    inputByCase: r2.inputByCase, tuple,
+    canonicalRoot, verifiedPolicyInputs, launcherSourceDigests, artifactStoreIdentitySha256 };
+}
+
+export async function prepareExternalNormalR2AuthorizationTuple(input) {
+  const prepared = await prepareExternalNormalR2Execution(input);
+  return { phaseId: R2_PHASE_ID, phasePlanSha256: R2_COHORT_PLAN_SHA256,
+    sourceBundleSha256: R2_BUNDLE_SHA256, authorizationTuple: prepared.tuple };
+}
+
+export async function validatePreparedExternalNormalR2Grant(input, grant, nowMs = Date.now()) {
+  const prepared = await prepareExternalNormalR2Execution(input);
+  const authorized = validateExternalNormalR2RootGoGrant(prepared.plan, grant, prepared.tuple, nowMs);
+  return { status: authorized ? 'authorized' : 'authorization_rejected', phaseId: R2_PHASE_ID,
+    phasePlanSha256: R2_COHORT_PLAN_SHA256, sourceBundleSha256: R2_BUNDLE_SHA256,
+    authorizationTuple: prepared.tuple };
+}
+
 export function buildExternalNormalV2AuthorizationTuple(plan, planSha256, outputRootSha256,
   launcherSourceTupleSha256 = '0'.repeat(64), artifactStoreIdentitySha256 = outputRootSha256, privateBinding, routeIdentity) {
   validateExternalNormalV2PrivateBinding(privateBinding);
@@ -1352,6 +1643,41 @@ export function validateCapturedRouteIdentity(calls, rows, expectedAlias, expect
     identitySetSha256: sha256(canonicalJson(observed)) };
 }
 
+function validCompletedNormalReviewEvidence(result) {
+  const outcome = result?.outcome;
+  const canonical = result?.canonicalReviewEvidence;
+  const counts = canonical?.counts;
+  if (!outcome || !['completed_eligible', 'completed_ineligible'].includes(outcome.workerOutcomeClass)
+    || !['completed_eligible', 'completed_ineligible'].includes(outcome.gateOutcomeClass)
+    || outcome.agreement !== 'agreement'
+    || !/^[a-f0-9]{64}$/u.test(outcome.canonicalEvidenceSha256 || '')
+    || !/^[a-f0-9]{64}$/u.test(outcome.gateDecisionSha256 || '')
+    || !canonical || !['SHIP', 'FIX_FIRST', 'INCOMPLETE_REVIEW'].includes(canonical.decisionClassification)
+    || !counts || ['p0Count', 'p1Count', 'p2Count', 'p3Count', 'nitCount'].some((key) =>
+      !Number.isSafeInteger(counts[key]) || counts[key] < 0)
+    || typeof canonical.coverageComplete !== 'boolean' || typeof canonical.quorumSatisfied !== 'boolean'
+    || !Array.isArray(canonical.blockingFindings) || canonical.blockingFindings.some((finding) => !finding
+      || !/^[a-f0-9]{64}$/u.test(finding.fingerprintSha256 || '') || !['P0', 'P1'].includes(finding.severity)
+      || typeof finding.path !== 'string' || !['confirmed', 'contradicted', 'insufficient', 'unavailable'].includes(finding.verificationStatus)
+      || !['introduced', 'exacerbated', 'preexisting', 'unproven'].includes(finding.causalScope)
+      || (finding.line !== undefined && (!Number.isSafeInteger(finding.line) || finding.line < 1))
+      || (finding.title !== undefined && (typeof finding.title !== 'string' || finding.title.length === 0 || finding.title.length > 4_000))
+      || (finding.claim !== undefined && (typeof finding.claim !== 'string' || finding.claim.length === 0 || finding.claim.length > 16_000))
+      || (finding.blockerEvidence !== undefined && (!finding.blockerEvidence || typeof finding.blockerEvidence !== 'object'
+        || typeof finding.blockerEvidence.trigger !== 'string' || typeof finding.blockerEvidence.impact !== 'string'
+        || typeof finding.blockerEvidence.violatedContract !== 'string'))
+      || (finding.reviewIdentity !== undefined && finding.reviewIdentity !== null
+        && (!finding.reviewIdentity || typeof finding.reviewIdentity.repository !== 'string'
+          || !/^[a-f0-9]{40}$/u.test(finding.reviewIdentity.baseSha || '')
+          || !/^[a-f0-9]{40}$/u.test(finding.reviewIdentity.headSha || '')))
+      || !validPrivateCitationEvidence(finding.citationEvidence)
+      || !validOptionalDigest(finding.sourceReviewIdentitySha256) || !validOptionalDigest(finding.scopeEvidenceSha256)
+      || !validOptionalDigest(finding.blockerEvidenceSha256))) return false;
+  return result.terminalStatus === 'completed' && result.qualificationControl === 'none'
+    && outcome.workerOutcomeClass !== 'incomplete' && outcome.gateOutcomeClass !== 'incomplete'
+    && canonical.coverageComplete && canonical.quorumSatisfied;
+}
+
 /** Assesses only actual production receipt facts; planned labels never enter this projection. */
 export function assessExternalNormalV2StepReceipt(step, result, expectedHistoryRunId = null, expectedReviewIdentity = null) {
   const incomplete = (reason) => ({ status: 'incomplete', reason });
@@ -1621,13 +1947,97 @@ export function validateExactLogLedger(calls, capture) {
     bifrostCalculatedCostUsd, estimatedUsd };
 }
 
+function externalNormalExecutionProfile(trustedR2Execution) {
+  if (!trustedR2Execution) return {
+    phaseCallLimit: CLIENT_CALL_LIMIT,
+    historicalPhysicalAttempts: HISTORICAL_PHYSICAL_ATTEMPTS,
+    overallPhysicalAttemptCeiling: OVERALL_PHYSICAL_ATTEMPT_CEILING,
+    inputForStep: (step) => INPUTS[step.caseId],
+    clientCallAllocationForStep,
+    workerCallAllocationForStep: clientCallAllocationForStep,
+    wallReservationForStep,
+    authFailureStepId: 'v2-provider-failure-control',
+    historyProducerStepId: 'v2-sequence-a',
+    assessStep: assessExternalNormalV2StepReceipt,
+  };
+  const casesById = new Map(trustedR2Execution.admitted.cases.map((entry) => [entry.caseId, entry]));
+  const inputsById = trustedR2Execution.inputByCase;
+  const assessmentStepIds = R2_ASSESSMENT_STEP_IDS;
+  return {
+    phaseCallLimit: R2_PHASE_CLIENT_CALL_LIMIT,
+    historicalPhysicalAttempts: R2_HISTORICAL_PHYSICAL_ATTEMPTS,
+    overallPhysicalAttemptCeiling: OVERALL_PHYSICAL_ATTEMPT_CEILING,
+    inputForStep: (step) => {
+      const source = casesById.get(step.caseId);
+      if (!source) throw new Error('external_normal_r2_step_input_identity_invalid');
+      return { path: source.inputPath, sha256: source.inputSha256, repositoryId: source.repository.repositoryId };
+    },
+    clientCallAllocationForStep: (step) => {
+      if (!Number.isSafeInteger(step?.clientCallAllocation) || step.clientCallAllocation < 0
+        || step.clientCallAllocation > 53) throw new Error('external_normal_r2_step_call_allocation_invalid');
+      return step.clientCallAllocation;
+    },
+    workerCallAllocationForStep: (step) => step.clientCallAllocation === 53 ? 58 : step.clientCallAllocation,
+    wallReservationForStep: (step) => {
+      if (!Number.isSafeInteger(step?.reservationMs) || step.reservationMs < 1) {
+        throw new Error('external_normal_r2_step_reservation_invalid');
+      }
+      return step.reservationMs;
+    },
+    authFailureStepId: 'r2-s008',
+    historyProducerStepId: 'r2-s003',
+    assessStep: (step, result, historyRunId, expectedReviewIdentity) => {
+      const mappedStep = { ...step, stepId: assessmentStepIds[step.stepId] };
+      if (step.stepId === 'r2-s006') {
+        const changedPaths = inputsById.get(step.caseId)?.source?.changedPaths;
+        const withheldPath = Array.isArray(changedPaths) && changedPaths.length === 1 ? changedPaths[0] : null;
+        return result.clientCalls === 0 && result.providerCalls.length === 0
+          && typeof withheldPath === 'string'
+          && step.fault?.readPath === withheldPath && step.fault.availability === 'unavailable'
+          && result.qualificationControl === 'source-coverage-unavailable'
+          && result.preflight?.control === 'source-coverage-unavailable'
+          && result.preflight.sourceCoverage === 'unavailable' && result.preflight.withheldPath === withheldPath
+          && result.preflight.physicalClientCalls === 0
+          ? { status: 'expected_control', reason: 'source_coverage_unavailable_abstained_before_model_call' }
+          : { status: 'failed', reason: 'source_coverage_control_evidence_invalid' };
+      }
+      if (step.clientCallAllocation > 0 && !['r2-s008', 'r2-s009'].includes(step.stepId)) {
+        if (!Number.isSafeInteger(result?.clientCalls) || result.clientCalls < 1
+          || !Array.isArray(result.providerCalls) || result.providerCalls.length < 1) {
+          return { status: 'failed', reason: 'normal_review_provider_dispatch_not_observed' };
+        }
+        if (!validCompletedNormalReviewEvidence(result)) {
+          return { status: 'incomplete', reason: 'normal_gate_did_not_complete_with_canonical_evidence' };
+        }
+        if (step.stepId === 'r2-s004') {
+          const expectedParentSha = historyRunId ? sha256(historyRunId) : null;
+          if (!expectedParentSha || !result.history || result.history.source !== 'isolated-qualification-store'
+            || result.history.loadStatus !== 'complete' || result.history.parentRunIdSha256 !== expectedParentSha
+            || !/^[a-f0-9]{64}$/u.test(result.history.snapshotIdSha256 || '')
+            || !/^[a-f0-9]{64}$/u.test(result.history.contextDigest || '')) {
+            return { status: 'incomplete', reason: 'loaded_history_lineage_not_proven' };
+          }
+        }
+        if (step.stepId === 'r2-s005' && (!result.history
+          || result.history.source !== 'empty-qualification-ablation' || result.history.parentRunIdSha256 !== null)) {
+          return { status: 'incomplete', reason: 'empty_history_ablation_not_proven' };
+        }
+        return { status: 'accepted', reason: 'actual_worker_and_gate_receipts_complete' };
+      }
+      return assessExternalNormalV2StepReceipt(mappedStep, result, historyRunId, expectedReviewIdentity);
+    },
+  };
+}
+
 /** Serial bounded executor. `executeCase` must invoke `recordClientCall` at the actual fetch boundary. */
-export async function runExternalNormalQualificationV2({
+async function runExternalNormalQualificationCore({
   repositoryRoot, policyInputRoot, phaseRoot, privateBinding, routeIdentity, authorization, executeCase, captureExactLogs,
   preflightExecution, now = Date.now,
-} = {}) {
+} = {}, trustedR2Execution) {
   if (typeof executeCase !== 'function') throw new Error('external_normal_v2_case_executor_required');
-  const frozen = await readFrozenExternalNormalV2Plan(repositoryRoot || process.cwd());
+  const frozen = trustedR2Execution
+    ? { plan: trustedR2Execution.plan, bundle: trustedR2Execution.bundle, planSha256: trustedR2Execution.planSha256 }
+    : await readFrozenExternalNormalV2Plan(repositoryRoot || process.cwd());
   const { bundle, planSha256 } = frozen;
   const template = frozen.plan;
   if (!authorization) return { status: 'authorization_required', phaseId: template.phaseId, clientCalls: 0, planSha256 };
@@ -1636,7 +2046,9 @@ export async function runExternalNormalQualificationV2({
   catch { return { status: 'private_binding_rejected', phaseId: template.phaseId, clientCalls: 0, planSha256 }; }
   try { validateExternalNormalV2RouteIdentity(routeIdentity); }
   catch { return { status: 'route_identity_rejected', phaseId: template.phaseId, clientCalls: 0, planSha256 }; }
-  const plan = bindExternalNormalV2PrivateInputs(template, privateBinding, routeIdentity);
+  const plan = trustedR2Execution ? trustedR2Execution.plan
+    : bindExternalNormalV2PrivateInputs(template, privateBinding, routeIdentity);
+  const profile = externalNormalExecutionProfile(trustedR2Execution);
   if (plan.status !== 'frozen-ready-awaiting-root-go' || plan.dispatchAuthorization !== false
     || !plan.runtime?.finalSourceRevision || !plan.runtime?.workerImageDigest || !plan.runtime?.runtimeManifestSha256
     || !plan.policy?.effectiveConfigSha256 || !plan.targetProjections?.every((row) =>
@@ -1662,9 +2074,16 @@ export async function runExternalNormalQualificationV2({
   const artifactStoreIdentitySha256 = sha256(canonicalJson({ pathSha256: outputRootSha256,
     uid: rootInfo.uid, gid: rootInfo.gid, mode: rootInfo.mode & 0o777 }));
   const launcherSourceDigests = await readExternalNormalV2LauncherSourceDigests(repositoryRoot || process.cwd());
-  const tuple = buildExternalNormalV2AuthorizationTuple(plan, planSha256, outputRootSha256,
-    launcherSourceDigests.tupleSha256, artifactStoreIdentitySha256, privateBinding, routeIdentity);
-  if (!validateRootGoGrant(plan, authorization, tuple, now())) {
+  const tuple = trustedR2Execution
+    ? buildExternalNormalR2AuthorizationTuple(plan, planSha256, outputRootSha256,
+      launcherSourceDigests.tupleSha256, artifactStoreIdentitySha256, privateBinding, routeIdentity,
+      trustedR2Execution.admitted)
+    : buildExternalNormalV2AuthorizationTuple(plan, planSha256, outputRootSha256,
+      launcherSourceDigests.tupleSha256, artifactStoreIdentitySha256, privateBinding, routeIdentity);
+  const validGrant = trustedR2Execution
+    ? validateExternalNormalR2RootGoGrant(plan, authorization, tuple, now())
+    : validateRootGoGrant(plan, authorization, tuple, now());
+  if (!validGrant) {
     return { status: 'authorization_rejected', phaseId: plan.phaseId, clientCalls: 0, planSha256 };
   }
   if (!await consumeOneShotGrant(canonicalRoot, authorization)) {
@@ -1685,7 +2104,7 @@ export async function runExternalNormalQualificationV2({
   let unknownClientCallUpperBound = 0;
   const captureStepLogs = async (stepResult) => {
     const calls = stepResult?.providerCalls ?? [];
-    if (calls.length === 0 || (stepResult.stepId === 'v2-provider-failure-control' && !stepResult.recoveredAttemptLedger)) {
+    if (calls.length === 0 || (stepResult.stepId === profile.authFailureStepId && !stepResult.recoveredAttemptLedger)) {
       return { ok: true, status: 'no_calls', matchedCount: 0 };
     }
     const captureReserveRemaining = CAPTURE_RESERVE_MS - captureElapsedMs;
@@ -1828,10 +2247,12 @@ export async function runExternalNormalQualificationV2({
   }
   if (transportPreflight.status !== 'ready') incomplete = true;
   if (transportPreflight.status === 'ready') for (const step of plan.runs) {
-    const input = INPUTS[step.caseId];
-    const reservation = wallReservationForStep(step);
-    const armCallAllocation = clientCallAllocationForStep(step);
-    const notYetReserved = plan.runs.slice(plan.runs.indexOf(step) + 1).reduce((sum, later) => sum + wallReservationForStep(later), 0);
+    const input = profile.inputForStep(step);
+    const reservation = profile.wallReservationForStep(step);
+    const armCallAllocation = profile.clientCallAllocationForStep(step);
+    const workerCallAllocation = profile.workerCallAllocationForStep(step);
+    const notYetReserved = plan.runs.slice(plan.runs.indexOf(step) + 1)
+      .reduce((sum, later) => sum + profile.wallReservationForStep(later), 0);
     const currentTime = now();
     const overheadElapsed = Math.max(0, currentTime - started - activeElapsedMs - captureElapsedMs);
     const overheadRemaining = RESERVED_OVERHEAD_MS - overheadElapsed;
@@ -1866,7 +2287,7 @@ export async function runExternalNormalQualificationV2({
       rawExecutionReceipt = await executeCase(projection, {
         signal: controller.signal,
         deadlineAt,
-        clientCallAllocation: armCallAllocation,
+        clientCallAllocation: workerCallAllocation,
         captureOutsideChild: plan.executionEnvelope.captureOutsideChildDeadline,
         artifactStoreRoot: canonicalRoot,
         recordClientCall() {
@@ -1875,7 +2296,7 @@ export async function runExternalNormalQualificationV2({
             stepBlockedClientCalls += 1;
             throw new Error('external_normal_v2_per_arm_client_call_cap_exceeded');
           }
-          if (clientCalls >= CLIENT_CALL_LIMIT) {
+          if (clientCalls >= profile.phaseCallLimit) {
             stepBlockedClientCalls += 1;
             throw new Error('external_normal_v2_phase_client_call_cap_exceeded');
           }
@@ -1886,7 +2307,7 @@ export async function runExternalNormalQualificationV2({
       });
       const reportedChildCalls = Number.isSafeInteger(rawExecutionReceipt?.clientCalls) ? rawExecutionReceipt.clientCalls : null;
       if (reportedChildCalls !== null && stepCalls === 0) {
-        if (reportedChildCalls > armCallAllocation || clientCalls + reportedChildCalls > CLIENT_CALL_LIMIT) {
+        if (reportedChildCalls > armCallAllocation || clientCalls + reportedChildCalls > profile.phaseCallLimit) {
           throw new Error('external_normal_v2_child_client_call_budget_exceeded');
         }
         clientCalls += reportedChildCalls;
@@ -1924,7 +2345,7 @@ export async function runExternalNormalQualificationV2({
         repository: `${bundledCase.repository.owner}/${bundledCase.repository.repo}`,
         baseSha: bundledCase.baseSha, headSha: bundledCase.headSha,
       } : null;
-      const assessment = assessExternalNormalV2StepReceipt(step, result, historyRunId, expectedReviewIdentity);
+      const assessment = profile.assessStep(step, result, historyRunId, expectedReviewIdentity);
       stepResultForCapture = { stepId: step.stepId, runId: caseRunId, clientCallAllocation: armCallAllocation,
         clientCalls: stepCalls, blockedClientCalls: stepBlockedClientCalls, artifactVerification, assessment, ...result,
         ...(privateIdentifierSidecarReference ? { artifactReferences: [
@@ -1932,7 +2353,9 @@ export async function runExternalNormalQualificationV2({
         ] } : {}),
         ...(privateIdentifierSidecarStatus ? { privateIdentifierSidecarStatus } : {}) };
       stepResults.push(stepResultForCapture);
-      if (step.stepId === 'v2-sequence-a' && assessment.status === 'accepted') historyRuns.set(step.stepId, caseRunId);
+      if (step.stepId === profile.historyProducerStepId && assessment.status === 'accepted') {
+        historyRuns.set(step.stepId, caseRunId);
+      }
       if (assessment.status === 'incomplete' || result.terminalStatus === 'failed') incomplete = true;
       if (assessment.status === 'failed' || result.terminalStatus === 'failed') { failed = true; stopAfterStep = true; }
       if (assessment.status === 'incomplete') stopAfterStep = true;
@@ -2006,10 +2429,10 @@ export async function runExternalNormalQualificationV2({
       }
     }
     if (stopAfterStep) break;
-    if (clientCalls >= CLIENT_CALL_LIMIT) { incomplete = true; break; }
+    if (clientCalls >= profile.phaseCallLimit) { incomplete = true; break; }
   }
   const allProviderCalls = stepResults.flatMap((row) => row.providerCalls ?? []);
-  const expectedAuthStep = stepResults.find((row) => row.stepId === 'v2-provider-failure-control'
+  const expectedAuthStep = stepResults.find((row) => row.stepId === profile.authFailureStepId
     && row.assessment?.status === 'expected_control');
   const expectedAuthCalls = expectedAuthStep?.providerCalls ?? [];
   const excludedAuthCidHashes = new Set(expectedAuthCalls.map((call) => call.clientRequestIdSha256));
@@ -2066,13 +2489,13 @@ export async function runExternalNormalQualificationV2({
       batches: exactLogCaptureBatches };
   }
   if (!logLedger || unknownClientCallUpperBound > 0 || exactLogCaptureFailure) incomplete = true;
-  const attemptBounds = externalNormalV2AttemptBounds(clientCalls, unknownClientCallUpperBound);
+  const attemptBounds = executionAttemptBounds(clientCalls, unknownClientCallUpperBound, profile);
   const summary = {
     status: failed ? 'failed' : incomplete ? 'incomplete' : 'completed', phaseId: plan.phaseId,
     planSha256, clientCalls: unknownClientCallUpperBound > 0 ? null : clientCalls,
-    previousPhysicalAttempts: HISTORICAL_PHYSICAL_ATTEMPTS,
+    previousPhysicalAttempts: profile.historicalPhysicalAttempts,
     ...attemptBounds,
-    overallPhysicalAttemptCeiling: OVERALL_PHYSICAL_ATTEMPT_CEILING,
+    overallPhysicalAttemptCeiling: profile.overallPhysicalAttemptCeiling,
     phaseAttemptAllocation: { declared: plan.executionEnvelope.perArmClientHttpAttemptAllocation.declaredArmTotal,
       spent: unknownClientCallUpperBound > 0 ? null : clientCalls,
       knownSpent: clientCalls, unknownClientCallUpperBound,
@@ -2108,6 +2531,16 @@ export async function runExternalNormalQualificationV2({
   };
   summary.phaseSummary = await persistPhaseSummary(canonicalRoot, summary);
   return summary;
+}
+
+export async function runExternalNormalQualificationV2(input = {}) {
+  return runExternalNormalQualificationCore(input);
+}
+
+export async function runExternalNormalQualificationR2(input = {}) {
+  if (typeof input.executeCase !== 'function') throw new Error('external_normal_r2_case_executor_required');
+  const trustedR2Execution = await prepareExternalNormalR2Execution(input);
+  return runExternalNormalQualificationCore(input, trustedR2Execution);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
