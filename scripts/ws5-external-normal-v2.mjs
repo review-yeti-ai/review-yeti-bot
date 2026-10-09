@@ -55,6 +55,12 @@ const LAUNCHER_SOURCE_PATHS = Object.freeze([
 ]);
 const FORBIDDEN_KEYS = /^(?:expected|oracle|label|verdict|gate|score|quality|answer|reference|ground_truth)(?:$|[_-])/iu;
 const PRIVATE_PROVIDER_REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const SAFE_PRE_CHILD_FAILURES = new Set([
+  'case_environment:required_binding_missing',
+  'inference_credential:inference_credential_unavailable',
+  'pinned_image:pinned_worker_image_unavailable',
+  'container_spawn:docker_launcher_unavailable',
+]);
 
 export function externalNormalV2AttemptBounds(knownClientCalls, unknownClientCallUpperBound = 0) {
   if (!Number.isSafeInteger(knownClientCalls) || knownClientCalls < 0
@@ -78,6 +84,14 @@ export function externalNormalV2AttemptBounds(knownClientCalls, unknownClientCal
 
 export function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+export function safeExternalNormalV2PreChildFailure(error) {
+  if (!error || typeof error !== 'object' || error.clientAttemptsMayHaveBeenSent !== false) return undefined;
+  const failure = error.preChildFailure;
+  if (!failure || typeof failure !== 'object' || typeof failure.stage !== 'string' || typeof failure.code !== 'string'
+    || !SAFE_PRE_CHILD_FAILURES.has(`${failure.stage}:${failure.code}`)) return undefined;
+  return { stage: failure.stage, code: failure.code };
 }
 
 async function readRepositoryFileWithoutSymlinks(repositoryRoot, relativePath) {
@@ -1779,6 +1793,7 @@ export async function runExternalNormalQualificationV2({
       failed = true;
       incomplete = true;
       const mayHaveSentRequests = error?.clientAttemptsMayHaveBeenSent === true && armCallAllocation > 0;
+      const preChildFailure = safeExternalNormalV2PreChildFailure(error);
       let partial = validatedExecutionReceipt;
       if (!partial && rawExecutionReceipt) {
         try { partial = validateExecutionReceipt(rawExecutionReceipt, stepCalls); } catch { /* preserve count when the receipt shape is invalid */ }
@@ -1813,6 +1828,7 @@ export async function runExternalNormalQualificationV2({
           recoveredCandidateAttemptLimit: recovered.candidateCount, recoveredSidecarSha256: recovered.sidecarSha256,
           workerAttestorAttemptsBlockedBeforeFetch: recovered.blockedAttestorTailCount } : {}),
         failureCode: 'case_execution_or_artifact_validation_failed',
+        ...(preChildFailure ? { preChildFailure } : {}),
         assessment: { status: 'failed', reason: 'case_execution_or_artifact_validation_failed' },
         providerCalls: partial?.providerCalls?.length ? partial.providerCalls : recoveredCalls };
       stepResults.push(stepResultForCapture);

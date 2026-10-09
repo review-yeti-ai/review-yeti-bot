@@ -94,10 +94,19 @@ const IMAGE_RESULT_MARKER = '__EXTERNAL_NORMAL_V2_RESULT__';
 const MAX_IMAGE_STDOUT_BYTES = 512 * 1024;
 const MAX_IMAGE_STDOUT_LINE_BYTES = 128 * 1024;
 
-type ExternalNormalV2ChildError = Error & { clientAttemptsMayHaveBeenSent: boolean };
+type ExternalNormalV2PreChildFailure =
+  | { stage: 'case_environment'; code: 'required_binding_missing' }
+  | { stage: 'inference_credential'; code: 'inference_credential_unavailable' }
+  | { stage: 'pinned_image'; code: 'pinned_worker_image_unavailable' }
+  | { stage: 'container_spawn'; code: 'docker_launcher_unavailable' };
 
-function childExecutionError(code: string, clientAttemptsMayHaveBeenSent: boolean): ExternalNormalV2ChildError {
-  return Object.assign(new Error(code), { clientAttemptsMayHaveBeenSent });
+type ExternalNormalV2ChildError = Error & { clientAttemptsMayHaveBeenSent: boolean;
+  preChildFailure?: ExternalNormalV2PreChildFailure };
+
+function childExecutionError(code: string, clientAttemptsMayHaveBeenSent: boolean,
+  preChildFailure?: ExternalNormalV2PreChildFailure): ExternalNormalV2ChildError {
+  return Object.assign(new Error(code), { clientAttemptsMayHaveBeenSent,
+    ...(preChildFailure ? { preChildFailure } : {}) });
 }
 
 const QUALIFICATION_ENV_ALLOWLIST = [
@@ -109,6 +118,37 @@ const QUALIFICATION_ENV_ALLOWLIST = [
   'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO', 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF',
   'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH', 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256',
 ] as const;
+const WORKER_CASE_REQUIRED_ENV_KEYS = [
+  'NODE_ENV', 'OPENAI_BASE_URL', 'REVIEW_MODEL', 'REVIEW_CONFIG_DIGEST', 'REVIEW_POLICY_DIGEST',
+  'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET', 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID',
+  'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER', 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO',
+  'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF', 'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH',
+  'REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256',
+] as const;
+
+function buildPinnedWorkerCaseEnvironment(binding: ExternalNormalV2PrivateBinding): Env {
+  const source = binding.sourceDescriptor;
+  const [sourceOwner, sourceRepo] = source.repository.split('/');
+  const workerEnv: Env = {
+    NODE_ENV: 'production',
+    OPENAI_BASE_URL: binding.transport.selectedBaseUrl,
+    REVIEW_MODEL: binding.transport.modelAlias,
+    REVIEW_CONFIG_DIGEST: binding.policy.effectiveConfigSha256,
+    REVIEW_POLICY_DIGEST: binding.policy.effectivePolicySha256,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: source.repository,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID: String(source.repositoryId),
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER: sourceOwner,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO: sourceRepo,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF: source.sourceRef,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH: source.path,
+    REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256: source.contentSha256,
+  };
+  if (!sourceOwner || !sourceRepo || WORKER_CASE_REQUIRED_ENV_KEYS.some((key) => !workerEnv[key]?.trim())) {
+    throw childExecutionError('external_normal_v2_worker_case_environment_invalid', false,
+      { stage: 'case_environment', code: 'required_binding_missing' });
+  }
+  return workerEnv;
+}
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -885,7 +925,8 @@ function runPinnedWorkerContainer(input: {
   try { child = spawnImpl('docker', args, { env: launchEnv, stdio: ['pipe', 'pipe', 'ignore'] }); }
   catch {
     stdinBytes.fill(0);
-    return Promise.reject(childExecutionError('external_normal_v2_docker_launcher_unavailable', false));
+    return Promise.reject(childExecutionError('external_normal_v2_docker_launcher_unavailable', false,
+      { stage: 'container_spawn', code: 'docker_launcher_unavailable' }));
   }
   return new Promise((resolveResult, rejectResult) => {
     let pending = Buffer.alloc(0);
@@ -946,8 +987,12 @@ function runPinnedWorkerContainer(input: {
       combined.fill(0);
       if (pending.length > MAX_IMAGE_STDOUT_LINE_BYTES) fail('external_normal_v2_child_stdout_line_limit_exceeded');
     });
-    child.once('error', () => { clean(); rejectResult(childExecutionError('external_normal_v2_docker_launcher_unavailable',
-      input.mode === '--external-normal-v2-case' && child.pid !== undefined)); });
+    child.once('error', () => {
+      const clientAttemptsMayHaveBeenSent = input.mode === '--external-normal-v2-case' && child.pid !== undefined;
+      clean();
+      rejectResult(childExecutionError('external_normal_v2_docker_launcher_unavailable', clientAttemptsMayHaveBeenSent,
+        clientAttemptsMayHaveBeenSent ? undefined : { stage: 'container_spawn', code: 'docker_launcher_unavailable' }));
+    });
     child.once('close', (code) => {
       if (didReject) { clean(); return; }
       if (code !== 0 || !resultLine) {
@@ -987,7 +1032,11 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
   const ensureImage = (digest: string) => {
     const imageRef = pinnedImageReference(digest);
     if (inspectedImageRef !== imageRef) {
-      (input.assertImageAvailable ?? assertPinnedImageAvailable)(imageRef);
+      try { (input.assertImageAvailable ?? assertPinnedImageAvailable)(imageRef); }
+      catch {
+        throw childExecutionError('external_normal_v2_pinned_worker_image_unavailable_locally', false,
+          { stage: 'pinned_image', code: 'pinned_worker_image_unavailable' });
+      }
       inspectedImageRef = imageRef;
     }
     return imageRef;
@@ -1038,6 +1087,7 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
       || projection.policy.effectivePolicySha256 !== targetBinding.effectivePolicySha256) {
       throw new Error('external_normal_v2_private_case_binding_mismatch');
     }
+    const workerEnv = buildPinnedWorkerCaseEnvironment(privateBinding);
     const imageRef = ensureImage(projection.runtime.workerImageDigest);
     if (context.clientCallAllocation !== outerCallAllocationForArm(projection.arm)) {
       throw new Error('external_normal_v2_arm_execution_envelope_mismatch');
@@ -1049,15 +1099,18 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
     if (policyRootInfo.isSymbolicLink() || !policyRootInfo.isDirectory() || (policyRootInfo.mode & 0o077) !== 0) {
       throw new Error('external_normal_v2_policy_root_invalid_or_not_private');
     }
-    const workerEnv: Env = { NODE_ENV: 'production',
-      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID: String(projection.policy.policySource.repositoryId) };
     let inferenceCredential: string | undefined;
     let caseRequestJson = '';
     try {
       if (!EXTERNAL_NORMAL_V2_CREDENTIAL_FREE_ARMS.has(projection.arm)) {
-        inferenceCredential = await input.readInferenceKeyInMemory(context.signal);
+        try { inferenceCredential = await input.readInferenceKeyInMemory(context.signal); }
+        catch {
+          throw childExecutionError('external_normal_v2_parent_inference_credential_unavailable', false,
+            { stage: 'inference_credential', code: 'inference_credential_unavailable' });
+        }
         if (!isValidInferenceCredential(inferenceCredential)) {
-          throw new Error('external_normal_v2_parent_inference_credential_invalid');
+          throw childExecutionError('external_normal_v2_parent_inference_credential_invalid', false,
+            { stage: 'inference_credential', code: 'inference_credential_unavailable' });
         }
       }
       caseRequestJson = JSON.stringify({ projection, clientCallAllocation: context.clientCallAllocation,
