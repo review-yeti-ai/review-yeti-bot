@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.122.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.5...v1.122.6) (2026-10-09)
+
+
+### Bug Fixes
+
+* forward arm call allocation to executor ([#1458](https://github.com/review-yeti-ai/review-yeti-bot/issues/1458)) ([88b84cb](https://github.com/review-yeti-ai/review-yeti-bot/commit/88b84cb707599fe4e1a83c47d1a1d257d6350e6f))
+
 ## [1.122.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.4...v1.122.5) (2026-10-09)
 
 
