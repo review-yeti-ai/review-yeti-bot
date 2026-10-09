@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.128.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.127.0...v1.128.0) (2026-10-09)
+
+
+### Features
+
+* **cf-mcp:** implement unified edge MCP server with mutating tools and SSE transport ([#1480](https://github.com/review-yeti-ai/review-yeti-bot/issues/1480)) ([e4943ae](https://github.com/review-yeti-ai/review-yeti-bot/commit/e4943ae88d89e6265b08e590bb9c361513aa3e73))
+
 ## [1.127.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.126.0...v1.127.0) (2026-10-09)
 
 
