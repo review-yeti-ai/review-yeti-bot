@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.122.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.6...v1.122.7) (2026-10-09)
+
+
+### Bug Fixes
+
+* preserve failed qualification evidence and receipts ([#1461](https://github.com/review-yeti-ai/review-yeti-bot/issues/1461)) ([98a0d2e](https://github.com/review-yeti-ai/review-yeti-bot/commit/98a0d2ef9f0a8bfa36186d4e6ab29d7ea8a1100b))
+
 ## [1.122.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.5...v1.122.6) (2026-10-09)
 
 
