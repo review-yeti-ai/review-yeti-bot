@@ -32,7 +32,7 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
     assert.deepEqual(res.result, {});
   });
 
-  it('handles "tools/list" returning all 9 registered Review Yeti tools', async () => {
+  it('handles "tools/list" returning all 12 registered Review Yeti tools', async () => {
     const res = await defaultMcpRouter.handleRpc({
       jsonrpc: '2.0',
       id: 2,
@@ -42,7 +42,7 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
     assert.equal(res.jsonrpc, '2.0');
     assert.ok(res.result);
     assert.ok(Array.isArray(res.result.tools));
-    assert.equal(res.result.tools.length, 9);
+    assert.equal(res.result.tools.length, 12);
 
     const toolNames = res.result.tools.map((t: any) => t.name);
     assert.ok(toolNames.includes('review_yeti_query_active_jobs'));
@@ -54,6 +54,18 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
     assert.ok(toolNames.includes('review_yeti_trigger_review'));
     assert.ok(toolNames.includes('review_yeti_cancel_review'));
     assert.ok(toolNames.includes('review_yeti_purge_cache'));
+    assert.ok(toolNames.includes('review_yeti_attest_pr_gate'));
+    assert.ok(toolNames.includes('review_yeti_dispute_finding'));
+    assert.ok(toolNames.includes('review_yeti_reply_review_thread'));
+  });
+
+  it('supports unprefixed tool name aliases and legacy aliases', () => {
+    assert.ok(defaultMcpRouter.getTool('attest_pr_gate'));
+    assert.ok(defaultMcpRouter.getTool('dispute_finding'));
+    assert.ok(defaultMcpRouter.getTool('reply_review_thread'));
+    assert.ok(defaultMcpRouter.getTool('trigger_review'));
+    assert.ok(defaultMcpRouter.getTool('get_review_findings'));
+    assert.ok(defaultMcpRouter.getTool('review_yeti_get_review_findings'));
   });
 
   it('rejects invalid JSON-RPC version with error code -32600', async () => {
