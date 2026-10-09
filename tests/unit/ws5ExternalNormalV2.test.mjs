@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { verifyQualificationFixtureAllowlist } from '../../scripts/normal-engine-qualification-fixtures.mjs';
@@ -41,6 +41,204 @@ function privateBinding(canonicalPath = path.join(tmpdir(), 'ws5-private-phase-r
       runtimeManifestSha256: '2'.repeat(64), publicationAttestationSha256: '3'.repeat(64) },
   };
 }
+
+const fixtureBytes = (value) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+
+async function createCoordinatorHarness(repositoryRoot) {
+  const { plan: template, bundle, planSha256 } = await runner.readFrozenExternalNormalV2Plan(repositoryRoot);
+  const tempRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'ws5-v2-allocation-forwarding-')));
+  const phaseRoot = path.join(tempRoot, 'phase-root');
+  const policyInputRoot = path.join(tempRoot, 'policy-inputs');
+  await mkdir(phaseRoot, { mode: 0o700 });
+  await chmod(phaseRoot, 0o700);
+  const phaseRootInfo = await lstat(phaseRoot);
+  await mkdir(policyInputRoot, { mode: 0o700 });
+  await chmod(policyInputRoot, 0o700);
+
+  const transport = { selectedBaseUrl: 'https://gateway.example.invalid/v1', modelAlias: 'fixture-reviewer' };
+  const sourceDescriptor = { repository: 'exampleorg/review-policy-fixture', repositoryId: 73,
+    sourceRef: 'b'.repeat(40), path: 'policy/candidate.json', candidateHead: 'd'.repeat(40),
+    preparedFixtureReviewHead: 'e'.repeat(40) };
+  const runtime = { finalSourceRevision: template.runtime.preparedConfigHelperSourceRevision,
+    workerImageDigest: `sha256:${'1'.repeat(64)}`, runtimeManifestSha256: '2'.repeat(64),
+    publicationAttestationSha256: '3'.repeat(64) };
+  const candidateBytes = fixtureBytes({ schema: 'exampleorg.review-policy.v1' });
+  const candidateRawSha256 = runner.sha256(candidateBytes);
+  sourceDescriptor.contentSha256 = candidateRawSha256;
+
+  const normalizedPlan = { schema: 'ReviewPolicyExecutionPlan.v1', fixture: 'coordinator-allocation-forwarding' };
+  const executionPlanNormalizedSha256 = runner.sha256(Buffer.from(runner.canonicalJson(normalizedPlan)));
+  const executionBytes = fixtureBytes({ plan: normalizedPlan,
+    normalized_plan_sha256: executionPlanNormalizedSha256 });
+
+  const preparedExecution = { version: 'PreparedReviewExecution.v1', transport: {
+    baseUrl: transport.selectedBaseUrl, model: transport.modelAlias }, config: { review_configuration_receipt: {
+      effective: { composed_budget: { central_policy_max_tasks: 8, central_policy_total_turns: 100,
+        provider_attempt_budget: { capability_version: 'ReviewProviderAttemptBudget.v1', total_limit: 100,
+          investigation_limit: 88, verifier_reserve: 12, operator_override_value: null } },
+      provider: { requested_effort: 'medium' } } } } };
+  const preparedExecutionBytes = fixtureBytes(preparedExecution);
+  const preparedExecutionSha256 = runner.sha256(preparedExecutionBytes);
+  const centralEffectiveConfigProjectionSha256 = '4'.repeat(64);
+  const effectiveConfigSha256 = '5'.repeat(64);
+  const effectivePolicySha256 = '6'.repeat(64);
+  const targetProjections = template.targetProjections.map((target) => ({ repositoryId: target.repositoryId,
+    normalizedPlanSha256: runner.sha256(Buffer.from(`normalized:${target.repositoryId}`)),
+    centralEffectiveConfigProjectionSha256, preparedExecutionSha256, effectiveConfigSha256,
+    effectivePolicySha256, preparedExecutionFile: `prepared-host/prepared-${target.repositoryId}-default.json` }));
+
+  const preparedFixture = { schema: 'exampleorg.review-yeti-prepared-execution-host-fixture.v1',
+    preparation_only: true, review_posting_enabled: false,
+    candidate_policy: { repository: sourceDescriptor.repository, repository_id: sourceDescriptor.repositoryId,
+      source_sha: sourceDescriptor.sourceRef, path: sourceDescriptor.path, content_sha256: candidateRawSha256 },
+    prepared_by: { repository: 'review-yeti-ai/review-yeti-bot',
+      source_sha: template.runtime.preparedConfigHelperSourceRevision, helper: 'preparePublishingPolicy',
+      helper_path: 'src/review/preparedPublishingPolicy.ts',
+      helper_source_file_sha256: template.runtime.preparedConfigHelperSourceFileSha256,
+      helper_compiled_file_sha256: template.runtime.preparedConfigHelperCompiledFileSha256,
+      worker_image_index_digest: runtime.workerImageDigest,
+      worker_runtime_manifest_sha256: runtime.runtimeManifestSha256 },
+    transport: { baseUrl: transport.selectedBaseUrl, model: transport.modelAlias },
+    targets: template.targetProjections.map((target) => ({ id: target.repositoryId, repository: target.repository,
+      scenarios: { default: { prepared_execution_file: `prepared-${target.repositoryId}-default.json`,
+        prepared_execution_sha256: preparedExecutionSha256, effective_config_digest: effectiveConfigSha256,
+        effective_policy_digest: effectivePolicySha256 } } })) };
+  const preparedFixtureBytes = fixtureBytes(preparedFixture);
+  const preparedExecutionFixtureSha256 = runner.sha256(preparedFixtureBytes);
+
+  const providerAttemptBudget = { capability_version: 'ReviewProviderAttemptBudget.v1', total_limit: 100,
+    investigation_limit: 88, verifier_reserve: 12, operator_override_value: null };
+  const projections = { schema: 'exampleorg.review-yeti-offline-candidate-projections.v2',
+    prepared_execution_fixture_path: 'review-yeti-v2-prepared-execution-host.fixture.json',
+    prepared_execution_fixture_sha256: preparedExecutionFixtureSha256, source_revision: sourceDescriptor.sourceRef,
+    review_posting_enabled: false, policy_sha256: candidateRawSha256,
+    cases: template.targetProjections.map((target, index) => ({ id: target.repositoryId,
+      repository: target.repository, pr_number: target.prNumber,
+      central_projection: { normalized_plan_sha256: targetProjections[index].normalizedPlanSha256,
+        plan: { effective_configuration: { effective: { provider: { model_alias: transport.modelAlias,
+          requested_effort: 'medium' } } }, lane: { max_review_assignments: 24 } } },
+      prepared_execution: { default: { prepared_execution_sha256: preparedExecutionSha256,
+        effective_config_digest: effectiveConfigSha256, provider_attempt_budget: providerAttemptBudget } } })) };
+  const projectionsBytes = fixtureBytes(projections);
+
+  const preparedManifest = { schema: 'exampleorg.review-yeti-prepared-execution-host-bundle.v1',
+    fixture_path: 'review-yeti-v2-prepared-execution-host.fixture.json',
+    fixture_sha256: preparedExecutionFixtureSha256,
+    prepared_from: { repository: sourceDescriptor.repository, repository_id: sourceDescriptor.repositoryId,
+      source_sha: sourceDescriptor.sourceRef, content_sha256: candidateRawSha256 },
+    helper: { repository: 'review-yeti-ai/review-yeti-bot', helper: 'preparePublishingPolicy',
+      helper_path: 'src/review/preparedPublishingPolicy.ts',
+      source_sha: template.runtime.preparedConfigHelperSourceRevision,
+      source_file_sha256: template.runtime.preparedConfigHelperSourceFileSha256,
+      compiled_file_sha256: template.runtime.preparedConfigHelperCompiledFileSha256 },
+    transport: { provider: 'bifrost', baseUrl: transport.selectedBaseUrl, model: transport.modelAlias },
+    samples: template.targetProjections.flatMap((target) => ['default', 'comparison'].map((scenario) => ({
+      id: target.repositoryId, scenario, path: `prepared-host/prepared-${target.repositoryId}-default.json`,
+      prepared_execution_sha256: preparedExecutionSha256, effective_config_digest: effectiveConfigSha256,
+      effective_policy_digest: effectivePolicySha256,
+      provider_attempt_budget: { total_limit: 100, investigation_limit: 88, verifier_reserve: 12,
+        operator_override_value: null } }))) };
+  const preparedManifestBytes = fixtureBytes(preparedManifest);
+
+  const inputFiles = [
+    ['review-yeti-v2-candidate.json', candidateBytes],
+    ['review-yeti-v2-candidate-execution-plan.fixture.json', executionBytes],
+    ['review-yeti-v2-prepared-execution-host.fixture.json', preparedFixtureBytes],
+    ['review-yeti-v2-synthetic-execution-plans-host.fixture.json', projectionsBytes],
+    ['review-yeti-v2-prepared-execution-host.manifest.json', preparedManifestBytes],
+  ];
+  for (const [relativePath, bytes] of inputFiles) {
+    const targetPath = path.join(policyInputRoot, relativePath);
+    await writeFile(targetPath, bytes, { mode: 0o600 });
+    await chmod(targetPath, 0o600);
+  }
+  for (const target of targetProjections) {
+    const targetPath = path.join(policyInputRoot, target.preparedExecutionFile);
+    await mkdir(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+    await writeFile(targetPath, preparedExecutionBytes, { mode: 0o600 });
+    await chmod(targetPath, 0o600);
+  }
+
+  const policyInputDigests = {
+    candidatePath: runner.sha256(candidateBytes), executionPlanFixturePath: runner.sha256(executionBytes),
+    preparedExecutionFixturePath: runner.sha256(preparedFixtureBytes), syntheticProjectionPath: runner.sha256(projectionsBytes),
+    preparedExecutionManifestPath: runner.sha256(preparedManifestBytes),
+  };
+  const binding = { schemaVersion: runner.EXTERNAL_NORMAL_V2_PRIVATE_BINDING_SCHEMA,
+    credentialBindingSha256: 'a'.repeat(64),
+    phaseRoot: { canonicalPath: phaseRoot, uid: phaseRootInfo.uid, gid: phaseRootInfo.gid,
+      mode: phaseRootInfo.mode & 0o777, initialEntryCount: 0 },
+    sourceDescriptor,
+    transport,
+    managementBaseUrl: 'https://management.example.invalid',
+    policy: { candidateGitBlob: '7'.repeat(40), executionPlanFixtureSha256: runner.sha256(executionBytes),
+      executionPlanNormalizedSha256, preparedExecutionFixtureSha256, preparedExecutionManifestSha256: runner.sha256(preparedManifestBytes),
+      preparedExecutionSha256, syntheticProjectionFixtureSha256: runner.sha256(projectionsBytes),
+      centralEffectiveConfigProjectionSha256, effectiveConfigSha256, effectivePolicySha256,
+      v1Promotion: 'fixture-v1-promotion', policyInputDigests, targetProjections },
+    runtime };
+  assert.doesNotThrow(() => runner.validateExternalNormalV2PrivateBinding(binding));
+  return { tempRoot, phaseRoot, policyInputRoot, binding, template, bundle, planSha256 };
+}
+
+test('forwards the frozen arm allocation through the real coordinator executor context', async () => {
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const harness = await createCoordinatorHarness(repositoryRoot);
+  let observedProjection;
+  let observedContext;
+  const now = Date.now();
+  try {
+    const boundPlan = runner.bindExternalNormalV2PrivateInputs(harness.template, harness.binding);
+    const canonicalRoot = await realpath(harness.phaseRoot);
+    const rootInfo = await lstat(canonicalRoot);
+    const outputRootSha256 = runner.sha256(canonicalRoot);
+    const artifactStoreIdentitySha256 = runner.sha256(runner.canonicalJson({ pathSha256: outputRootSha256,
+      uid: rootInfo.uid, gid: rootInfo.gid, mode: rootInfo.mode & 0o777 }));
+    const launcherSource = await runner.readExternalNormalV2LauncherSourceDigests(repositoryRoot);
+    const tuple = runner.buildExternalNormalV2AuthorizationTuple(boundPlan, harness.planSha256,
+      outputRootSha256, launcherSource.tupleSha256, artifactStoreIdentitySha256, harness.binding);
+    const authorization = { schemaVersion: runner.EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA, rootGo: true,
+      grantId: randomUUID(), issuedAt: new Date(now - 1_000).toISOString(),
+      expiresAt: new Date(now + 60_000).toISOString(), binding: tuple };
+
+    const result = await runner.runExternalNormalQualificationV2({ repositoryRoot,
+      policyInputRoot: harness.policyInputRoot, phaseRoot: harness.phaseRoot,
+      privateBinding: harness.binding, authorization, now: () => now,
+      captureExactLogs: async () => ({ status: 'no_calls' }),
+      preflightExecution: async ({ origin, sourceRevision, workerImageDigest, runtimeManifestSha256 }) => ({
+        status: 'ready', mode: 'dns_tls_only', originSha256: runner.sha256(origin), sourceRevision,
+        workerImageDigest, runtimeManifestSha256, resolvedAddressCount: 1,
+        resolvedAddressSetSha256: '8'.repeat(64), tlsAuthorized: true, tlsProtocol: 'TLSv1.3',
+        peerCertificateSha256: '9'.repeat(64), tlsAddressSha256: 'a'.repeat(64), elapsedMs: 1,
+      }),
+      executeCase: async (projection, context) => {
+        observedProjection = projection;
+        observedContext = context;
+        const error = new Error('synthetic stop before child execution');
+        error.clientAttemptsMayHaveBeenSent = false;
+        error.preChildFailure = { stage: 'case_environment', code: 'required_binding_missing' };
+        throw error;
+      },
+    });
+
+    assert.ok(observedProjection, JSON.stringify(result));
+    assert.equal(observedProjection.stepId, 'v2-p2-first');
+    assert.equal(observedProjection.arm, 'p2-only');
+    assert.equal(observedContext.clientCallAllocation, 58);
+    assert.equal(result.status, 'failed');
+    assert.equal(result.clientCalls, 0);
+    assert.equal(result.phaseAttemptAllocation.declared, 292);
+    assert.equal(result.phaseAttemptAllocation.spent, 0);
+    assert.equal(result.phaseAttemptAllocation.unspendableReserve, 8);
+    assert.equal(result.phaseAttemptAllocation.declared + result.phaseAttemptAllocation.unspendableReserve, 300);
+    assert.equal(result.stepResults[0].clientCallAllocation, 58);
+    assert.deepEqual(result.stepResults[0].preChildFailure,
+      { stage: 'case_environment', code: 'required_binding_missing' });
+    assert.equal(JSON.stringify(result).includes('synthetic stop before child execution'), false);
+  } finally {
+    await rm(harness.tempRoot, { recursive: true, force: true });
+  }
+});
 
 test('does not invoke a worker without a root-go receipt bound to the exact phase', async () => {
   assert.ok(runner, 'the current-source external v2 runner module must exist');
