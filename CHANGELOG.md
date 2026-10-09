@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.122.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.4...v1.122.5) (2026-10-09)
+
+
+### Bug Fixes
+
+* bind qualification case worker environment ([#1456](https://github.com/review-yeti-ai/review-yeti-bot/issues/1456)) ([5fecf16](https://github.com/review-yeti-ai/review-yeti-bot/commit/5fecf16b475e67154f1a576f1392398b18869da6))
+
 ## [1.122.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.3...v1.122.4) (2026-10-09)
 
 
