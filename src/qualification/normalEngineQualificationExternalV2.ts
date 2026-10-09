@@ -15,7 +15,7 @@ import {
   persistNormalEngineQualificationComposedResources,
   persistNormalEngineQualificationProviderIdentifiers,
   persistNormalEngineQualificationReceipt,
-  WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE,
+  externalNormalQualificationHistoryLineageForCase,
 } from './normalEngineQualification';
 import { NormalEngineQualificationReceiptPersistError, persistNormalEngineQualificationProviderCapture,
   runNormalEngineQualificationCase } from './normalEngineQualificationWorker';
@@ -695,15 +695,19 @@ export function createBoundExternalNormalV2CaseExecutor(input: {
     }
     let historyArtifactFailure = false;
     try {
-      const lineage = WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE;
-      const historyArtifacts = projection.arm === 'repair-introduction'
-        ? await historyStore.historyArtifactsFor({ runId: receipt.runId, sequenceId: lineage.sequenceId,
-          caseId: lineage.sourceCaseId })
-        : projection.arm === 'repair-head-history' || projection.arm === 'repair-head-empty-history'
-          ? await historyStore.artifactsForRepairRun({ runId: receipt.runId,
+      const capturesHistory = projection.arm === 'repair-introduction'
+        || projection.arm === 'repair-head-history' || projection.arm === 'repair-head-empty-history';
+      let historyArtifacts: Awaited<ReturnType<NormalEngineQualificationHistoryStore['historyArtifactsFor']>> = [];
+      if (capturesHistory) {
+        const lineage = externalNormalQualificationHistoryLineageForCase(projection.caseId);
+        if (!lineage) throw new Error('external_normal_v2_history_lineage_unavailable');
+        historyArtifacts = projection.arm === 'repair-introduction'
+          ? await historyStore.historyArtifactsFor({ runId: receipt.runId, sequenceId: lineage.sequenceId,
+            caseId: lineage.sourceCaseId })
+          : await historyStore.artifactsForRepairRun({ runId: receipt.runId,
             sourceRunId: projection.historyRunId ?? null, sequenceId: lineage.sequenceId,
-            sourceCaseId: lineage.sourceCaseId, repairCaseId: lineage.repairCaseId })
-          : [];
+            sourceCaseId: lineage.sourceCaseId, repairCaseId: lineage.repairCaseId });
+      }
       for (const artifact of historyArtifacts) {
         artifactReferences.push({ path: artifact.recordPath, sha256: artifact.recordSha256 });
       }

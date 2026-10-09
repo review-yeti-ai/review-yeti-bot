@@ -31,6 +31,7 @@ import {
   NORMAL_ENGINE_QUALIFICATION_PLAN_ID,
   NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT,
   buildNormalEngineQualificationSourceInput,
+  isExternalNormalQualificationBundle,
   parseNormalEngineQualificationPlanRequest,
   parseNormalEngineQualificationRequest,
   normalEngineQualificationComposedResourcesRelativePath,
@@ -543,7 +544,7 @@ function qualificationHistorySource(
         return {
           status: 'unavailable' as const, events: [], findings: [], eventCount: 0, findingCount: 0,
           loadedEventCount: 0, loadedFindingCount: 0, eventOmittedCount: 0, findingOmittedCount: 0,
-          legacyOmittedCount: 0, omissions: [request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2'
+          legacyOmittedCount: 0, omissions: [isExternalNormalQualificationBundle(request.fixture.bundleVersion)
             ? 'injected required-history transport failure before planning' : 'qualification history access unavailable for this fixed arm'],
         };
       },
@@ -841,6 +842,7 @@ export async function runNormalEngineQualificationCase(
   dependencies: NormalEngineQualificationWorkerDependencies = {},
 ): Promise<NormalEngineQualificationReceipt> {
   const request = parseNormalEngineQualificationRequest(env);
+  const externalNormalBundle = isExternalNormalQualificationBundle(request.fixture.bundleVersion);
   assertNoAmbientComposedEngineOverrides();
   const caseEnv = qualificationChildEnvironment(env, request.arm);
   const manifestPath = String(caseEnv.REVIEW_RUNTIME_MANIFEST_PATH || '/app/runtime-manifest.json').trim();
@@ -1111,7 +1113,7 @@ export async function runNormalEngineQualificationCase(
           if (!sourceCoverageControlSatisfied) throw new Error('normal_engine_qualification_coverage_fault_not_observed');
           throw new Error('normal_engine_qualification_required_source_window_unavailable');
         }
-        if (request.arm === 'repair-head-history-unavailable' && request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2') {
+        if (request.arm === 'repair-head-history-unavailable' && externalNormalBundle) {
           if (!history) throw new Error('normal_engine_qualification_required_history_source_missing');
           const historyLoad = await history.read(executionSignal);
           requiredHistoryControlSatisfied = historyLoad.status === 'unavailable' && historyLoad.eventCount === 0
@@ -1143,7 +1145,7 @@ export async function runNormalEngineQualificationCase(
     && workerError instanceof Error && workerError.message === 'normal_engine_qualification_required_source_window_unavailable') {
     workerError = undefined;
   }
-  if (request.arm === 'repair-head-history-unavailable' && request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2'
+  if (request.arm === 'repair-head-history-unavailable' && externalNormalBundle
     && requiredHistoryControlSatisfied && workerError instanceof Error
     && workerError.message === 'normal_engine_qualification_required_history_unavailable_transport') {
     workerError = undefined;
@@ -1151,8 +1153,7 @@ export async function runNormalEngineQualificationCase(
   assertNoAmbientComposedEngineOverrides();
 
   if ((request.phase === 'repair-head' || request.phase === 'same-head-recheck')
-    && !(request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2'
-      && request.arm === 'repair-head-history-unavailable' && requiredHistoryControlSatisfied)) {
+    && !(externalNormalBundle && request.arm === 'repair-head-history-unavailable' && requiredHistoryControlSatisfied)) {
     const lineage = request.historyLineage;
     if (!lineage) throw new Error('normal_engine_qualification_history_lineage_missing');
     const mode = request.arm === 'repair-head-empty-history' ? 'empty-context' as const
@@ -1306,7 +1307,7 @@ export async function runNormalEngineQualificationCase(
     && (!sourceCoverageControlSatisfied || calls.length !== 0 || gateDecision.eligible)) {
     workerError ||= new Error('qualification source coverage fault did not abstain before model calls');
   }
-  if (request.arm === 'repair-head-history-unavailable' && request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2'
+  if (request.arm === 'repair-head-history-unavailable' && externalNormalBundle
     && (!requiredHistoryControlSatisfied || calls.length !== 0 || gateDecision.eligible)) {
     workerError ||= new Error('qualification required history transport failure did not abstain before model calls');
   }
@@ -1479,7 +1480,7 @@ export async function runNormalEngineQualificationCase(
     ...(request.arm === 'preflight-source-coverage-control' ? { preflight: {
       control: 'source-coverage-unavailable' as const, sourceCoverage: 'unavailable' as const,
       withheldPath: 'src/modules/module-01.ts' as const, physicalClientCalls: 0 as const,
-    } } : request.arm === 'repair-head-history-unavailable' && request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2'
+    } } : request.arm === 'repair-head-history-unavailable' && externalNormalBundle
       && requiredHistoryControlSatisfied ? { preflight: {
         control: 'required-history-unavailable-transport' as const, historyStatus: 'unavailable' as const,
         historyFailureClass: 'transport' as const, historySourceRunIdSha256: sha256(request.historyRunId!),
@@ -1524,7 +1525,7 @@ export async function runNormalEngineQualificationCase(
         || (request.arm === 'adjudicator-recheck' && !adjudicatorRecheckControlSatisfied) ? 'failed' : workerError
         ? ['repair-head-verifier-unavailable', 'provider-failure', 'resource-exhaustion'].includes(request.arm) ? 'incomplete' : 'failed'
         : (request.arm === 'preflight-source-coverage-control' && sourceCoverageControlSatisfied)
-          || (request.arm === 'repair-head-history-unavailable' && request.fixture.bundleVersion === 'WS5ExternalNormalBundle.v2'
+          || (request.arm === 'repair-head-history-unavailable' && externalNormalBundle
             && requiredHistoryControlSatisfied) ? 'incomplete'
           : workerOutcome.gateOutcomeClass === 'incomplete' || workerOutcome.workerOutcomeClass === 'incomplete' ? 'incomplete'
           : composedResourcesComplete ? 'completed' : 'failed',

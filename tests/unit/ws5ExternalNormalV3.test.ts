@@ -149,6 +149,12 @@ describe('WS5 external normal v3 fixture boundary', () => {
       .toThrow('normal_engine_qualification_history_lineage_binding_invalid');
   });
 
+  it('requires an explicit parent run for the required-history-unavailable control', () => {
+    expect(() => parseNormalEngineQualificationRequest(
+      requestEnv('ws5-r2-c003', 'repair-head-history-unavailable')))
+      .toThrow('normal_engine_qualification_contract_invalid');
+  });
+
   it('uses the R2 normal and bounded-control budget profiles by exact case and arm', () => {
     expect(normalEngineQualificationBudgetProfileForArm('p2-only', 'ws5-r2-c001'))
       .toBe('normal-canary-240s-capture-outside-child');

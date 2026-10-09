@@ -93,6 +93,22 @@ export const WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE = Object.freeze({
   repairHeadSha: '81d910d8a133563e76e5a700ba65fb58b7dcdc72',
 });
 
+export function isExternalNormalQualificationBundle(bundleVersion: string): boolean {
+  return bundleVersion === EXTERNAL_V2_BUNDLE_VERSION || bundleVersion === EXTERNAL_V3_BUNDLE_VERSION;
+}
+
+export function externalNormalQualificationHistoryLineageForCase(caseId: string) {
+  if (caseId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sourceCaseId
+    || caseId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairCaseId) {
+    return WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE;
+  }
+  if (caseId === WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE.sourceCaseId
+    || caseId === WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE.repairCaseId) {
+    return WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE;
+  }
+  return undefined;
+}
+
 const LEGACY_REPAIR_HISTORY_LINEAGE: NormalEngineQualificationHistoryLineage = {
   sequenceId: 'ws5-repair-sequence-v1',
   sourceCaseId: 'ws5-sequence-a-v1',
@@ -1796,6 +1812,7 @@ function historyLineageForRequest(
 ): NormalEngineQualificationHistoryLineage | null {
   const needsLineage = arm === 'repair-introduction' || arm === 'adjudicator-recheck' || arm.startsWith('repair-head-');
   if (!needsLineage) return null;
+  const externalLineageForCase = externalNormalQualificationHistoryLineageForCase(caseId);
   const raw = Object.fromEntries(Object.entries(HISTORY_LINEAGE_ENV_KEYS).map(([key, envName]) => [key, nonempty(env, envName)])) as
     Record<keyof NormalEngineQualificationHistoryLineage, string>;
   const present = Object.values(raw).filter(Boolean).length;
@@ -1803,13 +1820,8 @@ function historyLineageForRequest(
   if (present === 0) {
     if (caseId === LEGACY_REPAIR_HISTORY_LINEAGE.sourceCaseId || caseId === LEGACY_REPAIR_HISTORY_LINEAGE.repairCaseId) {
       lineage = { ...LEGACY_REPAIR_HISTORY_LINEAGE };
-    } else if (caseId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sourceCaseId
-      || caseId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairCaseId) {
-      const { bundleSha256: _bundleSha256, ...externalLineage } = WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE;
-      lineage = { ...externalLineage };
-    } else if (caseId === WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE.sourceCaseId
-      || caseId === WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE.repairCaseId) {
-      const { bundleSha256: _bundleSha256, ...externalLineage } = WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE;
+    } else if (externalLineageForCase) {
+      const { bundleSha256: _bundleSha256, ...externalLineage } = externalLineageForCase;
       lineage = { ...externalLineage };
     } else {
       throw new Error('normal_engine_qualification_history_lineage_required');
@@ -1827,10 +1839,7 @@ function historyLineageForRequest(
     || !SHA_PATTERN.test(lineage.repairBaseSha) || !SHA_PATTERN.test(lineage.repairHeadSha)) {
     throw new Error('normal_engine_qualification_history_lineage_invalid');
   }
-  const externalLineage = lineage.sequenceId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sequenceId
-    ? WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE
-    : lineage.sequenceId === WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE.sequenceId
-      ? WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE : undefined;
+  const externalLineage = externalLineageForCase?.sequenceId === lineage.sequenceId ? externalLineageForCase : undefined;
   const expectedLineage: NormalEngineQualificationHistoryLineage = externalLineage ? {
     sequenceId: externalLineage.sequenceId,
     sourceCaseId: externalLineage.sourceCaseId,
