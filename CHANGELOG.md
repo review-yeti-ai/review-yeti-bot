@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.122.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.3...v1.122.4) (2026-10-09)
+
+
+### Bug Fixes
+
+* extend qualification preflight budget ([#1454](https://github.com/review-yeti-ai/review-yeti-bot/issues/1454)) ([012b878](https://github.com/review-yeti-ai/review-yeti-bot/commit/012b878ed570cd3bcde4930b3b4c42b2a5e55c02))
+
 ## [1.122.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.2...v1.122.3) (2026-10-08)
 
 
