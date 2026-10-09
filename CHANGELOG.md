@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.129.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.128.0...v1.129.0) (2026-10-09)
+
+
+### Features
+
+* **edge:** cut over ingress to Cloudflare native operator (Phase 4) [no-linear] ([#1482](https://github.com/review-yeti-ai/review-yeti-bot/issues/1482)) ([3ee16a7](https://github.com/review-yeti-ai/review-yeti-bot/commit/3ee16a73e459759ee27a2b5d3a2c08cb623c3858))
+
 ## [1.128.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.127.0...v1.128.0) (2026-10-09)
 
 
