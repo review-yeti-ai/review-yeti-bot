@@ -134,11 +134,11 @@ flowchart TD
   * Verified live responses for `/health`, `/ready`, `/api/mcp`, `/api/webhooks/github` (fail-closed HMAC rejection), and `/api/dispatch/action`.
 * Enabled automatic edge worker deployment in `.github/workflows/cf-orchestrator-ci.yaml`.
 
-### Phase 5: DOKS Decommission & Cluster Quota Reclamation (Next)
-* Remove `clusters/doks-nyc1/apps/ct-review-system/` from Flux in deployment infrastructure.
-* Land ADR documenting the 100% Cloudflare-Native architecture.
-* Delete the `ct-review-system` namespace on DOKS.
-* Reclaim 3,328 MiB of RAM and 775m CPU for remaining essential workloads.
+### Phase 5: DOKS Decommission & Cluster Quota Reclamation (Complete)
+* Removed `ct-review-system` from Flux apps Kustomization in deployment infrastructure (PR #1612).
+* Landed ADR 0003 documenting the 100% Cloudflare-Native architecture.
+* Deleted the `ct-review-system` namespace on DOKS Kubernetes.
+* Reclaimed 3,328 MiB of RAM limit (1,088 MiB requests) and 775m CPU control-plane quota, plus 8,704 MiB RAM and 850m CPU worker quota.
 
 ---
 
