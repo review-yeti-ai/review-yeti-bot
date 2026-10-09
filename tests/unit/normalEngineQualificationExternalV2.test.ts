@@ -8,6 +8,7 @@ import { PassThrough } from 'node:stream';
 import { canonicalJson } from '../../src/review/reviewCore';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { NormalEngineQualificationReceiptPersistError } from '../../src/qualification/normalEngineQualificationWorker';
+import { NormalEngineQualificationHistoryStore } from '../../src/qualification/normalEngineQualificationHistory';
 import { createBoundExternalNormalV2CaseExecutor, createPinnedWorkerImageExternalNormalV2Adapter,
   trustedPreparedBudget, validateExternalNormalV2PrivateBinding } from '../../src/qualification/normalEngineQualificationExternalV2';
 
@@ -194,6 +195,79 @@ describe('current-source external v2 worker adapter', () => {
     }] });
     expect(receipt).toMatchObject({ outcome: { gateOutcomeClass: 'completed_eligible' }, qualificationControl: 'none',
       artifactReferences: [{ canonicalSha256: expect.any(String) }] });
+    await rm(storeRoot, { recursive: true, force: true });
+  });
+
+  it('captures v3 source and repair history artifacts under the pinned R2 lineage', async () => {
+    const storeRoot = await mkdtemp(path.join(tmpdir(), 'external-v3-history-artifacts-'));
+    await chmod(storeRoot, 0o700);
+    const historyStore = new NormalEngineQualificationHistoryStore(storeRoot);
+    const sourceHistoryPath = `normal-engine-qualification-store/${'nq_' + '2'.repeat(32)}`
+      + '/ws5-r2-h001/ws5-r2-c002/history/record.json';
+    const repairVerificationPath = `normal-engine-qualification-store/${'nq_' + '3'.repeat(32)}`
+      + '/ws5-r2-h001/ws5-r2-c003/verification-set/record.json';
+    const sourceHistory = { kind: 'history', runId: `nq_${'2'.repeat(32)}`, sourceRunId: null,
+      sequenceId: 'ws5-r2-h001', caseId: 'ws5-r2-c002', findingEventId: null,
+      recordPath: sourceHistoryPath, recordSha256: 'a'.repeat(64), sha256Path: `${sourceHistoryPath}.sha256`,
+      sha256FileSha256: 'b'.repeat(64) };
+    const repairVerification = { kind: 'verification-set', runId: `nq_${'3'.repeat(32)}`,
+      sourceRunId: `nq_${'2'.repeat(32)}`, sequenceId: 'ws5-r2-h001', caseId: 'ws5-r2-c003', findingEventId: null,
+      recordPath: repairVerificationPath, recordSha256: 'c'.repeat(64), sha256Path: `${repairVerificationPath}.sha256`,
+      sha256FileSha256: 'd'.repeat(64) };
+    const historyArtifactsFor = vi.spyOn(historyStore, 'historyArtifactsFor')
+      .mockResolvedValue([sourceHistory] as never);
+    const artifactsForRepairRun = vi.spyOn(historyStore, 'artifactsForRepairRun')
+      .mockResolvedValue([repairVerification] as never);
+
+    for (const fixture of [
+      { caseId: 'ws5-r2-c002', inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-002.json',
+        inputSha256: 'f1b5a2f7b838cacd039972da5de7cb066ca838882e31e840190850591ae5c37f',
+        arm: 'repair-introduction', phase: 'repair-introduction', runId: `nq_${'2'.repeat(32)}` },
+      { caseId: 'ws5-r2-c003', inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-003.json',
+        inputSha256: '6fcfa7a254eb960ae3a2ef79358e06205e6812c748e353679ead1578b11a1e84',
+        arm: 'repair-head-history', phase: 'repair-head', runId: `nq_${'3'.repeat(32)}`,
+        historyRunId: `nq_${'2'.repeat(32)}` },
+    ]) {
+      const caseProjection = { ...projection, stepId: `r2-${fixture.caseId}`, caseId: fixture.caseId,
+        inputPath: fixture.inputPath, inputSha256: fixture.inputSha256, arm: fixture.arm,
+        historyMode: fixture.arm === 'repair-introduction' ? 'fresh introduction' : 'complete history',
+        targetRepositoryId: 73002, sourceBundleSha256: 'd83b08f04890604fd1bfe98105e6db7ad70945afb1e5471218ca62d2204cc3bc',
+        runId: fixture.runId, ...(fixture.historyRunId ? { historyRunId: fixture.historyRunId } : {}),
+        policy: { ...projection.policy, preparedExecutionFile: 'prepared-host/prepared-73002-default.json' } };
+      const receipt = { runId: fixture.runId, phase: fixture.phase, target: { caseId: fixture.caseId },
+        outcome: { workerOutcomeClass: 'completed_ineligible', gateOutcomeClass: 'completed_ineligible', agreement: 'agreement',
+          canonicalEvidenceSha256: 'e'.repeat(64), gateDecisionSha256: 'f'.repeat(64) },
+        history: { source: 'isolated-qualification-store', loadStatus: 'complete', snapshotIdSha256: '1'.repeat(64),
+          contextDigest: '2'.repeat(64), parentRunIdSha256: fixture.historyRunId
+            ? createHash('sha256').update(fixture.historyRunId).digest('hex') : null },
+        qualificationControl: 'none', preflight: null,
+        testBudget: { resourceExhaustion: null }, provider: { calls: [] }, terminal: { status: 'completed' } };
+      const runCase = vi.fn(async () => {
+        await persistFakeReceipt(storeRoot, receipt);
+        return receipt as never;
+      });
+      const executor = createBoundExternalNormalV2CaseExecutor({ baseEnv: bindings(), historyStore,
+        readInferenceKeyInMemory: () => 'qualification-test-key', runCase: runCase as never });
+      let clientCallCount = 0;
+      const result = await executor(caseProjection, { signal: new AbortController().signal,
+        deadlineAt: Date.now() + 240_000, artifactStoreRoot: storeRoot,
+        captureOutsideChild: true, clientCallAllocation: 58,
+        recordClientCall() { clientCallCount += 1; }, get clientCallCount() { return clientCallCount; },
+        get blockedClientCallCount() { return 0; } });
+      expect(runCase).toHaveBeenCalledOnce();
+      expect(clientCallCount).toBe(0);
+      expect(result).toMatchObject({ clientCalls: 0, terminalStatus: 'completed', providerCalls: [] });
+      if (fixture.arm === 'repair-introduction') {
+        expect(historyArtifactsFor).toHaveBeenLastCalledWith({ runId: fixture.runId,
+          sequenceId: 'ws5-r2-h001', caseId: 'ws5-r2-c002' });
+        expect(result.artifactReferences).toContainEqual({ path: sourceHistoryPath, sha256: 'a'.repeat(64) });
+      } else {
+        expect(artifactsForRepairRun).toHaveBeenLastCalledWith({ runId: fixture.runId,
+          sourceRunId: fixture.historyRunId, sequenceId: 'ws5-r2-h001', sourceCaseId: 'ws5-r2-c002',
+          repairCaseId: 'ws5-r2-c003' });
+        expect(result.artifactReferences).toContainEqual({ path: repairVerificationPath, sha256: 'c'.repeat(64) });
+      }
+    }
     await rm(storeRoot, { recursive: true, force: true });
   });
 

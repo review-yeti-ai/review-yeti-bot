@@ -324,6 +324,40 @@ describe('normal engine qualification source and capture', () => {
       terminal: { status: 'incomplete' }, publication: { githubWrites: 0, appChecks: 0, reviews: 0, comments: 0 } });
   });
 
+  it('treats required v3 history transport failure as incomplete before source diff planning and all model calls', async () => {
+    const { env } = providerFailureEnvironment();
+    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+      value: 'qualification-test-key' });
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUN_ID = 'nq_abcdef0123456789abcdef0123456789';
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_CASE_ID = 'ws5-r2-c003';
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'repair-head-history-unavailable';
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_HISTORY_RUN_ID = 'nq_0123456789abcdef0123456789abcdef';
+    let publisherCalls = 0;
+    const fetcher = vi.fn(async () => { throw new Error('v3 history preflight must not call a model'); });
+    const result = await runNormalEngineQualificationCase(env, {
+      verifyRuntimeManifest: async () => VALID_ENV.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256!,
+      runPublishingWorker: async (workerEnv, workerDeps) => {
+        publisherCalls += 1;
+        return runPublishingReviewWorker(workerEnv, workerDeps);
+      },
+      providerFetchImplementation: fetcher as never,
+      persistProviderCapture: providerCapturePersistenceStub(),
+      persistCaseReceipt: async () => ({ receiptPath: 'private/receipt.json', sha256Path: 'private/receipt.sha256',
+        receiptSha256: 'e'.repeat(64), idempotent: false }),
+    });
+    expect(publisherCalls).toBe(1);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ arm: 'repair-head-history-unavailable', qualificationControl: 'history-unavailable',
+      preflight: { control: 'required-history-unavailable-transport', historyStatus: 'unavailable',
+        historyFailureClass: 'transport',
+        historySourceRunIdSha256: createHash('sha256').update('nq_0123456789abcdef0123456789abcdef').digest('hex'),
+        physicalClientCalls: 0 },
+      history: { source: 'unavailable', loadStatus: 'unavailable' },
+      provider: { calls: [] },
+      outcome: { workerOutcomeClass: 'incomplete', gateOutcomeClass: 'incomplete', agreement: 'incomplete' },
+      terminal: { status: 'incomplete' }, publication: { githubWrites: 0, appChecks: 0, reviews: 0, comments: 0 } });
+  });
+
   it('loads the immutable eleven-arm outcome-blind plan and exact fixture pins', () => {
     const plan = parseNormalEngineQualificationPlanDescriptor();
     expect(plan).toMatchObject({

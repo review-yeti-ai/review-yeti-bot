@@ -21,6 +21,8 @@ const requiredDynamicPackages = [
 ];
 
 const workerModuleContractPath = path.resolve(packageRoot, 'src/cli/workerSelfTestModules.json');
+const HOST_ONLY_QUALIFICATION_PLAN_PATH =
+  'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json';
 
 const forbiddenPathParts = new Set(['.git', 'tests', 'coverage']);
 
@@ -145,10 +147,13 @@ async function main() {
   // The phase plan is a host-side ROOTGO descriptor that pins the built image
   // and runtime manifest. Copying it into the image would create a digest cycle.
   for (const fixture of await verifyQualificationFixtureAllowlist(packageRoot, [
-    'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json',
+    HOST_ONLY_QUALIFICATION_PLAN_PATH,
   ])) {
     files.add(relativeSafe(path.resolve(packageRoot, fixture.path)));
   }
+
+  // Keep the host-only descriptor out of the image even if the file tracer discovers it.
+  files.delete(HOST_ONLY_QUALIFICATION_PLAN_PATH);
 
   for (const relative of files) await copyFile(relative);
 
