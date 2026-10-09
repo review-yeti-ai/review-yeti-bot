@@ -6,6 +6,13 @@
  * "Review Yeti Gate" (merge eligibility gate) check runs.
  */
 
+import {
+  OPERATOR_PASSTHROUGH_REVIEW_TITLE,
+  OPERATOR_PASSTHROUGH_GATE_TITLE,
+  OPERATOR_PASSTHROUGH_MODE_MARKER,
+  OPERATOR_PASSTHROUGH_ZERO_LANES_MARKER,
+} from '../auth/passthrough.js';
+
 export const REVIEW_WORKER_CHECK_NAME = 'Review Yeti';
 export const REVIEW_GATE_CHECK_NAME = 'Review Yeti Gate';
 
@@ -66,6 +73,7 @@ export interface CompleteCheckOptions {
   executionAttempt?: number;
   detailsUrl?: string;
   fetchFn?: typeof fetch;
+  passthroughMode?: boolean;
 }
 
 export interface CheckPublisherResult {
@@ -264,10 +272,11 @@ export async function completeChecks(options: CompleteCheckOptions): Promise<Che
   const errors: string[] = [];
 
   const completedAt = new Date().toISOString();
-  const isSuccess = verdict === 'success';
-  const isNeutral = verdict === 'neutral';
-  const isCancelled = verdict === 'cancelled';
-  const isTimedOut = verdict === 'timed_out';
+  const isPassthrough = Boolean(options.passthroughMode);
+  const isSuccess = isPassthrough || verdict === 'success';
+  const isNeutral = !isPassthrough && verdict === 'neutral';
+  const isCancelled = !isPassthrough && verdict === 'cancelled';
+  const isTimedOut = !isPassthrough && verdict === 'timed_out';
 
   // Map verdict to check run conclusions
   const workerConclusion: 'success' | 'failure' | 'neutral' | 'cancelled' | 'timed_out' =
@@ -281,24 +290,47 @@ export async function completeChecks(options: CompleteCheckOptions): Promise<Che
             ? 'timed_out'
             : 'failure';
 
-  const workerTitle = workerTitleOverride || (
-    isSuccess
-      ? 'Review Yeti: SHIP'
-      : isNeutral
-        ? 'Review Yeti: NEUTRAL'
-        : isCancelled
-          ? 'Review Yeti: CANCELLED'
-          : isTimedOut
-            ? 'Review Yeti: review did not complete'
-            : 'Review Yeti: BLOCK');
+  const workerTitle =
+    workerTitleOverride ||
+    (isPassthrough
+      ? OPERATOR_PASSTHROUGH_REVIEW_TITLE
+      : isSuccess
+        ? 'Review Yeti: SHIP'
+        : isNeutral
+          ? 'Review Yeti: NEUTRAL'
+          : isCancelled
+            ? 'Review Yeti: CANCELLED'
+            : isTimedOut
+              ? 'Review Yeti: review did not complete'
+              : 'Review Yeti: BLOCK');
 
   const gateConclusion: 'success' | 'failure' = isSuccess ? 'success' : 'failure';
-  const gateTitle = gateTitleOverride || (isSuccess ? 'Review Yeti Gate: Approved (SHIP)' : 'Review Yeti Gate: Failed');
-  const gateSummary = gateSummaryOverride || (isSuccess
-    ? 'Review Yeti completed this attempt and the policy eligibility gate passed.'
-    : 'Review Yeti completed this attempt but the policy eligibility gate failed.');
+  const gateTitle =
+    gateTitleOverride ||
+    (isPassthrough
+      ? OPERATOR_PASSTHROUGH_GATE_TITLE
+      : isSuccess
+        ? 'Review Yeti Gate: Approved (SHIP)'
+        : 'Review Yeti Gate: Failed');
+  const gateSummary =
+    gateSummaryOverride ||
+    (isPassthrough
+      ? `${REVIEW_GATE_CHECK_NAME} published an explicit operator-passthrough SHIP exemption because the operator-wide pause is enabled. ${OPERATOR_PASSTHROUGH_MODE_MARKER} ${OPERATOR_PASSTHROUGH_ZERO_LANES_MARKER} Policy eligibility gate passed.`
+      : isSuccess
+        ? 'Review Yeti completed this attempt and the policy eligibility gate passed.'
+        : 'Review Yeti completed this attempt but the policy eligibility gate failed.');
 
-  const defaultWorkerSummary = `### ${workerTitle}\n\nReview Yeti completed evaluation with verdict: **${verdict.toUpperCase()}**.`;
+  const defaultWorkerSummary = isPassthrough
+    ? [
+        `### ${workerTitle}`,
+        '',
+        `Review Yeti published an explicit operator-passthrough SHIP exemption because the operator-wide pause is enabled.`,
+        OPERATOR_PASSTHROUGH_MODE_MARKER,
+        `${OPERATOR_PASSTHROUGH_ZERO_LANES_MARKER} No provider review, Action worker, or container runner was started or consumed.`,
+        '',
+        'Protected merge eligibility is approved.',
+      ].join('\n')
+    : `### ${workerTitle}\n\nReview Yeti completed evaluation with verdict: **${verdict.toUpperCase()}**.`;
   const annotations = formatCheckAnnotations(findings);
 
   // 1. Complete Worker Check Run

@@ -1,4 +1,5 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult } from '../types.js';
+import { isPassthroughMode } from '../../types.js';
 
 export interface AttestPrGateOutput {
   attested: boolean;
@@ -71,6 +72,53 @@ export const attestPrGateTool: McpToolHandler = {
           {
             type: 'text',
             text: 'Error: "repo", "pr_number", and "head_sha" are required parameters.',
+          },
+        ],
+      };
+    }
+
+    // In operator passthrough mode, always attest gate with zero blockers
+    if (isPassthroughMode(env)) {
+      const timestamp = new Date().toISOString();
+      const secret =
+        env.REVIEW_YETI_ATTESTATION_SECRET ||
+        process.env?.REVIEW_YETI_ATTESTATION_SECRET ||
+        'review-yeti-gate-attestation-secret';
+      const attestationToken = await computeGateAttestationHmac(
+        secret,
+        `${owner}/${repo}#${prNumber}@${headSha}:${timestamp}`
+      );
+
+      const output: AttestPrGateOutput = {
+        attested: true,
+        head_sha: headSha,
+        gate_status: 'PASSED',
+        blockers: [],
+        attestation_token: attestationToken,
+        timestamp,
+      };
+
+      const lines = [
+        '### Review Yeti Gate Attestation: ✅ PASSED (Passthrough Mode)',
+        `- **Repository:** ${owner}/${repo}`,
+        `- **Pull Request:** #${prNumber}`,
+        `- **Head Commit:** \`${headSha}\``,
+        '- **Attested:** Yes (operator passthrough authorized)',
+        `- **Timestamp:** ${timestamp}`,
+        `- **Attestation Token:** \`${attestationToken}\``,
+        '',
+        'Operator passthrough mode is active. Zero review lanes ran. Protected merge eligibility is approved.',
+      ];
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: lines.join('\n'),
+          },
+          {
+            type: 'text',
+            text: JSON.stringify(output, null, 2),
           },
         ],
       };

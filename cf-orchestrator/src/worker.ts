@@ -3,6 +3,7 @@ import { ReviewRunDO } from './reviewRunDO.js';
 import { ReviewJobWorkflow } from './reviewJobWorkflow.js';
 import { handleMergeGroupAttestation } from './mergeGroupAttestation.js';
 import type { DebounceMessagePayload, Env, ReviewRunSpec } from './types.js';
+import { isPassthroughMode } from './types.js';
 import { purgeExpiredR2WorkspaceCaches } from './runners/r2WorkspaceCache.js';
 import { defaultMcpRouter, constantTimeEquals } from './mcp/mcpRouter.js';
 import { handleDashboardApi } from './api/dashboardRoutes.js';
@@ -459,6 +460,24 @@ export default {
               baseSha: pr.base?.sha || '',
               installationId: payload.installation?.id ?? 0,
             };
+
+            // In passthrough mode, bypass the 60s debounce queue and trigger the workflow immediately
+            if (isPassthroughMode(env)) {
+              if (env.REVIEW_JOB_WORKFLOW && typeof env.REVIEW_JOB_WORKFLOW.create === 'function') {
+                await env.REVIEW_JOB_WORKFLOW.create({
+                  id: runId,
+                  params: spec,
+                });
+              }
+
+              return Response.json({
+                status: 'dispatched_immediate',
+                runId,
+                passthrough: true,
+                supersededRunId,
+                supersededRunIds: Array.from(runsToCancel),
+              });
+            }
 
             const debounceItem: DebounceMessagePayload = {
               ...spec,
