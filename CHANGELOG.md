@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.122.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.7...v1.122.8) (2026-10-09)
+
+
+### Bug Fixes
+
+* verify gateway route identity for qualification ([#1463](https://github.com/review-yeti-ai/review-yeti-bot/issues/1463)) ([84918c4](https://github.com/review-yeti-ai/review-yeti-bot/commit/84918c4234841b85688208122249cc87bcfb8aaf))
+
 ## [1.122.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.6...v1.122.7) (2026-10-09)
 
 
