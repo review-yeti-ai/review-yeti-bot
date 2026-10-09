@@ -4,8 +4,13 @@ import type { Env, ReviewRunSpec } from './types.js';
 import { type ContainerRunner, CloudflareContainerRunner } from './runners/containerRunner.js';
 import { DigitalOceanAgentRunner } from './runners/digitalOceanAgentRunner.js';
 import type { RunnerCostDetails } from './runners/runnerCost.js';
-import { buildGitHubReviewPayload } from './reviewPublisher.js';
-import { signGitHubAppJwt } from './auth/githubEdgeAuth.js';
+import {
+  buildGitHubReviewPayload,
+  createPendingChecks,
+  completeChecks,
+  publishStickyComment,
+  getInstallationToken,
+} from './github/index.js';
 
 export interface ReceiptAuditRecord {
   runId: string;
@@ -34,42 +39,13 @@ export async function mintScopedGitHubToken(
   // If real GitHub App credentials are configured, mint RS256 JWT & authentic token
   if (env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY) {
     try {
-      let instId = installationId;
-      if (!instId && owner && repo) {
-        const jwt = await signGitHubAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
-        const installRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/installation`, {
-          headers: {
-            Authorization: `Bearer ${jwt}`,
-            Accept: 'application/vnd.github.v3+json',
-            'User-Agent': 'ReviewYeti-Edge/2.4',
-          },
-        });
-        if (installRes.ok) {
-          const installData = (await installRes.json()) as any;
-          instId = installData?.id;
-        }
-      }
-
-      if (instId) {
-        const jwt = await signGitHubAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
-        const tokenRes = await fetch(`https://api.github.com/app/installations/${instId}/access_tokens`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${jwt}`,
-            Accept: 'application/vnd.github.v3+json',
-            'User-Agent': 'ReviewYeti-Edge/2.4',
-          },
-        });
-        if (tokenRes.ok) {
-          const tokenData = (await tokenRes.json()) as any;
-          if (tokenData?.token) {
-            return {
-              token: tokenData.token,
-              digest: `sha256:token_${runId}`,
-              expiresAt: tokenData.expires_at ? new Date(tokenData.expires_at).getTime() : Date.now() + 3600_000,
-            };
-          }
-        }
+      const token = await getInstallationToken(env, owner, repo, installationId);
+      if (token) {
+        return {
+          token,
+          digest: `sha256:token_${runId}`,
+          expiresAt: Date.now() + 3000_000,
+        };
       }
     } catch (err) {
       console.warn('GitHub App token minting error, falling back to ephemeral token:', err);
@@ -224,7 +200,27 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
           throw new Error(`Lease acquisition failed: ${leaseData.reason}`);
         }
 
-        return { granted: true, workerId, fencingEpoch: 1 };
+        let workerCheckId: number | undefined;
+        let gateCheckId: number | undefined;
+
+        if (tokenInfo?.token && !tokenInfo.token.startsWith('ghs_dummy_') && !tokenInfo.token.startsWith('ghs_ephemeral_')) {
+          try {
+            const pending = await createPendingChecks({
+              owner,
+              repo,
+              headSha,
+              runId,
+              token: tokenInfo.token,
+              executionAttempt: 1,
+            });
+            workerCheckId = pending.workerCheckId;
+            gateCheckId = pending.gateCheckId;
+          } catch (err) {
+            console.warn('Non-fatal error creating pending checks:', err);
+          }
+        }
+
+        return { granted: true, workerId, fencingEpoch: 1, workerCheckId, gateCheckId };
       });
 
       // Handle queue wait if slot was not immediately granted
@@ -409,12 +405,44 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
           recordedAt: new Date().toISOString(),
         });
 
-        // Publish PR Review & Inline Suggestions to GitHub
-        if (tokenInfo?.token && !tokenInfo.token.startsWith('ghs_dummy_')) {
+        // Publish Authoritative GitHub Checks, Sticky Comment & PR Review to GitHub
+        if (tokenInfo?.token && !tokenInfo.token.startsWith('ghs_dummy_') && !tokenInfo.token.startsWith('ghs_ephemeral_')) {
           const verdict = (receiptPayload.verdict || (containerOutcome.status === 'succeeded' ? 'success' : 'action_required')) as 'success' | 'action_required' | 'neutral';
           const summaryMarkdown = receiptPayload.summaryMarkdown || receiptPayload.summary || `## Review Yeti Verdict: ${String(verdict).toUpperCase()}`;
           const findings = receiptPayload.findings || [];
 
+          // 1. Complete Check Runs ("Review Yeti" and "Review Yeti Gate")
+          await completeChecks({
+            owner,
+            repo,
+            headSha,
+            runId,
+            token: tokenInfo.token,
+            verdict,
+            summaryMarkdown,
+            findings,
+            workerCheckId: (lease as any)?.workerCheckId,
+            gateCheckId: (lease as any)?.gateCheckId,
+            executionAttempt: 1,
+          });
+
+          // 2. Upsert Sticky Pull Request Overview Comment
+          await publishStickyComment({
+            owner,
+            repo,
+            prNumber,
+            headSha,
+            token: tokenInfo.token,
+            verdict,
+            findings,
+            metrics: {
+              totalTokens: containerOutcome.totalTokens,
+              durationMs: containerOutcome.durationMs,
+            },
+            runnerCost: containerOutcome.runnerCost,
+          });
+
+          // 3. Publish Line-Level Review and 1-Click Suggestions
           const reviewPayload = buildGitHubReviewPayload({
             commitId: headSha,
             verdict,
