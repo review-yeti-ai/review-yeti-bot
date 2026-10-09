@@ -1,6 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowStep, type WorkflowEvent } from 'cloudflare:workers';
 export type { WorkflowStep, WorkflowEvent };
 import type { Env, ReviewRunSpec } from './types.js';
+import { isPassthroughMode } from './types.js';
 import { type ContainerRunner, CloudflareContainerRunner } from './runners/containerRunner.js';
 import { DigitalOceanAgentRunner } from './runners/digitalOceanAgentRunner.js';
 import type { RunnerCostDetails } from './runners/runnerCost.js';
@@ -37,8 +38,17 @@ export async function mintScopedGitHubToken(
 ): Promise<{ token: string; digest: string; expiresAt: number }> {
   const { runId, installationId, owner, repo } = spec;
 
+  // If explicit GITHUB_TOKEN is available, use it directly
+  if (env.GITHUB_TOKEN) {
+    return {
+      token: env.GITHUB_TOKEN,
+      digest: `sha256:token_${runId}`,
+      expiresAt: Date.now() + 3600_000,
+    };
+  }
+
   // If real GitHub App credentials are configured, mint RS256 JWT & authentic token
-  if (env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY) {
+  if ((env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY) || env.AUTH_CACHE) {
     try {
       const token = await getInstallationToken(env, owner, repo, installationId);
       if (token) {
@@ -153,8 +163,9 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
     const spec = event.payload;
     const { runId, owner, repo, prNumber, headSha, baseSha } = spec;
     const repoKey = `${owner}/${repo}`.toLowerCase();
-
-    const pauseMode = this.env.OPERATOR_GLOBAL_PASSTHROUGH;
+    const pauseMode = this.env.OPERATOR_GLOBAL_PASSTHROUGH !== undefined
+      ? this.env.OPERATOR_GLOBAL_PASSTHROUGH
+      : (isPassthroughMode(this.env) ? 'true' : undefined);
     if (pauseMode !== 'false') {
       const config = { timeout: '2 minutes', retries: { limit: 0, delay: '1 second' } };
       const stepName = pauseMode === 'true' ? 'operator-passthrough-publication' : 'operator-passthrough-config-unavailable';

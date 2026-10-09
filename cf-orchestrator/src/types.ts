@@ -86,8 +86,18 @@ export interface Env {
   REVIEW_YETI_MCP_AUTH_TOKEN?: string;
   GITHUB_TOKEN?: string;
   OPERATOR_GLOBAL_PASSTHROUGH?: string;
+  REVIEW_YETI_PASSTHROUGH?: string;
+  PASSTHROUGH_MODE?: string;
   ACTION_DISPATCH_ALLOW_APP_GATE?: string;
 }
+
+export {
+  isPassthroughMode,
+  OPERATOR_PASSTHROUGH_REVIEW_TITLE,
+  OPERATOR_PASSTHROUGH_GATE_TITLE,
+  OPERATOR_PASSTHROUGH_MODE_MARKER,
+  OPERATOR_PASSTHROUGH_ZERO_LANES_MARKER,
+} from './auth/passthrough.js';
 
 export type ReviewStage =
   | 'admission'

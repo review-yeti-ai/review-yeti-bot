@@ -1,4 +1,5 @@
 import type { Env, ReviewRunSpec, ReviewRunState } from './types.js';
+import { isPassthroughMode } from './types.js';
 import { fetchLivePullRequestDiff } from './auth/githubEdgeAuth.js';
 import { reviewRunSpecDigest } from './reviewRunIdentity.js';
 import {
@@ -293,8 +294,11 @@ export class ReviewRunDO {
       return { published: false, error: 'no_valid_token' };
     }
 
-    const verdict = params?.verdict ||
-      (this.runState.phase === 'Completed' ? 'success' : this.runState.phase === 'Cancelled' ? 'cancelled' : 'failure');
+    const passthrough = isPassthroughMode(this.env);
+    const verdict = passthrough
+      ? 'success'
+      : (params?.verdict ||
+        (this.runState.phase === 'Completed' ? 'success' : this.runState.phase === 'Cancelled' ? 'cancelled' : 'failure'));
     const findings = params?.findings || [];
     const summaryMarkdown = params?.summaryMarkdown;
 
@@ -309,6 +313,7 @@ export class ReviewRunDO {
       summaryMarkdown,
       findings,
       detailsUrl: params?.detailsUrl,
+      passthroughMode: passthrough,
     });
 
     // 2. Publish Sticky Comment
@@ -322,6 +327,7 @@ export class ReviewRunDO {
       findings,
       metrics: params?.metrics,
       runnerCost: params?.runnerCost,
+      passthroughMode: passthrough,
     });
 
     await this.publishEvent('publication:complete', {

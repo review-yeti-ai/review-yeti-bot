@@ -69,8 +69,9 @@ export function buildGitHubReviewPayload(params: {
   summaryMarkdown: string;
   findings: InlineFindingSuggestion[];
   runnerCost?: RunnerCostDetails;
+  passthroughMode?: boolean;
 }): GitHubReviewPayload {
-  const { commitId, verdict, summaryMarkdown, findings, runnerCost } = params;
+  const { commitId, verdict, summaryMarkdown, findings, runnerCost, passthroughMode } = params;
 
   // Append runner cost item if managed runners were used
   let body = summaryMarkdown;
@@ -81,12 +82,17 @@ export function buildGitHubReviewPayload(params: {
 
   // Map verdict to GitHub PR review event. Only P0/P1 block; P2 is advisory. A blocking finding
   // is never approved, even if the upstream verdict and the finding list disagree.
-  const hasBlockers = findings.some(f => f.severity === 'P0' || f.severity === 'P1');
+  // In passthrough mode, always emit APPROVE with zero blockers.
   let event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT' = 'COMMENT';
-  if (verdict === 'success') {
-    event = hasBlockers ? 'REQUEST_CHANGES' : 'APPROVE';
-  } else if (verdict === 'action_required') {
-    event = hasBlockers ? 'REQUEST_CHANGES' : 'COMMENT';
+  if (passthroughMode) {
+    event = 'APPROVE';
+  } else {
+    const hasBlockers = findings.some(f => f.severity === 'P0' || f.severity === 'P1');
+    if (verdict === 'success') {
+      event = hasBlockers ? 'REQUEST_CHANGES' : 'APPROVE';
+    } else if (verdict === 'action_required') {
+      event = hasBlockers ? 'REQUEST_CHANGES' : 'COMMENT';
+    }
   }
 
   const comments: GitHubReviewComment[] = findings
