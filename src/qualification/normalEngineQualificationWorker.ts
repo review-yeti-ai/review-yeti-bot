@@ -359,11 +359,15 @@ function requiredRecord(value: unknown, name: string): Record<string, unknown> {
   return record;
 }
 
-function budgetProfileForArm(arm: NormalEngineQualificationArm, caseId?: string): NormalEngineQualificationBudgetProfile {
-  if (caseId === 'ws5-current-1dd-v2-sequence-b' && arm === 'repair-head-history-unavailable') {
+export function normalEngineQualificationBudgetProfileForArm(
+  arm: NormalEngineQualificationArm, caseId?: string,
+): NormalEngineQualificationBudgetProfile {
+  if ((caseId === 'ws5-current-1dd-v2-sequence-b' || caseId === 'ws5-r2-c003')
+    && arm === 'repair-head-history-unavailable') {
     return 'required-history-preflight-15s';
   }
-  if (caseId?.startsWith('ws5-current-1dd-v2-')
+  if ((caseId?.startsWith('ws5-current-1dd-v2-')
+      || ['ws5-r2-c001', 'ws5-r2-c002', 'ws5-r2-c003'].includes(caseId || ''))
     && ['p2-only', 'repair-introduction', 'repair-head-history', 'repair-head-empty-history'].includes(arm)) {
     return 'normal-canary-240s-capture-outside-child';
   }
@@ -469,7 +473,7 @@ export function parseNormalEngineQualificationPlanDescriptor(bytes?: Buffer): Pa
     } else if (sourceParent !== undefined) {
       throw new Error('normal_engine_qualification_plan_unexpected_history_lineage');
     }
-    const profile = budgetProfileForArm(arm);
+    const profile = normalEngineQualificationBudgetProfileForArm(arm);
     steps.push({ descriptorRunId, arm, caseId, phase,
       historySourceDescriptorRunId: typeof sourceParent === 'string' ? sourceParent : null,
       budgetProfile: profile, inputSha256: pin.sha256, bundleSha256: pin.bundleSha256,
@@ -893,8 +897,9 @@ export async function runNormalEngineQualificationCase(
     .files.map((file) => file.path);
   const now = dependencies.now || Date.now;
   const startedAt = new Date(now()).toISOString();
-  const testBudgetProfile = dependencies.testBudgetProfile ?? budgetProfileForArm(request.arm, request.fixture.caseId);
-  if (testBudgetProfile !== budgetProfileForArm(request.arm, request.fixture.caseId)) {
+  const testBudgetProfile = dependencies.testBudgetProfile
+    ?? normalEngineQualificationBudgetProfileForArm(request.arm, request.fixture.caseId);
+  if (testBudgetProfile !== normalEngineQualificationBudgetProfileForArm(request.arm, request.fixture.caseId)) {
     throw new Error('normal_engine_qualification_test_budget_profile_mismatch');
   }
   const panelBudgetSeconds = panelSecondsForBudget(testBudgetProfile);

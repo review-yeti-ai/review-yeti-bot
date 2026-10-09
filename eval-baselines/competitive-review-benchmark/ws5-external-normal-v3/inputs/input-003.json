@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "WS5RepairReviewInput.v1",
+  "caseId": "ws5-r2-c003",
+  "source": {
+    "repository": {
+      "repositoryId": 73002,
+      "owner": "synthetic",
+      "repo": "fixture-sequence"
+    },
+    "prNumber": 52,
+    "baseSha": "e62ac7e8846d80864cacc65699268097caa31223",
+    "headSha": "81d910d8a133563e76e5a700ba65fb58b7dcdc72",
+    "changedPaths": [
+      "src/tenant/invoice-access.ts"
+    ],
+    "revisions": [
+      {
+        "commitSha": "b2beab2ab2c6369a0d6352a78af795d92246b7f3",
+        "treeSha": "f2513cc502492e4fdc741332e2b0552a9770fc0d",
+        "parentSha": null,
+        "commitTimestamp": "2026-10-09T00:02:00+00:00",
+        "commitMessage": "Synthetic fixture revision 1",
+        "files": [
+          {
+            "path": "src/tenant/invoice-access.ts",
+            "mode": "100644",
+            "gitBlobSha": "ad773bb95d89f50cac2d794e95035a08162720fb",
+            "sha256": "92865ec585480472a59dd4bb18646ebdd32f9d11f2de2e151c5cdd6378b12bf9",
+            "content": "export type Principal = { tenantId: string };\nexport type Invoice = { id: string; tenantId: string };\n\nexport function canReadInvoice(principal: Principal | undefined, invoice: Invoice): boolean {\n  if (principal === undefined) return false;\n  return principal.tenantId === invoice.tenantId;\n}\n"
+          },
+          {
+            "path": "test/invoice-access.test.ts",
+            "mode": "100644",
+            "gitBlobSha": "2fc4a26ee498052b07a93a14bc2d7b1f689a13a0",
+            "sha256": "718db17b506c43472e1394ecf363e525ad87aea618fdec7a2d9894e991bc13b7",
+            "content": "import { describe, expect, it } from \"vitest\";\nimport { canReadInvoice, Invoice } from \"../src/tenant/invoice-access\";\n\nconst invoice: Invoice = { id: \"inv-204\", tenantId: \"tenant-north\" };\n\ndescribe(\"canReadInvoice\", () => {\n  it(\"denies a missing authenticated principal\", () => {\n    expect(canReadInvoice(undefined, invoice)).toBe(false);\n  });\n  it(\"denies a principal from another tenant\", () => {\n    expect(canReadInvoice({ tenantId: \"tenant-south\" }, invoice)).toBe(false);\n  });\n});\n"
+          }
+        ]
+      },
+      {
+        "commitSha": "e62ac7e8846d80864cacc65699268097caa31223",
+        "treeSha": "86e4e120c12aaaf937ead208beb7100017a832c1",
+        "parentSha": "b2beab2ab2c6369a0d6352a78af795d92246b7f3",
+        "commitTimestamp": "2026-10-09T00:03:00+00:00",
+        "commitMessage": "Synthetic fixture revision 2",
+        "files": [
+          {
+            "path": "src/tenant/invoice-access.ts",
+            "mode": "100644",
+            "gitBlobSha": "a3af1c3e82e8dc067b78611cbb31cadf993378db",
+            "sha256": "fe60777306a4e1f4cd23d7490903e9a35d689f8f99cc559d4f2c347ff08c31d9",
+            "content": "export type Principal = { tenantId: string };\nexport type Invoice = { id: string; tenantId: string };\n\nexport function canReadInvoice(principal: Principal | undefined, invoice: Invoice): boolean {\n  const effectiveTenantId = principal?.tenantId ?? invoice.tenantId;\n  return effectiveTenantId === invoice.tenantId;\n}\n"
+          },
+          {
+            "path": "test/invoice-access.test.ts",
+            "mode": "100644",
+            "gitBlobSha": "2fc4a26ee498052b07a93a14bc2d7b1f689a13a0",
+            "sha256": "718db17b506c43472e1394ecf363e525ad87aea618fdec7a2d9894e991bc13b7",
+            "content": "import { describe, expect, it } from \"vitest\";\nimport { canReadInvoice, Invoice } from \"../src/tenant/invoice-access\";\n\nconst invoice: Invoice = { id: \"inv-204\", tenantId: \"tenant-north\" };\n\ndescribe(\"canReadInvoice\", () => {\n  it(\"denies a missing authenticated principal\", () => {\n    expect(canReadInvoice(undefined, invoice)).toBe(false);\n  });\n  it(\"denies a principal from another tenant\", () => {\n    expect(canReadInvoice({ tenantId: \"tenant-south\" }, invoice)).toBe(false);\n  });\n});\n"
+          }
+        ]
+      },
+      {
+        "commitSha": "81d910d8a133563e76e5a700ba65fb58b7dcdc72",
+        "treeSha": "f2513cc502492e4fdc741332e2b0552a9770fc0d",
+        "parentSha": "e62ac7e8846d80864cacc65699268097caa31223",
+        "commitTimestamp": "2026-10-09T00:04:00+00:00",
+        "commitMessage": "Synthetic fixture revision 3",
+        "files": [
+          {
+            "path": "src/tenant/invoice-access.ts",
+            "mode": "100644",
+            "gitBlobSha": "ad773bb95d89f50cac2d794e95035a08162720fb",
+            "sha256": "92865ec585480472a59dd4bb18646ebdd32f9d11f2de2e151c5cdd6378b12bf9",
+            "content": "export type Principal = { tenantId: string };\nexport type Invoice = { id: string; tenantId: string };\n\nexport function canReadInvoice(principal: Principal | undefined, invoice: Invoice): boolean {\n  if (principal === undefined) return false;\n  return principal.tenantId === invoice.tenantId;\n}\n"
+          },
+          {
+            "path": "test/invoice-access.test.ts",
+            "mode": "100644",
+            "gitBlobSha": "2fc4a26ee498052b07a93a14bc2d7b1f689a13a0",
+            "sha256": "718db17b506c43472e1394ecf363e525ad87aea618fdec7a2d9894e991bc13b7",
+            "content": "import { describe, expect, it } from \"vitest\";\nimport { canReadInvoice, Invoice } from \"../src/tenant/invoice-access\";\n\nconst invoice: Invoice = { id: \"inv-204\", tenantId: \"tenant-north\" };\n\ndescribe(\"canReadInvoice\", () => {\n  it(\"denies a missing authenticated principal\", () => {\n    expect(canReadInvoice(undefined, invoice)).toBe(false);\n  });\n  it(\"denies a principal from another tenant\", () => {\n    expect(canReadInvoice({ tenantId: \"tenant-south\" }, invoice)).toBe(false);\n  });\n});\n"
+          }
+        ]
+      }
+    ],
+    "patches": [
+      {
+        "path": "src/tenant/invoice-access.ts",
+        "patch": "diff --git a/src/tenant/invoice-access.ts b/src/tenant/invoice-access.ts\nindex a3af1c3..ad773bb 100644\n--- a/src/tenant/invoice-access.ts\n+++ b/src/tenant/invoice-access.ts\n@@ -1,7 +1,7 @@\n export type Principal = { tenantId: string };\n export type Invoice = { id: string; tenantId: string };\n \n export function canReadInvoice(principal: Principal | undefined, invoice: Invoice): boolean {\n-  const effectiveTenantId = principal?.tenantId ?? invoice.tenantId;\n-  return effectiveTenantId === invoice.tenantId;\n+  if (principal === undefined) return false;\n+  return principal.tenantId === invoice.tenantId;\n }\n",
+        "sha256": "0e7f54ec6da7ffa3744e789023380b04403701b0f1691301aef0687d4b8624e2"
+      }
+    ]
+  },
+  "candidates": []
+}

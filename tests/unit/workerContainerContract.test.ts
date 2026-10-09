@@ -110,12 +110,12 @@ describe('worker container contract', () => {
     const dockerignore = readRequired(dockerignorePath);
     const stagingScript = readRequired(stagingScriptPath);
 
-    expect(allowlist).toHaveLength(17);
+    expect(allowlist).toHaveLength(22);
     expect(allowlist.every((fixture) => fixture.sha256 === fixture.actualSha256)).toBe(true);
     expect(allowlist.every((fixture) => !fixture.path.toLowerCase().includes('/oracle/'))).toBe(true);
     const phasePlanPath = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json';
     const workerFixtures = allowlist.filter((fixture) => fixture.path !== phasePlanPath);
-    expect(workerFixtures).toHaveLength(16);
+    expect(workerFixtures).toHaveLength(21);
     expect(dockerfile).not.toContain(`COPY ${phasePlanPath}`);
     expect(dockerignore).not.toContain(`!${phasePlanPath}`);
     for (const fixture of workerFixtures) {
@@ -124,6 +124,7 @@ describe('worker container contract', () => {
     }
     expect(stagingScript).toContain("verifyQualificationFixtureAllowlist(packageRoot, [");
     expect(stagingScript).toContain("'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json'");
+    expect(stagingScript).toContain('files.delete(HOST_ONLY_QUALIFICATION_PLAN_PATH)');
     expect(allowlist.map(({ path }) => path)).not.toContain('eval-baselines/grounded-lifecycle-corpus-v1/inputs/lc_0d8f4a7c2b9e41f8.json');
   });
 
@@ -143,6 +144,11 @@ describe('worker container contract', () => {
       'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/coverage_hole.json',
       'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/provider_failure.json',
       'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/resource_exhaustion.json',
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/source-bundle.json',
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-001.json',
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-002.json',
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-003.json',
+      'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-004.json',
     ]) expect(dockerfile).toContain(`COPY ${path} ./${path}`);
     expect(dockerfile).not.toContain('COPY eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/phase-plan.json');
     expect(childRunner).toContain("'--pull=never'");

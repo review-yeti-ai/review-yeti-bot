@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "WS5RepairReviewInput.v1",
+  "caseId": "ws5-r2-c004",
+  "source": {
+    "repository": {
+      "repositoryId": 73003,
+      "owner": "synthetic",
+      "repo": "fixture-large-crossfile"
+    },
+    "prNumber": 53,
+    "baseSha": "a3e317cb730f8001039869c522d79f5793ccdc85",
+    "headSha": "ebd7011b8170dd4b650ce924c335a6cd84fccbfe",
+    "changedPaths": [
+      "src/queue/selector.ts"
+    ],
+    "revisions": [
+      {
+        "commitSha": "a3e317cb730f8001039869c522d79f5793ccdc85",
+        "treeSha": "c4154606cf51d46c3aa4b4e8823822e95f73921e",
+        "parentSha": null,
+        "commitTimestamp": "2026-10-09T00:05:00+00:00",
+        "commitMessage": "Synthetic fixture revision 1",
+        "files": [
+          {
+            "path": "src/queue/selector.ts",
+            "mode": "100644",
+            "gitBlobSha": "c2d113e7f12571112afd2a0e2a2fd9fbbdc369da",
+            "sha256": "a9d67844806eb05841bd33a84fbb0567c39334c533e0d20451f1eb35af9f9c64",
+            "content": "export type QueueItem = { id: string; visible: boolean; priority: number };\n\nexport function selectVisible(items: QueueItem[]): QueueItem[] {\n  return items.filter((item) => item.visible);\n}\n"
+          }
+        ]
+      },
+      {
+        "commitSha": "ebd7011b8170dd4b650ce924c335a6cd84fccbfe",
+        "treeSha": "6ced5007f59572c8fb173d903113faca91fa7596",
+        "parentSha": "a3e317cb730f8001039869c522d79f5793ccdc85",
+        "commitTimestamp": "2026-10-09T00:06:00+00:00",
+        "commitMessage": "Synthetic fixture revision 2",
+        "files": [
+          {
+            "path": "src/queue/selector.ts",
+            "mode": "100644",
+            "gitBlobSha": "69c6b8f3ebe7f11826c6fb100203a9989afeeb06",
+            "sha256": "839cd028ba666869d98058fec4699b5772dbb4f31039c9dbf36ff45ea789666e",
+            "content": "export type QueueItem = { id: string; visible: boolean; priority: number };\n\nexport function selectVisible(items: QueueItem[]): QueueItem[] {\n  return items.filter((item) => item.visible).sort((a, b) => b.priority - a.priority);\n}\n"
+          }
+        ]
+      }
+    ],
+    "patches": [
+      {
+        "path": "src/queue/selector.ts",
+        "patch": "diff --git a/src/queue/selector.ts b/src/queue/selector.ts\nindex c2d113e..69c6b8f 100644\n--- a/src/queue/selector.ts\n+++ b/src/queue/selector.ts\n@@ -1,5 +1,5 @@\n export type QueueItem = { id: string; visible: boolean; priority: number };\n \n export function selectVisible(items: QueueItem[]): QueueItem[] {\n-  return items.filter((item) => item.visible);\n+  return items.filter((item) => item.visible).sort((a, b) => b.priority - a.priority);\n }\n",
+        "sha256": "6dc4609bf4430a06056f8af44c7fc1dd3da2553e3902c0a30de599832339128f"
+      }
+    ]
+  },
+  "candidates": []
+}

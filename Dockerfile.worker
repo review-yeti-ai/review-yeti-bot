@@ -38,6 +38,11 @@ COPY eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/s
 COPY eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/coverage_hole.json ./eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/coverage_hole.json
 COPY eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/provider_failure.json ./eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/provider_failure.json
 COPY eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/resource_exhaustion.json ./eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/resource_exhaustion.json
+COPY eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/source-bundle.json ./eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/source-bundle.json
+COPY eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-001.json ./eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-001.json
+COPY eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-002.json ./eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-002.json
+COPY eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-003.json ./eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-003.json
+COPY eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-004.json ./eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-004.json
 RUN npm run build:backend \
  && node scripts/stage-worker-runtime.mjs /out
 

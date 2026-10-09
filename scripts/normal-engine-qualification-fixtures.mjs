@@ -39,6 +39,16 @@ export const NORMAL_ENGINE_QUALIFICATION_FIXTURE_ALLOWLIST = Object.freeze([
     sha256: '76278ffbbb439e4e4d7b77dabe6022c01cf2c33d61753127cc82c542a9d1e2bd' },
   { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v2/inputs/resource_exhaustion.json',
     sha256: '015efdfc7c5253cb52e4ec99f22bfc354ea51ae54667f161993a98b1566cd1bc' },
+  { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/source-bundle.json',
+    sha256: 'd83b08f04890604fd1bfe98105e6db7ad70945afb1e5471218ca62d2204cc3bc' },
+  { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-001.json',
+    sha256: '54bb996bbd1caee73b313bc25676253469bdc9f40496ed937a0cfad32c29b162' },
+  { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-002.json',
+    sha256: 'f1b5a2f7b838cacd039972da5de7cb066ca838882e31e840190850591ae5c37f' },
+  { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-003.json',
+    sha256: '6fcfa7a254eb960ae3a2ef79358e06205e6812c748e353679ead1578b11a1e84' },
+  { path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-004.json',
+    sha256: 'e3cfadf9e9937c66d4c8fdfd90d97668fc691a185bba6960cb8379b276b9cb97' },
 ]);
 
 export async function verifyQualificationFixtureAllowlist(root = process.cwd(), excludedPaths = []) {

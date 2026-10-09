@@ -18,6 +18,9 @@ const P2_BUNDLE_SHA256 = 'ff43921f3c8188d6a0efd8a257c310f1ac1d8cefcc32fd1f8fba24
 const EXTERNAL_V2_BUNDLE_VERSION = 'WS5ExternalNormalBundle.v2' as const;
 const EXTERNAL_V2_BUNDLE_SHA256 = '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1';
 const EXTERNAL_V2_BUNDLE_DESCRIPTOR_PATH = 'competitive-review-benchmark/ws5-external-normal-v2/source-bundle.json';
+const EXTERNAL_V3_BUNDLE_VERSION = 'WS5ExternalNormalBundle.v3' as const;
+const EXTERNAL_V3_BUNDLE_SHA256 = 'd83b08f04890604fd1bfe98105e6db7ad70945afb1e5471218ca62d2204cc3bc';
+const EXTERNAL_V3_BUNDLE_DESCRIPTOR_PATH = 'competitive-review-benchmark/ws5-external-normal-v3/source-bundle.json';
 const REPOSITORY_ROOT = resolve(__dirname, '../..');
 const FIXTURE_ROOT = resolve(REPOSITORY_ROOT, 'eval-baselines');
 export const NORMAL_ENGINE_QUALIFICATION_RECEIPT_PATH = '/workspace/.review-yeti/normal-engine-qualification.json';
@@ -77,6 +80,17 @@ export const WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE = Object.freeze({
   repairInputSha256: '52cdd6d19fc5dd042412a85df5b4effe8c9793c43cea3104ab5b35d036b1d1aa',
   repairBaseSha: '1035dc8db9a222447aa774fd9660c224e5d37655',
   repairHeadSha: '1b183caf5f8c518a3acda3fb2d8eea38133eed98',
+});
+
+export const WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE = Object.freeze({
+  sequenceId: 'ws5-r2-h001',
+  sourceCaseId: 'ws5-r2-c002',
+  repairCaseId: 'ws5-r2-c003',
+  bundleSha256: EXTERNAL_V3_BUNDLE_SHA256,
+  sourceInputSha256: 'f1b5a2f7b838cacd039972da5de7cb066ca838882e31e840190850591ae5c37f',
+  repairInputSha256: '6fcfa7a254eb960ae3a2ef79358e06205e6812c748e353679ead1578b11a1e84',
+  repairBaseSha: 'e62ac7e8846d80864cacc65699268097caa31223',
+  repairHeadSha: '81d910d8a133563e76e5a700ba65fb58b7dcdc72',
 });
 
 const LEGACY_REPAIR_HISTORY_LINEAGE: NormalEngineQualificationHistoryLineage = {
@@ -188,6 +202,26 @@ const FIXTURE_PINS: readonly FixturePin[] = [
     schemaVersion: 'WS5P2DisplaySortInput.v1', bundleVersion: EXTERNAL_V2_BUNDLE_VERSION, bundleSha256: EXTERNAL_V2_BUNDLE_SHA256,
     repository: { repositoryId: 73004, owner: 'synthetic', repo: 'fixture-display-sort' }, prNumber: 43,
     baseSha: '740ca081f3ec2399ea72a329fbe4b2e7eeb47cd7', headSha: 'e4edc4bd9f74fd9ec3e8f8f7d9a83bd821832497' },
+  { caseId: 'ws5-r2-c001', path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-001.json',
+    sha256: '54bb996bbd1caee73b313bc25676253469bdc9f40496ed937a0cfad32c29b162',
+    schemaVersion: 'WS5RepairReviewInput.v1', bundleVersion: EXTERNAL_V3_BUNDLE_VERSION, bundleSha256: EXTERNAL_V3_BUNDLE_SHA256,
+    repository: { repositoryId: 73004, owner: 'synthetic', repo: 'fixture-display-sort' }, prNumber: 51,
+    baseSha: '9d9232e0fae8d370ef2570c1129f836b9b1a1c36', headSha: '5440774cbd3465150755f08a917bf724c92a372d' },
+  { caseId: 'ws5-r2-c002', path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-002.json',
+    sha256: 'f1b5a2f7b838cacd039972da5de7cb066ca838882e31e840190850591ae5c37f',
+    schemaVersion: 'WS5RepairReviewInput.v1', bundleVersion: EXTERNAL_V3_BUNDLE_VERSION, bundleSha256: EXTERNAL_V3_BUNDLE_SHA256,
+    repository: { repositoryId: 73002, owner: 'synthetic', repo: 'fixture-sequence' }, prNumber: 52,
+    baseSha: 'b2beab2ab2c6369a0d6352a78af795d92246b7f3', headSha: 'e62ac7e8846d80864cacc65699268097caa31223' },
+  { caseId: 'ws5-r2-c003', path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-003.json',
+    sha256: '6fcfa7a254eb960ae3a2ef79358e06205e6812c748e353679ead1578b11a1e84',
+    schemaVersion: 'WS5RepairReviewInput.v1', bundleVersion: EXTERNAL_V3_BUNDLE_VERSION, bundleSha256: EXTERNAL_V3_BUNDLE_SHA256,
+    repository: { repositoryId: 73002, owner: 'synthetic', repo: 'fixture-sequence' }, prNumber: 52,
+    baseSha: 'e62ac7e8846d80864cacc65699268097caa31223', headSha: '81d910d8a133563e76e5a700ba65fb58b7dcdc72' },
+  { caseId: 'ws5-r2-c004', path: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-004.json',
+    sha256: 'e3cfadf9e9937c66d4c8fdfd90d97668fc691a185bba6960cb8379b276b9cb97',
+    schemaVersion: 'WS5RepairReviewInput.v1', bundleVersion: EXTERNAL_V3_BUNDLE_VERSION, bundleSha256: EXTERNAL_V3_BUNDLE_SHA256,
+    repository: { repositoryId: 73003, owner: 'synthetic', repo: 'fixture-large-crossfile' }, prNumber: 53,
+    baseSha: 'a3e317cb730f8001039869c522d79f5793ccdc85', headSha: 'ebd7011b8170dd4b650ce924c335a6cd84fccbfe' },
 ].sort((left, right) => left.caseId < right.caseId ? -1 : left.caseId > right.caseId ? 1 : 0);
 
 const LIFECYCLE_PINS = FIXTURE_PINS.filter((pin) => pin.bundleVersion === FIXTURE_BUNDLE_VERSION);
@@ -281,6 +315,7 @@ export const NORMAL_ENGINE_QUALIFICATION_PLAN_CASE_IDS = Object.freeze([
   'ws5-current-1dd-v2-p2', 'ws5-current-1dd-v2-sequence-a', 'ws5-current-1dd-v2-sequence-b',
   'ws5-current-1dd-v2-coverage-hole', 'ws5-current-1dd-v2-provider-failure',
   'ws5-current-1dd-v2-resource-exhaustion',
+  'ws5-r2-c001', 'ws5-r2-c002', 'ws5-r2-c003', 'ws5-r2-c004',
 ] as const);
 
 export interface NormalEngineQualificationPlanRequest {
@@ -1552,6 +1587,14 @@ function armAllowedForPin(pin: FixturePin, arm: NormalEngineQualificationArm): b
     if (pin.caseId === 'ws5-current-1dd-v2-provider-failure') return arm === 'provider-failure';
     if (pin.caseId === 'ws5-current-1dd-v2-resource-exhaustion') return arm === 'resource-exhaustion';
   }
+  if (pin.bundleVersion === EXTERNAL_V3_BUNDLE_VERSION) {
+    if (pin.caseId === 'ws5-r2-c001') return ['p2-only', 'provider-failure', 'resource-exhaustion'].includes(arm);
+    if (pin.caseId === 'ws5-r2-c002') return arm === 'repair-introduction';
+    if (pin.caseId === 'ws5-r2-c003') {
+      return ['repair-head-history', 'repair-head-empty-history', 'repair-head-history-unavailable'].includes(arm);
+    }
+    if (pin.caseId === 'ws5-r2-c004') return arm === 'preflight-source-coverage-control';
+  }
   return false;
 }
 
@@ -1585,7 +1628,9 @@ function assertFixtureBundleDescriptor(pin: FixturePin): void {
       : pin.bundleVersion === P2_BUNDLE_VERSION
         ? resolve(FIXTURE_ROOT, 'competitive-review-benchmark/ws5-p2-display-sort-v1/descriptor.json')
         : pin.bundleVersion === EXTERNAL_V2_BUNDLE_VERSION
-          ? resolve(FIXTURE_ROOT, EXTERNAL_V2_BUNDLE_DESCRIPTOR_PATH) : '';
+          ? resolve(FIXTURE_ROOT, EXTERNAL_V2_BUNDLE_DESCRIPTOR_PATH)
+          : pin.bundleVersion === EXTERNAL_V3_BUNDLE_VERSION
+            ? resolve(FIXTURE_ROOT, EXTERNAL_V3_BUNDLE_DESCRIPTOR_PATH) : '';
   if (!descriptorPath) throw new Error('normal_engine_qualification_fixture_bundle_unknown');
   const bytes = readFileSync(descriptorPath);
   if (createHash('sha256').update(bytes).digest('hex') !== pin.bundleSha256) {
@@ -1621,6 +1666,34 @@ function assertFixtureBundleDescriptor(pin: FixturePin): void {
         || JSON.stringify(candidateEntry.repository) !== JSON.stringify(candidate.repository)
         || candidateEntry.prNumber !== candidate.prNumber || candidateEntry.baseSha !== candidate.baseSha
         || candidateEntry.headSha !== candidate.headSha) {
+        throw new Error('normal_engine_qualification_fixture_descriptor_identity_mismatch');
+      }
+    }
+    return;
+  }
+  if (pin.bundleVersion === EXTERNAL_V3_BUNDLE_VERSION) {
+    if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(['cases', 'schemaVersion'])
+      || value.schemaVersion !== EXTERNAL_V3_BUNDLE_VERSION || !Array.isArray(value.cases)) {
+      throw new Error('normal_engine_qualification_fixture_descriptor_invalid');
+    }
+    const externalPins = FIXTURE_PINS.filter((entry) => entry.bundleVersion === EXTERNAL_V3_BUNDLE_VERSION);
+    const caseIds = value.cases.map((candidate) => candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+      ? (candidate as Record<string, unknown>).caseId : undefined);
+    if (value.cases.length !== externalPins.length
+      || JSON.stringify([...caseIds].sort()) !== JSON.stringify(externalPins.map((entry) => entry.caseId).sort())) {
+      throw new Error('normal_engine_qualification_fixture_descriptor_identity_mismatch');
+    }
+    const expectedKeys = ['baseSha', 'caseId', 'headSha', 'inputPath', 'inputSha256', 'prNumber', 'repository', 'schemaVersion']
+      .sort();
+    for (const candidate of externalPins) {
+      const entry = value.cases.find((row) => row && typeof row === 'object' && !Array.isArray(row)
+        && (row as Record<string, unknown>).caseId === candidate.caseId) as Record<string, unknown> | undefined;
+      if (!entry || JSON.stringify(Object.keys(entry).sort()) !== JSON.stringify(expectedKeys)
+        || entry.inputPath !== candidate.path || entry.inputSha256 !== candidate.sha256
+        || entry.schemaVersion !== candidate.schemaVersion
+        || JSON.stringify(entry.repository) !== JSON.stringify(candidate.repository)
+        || entry.prNumber !== candidate.prNumber || entry.baseSha !== candidate.baseSha
+        || entry.headSha !== candidate.headSha) {
         throw new Error('normal_engine_qualification_fixture_descriptor_identity_mismatch');
       }
     }
@@ -1670,9 +1743,7 @@ function rejectExternalEffectsAndOracle(env: NodeJS.ProcessEnv): void {
   }
 }
 
-function readPinnedInput(pin: FixturePin): { bytes: Buffer; input: Record<string, unknown> } {
-  assertFixtureBundleDescriptor(pin);
-  const bytes = readFileSync(resolve(REPOSITORY_ROOT, pin.path));
+function validatePinnedInputBytes(pin: FixturePin, bytes: Buffer): Record<string, unknown> {
   const digest = createHash('sha256').update(bytes).digest('hex');
   if (digest !== pin.sha256) throw new Error('normal_engine_qualification_fixture_digest_mismatch');
   let input: unknown;
@@ -1687,10 +1758,25 @@ function readPinnedInput(pin: FixturePin): { bytes: Buffer; input: Record<string
     || source?.baseSha !== pin.baseSha || source?.headSha !== pin.headSha
     || repository?.repositoryId !== pin.repository.repositoryId
     || repository?.owner !== pin.repository.owner || repository?.repo !== pin.repository.repo
+    || (pin.bundleVersion === EXTERNAL_V3_BUNDLE_VERSION && hasOfficialReviewField(record))
     || !Array.isArray(source?.changedPaths) || !Array.isArray(source?.patches) || !Array.isArray(source?.revisions)) {
     throw new Error('normal_engine_qualification_fixture_identity_mismatch');
   }
-  return { bytes, input: record };
+  return record;
+}
+
+export function validateQualificationFixtureInputBytes(caseId: string, bytes: Buffer): void {
+  const pin = FIXTURE_PINS.find((entry) => entry.caseId === caseId);
+  if (!pin) throw new Error('normal_engine_qualification_fixture_identity_mismatch');
+  assertFixtureBundleDescriptor(pin);
+  validatePinnedInputBytes(pin, bytes);
+}
+
+function readPinnedInput(pin: FixturePin): { bytes: Buffer; input: Record<string, unknown> } {
+  assertFixtureBundleDescriptor(pin);
+  const bytes = readFileSync(resolve(REPOSITORY_ROOT, pin.path));
+  const input = validatePinnedInputBytes(pin, bytes);
+  return { bytes, input };
 }
 
 const HISTORY_LINEAGE_ENV_KEYS = Object.freeze({
@@ -1721,6 +1807,10 @@ function historyLineageForRequest(
       || caseId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairCaseId) {
       const { bundleSha256: _bundleSha256, ...externalLineage } = WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE;
       lineage = { ...externalLineage };
+    } else if (caseId === WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE.sourceCaseId
+      || caseId === WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE.repairCaseId) {
+      const { bundleSha256: _bundleSha256, ...externalLineage } = WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE;
+      lineage = { ...externalLineage };
     } else {
       throw new Error('normal_engine_qualification_history_lineage_required');
     }
@@ -1737,15 +1827,18 @@ function historyLineageForRequest(
     || !SHA_PATTERN.test(lineage.repairBaseSha) || !SHA_PATTERN.test(lineage.repairHeadSha)) {
     throw new Error('normal_engine_qualification_history_lineage_invalid');
   }
-  const isExternalV2 = lineage.sequenceId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sequenceId;
-  const expectedLineage: NormalEngineQualificationHistoryLineage = isExternalV2 ? {
-    sequenceId: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sequenceId,
-    sourceCaseId: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sourceCaseId,
-    repairCaseId: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairCaseId,
-    sourceInputSha256: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sourceInputSha256,
-    repairInputSha256: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairInputSha256,
-    repairBaseSha: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairBaseSha,
-    repairHeadSha: WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.repairHeadSha,
+  const externalLineage = lineage.sequenceId === WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE.sequenceId
+    ? WS5_EXTERNAL_NORMAL_V2_HISTORY_LINEAGE
+    : lineage.sequenceId === WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE.sequenceId
+      ? WS5_EXTERNAL_NORMAL_V3_HISTORY_LINEAGE : undefined;
+  const expectedLineage: NormalEngineQualificationHistoryLineage = externalLineage ? {
+    sequenceId: externalLineage.sequenceId,
+    sourceCaseId: externalLineage.sourceCaseId,
+    repairCaseId: externalLineage.repairCaseId,
+    sourceInputSha256: externalLineage.sourceInputSha256,
+    repairInputSha256: externalLineage.repairInputSha256,
+    repairBaseSha: externalLineage.repairBaseSha,
+    repairHeadSha: externalLineage.repairHeadSha,
   } : { ...LEGACY_REPAIR_HISTORY_LINEAGE };
   if (JSON.stringify(lineage) !== JSON.stringify(expectedLineage)
     || (arm === 'repair-introduction' && caseId !== lineage.sourceCaseId)

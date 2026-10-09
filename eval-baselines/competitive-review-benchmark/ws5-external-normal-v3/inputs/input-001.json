@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "WS5RepairReviewInput.v1",
+  "caseId": "ws5-r2-c001",
+  "source": {
+    "repository": {
+      "repositoryId": 73004,
+      "owner": "synthetic",
+      "repo": "fixture-display-sort"
+    },
+    "prNumber": 51,
+    "baseSha": "9d9232e0fae8d370ef2570c1129f836b9b1a1c36",
+    "headSha": "5440774cbd3465150755f08a917bf724c92a372d",
+    "changedPaths": [
+      "src/components/DownloadIconButton.tsx"
+    ],
+    "revisions": [
+      {
+        "commitSha": "9d9232e0fae8d370ef2570c1129f836b9b1a1c36",
+        "treeSha": "ad86e1d1a97aafa46490d8660112071d7f186842",
+        "parentSha": null,
+        "commitTimestamp": "2026-10-09T00:00:00+00:00",
+        "commitMessage": "Synthetic fixture revision 1",
+        "files": [
+          {
+            "path": "src/components/DownloadIconButton.tsx",
+            "mode": "100644",
+            "gitBlobSha": "154aeb7dc04882c0909de89d6f6277fe920d6d64",
+            "sha256": "56f49528288bdbbf224869685defe9ecdea99ef051adfdc4ac6f17519843aaed",
+            "content": "import type { MouseEventHandler } from \"react\";\n\nexport function DownloadIconButton({ onDownload }: { onDownload: MouseEventHandler<HTMLButtonElement> }) {\n  return (\n    <button type=\"button\" aria-label=\"Download file\" onClick={onDownload}>\n      <svg aria-hidden=\"true\" viewBox=\"0 0 16 16\"><path d=\"M8 2v8m-3-3 3 3 3-3M3 13h10\" /></svg>\n    </button>\n  );\n}\n"
+          },
+          {
+            "path": "test/DownloadIconButton.test.tsx",
+            "mode": "100644",
+            "gitBlobSha": "fcd6855f2f567d3e7bcf74d7f58bf3d93a6b5624",
+            "sha256": "52dcfe2a94e292e8eb07969ed9eaf90d417e3d6cc24f693e67a5441505e7ed1a",
+            "content": "import { fireEvent, render } from \"@testing-library/react\";\nimport { expect, it, vi } from \"vitest\";\nimport { DownloadIconButton } from \"../src/components/DownloadIconButton\";\n\nit(\"invokes the download handler\", () => {\n  const onDownload = vi.fn();\n  const view = render(<DownloadIconButton onDownload={onDownload} />);\n  fireEvent.click(view.container.querySelector(\"button\")!);\n  expect(onDownload).toHaveBeenCalledOnce();\n});\n"
+          }
+        ]
+      },
+      {
+        "commitSha": "5440774cbd3465150755f08a917bf724c92a372d",
+        "treeSha": "bf0042652c557ae24b922d3f30dfa74a7965dade",
+        "parentSha": "9d9232e0fae8d370ef2570c1129f836b9b1a1c36",
+        "commitTimestamp": "2026-10-09T00:01:00+00:00",
+        "commitMessage": "Synthetic fixture revision 2",
+        "files": [
+          {
+            "path": "src/components/DownloadIconButton.tsx",
+            "mode": "100644",
+            "gitBlobSha": "93d1f5620ae4fe0f2beda514d26d003ac55650f0",
+            "sha256": "5fc8dfdde79310588ab6affc9eb078e6b826c149e88dede19515053999e0cc35",
+            "content": "import type { MouseEventHandler } from \"react\";\n\nexport function DownloadIconButton({ onDownload }: { onDownload: MouseEventHandler<HTMLButtonElement> }) {\n  return (\n    <button type=\"button\" onClick={onDownload}>\n      <svg aria-hidden=\"true\" viewBox=\"0 0 16 16\"><path d=\"M8 2v8m-3-3 3 3 3-3M3 13h10\" /></svg>\n    </button>\n  );\n}\n"
+          },
+          {
+            "path": "test/DownloadIconButton.test.tsx",
+            "mode": "100644",
+            "gitBlobSha": "fcd6855f2f567d3e7bcf74d7f58bf3d93a6b5624",
+            "sha256": "52dcfe2a94e292e8eb07969ed9eaf90d417e3d6cc24f693e67a5441505e7ed1a",
+            "content": "import { fireEvent, render } from \"@testing-library/react\";\nimport { expect, it, vi } from \"vitest\";\nimport { DownloadIconButton } from \"../src/components/DownloadIconButton\";\n\nit(\"invokes the download handler\", () => {\n  const onDownload = vi.fn();\n  const view = render(<DownloadIconButton onDownload={onDownload} />);\n  fireEvent.click(view.container.querySelector(\"button\")!);\n  expect(onDownload).toHaveBeenCalledOnce();\n});\n"
+          }
+        ]
+      }
+    ],
+    "patches": [
+      {
+        "path": "src/components/DownloadIconButton.tsx",
+        "patch": "diff --git a/src/components/DownloadIconButton.tsx b/src/components/DownloadIconButton.tsx\nindex 154aeb7..93d1f56 100644\n--- a/src/components/DownloadIconButton.tsx\n+++ b/src/components/DownloadIconButton.tsx\n@@ -1,9 +1,9 @@\n import type { MouseEventHandler } from \"react\";\n \n export function DownloadIconButton({ onDownload }: { onDownload: MouseEventHandler<HTMLButtonElement> }) {\n   return (\n-    <button type=\"button\" aria-label=\"Download file\" onClick={onDownload}>\n+    <button type=\"button\" onClick={onDownload}>\n       <svg aria-hidden=\"true\" viewBox=\"0 0 16 16\"><path d=\"M8 2v8m-3-3 3 3 3-3M3 13h10\" /></svg>\n     </button>\n   );\n }\n",
+        "sha256": "7f0b6ea080425d1ba8b2fd299da1eaf7f59ee27419f3a981bcac601dc7537796"
+      }
+    ]
+  },
+  "candidates": []
+}
