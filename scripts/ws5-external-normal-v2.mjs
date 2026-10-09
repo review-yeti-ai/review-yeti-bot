@@ -1740,6 +1740,7 @@ export async function runExternalNormalQualificationV2({
       rawExecutionReceipt = await executeCase(projection, {
         signal: controller.signal,
         deadlineAt,
+        clientCallAllocation: armCallAllocation,
         captureOutsideChild: plan.executionEnvelope.captureOutsideChildDeadline,
         artifactStoreRoot: canonicalRoot,
         recordClientCall() {
