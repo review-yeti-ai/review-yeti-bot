@@ -183,6 +183,44 @@ const EXTERNAL_NORMAL_V2_SUPPORTED_CASE_ARMS = new Set([
   'p2-only', 'repair-introduction', 'repair-head-history', 'repair-head-empty-history', 'provider-failure',
   'resource-exhaustion', 'repair-head-history-unavailable', 'preflight-source-coverage-control',
 ]);
+const EXTERNAL_NORMAL_R2_SOURCE_BUNDLE_SHA256 = 'd83b08f04890604fd1bfe98105e6db7ad70945afb1e5471218ca62d2204cc3bc';
+interface ExternalNormalR2StepAllocationBinding {
+  caseId: string;
+  inputPath: string;
+  inputSha256: string;
+  arm: string;
+  targetRepositoryId: number;
+  clientCallAllocation: number;
+}
+const EXTERNAL_NORMAL_R2_STEP_ALLOCATION_BINDINGS: Readonly<Record<string, ExternalNormalR2StepAllocationBinding>> = Object.freeze({
+  'r2-s001': { caseId: 'ws5-r2-c001', inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-001.json',
+    inputSha256: '54bb996bbd1caee73b313bc25676253469bdc9f40496ed937a0cfad32c29b162',
+    arm: 'p2-only', targetRepositoryId: 73004, clientCallAllocation: 53 },
+  'r2-s002': { caseId: 'ws5-r2-c001', inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-001.json',
+    inputSha256: '54bb996bbd1caee73b313bc25676253469bdc9f40496ed937a0cfad32c29b162',
+    arm: 'p2-only', targetRepositoryId: 73004, clientCallAllocation: 53 },
+  'r2-s003': { caseId: 'ws5-r2-c002', inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-002.json',
+    inputSha256: 'f1b5a2f7b838cacd039972da5de7cb066ca838882e31e840190850591ae5c37f',
+    arm: 'repair-introduction', targetRepositoryId: 73002, clientCallAllocation: 53 },
+  'r2-s004': { caseId: 'ws5-r2-c003', inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-003.json',
+    inputSha256: '6fcfa7a254eb960ae3a2ef79358e06205e6812c748e353679ead1578b11a1e84',
+    arm: 'repair-head-history', targetRepositoryId: 73002, clientCallAllocation: 53 },
+  'r2-s005': { caseId: 'ws5-r2-c003', inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-003.json',
+    inputSha256: '6fcfa7a254eb960ae3a2ef79358e06205e6812c748e353679ead1578b11a1e84',
+    arm: 'repair-head-empty-history', targetRepositoryId: 73002, clientCallAllocation: 53 },
+  'r2-s006': { caseId: 'ws5-r2-c004', inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-004.json',
+    inputSha256: 'e3cfadf9e9937c66d4c8fdfd90d97668fc691a185bba6960cb8379b276b9cb97',
+    arm: 'preflight-source-coverage-control', targetRepositoryId: 73003, clientCallAllocation: 0 },
+  'r2-s007': { caseId: 'ws5-r2-c003', inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-003.json',
+    inputSha256: '6fcfa7a254eb960ae3a2ef79358e06205e6812c748e353679ead1578b11a1e84',
+    arm: 'repair-head-history-unavailable', targetRepositoryId: 73002, clientCallAllocation: 0 },
+  'r2-s008': { caseId: 'ws5-r2-c001', inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-001.json',
+    inputSha256: '54bb996bbd1caee73b313bc25676253469bdc9f40496ed937a0cfad32c29b162',
+    arm: 'provider-failure', targetRepositoryId: 73004, clientCallAllocation: 1 },
+  'r2-s009': { caseId: 'ws5-r2-c001', inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-001.json',
+    inputSha256: '54bb996bbd1caee73b313bc25676253469bdc9f40496ed937a0cfad32c29b162',
+    arm: 'resource-exhaustion', targetRepositoryId: 73004, clientCallAllocation: 1 },
+});
 const EXTERNAL_NORMAL_V2_PROJECTION_KEYS = new Set([
   'stepId', 'caseId', 'inputPath', 'inputSha256', 'arm', 'historyMode', 'targetRepositoryId',
   'sourceBundleSha256', 'runId', 'historyRunId', 'runtime', 'policy',
@@ -192,6 +230,11 @@ const EXTERNAL_NORMAL_V2_REQUIRED_PROJECTION_KEYS = [
   'sourceBundleSha256', 'runId', 'runtime', 'policy',
 ];
 const MAX_EXTERNAL_NORMAL_V2_CREDENTIAL_BYTES = 8 * 1024;
+
+function isExternalNormalR2ProjectionCandidate(projection: Record<string, unknown>): boolean {
+  return projection.sourceBundleSha256 === EXTERNAL_NORMAL_R2_SOURCE_BUNDLE_SHA256
+    || (typeof projection.caseId === 'string' && projection.caseId.startsWith('ws5-r2-'));
+}
 
 function isValidInferenceCredential(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.trim() === value
@@ -203,9 +246,18 @@ function hasValidExternalNormalV2Projection(value: unknown): value is ExternalNo
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const projection = value as Record<string, unknown>;
   const arm = projection.arm;
-  return Object.keys(projection).every((key) => EXTERNAL_NORMAL_V2_PROJECTION_KEYS.has(key))
+  const validShape = Object.keys(projection).every((key) => EXTERNAL_NORMAL_V2_PROJECTION_KEYS.has(key))
     && EXTERNAL_NORMAL_V2_REQUIRED_PROJECTION_KEYS.every((key) => Object.hasOwn(projection, key))
     && typeof arm === 'string' && EXTERNAL_NORMAL_V2_SUPPORTED_CASE_ARMS.has(arm);
+  if (!validShape) return false;
+  if (!isExternalNormalR2ProjectionCandidate(projection)) return true;
+  const stepBinding = EXTERNAL_NORMAL_R2_STEP_ALLOCATION_BINDINGS[String(projection.stepId)];
+  return Boolean(stepBinding && projection.sourceBundleSha256 === EXTERNAL_NORMAL_R2_SOURCE_BUNDLE_SHA256
+    && projection.caseId === stepBinding.caseId
+    && projection.inputPath === stepBinding.inputPath
+    && projection.inputSha256 === stepBinding.inputSha256
+    && projection.arm === stepBinding.arm
+    && projection.targetRepositoryId === stepBinding.targetRepositoryId);
 }
 
 export function validateExternalNormalV2PrivateBinding(value: unknown, env?: Env): ExternalNormalV2PrivateBinding {
@@ -528,6 +580,15 @@ function outerCallAllocationForArm(arm: string): number {
   throw new Error('external_normal_v2_arm_call_allocation_unavailable');
 }
 
+function outerCallAllocationForProjection(projection: ExternalNormalV2Projection): number {
+  const isR2Projection = isExternalNormalR2ProjectionCandidate(projection as unknown as Record<string, unknown>);
+  if (!isR2Projection) return outerCallAllocationForArm(projection.arm);
+  if (!hasValidExternalNormalV2Projection(projection)) {
+    throw new Error('external_normal_v2_r2_case_binding_invalid');
+  }
+  return EXTERNAL_NORMAL_R2_STEP_ALLOCATION_BINDINGS[projection.stepId].clientCallAllocation;
+}
+
 export function parseExternalNormalV2ImageCaseRequest(value: unknown): ExternalNormalV2ImageCaseRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('external_normal_v2_child_case_request_invalid');
@@ -542,7 +603,7 @@ export function parseExternalNormalV2ImageCaseRequest(value: unknown): ExternalN
     ...(credentialRequired ? ['inferenceCredential'] : [])];
   if (!hasExactKeys(value, requestKeys)
     || !Number.isSafeInteger(candidate.clientCallAllocation)
-    || candidate.clientCallAllocation !== outerCallAllocationForArm(arm)
+    || candidate.clientCallAllocation !== outerCallAllocationForProjection(candidate.projection)
     || !Number.isSafeInteger(candidate.deadlineAt) || (candidate.deadlineAt as number) <= Date.now()
     || (credentialRequired && !isValidInferenceCredential(candidate.inferenceCredential))) {
     throw new Error('external_normal_v2_child_case_request_invalid');
@@ -566,7 +627,11 @@ export function createBoundExternalNormalV2CaseExecutor(input: {
   const runCase = input.runCase ?? runNormalEngineQualificationCase;
   const realFetch = input.fetchImplementation ?? globalThis.fetch.bind(globalThis);
   return async (projection, context) => {
-    if (context.captureOutsideChild !== true || context.clientCallAllocation !== outerCallAllocationForArm(projection.arm)) {
+    if (isExternalNormalR2ProjectionCandidate(projection as unknown as Record<string, unknown>)
+      && !hasValidExternalNormalV2Projection(projection)) {
+      throw new Error('external_normal_v2_worker_projection_invalid');
+    }
+    if (context.captureOutsideChild !== true || context.clientCallAllocation !== outerCallAllocationForProjection(projection)) {
       throw new Error('external_normal_v2_arm_execution_envelope_mismatch');
     }
     const artifactStoreRoot = await validateArtifactStoreRoot(context.artifactStoreRoot);
@@ -1123,7 +1188,7 @@ export function createPinnedWorkerImageExternalNormalV2Adapter(input: {
     }
     const workerEnv = buildPinnedWorkerCaseEnvironment(privateBinding);
     const imageRef = ensureImage(projection.runtime.workerImageDigest);
-    if (context.clientCallAllocation !== outerCallAllocationForArm(projection.arm)) {
+    if (context.clientCallAllocation !== outerCallAllocationForProjection(projection)) {
       throw new Error('external_normal_v2_arm_execution_envelope_mismatch');
     }
     const phaseRoot = await validateArtifactStoreRoot(context.artifactStoreRoot);

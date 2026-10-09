@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -10,7 +10,8 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { NormalEngineQualificationReceiptPersistError } from '../../src/qualification/normalEngineQualificationWorker';
 import { NormalEngineQualificationHistoryStore } from '../../src/qualification/normalEngineQualificationHistory';
 import { createBoundExternalNormalV2CaseExecutor, createPinnedWorkerImageExternalNormalV2Adapter,
-  trustedPreparedBudget, validateExternalNormalV2PrivateBinding } from '../../src/qualification/normalEngineQualificationExternalV2';
+  parseExternalNormalV2ImageCaseRequest, trustedPreparedBudget, validateExternalNormalV2PrivateBinding }
+  from '../../src/qualification/normalEngineQualificationExternalV2';
 
 const policyContent = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
   personas: 'security', profile: 'balanced', review_engine: 'composed', severity_policy: 'review-yeti-severity.v2',
@@ -112,6 +113,75 @@ const projection = {
     preparedExecutionFile: 'prepared-host/prepared-73004-default.json', policySource,
     routeAlias: testRouteAlias, requestedEffort: 'medium', inferenceBaseUrl },
 };
+
+async function r2ProjectionForStep(stepId: string, preparedExecutionSha256 = privateBinding.policy.preparedExecutionSha256) {
+  const [planBytes, bundleBytes] = await Promise.all([
+    readFile(new URL('../fixtures/qualification/ws5-r2-cohort-plan.json', import.meta.url)),
+    readFile(new URL('../../eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/source-bundle.json', import.meta.url)),
+  ]);
+  const plan = JSON.parse(planBytes.toString('utf8')) as { steps: Array<Record<string, any>> };
+  const bundle = JSON.parse(bundleBytes.toString('utf8')) as { cases: Array<Record<string, any>> };
+  const step = plan.steps.find((entry) => entry.stepId === stepId);
+  if (!step) throw new Error(`missing R2 step fixture: ${stepId}`);
+  const armByStepId: Record<string, string> = {
+    'r2-s001': 'p2-only', 'r2-s002': 'p2-only', 'r2-s003': 'repair-introduction',
+    'r2-s004': 'repair-head-history', 'r2-s005': 'repair-head-empty-history',
+    'r2-s006': 'preflight-source-coverage-control', 'r2-s007': 'repair-head-history-unavailable',
+    'r2-s008': 'provider-failure', 'r2-s009': 'resource-exhaustion',
+  };
+  const arm = armByStepId[stepId];
+  if (!arm) throw new Error(`missing R2 arm binding: ${stepId}`);
+  const source = bundle.cases.find((entry) => entry.caseId === step.caseId);
+  if (!source) throw new Error(`missing R2 case fixture: ${String(step.caseId)}`);
+  const target = privateBinding.policy.targetProjections.find((entry) => entry.repositoryId === source.repository.repositoryId);
+  if (!target) throw new Error(`missing R2 target binding: ${String(source.repository.repositoryId)}`);
+  return {
+    stepId: step.stepId,
+    caseId: source.caseId,
+    inputPath: source.inputPath,
+    inputSha256: source.inputSha256,
+    arm,
+    historyMode: String(step.historyMode ?? ''),
+    targetRepositoryId: source.repository.repositoryId,
+    sourceBundleSha256: createHash('sha256').update(bundleBytes).digest('hex'),
+    runId: `nq_${'2'.repeat(32)}`,
+    runtime,
+    policy: { candidateHead: privateBinding.sourceDescriptor.candidateHead,
+      candidateRawSha256: privateBinding.sourceDescriptor.contentSha256,
+      effectiveConfigSha256: privateBinding.policy.effectiveConfigSha256,
+      effectivePolicySha256: privateBinding.policy.effectivePolicySha256,
+      centralEffectiveConfigProjectionSha256: target.centralEffectiveConfigProjectionSha256,
+      preparedExecutionSha256,
+      preparedExecutionFile: target.preparedExecutionFile,
+      policySource: { repository: privateBinding.sourceDescriptor.repository,
+        repositoryId: privateBinding.sourceDescriptor.repositoryId,
+        sourceRef: privateBinding.sourceDescriptor.sourceRef, path: privateBinding.sourceDescriptor.path,
+        contentSha256: privateBinding.sourceDescriptor.contentSha256 },
+      routeAlias: privateBinding.transport.modelAlias, requestedEffort: 'medium', inferenceBaseUrl },
+  };
+}
+
+async function writeR2PreparedInputs(policyRoot: string, phaseRoot: string) {
+  const preparedJson = bindings().REVIEW_PREPARED_CONFIG_JSON!;
+  const preparedExecutionSha256 = createHash('sha256').update(preparedJson).digest('hex');
+  const preparedDirectory = path.join(policyRoot, 'prepared-host');
+  await mkdir(preparedDirectory, { recursive: true, mode: 0o700 });
+  await chmod(preparedDirectory, 0o700);
+  for (const repositoryId of [73002, 73003, 73004]) {
+    const preparedPath = path.join(preparedDirectory, `prepared-${repositoryId}-default.json`);
+    await writeFile(preparedPath, preparedJson, { mode: 0o600 });
+    await chmod(preparedPath, 0o600);
+  }
+  const phaseRootCanonicalPath = await realpath(phaseRoot);
+  const binding = { ...privateBinding,
+    phaseRoot: { ...privateBinding.phaseRoot, canonicalPath: phaseRootCanonicalPath },
+    policy: { ...privateBinding.policy, preparedExecutionSha256,
+      targetProjections: privateBinding.policy.targetProjections.map((target) => ({
+        ...target, preparedExecutionSha256,
+      })) },
+  };
+  return { binding, preparedJson, preparedExecutionSha256 };
+}
 
 describe('current-source external v2 worker adapter', () => {
   it('rejects private binding source or transport that differs from the trusted prepared environment', () => {
@@ -220,20 +290,12 @@ describe('current-source external v2 worker adapter', () => {
       .mockResolvedValue([repairVerification] as never);
 
     for (const fixture of [
-      { caseId: 'ws5-r2-c002', inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-002.json',
-        inputSha256: 'f1b5a2f7b838cacd039972da5de7cb066ca838882e31e840190850591ae5c37f',
-        arm: 'repair-introduction', phase: 'repair-introduction', runId: `nq_${'2'.repeat(32)}` },
-      { caseId: 'ws5-r2-c003', inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-003.json',
-        inputSha256: '6fcfa7a254eb960ae3a2ef79358e06205e6812c748e353679ead1578b11a1e84',
-        arm: 'repair-head-history', phase: 'repair-head', runId: `nq_${'3'.repeat(32)}`,
+      { stepId: 'r2-s003', caseId: 'ws5-r2-c002', arm: 'repair-introduction', phase: 'repair-introduction', runId: `nq_${'2'.repeat(32)}` },
+      { stepId: 'r2-s004', caseId: 'ws5-r2-c003', arm: 'repair-head-history', phase: 'repair-head', runId: `nq_${'3'.repeat(32)}`,
         historyRunId: `nq_${'2'.repeat(32)}` },
     ]) {
-      const caseProjection = { ...projection, stepId: `r2-${fixture.caseId}`, caseId: fixture.caseId,
-        inputPath: fixture.inputPath, inputSha256: fixture.inputSha256, arm: fixture.arm,
-        historyMode: fixture.arm === 'repair-introduction' ? 'fresh introduction' : 'complete history',
-        targetRepositoryId: 73002, sourceBundleSha256: 'd83b08f04890604fd1bfe98105e6db7ad70945afb1e5471218ca62d2204cc3bc',
-        runId: fixture.runId, ...(fixture.historyRunId ? { historyRunId: fixture.historyRunId } : {}),
-        policy: { ...projection.policy, preparedExecutionFile: 'prepared-host/prepared-73002-default.json' } };
+      const caseProjection = { ...await r2ProjectionForStep(fixture.stepId), runId: fixture.runId,
+        ...(fixture.historyRunId ? { historyRunId: fixture.historyRunId } : {}) };
       const receipt = { runId: fixture.runId, phase: fixture.phase, target: { caseId: fixture.caseId },
         outcome: { workerOutcomeClass: 'completed_ineligible', gateOutcomeClass: 'completed_ineligible', agreement: 'agreement',
           canonicalEvidenceSha256: 'e'.repeat(64), gateDecisionSha256: 'f'.repeat(64) },
@@ -251,7 +313,7 @@ describe('current-source external v2 worker adapter', () => {
       let clientCallCount = 0;
       const result = await executor(caseProjection, { signal: new AbortController().signal,
         deadlineAt: Date.now() + 240_000, artifactStoreRoot: storeRoot,
-        captureOutsideChild: true, clientCallAllocation: 58,
+        captureOutsideChild: true, clientCallAllocation: 53,
         recordClientCall() { clientCallCount += 1; }, get clientCallCount() { return clientCallCount; },
         get blockedClientCallCount() { return 0; } });
       expect(runCase).toHaveBeenCalledOnce();
@@ -384,6 +446,135 @@ describe('current-source external v2 worker adapter', () => {
     for (const arm of ['preflight-source-coverage-control', 'repair-head-history-unavailable']) {
       expect(parse({ projection: { ...projection, arm }, clientCallAllocation: 0,
         deadlineAt: Date.now() + 15_000 })).toMatchObject({ projection: { arm } });
+    }
+  });
+
+  it('pins R2 allocations to actual v3 steps through the Docker adapter and image parser', async () => {
+    const policyRoot = await mkdtemp(path.join(tmpdir(), 'external-r2-policy-inputs-'));
+    const phaseRoot = await mkdtemp(path.join(tmpdir(), 'external-r2-adapter-phase-'));
+    await Promise.all([chmod(policyRoot, 0o700), chmod(phaseRoot, 0o700)]);
+    const { binding, preparedExecutionSha256 } = await writeR2PreparedInputs(policyRoot, phaseRoot);
+    const r2Projection = await r2ProjectionForStep('r2-s001', preparedExecutionSha256);
+    const imageResult = { clientCalls: 0, blockedClientCalls: 0, terminalStatus: 'incomplete',
+      receiptSha256: '3'.repeat(64), failureCode: 'worker_execution_failed', artifactReferences: [], providerCalls: [] };
+    const parsedRequests: Array<Record<string, any>> = [];
+    const dockerCalls: string[] = [];
+    const spawnImplementation = ((command: string, _args: string[], _options: { env: NodeJS.ProcessEnv }) => {
+      expect(command).toBe('docker');
+      const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; kill: () => void };
+      child.stdin = new PassThrough();
+      child.stdout = new PassThrough();
+      child.kill = () => undefined;
+      let stdin = '';
+      child.stdin.on('data', (chunk: Buffer) => { stdin += chunk.toString('utf8'); });
+      child.stdin.on('finish', () => {
+        dockerCalls.push(stdin);
+        const request = JSON.parse(stdin) as Record<string, any>;
+        parsedRequests.push(parseExternalNormalV2ImageCaseRequest(request));
+        stdin = '';
+        child.stdout.end(`__EXTERNAL_NORMAL_V2_RESULT__${JSON.stringify(imageResult)}\n`);
+        child.stdout.once('end', () => child.emit('close', 0));
+      });
+      return child;
+    }) as never;
+    const adapter = createPinnedWorkerImageExternalNormalV2Adapter({ policyInputRoot: policyRoot, baseEnv: bindings(),
+      privateBinding: binding, assertImageAvailable() {}, readInferenceKeyInMemory: () => 'offline-r2-test-credential',
+      spawnImplementation });
+    const context = { signal: new AbortController().signal, deadlineAt: Date.now() + 240_000,
+      captureOutsideChild: true as const, artifactStoreRoot: phaseRoot, clientCallAllocation: 53,
+      recordClientCall() { throw new Error('host adapter must not proxy worker fetch attempts'); },
+      get clientCallCount() { return 0; }, get blockedClientCallCount() { return 0; } };
+    try {
+      await expect(adapter.executeCase(r2Projection, context)).resolves.toEqual(imageResult);
+      expect(parsedRequests).toHaveLength(1);
+      expect(parsedRequests[0]).toMatchObject({ clientCallAllocation: 53,
+        projection: { stepId: 'r2-s001', caseId: 'ws5-r2-c001', arm: 'p2-only',
+          inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-001.json',
+          inputSha256: '54bb996bbd1caee73b313bc25676253469bdc9f40496ed937a0cfad32c29b162' } });
+      expect(parsedRequests[0].projection.sourceBundleSha256)
+        .toBe('d83b08f04890604fd1bfe98105e6db7ad70945afb1e5471218ca62d2204cc3bc');
+
+      await expect(adapter.executeCase(r2Projection, { ...context, clientCallAllocation: 54 }))
+        .rejects.toThrow('external_normal_v2_arm_execution_envelope_mismatch');
+      for (const changed of [
+        { ...r2Projection, caseId: 'ws5-r2-c002' },
+        { ...r2Projection, inputSha256: '0'.repeat(64) },
+        { ...r2Projection, inputPath: 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3/inputs/input-002.json' },
+        { ...r2Projection, sourceBundleSha256: '0'.repeat(64) },
+        { ...r2Projection, targetRepositoryId: 73002 },
+      ]) {
+        await expect(adapter.executeCase(changed, context)).rejects.toThrow('external_normal_v2_worker_projection_invalid');
+      }
+      expect(dockerCalls).toHaveLength(1);
+
+      for (const [stepId, expectedAllocation, credential] of [
+        ['r2-s006', 0, undefined], ['r2-s007', 0, undefined], ['r2-s008', 1, undefined],
+        ['r2-s009', 1, 'offline-r2-control-credential'],
+      ] as const) {
+        const controlProjection = await r2ProjectionForStep(stepId, preparedExecutionSha256);
+        const request = { projection: controlProjection, clientCallAllocation: expectedAllocation,
+          deadlineAt: Date.now() + 60_000, ...(credential ? { inferenceCredential: credential } : {}) };
+        expect(parseExternalNormalV2ImageCaseRequest(request).clientCallAllocation).toBe(expectedAllocation);
+      }
+
+      const v2Request = { projection, clientCallAllocation: 58, deadlineAt: Date.now() + 240_000,
+        inferenceCredential: 'offline-v2-test-credential' };
+      expect(parseExternalNormalV2ImageCaseRequest(v2Request).clientCallAllocation).toBe(58);
+      expect(() => parseExternalNormalV2ImageCaseRequest({ ...v2Request, clientCallAllocation: 59 }))
+        .toThrow('external_normal_v2_child_case_request_invalid');
+      expect(() => parseExternalNormalV2ImageCaseRequest({ ...parsedRequests[0], clientCallAllocation: 54 }))
+        .toThrow('external_normal_v2_child_case_request_invalid');
+    } finally {
+      await Promise.all([rm(policyRoot, { recursive: true, force: true }), rm(phaseRoot, { recursive: true, force: true })]);
+    }
+  });
+
+  it('blocks R2 attempt 54 before fetch using the allocation parsed from the image request', async () => {
+    const policyRoot = await mkdtemp(path.join(tmpdir(), 'external-r2-child-policy-'));
+    const phaseRoot = await mkdtemp(path.join(tmpdir(), 'external-r2-child-phase-'));
+    await Promise.all([chmod(policyRoot, 0o700), chmod(phaseRoot, 0o700)]);
+    const { preparedExecutionSha256 } = await writeR2PreparedInputs(policyRoot, phaseRoot);
+    const r2Projection = await r2ProjectionForStep('r2-s001', preparedExecutionSha256);
+    const parsedRequest = parseExternalNormalV2ImageCaseRequest({ projection: r2Projection,
+      clientCallAllocation: 53, deadlineAt: Date.now() + 240_000,
+      inferenceCredential: 'offline-r2-child-credential' });
+    const fetcher = vi.fn(async () => new Response('{}', { status: 200 }));
+    const runCase = vi.fn(async (_env, dependencies) => {
+      for (let attempt = 0; attempt < 54; attempt += 1) {
+        try {
+          await dependencies.providerFetchImplementation!(`${inferenceBaseUrl}/chat/completions`, {
+            headers: { 'x-request-id': randomUUID() },
+          });
+        } catch { break; }
+      }
+      throw new NormalEngineQualificationReceiptPersistError();
+    });
+    let clientCallCount = 0;
+    let blockedClientCallCount = 0;
+    const childExecutor = createBoundExternalNormalV2CaseExecutor({ baseEnv: bindings(),
+      fetchImplementation: fetcher as never, policyInputRoot: policyRoot,
+      readInferenceKeyInMemory: () => parsedRequest.inferenceCredential ?? '', runCase: runCase as never });
+    try {
+      const receipt = await childExecutor(parsedRequest.projection, { signal: new AbortController().signal,
+        deadlineAt: parsedRequest.deadlineAt, captureOutsideChild: true, artifactStoreRoot: phaseRoot,
+        clientCallAllocation: parsedRequest.clientCallAllocation,
+        recordClientCall() {
+          if (clientCallCount >= parsedRequest.clientCallAllocation) {
+            blockedClientCallCount += 1;
+            throw new Error('R2 child cap blocked the next physical attempt');
+          }
+          clientCallCount += 1;
+        },
+        get clientCallCount() { return clientCallCount; },
+        get blockedClientCallCount() { return blockedClientCallCount; } });
+      expect(fetcher).toHaveBeenCalledTimes(53);
+      expect(clientCallCount).toBe(53);
+      expect(blockedClientCallCount).toBe(1);
+      expect(receipt).toMatchObject({ clientCalls: 53, blockedClientCalls: 1, terminalStatus: 'failed' });
+      expect(receipt.providerCalls).toHaveLength(53);
+      expect(runCase).toHaveBeenCalledOnce();
+    } finally {
+      await Promise.all([rm(policyRoot, { recursive: true, force: true }), rm(phaseRoot, { recursive: true, force: true })]);
     }
   });
 
