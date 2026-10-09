@@ -5,15 +5,19 @@ import path from 'node:path';
 const LOG_RESPONSE_LIMIT_BYTES = 1_048_576;
 const LOG_COLLECTION_KEYS = new Set(['logs', 'data', 'rows', 'results']);
 const LOG_STRING_FIELDS = new Map([
-  ['id', 'id'], ['parentrequestid', 'parent_request_id'], ['provider', 'provider'],
+  ['id', 'id'], ['parentrequestid', 'parent_request_id'], ['routingruleid', 'routing_rule_id'],
+  ['routingrulename', 'routing_rule_name'], ['serversidefallbackmodel', 'server_side_fallback_model'],
+  ['provider', 'provider'],
   ['model', 'model'], ['alias', 'alias'], ['servedmodel', 'served_model'],
   ['finishreason', 'finish_reason'], ['status', 'status'], ['servicetier', 'service_tier'],
   ['timestamp', 'timestamp'], ['createdat', 'created_at'],
 ]);
 const LOG_NUMBER_FIELDS = new Map([
   ['fallbackindex', 'fallback_index'], ['upstreamlatencyms', 'upstream_latency_ms'],
-  ['duration', 'duration'], ['latency', 'latency'], ['cost', 'cost'],
+  ['numberofretries', 'number_of_retries'], ['duration', 'duration'], ['latency', 'latency'], ['cost', 'cost'],
 ]);
+const TYPED_STRING_FIELDS = new Set(['parent_request_id', 'routing_rule_id', 'routing_rule_name', 'server_side_fallback_model']);
+const TYPED_NUMBER_FIELDS = new Set(['fallback_index', 'number_of_retries']);
 const LOG_USAGE_FIELDS = new Map([
   ['prompttokens', 'prompt_tokens'], ['completiontokens', 'completion_tokens'],
   ['totaltokens', 'total_tokens'], ['inputtokens', 'input_tokens'], ['outputtokens', 'output_tokens'],
@@ -227,6 +231,29 @@ class BoundedMetadataJsonProjector {
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
   }
 
+  async typedStringValue() {
+    await this.space();
+    const first = await this.peek();
+    if (first === 0x22) return { state: 'string', value: await this.string(true, 1024) };
+    if (first === 0x6e) { await this.skipValue(); return { state: 'null', value: null }; }
+    await this.skipValue();
+    return { state: 'invalid', value: null };
+  }
+
+  async typedNumberValue() {
+    await this.space();
+    const first = await this.peek();
+    if (first === null) throw new Error('bifrost_log_json_truncated');
+    if (first === 0x6e) { await this.skipValue(); return { state: 'null', value: null }; }
+    if ([0x22, 0x7b, 0x5b, 0x74, 0x66].includes(first)) {
+      await this.skipValue();
+      return { state: 'invalid', value: null };
+    }
+    const value = await this.scalar();
+    return typeof value === 'number' && Number.isFinite(value)
+      ? { state: 'number', value } : { state: 'invalid', value: null };
+  }
+
   async usageObject() {
     const values = Object.create(null);
     await this.space();
@@ -261,11 +288,25 @@ class BoundedMetadataJsonProjector {
       await this.space();
       await this.expect(0x3a);
       if (LOG_STRING_FIELDS.has(key)) {
-        const value = await this.safeStringValue();
-        if (typeof value === 'string') row[LOG_STRING_FIELDS.get(key)] = value;
+        const field = LOG_STRING_FIELDS.get(key);
+        if (TYPED_STRING_FIELDS.has(field)) {
+          const { state, value } = await this.typedStringValue();
+          row[field] = value;
+          row[`${field}_state`] = state;
+        } else {
+          const value = await this.safeStringValue();
+          if (typeof value === 'string') row[field] = value;
+        }
       } else if (LOG_NUMBER_FIELDS.has(key)) {
-        const value = await this.safeNumberValue();
-        if (value !== null) row[LOG_NUMBER_FIELDS.get(key)] = value;
+        const field = LOG_NUMBER_FIELDS.get(key);
+        if (TYPED_NUMBER_FIELDS.has(field)) {
+          const { state, value } = await this.typedNumberValue();
+          row[field] = value;
+          row[`${field}_state`] = state;
+        } else {
+          const value = await this.safeNumberValue();
+          if (value !== null) row[field] = value;
+        }
       } else if (key === 'tokenusage') {
         const usage = await this.usageObject();
         if (Object.keys(usage).length) row.token_usage = usage;
@@ -447,11 +488,46 @@ async function collectOneExactLog({ fetchImpl, auth, binding, managementOrigin, 
   const completion = row.token_usage?.completion_tokens ?? row.token_usage?.output_tokens ?? null;
   const total = row.token_usage?.total_tokens ?? (Number.isSafeInteger(prompt) && Number.isSafeInteger(completion) ? prompt + completion : null);
   const bifrostLogStatus = ['processing', 'success', 'error'].includes(row.status) ? row.status : null;
+  const parentRequestIdValueSha256 = typeof row.parent_request_id === 'string'
+    ? digest(row.parent_request_id.toLowerCase()) : null;
+  const parentRequestIdState = row.parent_request_id_state === 'string'
+    ? REQUEST_ID_RE.test(row.parent_request_id || '') ? 'valid' : 'invalid'
+    : row.parent_request_id_state ?? 'absent';
+  const routeIdValueSha256 = typeof row.routing_rule_id === 'string'
+    ? digest(row.routing_rule_id.toLowerCase()) : null;
+  const routingRuleIdState = row.routing_rule_id_state === 'string'
+    ? REQUEST_ID_RE.test(row.routing_rule_id || '') ? 'valid' : 'invalid'
+    : row.routing_rule_id_state ?? 'absent';
+  const routeNameValueSha256 = typeof row.routing_rule_name === 'string'
+    ? digest(row.routing_rule_name) : null;
+  const routingRuleNameState = row.routing_rule_name_state === 'string'
+    ? SAFE_ROUTE_RE.test(row.routing_rule_name || '') ? 'valid' : 'invalid'
+    : row.routing_rule_name_state ?? 'absent';
+  const indexedField = (field) => {
+    const state = row[`${field}_state`] ?? 'absent';
+    if (state !== 'number') return { state, value: null };
+    return Number.isSafeInteger(row[field]) && row[field] >= 0
+      ? { state: 'number', value: row[field] } : { state: 'invalid', value: null };
+  };
+  const fallbackIndex = indexedField('fallback_index');
+  const numberOfRetries = indexedField('number_of_retries');
+  const serverSideFallbackModelState = row.server_side_fallback_model_state ?? 'absent';
+  const serverSideFallbackModelSha256 = typeof row.server_side_fallback_model === 'string'
+    ? digest(row.server_side_fallback_model) : null;
   const safeRow = {
-    id: row.id, parent_request_id: row.parent_request_id ?? null, provider: row.provider ?? null,
+    id: row.id, parent_request_id_sha256: parentRequestIdValueSha256, parent_request_id_state: parentRequestIdState,
+    routing_rule_id_sha256: routeIdValueSha256, routing_rule_id_state: routingRuleIdState,
+    routing_rule_name_sha256: routeNameValueSha256, routing_rule_name_state: routingRuleNameState,
+    provider: row.provider ?? null,
     alias: row.alias ?? null,
     model: row.model ?? null, served_model: row.served_model ?? null, status: row.status ?? null,
-    service_tier: row.service_tier ?? null, fallback_index: row.fallback_index ?? null,
+    server_side_fallback_model_sha256: serverSideFallbackModelSha256,
+    server_side_fallback_model_state: serverSideFallbackModelState,
+    service_tier: row.service_tier ?? null,
+    fallback_index: row.fallback_index_state === 'number' ? row.fallback_index : null,
+    fallback_index_state: fallbackIndex.state,
+    number_of_retries: row.number_of_retries_state === 'number' ? row.number_of_retries : null,
+    number_of_retries_state: numberOfRetries.state,
     upstream_latency_ms: row.upstream_latency_ms ?? null, token_usage: row.token_usage ?? null,
     bifrostCalculatedCostUsd: typeof row.cost === 'number' && Number.isFinite(row.cost) && row.cost >= 0 ? row.cost : null,
     contentFieldsPresent: row.contentFieldsPresent === true,
@@ -461,8 +537,19 @@ async function collectOneExactLog({ fetchImpl, auth, binding, managementOrigin, 
     bifrostLogRequestIdSha256: digest(bifrostLogRequestId.toLowerCase()),
     bifrostLogRowIdSha256: digest(row.id.toLowerCase()),
     upstreamResponseRequestIdSha256,
-    bifrostParentRequestIdSha256: row.parent_request_id && REQUEST_ID_RE.test(row.parent_request_id)
-      ? digest(row.parent_request_id.toLowerCase()) : null,
+    bifrostParentRequestIdSha256: parentRequestIdState === 'valid' ? parentRequestIdValueSha256 : null,
+    parentRequestIdValueSha256,
+    parentRequestIdState,
+    routingRuleIdSha256: routeIdValueSha256,
+    routingRuleIdState,
+    routingRuleNameSha256: routeNameValueSha256,
+    routingRuleNameState,
+    fallbackIndex: fallbackIndex.value,
+    fallbackIndexState: fallbackIndex.state,
+    numberOfRetries: numberOfRetries.value,
+    numberOfRetriesState: numberOfRetries.state,
+    serverSideFallbackModelSha256,
+    serverSideFallbackModelState,
     exactRowCount: 1,
     exactLogRowSha256: digest(canonicalJson(safeRow)),
     exactLogResponseSha256: projected.bodySha256,

@@ -11,6 +11,7 @@ export const EXTERNAL_NORMAL_V2_PLAN_SHA256 = '2cf0c2455969df0e1a6cdfa4b97ba4c40
 export const EXTERNAL_NORMAL_V2_BUNDLE_SHA256 = '99b707383ec16eea3ef81994c623e956f551a1e9d0b6acf2dd503afc5d41cfe1';
 export const EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA = 'ReviewYetiExternalNormalQualificationRootGo.v1';
 export const EXTERNAL_NORMAL_V2_PRIVATE_BINDING_SCHEMA = 'ReviewYetiExternalNormalQualificationPrivateBinding.v1';
+export const EXTERNAL_NORMAL_V2_ROUTE_IDENTITY_SCHEMA = 'ReviewYetiExternalNormalQualificationRouteIdentity.v1';
 
 const PHASE_WALL_LIMIT_MS = 1_800_000;
 const CLIENT_CALL_LIMIT = 300;
@@ -55,6 +56,7 @@ const LAUNCHER_SOURCE_PATHS = Object.freeze([
 ]);
 const FORBIDDEN_KEYS = /^(?:expected|oracle|label|verdict|gate|score|quality|answer|reference|ground_truth)(?:$|[_-])/iu;
 const PRIVATE_PROVIDER_REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const SAFE_ROUTE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,119}$/u;
 const SAFE_PRE_CHILD_FAILURES = new Set([
   'case_environment:required_binding_missing',
   'inference_credential:inference_credential_unavailable',
@@ -259,8 +261,25 @@ export function validateExternalNormalV2PrivateBinding(binding) {
   return binding;
 }
 
-export function bindExternalNormalV2PrivateInputs(template, binding) {
+const ROUTE_IDENTITY_KEYS = ['schemaVersion', 'routingRuleId', 'routingRuleName', 'provider', 'model',
+  'sourceConfigurationSha256'];
+
+export function validateExternalNormalV2RouteIdentity(routeIdentity) {
+  if (!hasExactKeys(routeIdentity, ROUTE_IDENTITY_KEYS)
+    || routeIdentity.schemaVersion !== EXTERNAL_NORMAL_V2_ROUTE_IDENTITY_SCHEMA
+    || !PRIVATE_PROVIDER_REQUEST_ID.test(routeIdentity.routingRuleId || '')
+    || !SAFE_ROUTE_IDENTIFIER.test(routeIdentity.routingRuleName || '')
+    || !SAFE_ROUTE_IDENTIFIER.test(routeIdentity.provider || '')
+    || !SAFE_ROUTE_IDENTIFIER.test(routeIdentity.model || '')
+    || !/^[a-f0-9]{64}$/iu.test(routeIdentity.sourceConfigurationSha256 || '')) {
+    throw new Error('external_normal_v2_route_identity_binding_invalid');
+  }
+  return routeIdentity;
+}
+
+export function bindExternalNormalV2PrivateInputs(template, binding, routeIdentity) {
   validateExternalNormalV2PrivateBinding(binding);
+  validateExternalNormalV2RouteIdentity(routeIdentity);
   const { policyInputDigests: _privateInputDigests, targetProjections: privateTargetProjections,
     ...privatePolicyFields } = binding.policy;
   const targetPins = new Map(privateTargetProjections.map((target) => [target.repositoryId, target]));
@@ -281,6 +300,7 @@ export function bindExternalNormalV2PrivateInputs(template, binding) {
     runtime: { ...template.runtime, ...binding.runtime },
     policy: { ...template.policy, ...privatePolicyFields, candidateRawSha256: binding.sourceDescriptor.contentSha256,
       inferenceBaseUrl: binding.transport.selectedBaseUrl, routeAlias: binding.transport.modelAlias,
+      routeIdentity,
       candidateHead: binding.sourceDescriptor.candidateHead,
       preparedFixtureReviewHead: binding.sourceDescriptor.preparedFixtureReviewHead,
       policySource: { repository: binding.sourceDescriptor.repository,
@@ -291,8 +311,9 @@ export function bindExternalNormalV2PrivateInputs(template, binding) {
   };
 }
 
-export function assertExternalNormalV2PlanMatchesPrivateBinding(plan, binding) {
+export function assertExternalNormalV2PlanMatchesPrivateBinding(plan, binding, routeIdentity) {
   validateExternalNormalV2PrivateBinding(binding);
+  validateExternalNormalV2RouteIdentity(routeIdentity);
   const source = binding.sourceDescriptor;
   const policy = binding.policy;
   const targets = new Map(binding.policy.targetProjections.map((target) => [target.repositoryId, target]));
@@ -308,6 +329,7 @@ export function assertExternalNormalV2PlanMatchesPrivateBinding(plan, binding) {
     && plan.policy.effectiveConfigSha256 === policy.effectiveConfigSha256
     && plan.policy.effectivePolicySha256 === policy.effectivePolicySha256
     && plan.policy.routeAlias === binding.transport.modelAlias
+    && canonicalJson(plan.policy.routeIdentity) === canonicalJson(routeIdentity)
     && plan.policy.requestedEffort === 'medium'
     && plan.policy.servedProviderModelEffort === 'medium'
     && plan.policy.v1Promotion === policy.v1Promotion
@@ -711,9 +733,9 @@ export async function readFrozenExternalNormalV2Plan(repositoryRoot) {
 }
 
 export function buildExternalNormalV2AuthorizationTuple(plan, planSha256, outputRootSha256,
-  launcherSourceTupleSha256 = '0'.repeat(64), artifactStoreIdentitySha256 = outputRootSha256, privateBinding) {
+  launcherSourceTupleSha256 = '0'.repeat(64), artifactStoreIdentitySha256 = outputRootSha256, privateBinding, routeIdentity) {
   validateExternalNormalV2PrivateBinding(privateBinding);
-  assertExternalNormalV2PlanMatchesPrivateBinding(plan, privateBinding);
+  assertExternalNormalV2PlanMatchesPrivateBinding(plan, privateBinding, routeIdentity);
   const inputs = Object.entries(INPUTS).map(([caseId, input]) => ({ caseId, inputSha256: input.sha256 })).sort((a, b) => a.caseId.localeCompare(b.caseId));
   const runtime = plan.runtime || {};
   const policy = plan.policy || {};
@@ -737,6 +759,7 @@ export function buildExternalNormalV2AuthorizationTuple(plan, planSha256, output
     centralEffectiveConfigProjectionSha256: policy.centralEffectiveConfigProjectionSha256,
     effectiveConfigSha256: policy.effectiveConfigSha256,
     effectivePolicySha256: policy.effectivePolicySha256,
+    routeIdentitySha256: sha256(canonicalJson(policy.routeIdentity)),
     servedProviderModelEffort: policy.servedProviderModelEffort, v1Promotion: policy.v1Promotion,
     policyInputDigestsSha256: sha256(canonicalJson(privateBinding.policy.policyInputDigests)),
     targetProjectionPinsSha256: sha256(canonicalJson(privateBinding.policy.targetProjections)),
@@ -1267,25 +1290,65 @@ function validPrivateCitationEvidence(value) {
   return value.usedCitationIds.every((id) => typeof id === 'string' && citationIds.has(id));
 }
 
-export function validateCapturedRouteIdentity(calls, rows, expectedAlias) {
-  if (!Array.isArray(calls) || !Array.isArray(rows) || typeof expectedAlias !== 'string' || !expectedAlias) {
+export function validateCapturedRouteIdentity(calls, rows, expectedAlias, expectedRoute) {
+  const expectedRouteKeys = ['schemaVersion', 'routingRuleId', 'routingRuleName', 'provider', 'model',
+    'sourceConfigurationSha256'];
+  if (!Array.isArray(calls) || !Array.isArray(rows) || !SAFE_ROUTE_IDENTIFIER.test(expectedAlias || '')
+    || !hasExactKeys(expectedRoute, expectedRouteKeys)
+    || expectedRoute.schemaVersion !== EXTERNAL_NORMAL_V2_ROUTE_IDENTITY_SCHEMA
+    || !PRIVATE_PROVIDER_REQUEST_ID.test(expectedRoute.routingRuleId || '')
+    || !SAFE_ROUTE_IDENTIFIER.test(expectedRoute.routingRuleName || '')
+    || !SAFE_ROUTE_IDENTIFIER.test(expectedRoute.provider || '')
+    || !SAFE_ROUTE_IDENTIFIER.test(expectedRoute.model || '')
+    || !/^[a-f0-9]{64}$/u.test(expectedRoute.sourceConfigurationSha256 || '')) {
     throw new Error('external_normal_v2_route_identity_inputs_invalid');
   }
-  const rowsByCid = new Map(rows.map((row) => [row.clientRequestIdSha256, row]));
-  const successfulCalls = calls.filter((call) => call.httpStatus === 200);
+  const expectedRuleIdSha256 = sha256(expectedRoute.routingRuleId.toLowerCase());
+  const expectedRuleNameSha256 = sha256(expectedRoute.routingRuleName);
+  const rowsByCid = new Map();
+  for (const row of rows) {
+    if (!row || !/^[a-f0-9]{64}$/u.test(row.clientRequestIdSha256 || '')
+      || rowsByCid.has(row.clientRequestIdSha256)) throw new Error('external_normal_v2_route_identity_not_proven');
+    rowsByCid.set(row.clientRequestIdSha256, row);
+  }
+  const callIds = new Set(calls.map((call) => call?.clientRequestIdSha256));
+  if (callIds.size !== calls.length || callIds.size !== rowsByCid.size
+    || [...callIds].some((id) => !/^[a-f0-9]{64}$/u.test(id || '') || !rowsByCid.has(id))) {
+    throw new Error('external_normal_v2_route_identity_not_proven');
+  }
+  const successfulCalls = calls.filter((call) => call?.httpStatus === 200);
   if (successfulCalls.length === 0) throw new Error('external_normal_v2_route_identity_successful_call_missing');
   const observed = [];
   for (const call of successfulCalls) {
     const row = rowsByCid.get(call.clientRequestIdSha256);
-    const alias = row?.bifrostAlias ?? null;
-    if (!row || row.bifrostLogStatus !== 'success' || typeof row.provider !== 'string' || !row.provider
-      || typeof row.resolvedModel !== 'string' || !row.resolvedModel || alias !== expectedAlias) {
+    const parentStateValid = ['absent', 'null', 'valid', 'invalid'].includes(row?.parentRequestIdState);
+    const retriesStateValid = ['absent', 'null', 'number', 'invalid'].includes(row?.numberOfRetriesState)
+      && (row.numberOfRetriesState === 'number'
+        ? Number.isSafeInteger(row.numberOfRetries) && row.numberOfRetries >= 0 : row.numberOfRetries === null);
+    const serverFallbackStateValid = ['absent', 'null', 'string', 'invalid'].includes(row?.serverSideFallbackModelState)
+      && (['absent', 'null'].includes(row.serverSideFallbackModelState)
+        ? row.serverSideFallbackModelSha256 === null
+        : /^[a-f0-9]{64}$/u.test(row.serverSideFallbackModelSha256 || ''));
+    if (!row || call.requestedAlias !== expectedAlias || row.bifrostLogStatus !== 'success'
+      || row.provider !== expectedRoute.provider || row.resolvedModel !== expectedRoute.model
+      || row.routingRuleIdState !== 'valid' || row.routingRuleIdSha256 !== expectedRuleIdSha256
+      || row.routingRuleNameState !== 'valid' || row.routingRuleNameSha256 !== expectedRuleNameSha256
+      || row.fallbackIndexState !== 'number' || row.fallbackIndex !== 0
+      || !parentStateValid || !retriesStateValid || !serverFallbackStateValid
+      || !['absent', 'null'].includes(row.serverSideFallbackModelState)) {
       throw new Error('external_normal_v2_route_identity_not_proven');
     }
-    observed.push({ provider: row.provider, requestedAlias: expectedAlias, bifrostAlias: row.bifrostAlias,
-      resolvedModel: row.resolvedModel, servedModel: row.servedModel ?? null, serviceTier: row.serviceTier ?? null });
+    observed.push({ clientRequestIdSha256: call.clientRequestIdSha256, requestedAlias: expectedAlias,
+      routingRuleIdSha256: row.routingRuleIdSha256, routingRuleNameSha256: row.routingRuleNameSha256,
+      provider: row.provider, resolvedModel: row.resolvedModel,
+      fallbackIndex: row.fallbackIndex, parentRequestIdState: row.parentRequestIdState,
+      parentRequestIdValueSha256: row.parentRequestIdValueSha256 ?? null,
+      numberOfRetriesState: row.numberOfRetriesState, numberOfRetries: row.numberOfRetries,
+      serverSideFallbackModelState: row.serverSideFallbackModelState,
+      serverSideFallbackModelSha256: row.serverSideFallbackModelSha256 ?? null });
   }
   return { status: 'observed', successfulCallCount: observed.length,
+    routeExpectationSha256: sha256(canonicalJson(expectedRoute)),
     identitySetSha256: sha256(canonicalJson(observed)) };
 }
 
@@ -1456,11 +1519,36 @@ export function validateExactLogLedger(calls, capture) {
   }
   const byClientId = new Map();
   for (const row of capture.rows) {
+    const validIndexedMetadata = (state, value) => state === 'number'
+      ? Number.isSafeInteger(value) && value >= 0
+      : ['absent', 'null', 'invalid'].includes(state) && value === null;
+    const validRuleIdentityMetadata = (state, value) => ['absent', 'null', 'valid', 'invalid'].includes(state)
+      && validOptionalDigest(value)
+      && (state === 'valid' ? typeof value === 'string' : !['absent', 'null'].includes(state) || value === null);
+    const validParentMetadata = ['absent', 'null', 'valid', 'invalid'].includes(row?.parentRequestIdState)
+      && validOptionalDigest(row?.parentRequestIdValueSha256 ?? null)
+      && validOptionalDigest(row?.bifrostParentRequestIdSha256 ?? null)
+      && (row.parentRequestIdState === 'valid'
+        ? typeof row.parentRequestIdValueSha256 === 'string'
+          && row.bifrostParentRequestIdSha256 === row.parentRequestIdValueSha256
+        : ['absent', 'null'].includes(row.parentRequestIdState)
+          ? row.parentRequestIdValueSha256 === null && row.bifrostParentRequestIdSha256 === null
+          : row.bifrostParentRequestIdSha256 === null);
+    const validServerFallbackMetadata = ['absent', 'null', 'string', 'invalid'].includes(row?.serverSideFallbackModelState)
+      && validOptionalDigest(row?.serverSideFallbackModelSha256 ?? null)
+      && (row.serverSideFallbackModelState === 'string'
+        ? typeof row.serverSideFallbackModelSha256 === 'string'
+        : !['absent', 'null'].includes(row.serverSideFallbackModelState) || row.serverSideFallbackModelSha256 === null);
     if (!row || !/^[a-f0-9]{64}$/u.test(row.clientRequestIdSha256 || '')
       || !/^[a-f0-9]{64}$/u.test(row.bifrostLogRequestIdSha256 || '')
       || !/^[a-f0-9]{64}$/u.test(row.bifrostLogRowIdSha256 || '')
       || !validOptionalDigest(row.upstreamResponseRequestIdSha256 ?? null)
       || !validOptionalDigest(row.bifrostParentRequestIdSha256 ?? null)
+      || !validRuleIdentityMetadata(row?.routingRuleIdState, row?.routingRuleIdSha256 ?? null)
+      || !validRuleIdentityMetadata(row?.routingRuleNameState, row?.routingRuleNameSha256 ?? null)
+      || !validParentMetadata || !validServerFallbackMetadata
+      || !validIndexedMetadata(row?.fallbackIndexState, row?.fallbackIndex)
+      || !validIndexedMetadata(row?.numberOfRetriesState, row?.numberOfRetries)
       || row.exactRowCount !== 1 || !/^[a-f0-9]{64}$/u.test(row.exactLogRowSha256 || '')
       || (row.exactLogResponseSha256 !== undefined && row.exactLogResponseSha256 !== null
         && !/^[a-f0-9]{64}$/u.test(row.exactLogResponseSha256))
@@ -1485,9 +1573,17 @@ export function validateExactLogLedger(calls, capture) {
       bifrostLogRowIdSha256: row.bifrostLogRowIdSha256 ?? null,
       upstreamResponseRequestIdSha256: row.upstreamResponseRequestIdSha256 ?? null,
       bifrostParentRequestIdSha256: row.bifrostParentRequestIdSha256 ?? null, provider: row.provider ?? null,
-      bifrostAlias: row.bifrostAlias ?? null, resolvedModel: row.resolvedModel ?? null,
-      servedModel: row.servedModel ?? null, serviceTier: row.serviceTier ?? null, speed: row.speed ?? null,
-      inferenceGeo: row.inferenceGeo ?? null };
+      bifrostAlias: row.bifrostAlias ?? null,
+      routingRuleIdState: row.routingRuleIdState, routingRuleIdSha256: row.routingRuleIdSha256 ?? null,
+      routingRuleNameState: row.routingRuleNameState, routingRuleNameSha256: row.routingRuleNameSha256 ?? null,
+      resolvedModel: row.resolvedModel ?? null, servedModel: row.servedModel ?? null,
+      fallbackIndexState: row.fallbackIndexState, fallbackIndex: row.fallbackIndex,
+      parentRequestIdState: row.parentRequestIdState,
+      parentRequestIdValueSha256: row.parentRequestIdValueSha256 ?? null,
+      numberOfRetriesState: row.numberOfRetriesState, numberOfRetries: row.numberOfRetries,
+      serverSideFallbackModelState: row.serverSideFallbackModelState,
+      serverSideFallbackModelSha256: row.serverSideFallbackModelSha256 ?? null,
+      serviceTier: row.serviceTier ?? null, speed: row.speed ?? null, inferenceGeo: row.inferenceGeo ?? null };
   });
   const tokens = calls.map((call) => {
     const row = byClientId.get(call.clientRequestIdSha256);
@@ -1527,7 +1623,8 @@ export function validateExactLogLedger(calls, capture) {
 
 /** Serial bounded executor. `executeCase` must invoke `recordClientCall` at the actual fetch boundary. */
 export async function runExternalNormalQualificationV2({
-  repositoryRoot, policyInputRoot, phaseRoot, privateBinding, authorization, executeCase, captureExactLogs, preflightExecution, now = Date.now,
+  repositoryRoot, policyInputRoot, phaseRoot, privateBinding, routeIdentity, authorization, executeCase, captureExactLogs,
+  preflightExecution, now = Date.now,
 } = {}) {
   if (typeof executeCase !== 'function') throw new Error('external_normal_v2_case_executor_required');
   const frozen = await readFrozenExternalNormalV2Plan(repositoryRoot || process.cwd());
@@ -1537,7 +1634,9 @@ export async function runExternalNormalQualificationV2({
   if (!privateBinding) return { status: 'private_binding_required', phaseId: template.phaseId, clientCalls: 0, planSha256 };
   try { validateExternalNormalV2PrivateBinding(privateBinding); }
   catch { return { status: 'private_binding_rejected', phaseId: template.phaseId, clientCalls: 0, planSha256 }; }
-  const plan = bindExternalNormalV2PrivateInputs(template, privateBinding);
+  try { validateExternalNormalV2RouteIdentity(routeIdentity); }
+  catch { return { status: 'route_identity_rejected', phaseId: template.phaseId, clientCalls: 0, planSha256 }; }
+  const plan = bindExternalNormalV2PrivateInputs(template, privateBinding, routeIdentity);
   if (plan.status !== 'frozen-ready-awaiting-root-go' || plan.dispatchAuthorization !== false
     || !plan.runtime?.finalSourceRevision || !plan.runtime?.workerImageDigest || !plan.runtime?.runtimeManifestSha256
     || !plan.policy?.effectiveConfigSha256 || !plan.targetProjections?.every((row) =>
@@ -1564,7 +1663,7 @@ export async function runExternalNormalQualificationV2({
     uid: rootInfo.uid, gid: rootInfo.gid, mode: rootInfo.mode & 0o777 }));
   const launcherSourceDigests = await readExternalNormalV2LauncherSourceDigests(repositoryRoot || process.cwd());
   const tuple = buildExternalNormalV2AuthorizationTuple(plan, planSha256, outputRootSha256,
-    launcherSourceDigests.tupleSha256, artifactStoreIdentitySha256, privateBinding);
+    launcherSourceDigests.tupleSha256, artifactStoreIdentitySha256, privateBinding, routeIdentity);
   if (!validateRootGoGrant(plan, authorization, tuple, now())) {
     return { status: 'authorization_rejected', phaseId: plan.phaseId, clientCalls: 0, planSha256 };
   }
@@ -1672,7 +1771,7 @@ export async function runExternalNormalQualificationV2({
       exactCidRowsValidated = true;
       const routeIdentity = stepResult.recoveredAttemptLedger
         ? { status: 'client_response_unavailable' }
-        : validateCapturedRouteIdentity(calls, captured.rows, plan.policy.routeAlias);
+        : validateCapturedRouteIdentity(calls, captured.rows, plan.policy.routeAlias, plan.policy.routeIdentity);
       capturedLogRows.push(...captured.rows);
       const batch = { stepId: stepResult.stepId, status: 'captured', artifactSetSha256: captured.artifactSetSha256,
         artifactCount: captured.artifactCount, queriedCallCount: captured.artifactCount,
