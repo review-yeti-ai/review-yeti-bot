@@ -19,6 +19,9 @@ dispatches and exits in seconds, and worker pods do the model work.
 > runs. Kubernetes Mode cannot be pointed at a cluster you operate until the service
 > side can trust a caller you control, which is a change to the service, not a setting.
 
+> [!NOTE]
+> **Supported Remote Execution Backends**: Review Yeti supports both **Kubernetes / DOKS Mode** (`execution-backend: doks`) and **Cloudflare-Native Edge Mode** (`execution-backend: edge`). Both are first-class, valid options. Teams running on Kubernetes can deploy the in-cluster operator (`charts/review-yeti/`) and worker pods, while teams seeking zero standing cluster footprint can utilize Cloudflare Edge orchestration with ephemeral serverless runners.
+
 ---
 
 ## 💡 The Problem: CI Runner Minute Waste

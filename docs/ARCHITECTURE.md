@@ -10,7 +10,7 @@ Review Yeti is built around four foundational principles:
 
 1. **Separation of Concerns (Persona Panels)**: Instead of asking a single prompt to review an entire pull request, Review Yeti dispatches specialized prompts to distinct personas (Security, Performance, Architecture, Testing, Dependencies).
 2. **Deterministic Consensus & Arbitration**: Findings from all personas are collected, deduplicated, scored by severity (P0, P1, P2), and reconciled by an automated moderator and arbiter into a single binding verdict (`SHIP`, `FIX_FIRST`, `BLOCK`).
-3. **Dual Execution Runtime**: Supports both lightweight, zero-infra **Ephemeral GitHub Actions** and high-scale **Kubernetes / DOKS Offloaded Workers** to eliminate billable CI runner wait time.
+3. **Multi-Backend Execution Runtime**: Supports lightweight **Ephemeral GitHub Actions**, high-scale **Kubernetes / DOKS Offloaded Workers**, and **Cloudflare-Native Edge & Ephemeral Serverless** compute (DO Managed Agents / Firecracker microVMs and Cloudflare Sandboxes) to eliminate billable CI runner wait time. Both offloaded backends (Cloudflare Edge and Kubernetes/DOKS) are first-class, valid options.
 4. **Base-Ref Trust Boundary**: All review charters, configuration files, and security thresholds are read strictly from the pull request's **base branch** (e.g. `main`), preventing pull requests from tampering with their own review rules.
 
 ---
@@ -59,23 +59,28 @@ flowchart TD
 
 ## ⚙️ Execution Models
 
-Review Yeti supports two distinct execution patterns:
+Review Yeti supports three first-class, valid execution patterns:
 
-### 1. Ephemeral In-Runner Mode (Action Mode)
+### 1. Cloudflare-Native Edge & Ephemeral Serverless Mode (`execution-backend: edge` or `mars`)
+- **Runtime**: Ephemeral serverless runners (DigitalOcean Managed Agents in Firecracker microVMs or Cloudflare Container Sandboxes) with repository workspace caching in Cloudflare R2.
+- **Orchestration**: Managed via Cloudflare Edge Worker (`cf-orchestrator`), Cloudflare Workflows (`ReviewJobWorkflow`), and Durable Objects (`RepoGateDO`, `ReviewRunDO`) for concurrency serialization, debouncing, and state tracking.
+- **Ideal For**: Teams seeking zero standing cluster infrastructure, zero idle RAM, sub-second boot, and pay-only-for-active-reviews economics.
+
+### 2. Kubernetes Asynchronous Worker Mode (`execution-backend: doks`)
+- **Runtime**: Ephemeral containerized worker pods (`review-yeti-worker`) running inside a Kubernetes cluster (DOKS, EKS, GKE, etc.).
+- **Orchestration**:
+  - GitHub Actions runs an ultra-fast dispatch shim (< 10 seconds).
+  - Shim registers an in-progress Check Run (`review-status: DISPATCHED`, `gate-decision: PENDING`).
+  - Admission service receives dispatch payload and creates a `PRReviewJob` custom resource.
+  - Review Yeti Go Operator schedules a lightweight worker pod (`node dist/cli/runLiveReview.js`).
+  - Worker evaluates personas in parallel, completes the Check Run directly, and posts the consolidated review comment via a minted GitHub App installation token.
+- **Ideal For**: Teams already standardizing on Kubernetes infrastructure who prefer keeping review execution inside their private VPC/cluster boundaries.
+- **Reference**: See [Kubernetes & DOKS Execution Mode](KUBERNETES_MODE.md).
+
+### 3. Ephemeral In-Runner Mode (Action Mode, `execution-backend: local`)
 - **Runtime**: Runs directly within the GitHub Actions virtual machine (`ubuntu-latest` or self-hosted runner).
 - **Orchestration**: Managed via `action.yml` and `.github/workflows/pipelines/review-pipeline.js`.
 - **Ideal For**: Quick adoption, public open-source repos, and teams with moderate PR volume.
-
-### 2. Kubernetes Asynchronous Worker Mode (Operator / DOKS Mode)
-- **Runtime**: Ephemeral containerized worker pods (`review-yeti-worker`) running inside a Kubernetes cluster (DOKS, EKS, GKE, etc.).
-- **Orchestration**: 
-  - GitHub Actions runs an ultra-fast dispatch shim (< 10 seconds).
-  - Shim registers an in-progress Check Run (`review-status: DISPATCHED`, `gate-decision: PENDING`).
-  - Admission service receives dispatch payload and spawns a `PRReviewJob` custom resource.
-  - Review Yeti Operator schedules a lightweight worker pod (`node dist/cli/runLiveReview.js`).
-  - Worker evaluates personas in parallel, completes the Check Run directly, and posts the consolidated review comment via a minted GitHub App installation token.
-- **Ideal For**: High-velocity teams, monorepos, and organizations looking to eliminate billable CI runner minute waste.
-- **Reference**: See [Kubernetes & DOKS Execution Mode](KUBERNETES_MODE.md).
 
 ---
 
