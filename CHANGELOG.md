@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.126.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.125.0...v1.126.0) (2026-10-09)
+
+
+### Features
+
+* **edge:** implement Cloudflare native OIDC action dispatch endpoint (Phase 1) ([#1476](https://github.com/review-yeti-ai/review-yeti-bot/issues/1476)) ([2ff98d7](https://github.com/review-yeti-ai/review-yeti-bot/commit/2ff98d7c3bd5fa8e630e399fa50abe9125ace41c))
+
 ## [1.125.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.124.0...v1.125.0) (2026-10-09)
 
 
