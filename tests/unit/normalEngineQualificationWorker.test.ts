@@ -32,6 +32,7 @@ import { buildNormalEngineQualificationSourceInput, isNormalEngineQualificationW
   assertNormalEngineQualificationPlanReceipt, assertNormalEngineQualificationReceipt,
   parseNormalEngineQualificationPlanRequest, parseNormalEngineQualificationRequest,
   normalEngineQualificationComposedResourcesRelativePath,
+  normalEngineQualificationCoverageControlPathForCase,
   type NormalEngineProviderCaptureBinding } from '../../src/qualification/normalEngineQualification';
 import { NormalEngineQualificationProviderAttestor,
   normalEngineQualificationProviderCaptureRelativePath } from '../../src/qualification/normalEngineQualificationProvider';
@@ -289,6 +290,52 @@ describe('normal engine qualification source and capture', () => {
       preflight: { sourceCoverage: 'unavailable', withheldPath: 'src/modules/module-01.ts', physicalClientCalls: 0 }, provider: { calls: [] },
       outcome: { workerOutcomeClass: 'incomplete', gateOutcomeClass: 'incomplete', agreement: 'incomplete' },
       terminal: { status: 'incomplete' }, publication: { githubWrites: 0, appChecks: 0, reviews: 0, comments: 0 } });
+  });
+
+  it('binds the v3 coverage control to c004 changed path and abstains before any provider fetch', async () => {
+    const { env } = providerFailureEnvironment();
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUN_ID = 'nq_abcdef0123456789abcdef0123456789';
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_CASE_ID = 'ws5-r2-c004';
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'preflight-source-coverage-control';
+    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+      value: 'qualification-test-key' });
+    const coveragePath = normalEngineQualificationCoverageControlPathForCase('ws5-r2-c004');
+    expect(coveragePath).toBe('src/queue/selector.ts');
+    expect(normalEngineQualificationCoverageControlPathForCase('ws5-current-1dd-v2-coverage-hole'))
+      .toBe('src/modules/module-01.ts');
+    expect(normalEngineQualificationCoverageControlPathForCase('ws5-r2-c001')).toBeUndefined();
+    const request = parseNormalEngineQualificationRequest(env);
+    const provider = createNormalEngineQualificationRepoFileProvider(request);
+    const withheld = await provider.readFileAt!(coveragePath!, 'head');
+    expect(withheld).toMatchObject({ content: null, presence: 'unavailable',
+      source: { side: 'head', path: 'src/queue/selector.ts' } });
+    const oldV2Path = await provider.readFileAt!('src/modules/module-01.ts', 'head');
+    expect(oldV2Path).toMatchObject({ content: null, presence: 'absent',
+      source: { side: 'head', path: 'src/modules/module-01.ts' } });
+
+    let publisherCalls = 0;
+    const fetcher = vi.fn(async () => { throw new Error('v3 source preflight must not call the model'); });
+    const result = await runNormalEngineQualificationCase(env, {
+      verifyRuntimeManifest: async () => VALID_ENV.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256!,
+      runPublishingWorker: async (workerEnv, workerDeps) => {
+        publisherCalls += 1;
+        return runPublishingReviewWorker(workerEnv, workerDeps);
+      },
+      providerFetchImplementation: fetcher as never,
+      persistProviderCapture: providerCapturePersistenceStub(),
+      persistCaseReceipt: async () => ({ receiptPath: 'private/receipt.json', sha256Path: 'private/receipt.sha256',
+        receiptSha256: 'e'.repeat(64), idempotent: false }),
+    });
+    expect(publisherCalls).toBe(1);
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ target: { caseId: 'ws5-r2-c004' }, arm: 'preflight-source-coverage-control',
+      qualificationControl: 'source-coverage-unavailable',
+      preflight: { control: 'source-coverage-unavailable', sourceCoverage: 'unavailable',
+        withheldPath: 'src/queue/selector.ts', physicalClientCalls: 0 },
+      provider: { calls: [] },
+      outcome: { workerOutcomeClass: 'incomplete', gateOutcomeClass: 'incomplete', agreement: 'incomplete' },
+      terminal: { status: 'incomplete' },
+      publication: { githubWrites: 0, appChecks: 0, reviews: 0, comments: 0 } });
   });
 
   it('treats required v2 history transport failure as incomplete before task planning and all model calls', async () => {
@@ -870,6 +917,7 @@ describe('normal engine qualification source and capture', () => {
 
   it('sends only the in-memory invalid sentinel for the Bifrost authentication control', async () => {
     const { env, model } = providerFailureEnvironment();
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_CASE_ID = 'ws5-r2-c001';
     const authorizationHeaders: string[] = [];
     let physicalRequests = 0;
     const fetchImplementation: FetchImplementation = async (_input, init) => {
@@ -936,6 +984,7 @@ describe('normal engine qualification source and capture', () => {
 
   it('requires observed one-request exhaustion and incomplete worker and Gate outcomes for the resource control', async () => {
     const { env, model } = providerFailureEnvironment();
+    env.REVIEW_NORMAL_ENGINE_QUALIFICATION_CASE_ID = 'ws5-r2-c001';
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'resource-exhaustion';
     Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
       value: 'qualification-test-key' });

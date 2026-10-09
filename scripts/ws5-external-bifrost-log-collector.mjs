@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
+import { R2_COHORT_PLAN_SHA256, R2_PHASE_ID } from './ws5-external-normal-r2-plan.mjs';
 
 const LOG_RESPONSE_LIMIT_BYTES = 1_048_576;
 const LOG_COLLECTION_KEYS = new Set(['logs', 'data', 'rows', 'results']);
@@ -582,7 +583,9 @@ export function createExternalNormalV2ExactLogCollector({
     managementOrigin = parsedOrigin.origin;
   } catch { throw new Error('external_normal_v2_management_origin_invalid'); }
   return async ({ phaseId, planSha256, artifactStoreRoot, calls, stepReceipts, signal, deadlineAt } = {}) => {
-    if (phaseId !== 'ws5-current-source-external-v2' || !SHA256_RE.test(planSha256 || '')
+    const admittedPhase = (phaseId === 'ws5-current-source-external-v2' && SHA256_RE.test(planSha256 || ''))
+      || (phaseId === R2_PHASE_ID && planSha256 === R2_COHORT_PLAN_SHA256);
+    if (!admittedPhase
       || typeof artifactStoreRoot !== 'string' || !path.isAbsolute(artifactStoreRoot)
       || !Array.isArray(calls) || !Array.isArray(stepReceipts) || !Number.isFinite(deadlineAt)) {
       throw new Error('external_normal_v2_exact_log_capture_request_invalid');

@@ -32,6 +32,7 @@ import {
   NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT,
   buildNormalEngineQualificationSourceInput,
   isExternalNormalQualificationBundle,
+  normalEngineQualificationCoverageControlPathForCase,
   parseNormalEngineQualificationPlanRequest,
   parseNormalEngineQualificationRequest,
   normalEngineQualificationComposedResourcesRelativePath,
@@ -242,6 +243,11 @@ export function createNormalEngineQualificationRepoFileProvider(
   request: NormalEngineQualificationRequest,
 ): RepoFileProvider {
   const input = buildNormalEngineQualificationSourceInput(request);
+  const coverageControlPath = request.arm === 'preflight-source-coverage-control'
+    ? normalEngineQualificationCoverageControlPathForCase(request.fixture.caseId) : undefined;
+  if (request.arm === 'preflight-source-coverage-control' && !coverageControlPath) {
+    throw new Error('normal_engine_qualification_coverage_control_case_unpinned');
+  }
   const source = pinnedFiles(request);
   const repository = `${input.source.repository.owner}/${input.source.repository.repo}`;
   const changedFiles = new Map(parseChangedFiles(input.source.patches.map((entry) => entry.patch).join('\n'), {
@@ -249,7 +255,7 @@ export function createNormalEngineQualificationRepoFileProvider(
   }).files.map((file) => [file.path, file]));
   const readAt = async (path: string, side: 'head' | 'base' | 'merge-base') => {
     if (!validPath(path)) throw new Error('normal_engine_qualification_source_path_invalid');
-    if (request.arm === 'preflight-source-coverage-control' && side === 'head' && path === 'src/modules/module-01.ts') {
+    if (coverageControlPath && side === 'head' && path === coverageControlPath) {
       return { content: null, sha: input.source.headSha, presence: 'unavailable' as const,
         source: { repository, path, side }, unavailableReason: 'qualification coverage fault withholds this exact head window' };
     }
@@ -1107,9 +1113,11 @@ export async function runNormalEngineQualificationCase(
         if (request.arm === 'preflight-source-coverage-control') {
           const readFileAt = fixtureProvider.readFileAt;
           if (!readFileAt) throw new Error('normal_engine_qualification_source_window_provider_unavailable');
-          const withheld = await readFileAt('src/modules/module-01.ts', 'head');
+          const withheldPath = normalEngineQualificationCoverageControlPathForCase(request.fixture.caseId);
+          if (!withheldPath) throw new Error('normal_engine_qualification_coverage_control_case_unpinned');
+          const withheld = await readFileAt(withheldPath, 'head');
           sourceCoverageControlSatisfied = withheld.presence === 'unavailable' && withheld.content === null
-            && withheld.source?.side === 'head' && withheld.source?.path === 'src/modules/module-01.ts';
+            && withheld.source?.side === 'head' && withheld.source?.path === withheldPath;
           if (!sourceCoverageControlSatisfied) throw new Error('normal_engine_qualification_coverage_fault_not_observed');
           throw new Error('normal_engine_qualification_required_source_window_unavailable');
         }
@@ -1477,9 +1485,9 @@ export async function runNormalEngineQualificationCase(
       gateDecisionSha256,
     },
     canonicalReviewEvidence,
-    ...(request.arm === 'preflight-source-coverage-control' ? { preflight: {
+    ...(request.arm === 'preflight-source-coverage-control' && sourceCoverageControlSatisfied ? { preflight: {
       control: 'source-coverage-unavailable' as const, sourceCoverage: 'unavailable' as const,
-      withheldPath: 'src/modules/module-01.ts' as const, physicalClientCalls: 0 as const,
+      withheldPath: normalEngineQualificationCoverageControlPathForCase(request.fixture.caseId)!, physicalClientCalls: 0 as const,
     } } : request.arm === 'repair-head-history-unavailable' && externalNormalBundle
       && requiredHistoryControlSatisfied ? { preflight: {
         control: 'required-history-unavailable-transport' as const, historyStatus: 'unavailable' as const,
@@ -1492,7 +1500,7 @@ export async function runNormalEngineQualificationCase(
     composedResourcesSha256,
     composedResourcesUnavailableReason,
     groundedVerification,
-    qualificationControl: request.arm === 'preflight-source-coverage-control' ? 'source-coverage-unavailable'
+    qualificationControl: request.arm === 'preflight-source-coverage-control' && sourceCoverageControlSatisfied ? 'source-coverage-unavailable'
       : request.arm === 'repair-head-empty-history' ? 'empty-history-ablation'
       : request.arm === 'repair-head-history-unavailable' ? 'history-unavailable'
       : request.arm === 'repair-head-verifier-unavailable' ? 'grounded-verifier-unavailable'
