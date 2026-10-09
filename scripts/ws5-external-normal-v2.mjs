@@ -1079,9 +1079,13 @@ function rejectRawContinuationIdentifiers(value) {
   }
 }
 
-function validateR2ContinuationPriorAttempt(priorAttempt, currentPlan, currentOutputRootSha256) {
+function validateR2ContinuationPriorAttempt(priorAttempt, receiptPins, currentPlan, currentOutputRootSha256) {
   try {
-    if (!priorAttempt || typeof priorAttempt !== 'object' || Array.isArray(priorAttempt)
+    if (!hasExactKeys(receiptPins, ['schemaVersion', 'startSha256', 'terminalSha256', 'resultSha256'])
+      || receiptPins.schemaVersion !== 'ReviewYetiExternalNormalR2PriorAttemptReceiptPins.v1'
+      || !['startSha256', 'terminalSha256', 'resultSha256'].every((key) => /^[a-f0-9]{64}$/u
+        .test(receiptPins[key] || ''))
+      || !priorAttempt || typeof priorAttempt !== 'object' || Array.isArray(priorAttempt)
       || Object.keys(priorAttempt).sort().join('|') !== 'resultBytes|startBytes|terminalBytes') {
       throw new Error('invalid');
     }
@@ -1090,6 +1094,9 @@ function validateR2ContinuationPriorAttempt(priorAttempt, currentPlan, currentOu
     const startRecord = startFile.parsed;
     const terminalRecord = terminalFile.parsed;
     const resultFile = parseContinuationReceipt(priorAttempt.resultBytes, 'result');
+    if (startFile.sha256 !== receiptPins.startSha256
+      || terminalFile.sha256 !== receiptPins.terminalSha256
+      || resultFile.sha256 !== receiptPins.resultSha256) throw new Error('invalid');
     const result = resultFile.parsed;
     const startAtMs = Date.parse(startRecord.startedAt);
     const resultStartedAtMs = Date.parse(result.startedAt);
@@ -1350,7 +1357,8 @@ async function prepareExternalNormalR2ContinuationExecution(input = {}) {
     throw new Error('external_normal_r2_continuation_attempt_id_invalid');
   }
   const prepared = await prepareExternalNormalR2Execution(input);
-  const continuation = validateR2ContinuationPriorAttempt(input.priorAttempt, prepared.plan,
+  const continuation = validateR2ContinuationPriorAttempt(input.priorAttempt,
+    input.priorAttemptReceiptPins, prepared.plan,
     prepared.tuple.outputRootSha256);
   const scheduledRuns = prepared.plan.runs.filter((step) => continuation.remainingStepIds.includes(step.stepId));
   if (canonicalJson(scheduledRuns.map((step) => step.stepId)) !== canonicalJson(R2_CONTINUATION_STEP_IDS)
