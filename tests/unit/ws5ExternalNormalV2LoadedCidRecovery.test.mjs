@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { verifyQualificationFixtureAllowlist } from '../../scripts/normal-engine-qualification-fixtures.mjs';
@@ -193,17 +193,10 @@ async function createCoordinatorHarness(repositoryRoot) {
   return { tempRoot, phaseRoot, policyInputRoot, binding, routeIdentity, template, bundle, planSha256 };
 }
 
-
-async function runLoadedAdapterCollectorHarness({ sidecarMode = 'valid' } = {}) {
-  const repositoryRoot = new URL('../../', import.meta.url).pathname;
-  const harness = await createCoordinatorHarness(repositoryRoot);
-  const syntheticRows = Array.from({ length: 25 }, () => ({ callerRequestId: randomUUID(), bifrostLogRequestId: null,
-    upstreamResponseRequestId: randomUUID() }));
-  for (const row of syntheticRows) row.bifrostLogRequestId = row.callerRequestId;
-  const digest = (value) => createHash('sha256').update(value).digest('hex');
+async function workerBaseEnv(harness) {
   const source = harness.binding.sourceDescriptor;
   const [sourceOwner, sourceRepo] = source.repository.split('/');
-  const baseEnv = {
+  return {
     NODE_ENV: 'test', OPENAI_BASE_URL: harness.binding.transport.selectedBaseUrl,
     REVIEW_MODEL: harness.binding.transport.modelAlias,
     REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: source.repository,
@@ -221,6 +214,16 @@ async function runLoadedAdapterCollectorHarness({ sidecarMode = 'valid' } = {}) 
     REVIEW_PREPARED_CONFIG_JSON: await readFile(path.join(harness.policyInputRoot,
       'prepared-host/prepared-73004-default.json'), 'utf8'),
   };
+}
+
+async function runLoadedAdapterCollectorHarness({ sidecarMode = 'valid' } = {}) {
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const harness = await createCoordinatorHarness(repositoryRoot);
+  const syntheticRows = Array.from({ length: 25 }, () => ({ callerRequestId: randomUUID(), bifrostLogRequestId: null,
+    upstreamResponseRequestId: randomUUID() }));
+  for (const row of syntheticRows) row.bifrostLogRequestId = row.callerRequestId;
+  const digest = (value) => createHash('sha256').update(value).digest('hex');
+  const baseEnv = await workerBaseEnv(harness);
   const caseMounts = [];
   let childEnvHasInferenceKey = false;
   let argsContainSyntheticCredential = false;
@@ -482,4 +485,37 @@ test('supports a sealed-copy log-only read with separate private input and sanit
   await rm(sourceRoot, { recursive: true, force: true });
   await rm(diagnosticInputRoot, { recursive: true, force: true });
   await rm(outputRoot, { recursive: true, force: true });
+});
+
+test('passes the explicit private route DTO through the supported process wrapper into the MJS coordinator', async () => {
+  const repositoryRoot = new URL('../../', import.meta.url).pathname;
+  const harness = await createCoordinatorHarness(repositoryRoot);
+  const now = Date.now();
+  const baseEnv = await workerBaseEnv(harness);
+  baseEnv.REVIEW_YETI_EXTERNAL_NORMAL_V2_ROOT_GO = JSON.stringify({
+    schemaVersion: runner.EXTERNAL_NORMAL_V2_ROOT_GO_SCHEMA, rootGo: true, grantId: randomUUID(),
+    issuedAt: new Date(now - 1_000).toISOString(), expiresAt: new Date(now + 60_000).toISOString(), binding: {},
+  });
+  baseEnv.REVIEW_YETI_EXTERNAL_NORMAL_V2_POLICY_ROOT = harness.policyInputRoot;
+  let inferenceKeyReads = 0;
+  let exactLogCaptureCalls = 0;
+  try {
+    const missingRoute = await host.runCurrentSourceExternalNormalV2FromProcess({
+      baseEnv, privateBinding: harness.binding,
+      readInferenceKeyInMemory: () => { inferenceKeyReads += 1; return 'synthetic-wrapper-key'; },
+      captureExactLogs: async () => { exactLogCaptureCalls += 1; return { status: 'no_calls' }; },
+    });
+    assert.deepEqual(missingRoute, { status: 'route_identity_required', clientCalls: 0 });
+
+    const result = await host.runCurrentSourceExternalNormalV2FromProcess({
+      baseEnv, privateBinding: harness.binding, routeIdentity: harness.routeIdentity,
+      readInferenceKeyInMemory: () => { inferenceKeyReads += 1; return 'synthetic-wrapper-key'; },
+      captureExactLogs: async () => { exactLogCaptureCalls += 1; return { status: 'no_calls' }; },
+    });
+    assert.deepEqual(result, { status: 'authorization_rejected', phaseId: 'ws5-current-source-external-v2', clientCalls: 0,
+      planSha256: harness.planSha256 });
+    assert.equal(inferenceKeyReads, 0);
+    assert.equal(exactLogCaptureCalls, 0);
+    assert.deepEqual(await readdir(harness.phaseRoot), []);
+  } finally { await rm(harness.tempRoot, { recursive: true, force: true }); }
 });
