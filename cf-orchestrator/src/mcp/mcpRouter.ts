@@ -20,12 +20,24 @@ import {
   triggerReviewTool,
   cancelReviewTool,
   purgeCacheTool,
+  attestPrGateTool,
+  disputeFindingTool,
+  replyReviewThreadTool,
 } from './tools/index.js';
 
 export const MUTATING_TOOL_NAMES = new Set([
   'review_yeti_trigger_review',
+  'trigger_review',
   'review_yeti_cancel_review',
+  'cancel_review',
   'review_yeti_purge_cache',
+  'purge_cache',
+  'review_yeti_attest_pr_gate',
+  'attest_pr_gate',
+  'review_yeti_dispute_finding',
+  'dispute_finding',
+  'review_yeti_reply_review_thread',
+  'reply_review_thread',
 ]);
 
 export function constantTimeEquals(a: string, b: string): boolean {
@@ -74,8 +86,15 @@ function extractTextContent(res: any): string {
   return textItem?.text || '{}';
 }
 
+interface SseSession {
+  id: string;
+  controller: ReadableStreamDefaultController<Uint8Array>;
+  createdAt: number;
+}
+
 export class McpRouter {
   private readonly tools = new Map<string, McpToolHandler>();
+  private readonly sseSessions = new Map<string, SseSession>();
 
   constructor() {
     this.registerTool(queryActiveJobsTool);
@@ -87,6 +106,9 @@ export class McpRouter {
     this.registerTool(triggerReviewTool);
     this.registerTool(cancelReviewTool);
     this.registerTool(purgeCacheTool);
+    this.registerTool(attestPrGateTool);
+    this.registerTool(disputeFindingTool);
+    this.registerTool(replyReviewThreadTool);
   }
 
   public registerTool(handler: McpToolHandler): void {
@@ -98,7 +120,40 @@ export class McpRouter {
   }
 
   public getTool(name: string): McpToolHandler | undefined {
-    return this.tools.get(name);
+    const direct = this.tools.get(name);
+    if (direct) return direct;
+
+    // Check with/without review_yeti_ prefix
+    if (name.startsWith('review_yeti_')) {
+      const unprefixed = name.replace(/^review_yeti_/, '');
+      if (this.tools.has(unprefixed)) return this.tools.get(unprefixed);
+    } else {
+      const prefixed = `review_yeti_${name}`;
+      if (this.tools.has(prefixed)) return this.tools.get(prefixed);
+    }
+
+    // Common legacy aliases
+    if (name === 'review_yeti_get_review_findings' || name === 'get_review_findings') {
+      return this.tools.get('review_yeti_query_findings');
+    }
+
+    return undefined;
+  }
+
+  public getSseSession(sessionId: string): SseSession | undefined {
+    return this.sseSessions.get(sessionId);
+  }
+
+  public closeSseSession(sessionId: string): void {
+    const session = this.sseSessions.get(sessionId);
+    if (session) {
+      try {
+        session.controller.close();
+      } catch {
+        // Safe ignore
+      }
+      this.sseSessions.delete(sessionId);
+    }
   }
 
   public async handleRpc(
@@ -322,55 +377,55 @@ export class McpRouter {
   }
 
   public async handleHttpRequest(request: Request, env: any): Promise<Response> {
-    // 1. Scoped CORS headers (reject wildcard * on mutating control endpoint)
+    const url = new URL(request.url);
     const reqOrigin = request.headers.get('Origin') || '';
-    // Allowed origins are deployment configuration (ALLOWED_ORIGINS, comma separated): an exact origin such as
-    // https://dashboard.example.com, or `*.example.com` for any https subdomain. Loopback origins are always
-    // allowed for local development. With nothing configured only same-origin and non-browser callers work.
     const configuredOrigins = String(env?.ALLOWED_ORIGINS ?? '')
       .split(',')
       .map((entry: string) => entry.trim())
       .filter(Boolean);
-    const matchesConfigured = (origin: string): boolean => configuredOrigins.some((entry: string) => {
-      if (entry.startsWith('*.')) {
-        try {
-          const url = new URL(origin);
-          return url.protocol === 'https:' && url.hostname.endsWith(entry.slice(1));
-        } catch {
-          return false;
+    const matchesConfigured = (origin: string): boolean =>
+      configuredOrigins.some((entry: string) => {
+        if (entry.startsWith('*.')) {
+          try {
+            const u = new URL(origin);
+            return u.protocol === 'https:' && u.hostname.endsWith(entry.slice(1));
+          } catch {
+            return false;
+          }
         }
-      }
-      return origin === entry;
-    });
+        return origin === entry;
+      });
     const isAllowedOrigin =
       !reqOrigin ||
       matchesConfigured(reqOrigin) ||
       reqOrigin.startsWith('http://localhost:') ||
       reqOrigin.startsWith('http://127.0.0.1:');
-    const fallbackOrigin = configuredOrigins.find((entry: string) => !entry.startsWith('*.')) ?? new URL(request.url).origin;
+    const fallbackOrigin =
+      configuredOrigins.find((entry: string) => !entry.startsWith('*.')) ?? url.origin;
     const allowedOrigin = isAllowedOrigin && reqOrigin ? reqOrigin : fallbackOrigin;
 
     const corsHeaders: Record<string, string> = {
       'Access-Control-Allow-Origin': allowedOrigin,
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, mcp-session-id',
+      'Access-Control-Expose-Headers': 'Mcp-Session-Id',
     };
 
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // 2. Constant-time Authentication
+    // Constant-time Authentication
     const authHeader = request.headers.get('Authorization') || '';
     const token = authHeader.startsWith('Bearer ')
       ? authHeader.slice(7).trim()
-      : (request.headers.get('x-api-key') || '').trim();
+      : (request.headers.get('x-api-key') || url.searchParams.get('token') || '').trim();
     const configuredToken = (env.REVIEW_YETI_MCP_AUTH_TOKEN || '').trim();
 
     let isAuthenticated = false;
     if (configuredToken) {
       isAuthenticated = constantTimeEquals(token, configuredToken);
-      if (!isAuthenticated && request.method === 'POST') {
+      if (!isAuthenticated && request.method === 'POST' && env?.PUBLIC_READ_MCP !== 'true') {
         return new Response(
           JSON.stringify({
             jsonrpc: '2.0',
@@ -382,7 +437,128 @@ export class McpRouter {
       }
     }
 
-    // 3. GET /api/mcp info or tool list
+    // 1. SSE Transport: GET /api/mcp/sse, GET /mcp/sse, or Accept: text/event-stream
+    const isSseRequest =
+      url.pathname.endsWith('/sse') ||
+      request.headers.get('Accept')?.includes('text/event-stream');
+
+    if (request.method === 'GET' && isSseRequest) {
+      if (configuredToken && !isAuthenticated && env?.PUBLIC_READ_MCP !== 'true') {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32000, message: 'Unauthorized: Invalid or missing MCP authorization token' },
+          }),
+          { status: 401, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
+        );
+      }
+
+      const sessionId = crypto.randomUUID();
+      const encoder = new TextEncoder();
+      const basePath = url.pathname.startsWith('/mcp') ? '/mcp' : '/api/mcp';
+
+      const stream = new ReadableStream<Uint8Array>({
+        start: (controller) => {
+          this.sseSessions.set(sessionId, {
+            id: sessionId,
+            controller,
+            createdAt: Date.now(),
+          });
+          const endpointUri = `${basePath}/messages?sessionId=${sessionId}`;
+          controller.enqueue(encoder.encode(`event: endpoint\ndata: ${endpointUri}\n\n`));
+        },
+        cancel: () => {
+          this.sseSessions.delete(sessionId);
+        },
+      });
+
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          'Connection': 'keep-alive',
+          'Mcp-Session-Id': sessionId,
+        },
+      });
+    }
+
+    // 2. SSE Inbound Messages: POST /api/mcp/messages or POST /mcp/messages
+    if (request.method === 'POST' && url.pathname.endsWith('/messages')) {
+      const sessionId =
+        url.searchParams.get('sessionId') ||
+        request.headers.get('mcp-session-id') ||
+        '';
+
+      const session = this.sseSessions.get(sessionId);
+      if (!session) {
+        return Response.json(
+          {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32001, message: 'Session expired or not found' },
+          },
+          { status: 404, headers: corsHeaders }
+        );
+      }
+
+      let rpcBody: any;
+      try {
+        rpcBody = await request.json();
+      } catch {
+        return Response.json(
+          {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32700, message: 'Parse error: invalid JSON' },
+          },
+          { status: 400, headers: corsHeaders }
+        );
+      }
+
+      // Check auth if configured
+      if (configuredToken && !isAuthenticated && env?.PUBLIC_READ_MCP !== 'true') {
+        return Response.json(
+          {
+            jsonrpc: '2.0',
+            id: rpcBody?.id ?? null,
+            error: { code: -32000, message: 'Unauthorized: Invalid or missing MCP authorization token' },
+          },
+          { status: 401, headers: corsHeaders }
+        );
+      }
+
+      const encoder = new TextEncoder();
+      // Asynchronously handle and push to SSE stream
+      void (async () => {
+        try {
+          if (Array.isArray(rpcBody)) {
+            const responses = await Promise.all(
+              rpcBody.map((item) => this.handleRpc(item, { env }))
+            );
+            session.controller.enqueue(
+              encoder.encode(`event: message\ndata: ${JSON.stringify(responses)}\n\n`)
+            );
+          } else {
+            const response = await this.handleRpc(rpcBody, { env });
+            session.controller.enqueue(
+              encoder.encode(`event: message\ndata: ${JSON.stringify(response)}\n\n`)
+            );
+          }
+        } catch (err: any) {
+          console.error('Error dispatching message over SSE stream:', err);
+        }
+      })();
+
+      return Response.json(
+        { status: 'accepted', sessionId },
+        { status: 202, headers: { ...corsHeaders, 'Mcp-Session-Id': sessionId } }
+      );
+    }
+
+    // 3. GET /api/mcp or /mcp: Tool list & server info
     if (request.method === 'GET') {
       return Response.json(
         {
@@ -396,11 +572,11 @@ export class McpRouter {
       );
     }
 
-    // 4. POST /api/mcp JSON-RPC execution
+    // 4. POST /api/mcp or /mcp: JSON-RPC execution (Streamable HTTP)
     if (request.method === 'POST') {
-      let rpcRequest: JsonRpcRequest;
+      let rpcBody: any;
       try {
-        rpcRequest = (await request.json()) as JsonRpcRequest;
+        rpcBody = await request.json();
       } catch {
         return Response.json(
           {
@@ -412,8 +588,44 @@ export class McpRouter {
         );
       }
 
-      // Authorization check: mutating tools always require authentication.
-      // Read-only tools and resources require authentication unless PUBLIC_READ_MCP === 'true'.
+      // Handle batch JSON-RPC request
+      if (Array.isArray(rpcBody)) {
+        if (rpcBody.length === 0) {
+          return Response.json(
+            {
+              jsonrpc: '2.0',
+              id: null,
+              error: { code: -32600, message: 'Invalid Request: batch is empty' },
+            },
+            { status: 400, headers: corsHeaders }
+          );
+        }
+
+        // Check if any tool in batch is mutating
+        const hasMutating = rpcBody.some(
+          (req) =>
+            req?.method === 'tools/call' &&
+            typeof req?.params?.name === 'string' &&
+            MUTATING_TOOL_NAMES.has(req.params.name)
+        );
+        if (configuredToken && !isAuthenticated && (hasMutating || env?.PUBLIC_READ_MCP !== 'true')) {
+          return Response.json(
+            {
+              jsonrpc: '2.0',
+              id: null,
+              error: { code: -32000, message: 'Unauthorized: Invalid or missing MCP authorization token' },
+            },
+            { status: 401, headers: corsHeaders }
+          );
+        }
+
+        const responses = await Promise.all(
+          rpcBody.map((item) => this.handleRpc(item, { env }))
+        );
+        return Response.json(responses, { headers: corsHeaders });
+      }
+
+      const rpcRequest = rpcBody as JsonRpcRequest;
       const isMutating =
         rpcRequest.method === 'tools/call' &&
         typeof rpcRequest.params?.name === 'string' &&
@@ -457,4 +669,3 @@ export class McpRouter {
 }
 
 export const defaultMcpRouter = new McpRouter();
-

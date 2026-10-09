@@ -7,3 +7,6 @@ export * from './getAnalyticsDashboard.js';
 export * from './triggerReview.js';
 export * from './cancelReview.js';
 export * from './purgeCache.js';
+export * from './attestPrGate.js';
+export * from './disputeFinding.js';
+export * from './replyReviewThread.js';

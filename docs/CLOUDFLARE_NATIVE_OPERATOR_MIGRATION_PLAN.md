@@ -107,22 +107,23 @@ flowchart TD
 
 ## 4. Phased Implementation Roadmap
 
-### Phase 1: Edge OIDC Action Dispatch (Current)
+### Phase 1: Edge OIDC Action Dispatch (Complete - PR #1477)
 * Add `/api/dispatch/action` route to `cf-orchestrator`.
 * Implement `verifyGitHubActionsOidc` using `jose` and GitHub's JWKS.
 * Implement dispatch request schema validation and payload-to-claims assertion.
 * Wire up immediate dispatch to `ReviewJobWorkflow` and `RepoGateDO`.
 * Unit and integration test coverage verifying valid claims, forged tokens, mismatched repositories, and receipt structures.
 
-### Phase 2: Authoritative Edge App Publisher
+### Phase 2: Authoritative Edge App Publisher (Complete - PR #1478)
 * Implement Web Crypto RS256 GitHub App authentication and token caching in `cf-orchestrator/src/github/`.
 * Implement Check Run and sticky comment publishing in `ReviewRunDO`.
 * Verify exact visual and functional parity with existing DOKS checks.
 
-### Phase 3: Unified Edge MCP Server
-* Port mutating review tools (`attest_pr_gate`, `trigger_review`, `dispute_finding`) into `cf-orchestrator/src/mcp/tools/`.
+### Phase 3: Unified Edge MCP Server (Complete - Current)
+* Port mutating review tools (`attest_pr_gate`, `dispute_finding`, `reply_review_thread`) into `cf-orchestrator/src/mcp/tools/`.
+* Implement HTTP+SSE transport (`/api/mcp/sse`, `/api/mcp/messages`) and batch JSON-RPC support.
+* Support unprefixed tool aliases and legacy alias routing in `McpRouter`.
 * Validate conformance with Model Context Protocol specification.
-* Update `mcp_config.json` and Bifrost routing in configuration to route MCP traffic to Cloudflare.
 
 ### Phase 4: DNS & Ingress Cutover
 * Update default dispatch URL in `review-yeti-bot/action.yml` to `https://review-bot.example.com`.
