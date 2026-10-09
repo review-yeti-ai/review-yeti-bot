@@ -205,15 +205,31 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
         throw new Error('Operator passthrough candidate is outside authoritative admission');
       }
       validateOperatorPassthroughEvent(input.event);
+      if (input.scope && input.event.transport !== 'mcp') {
+        throw new Error('A caller-owned receipt scope is reserved for MCP passthrough');
+      }
       const expectedAppId = expectedAppIdFor(requested);
       let resolved;
-      try { resolved = await resolver.resolve(requested); }
+      try {
+        resolved = input.scope
+          ? await awaitOperatorPassthroughOperation(() => resolver.resolve(requested, input.scope!.signal), input.scope)
+          : await resolver.resolve(requested);
+      }
       catch (error) {
+        if (error instanceof OperatorPassthroughOperationDeadlineExceededError || input.scope?.signal.aborted) {
+          return unavailableOperatorPassthroughReceipt(null, null, null, 'unavailable', 'unavailable',
+            { stage: 'record', classification: 'receipt_deadline' });
+        }
         if (error instanceof AuthoritativeCandidateChangedError) throw error;
         if (!isPausedAuthorityReadUnavailable(error)) throw error;
         try {
-          await withOperatorPassthroughReceiptBudget((scope) =>
-            operatorRepository.assertDeliveryIdentity(input.event, scope));
+          if (input.scope) {
+            await awaitOperatorPassthroughOperation(
+              () => operatorRepository.assertDeliveryIdentity(input.event, input.scope), input.scope);
+          } else {
+            await withOperatorPassthroughReceiptBudget((scope) =>
+              operatorRepository.assertDeliveryIdentity(input.event, scope));
+          }
         }
         catch (identityError) {
           if (identityError instanceof OperatorPassthroughDeliveryIdentityConflictError) throw identityError;
@@ -221,6 +237,9 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
             || identityError instanceof OperatorPassthroughOperationDeadlineExceededError)) throw identityError;
         }
         return unavailableOperatorPassthroughReceipt(null, null, null, 'unavailable', 'unavailable');
+      }
+      if (input.reviewEngine !== undefined && resolved.prepared.config?.review_engine !== input.reviewEngine) {
+        throw new Error('Requested review_engine is not permitted by the authoritative policy');
       }
       const candidate = { ...requested, policyDigest: resolved.prepared.policy.effectivePolicyDigest };
       const recordInput = { candidate, expectedAppId, event: input.event };
@@ -233,7 +252,7 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
       const receiptBudgetMs = input.event.transport === 'mcp'
         ? OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS : OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS;
       try {
-        return await withOperatorPassthroughReceiptBudget(async (scope) => {
+        const publishReceipt = async (scope: OperatorPassthroughOperationScope) => {
           try {
             recorded = await awaitOperatorPassthroughOperation(
               () => operatorRepository.record(recordInput, undefined, scope), scope);
@@ -315,7 +334,10 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
             message: publication.readyForShip
               ? 'Operator pause authorizes SHIP with zero review lanes; both official checks are durably published.'
               : 'Operator pause authorizes SHIP with zero review lanes; official check publication is pending and protected merge is not eligible.' };
-        }, receiptBudgetMs);
+        };
+        return input.scope
+          ? await awaitOperatorPassthroughOperation(() => publishReceipt(input.scope!), input.scope)
+          : await withOperatorPassthroughReceiptBudget(publishReceipt, receiptBudgetMs);
       } catch (error) {
         if (!(error instanceof OperatorPassthroughOperationDeadlineExceededError)) throw error;
         return recorded

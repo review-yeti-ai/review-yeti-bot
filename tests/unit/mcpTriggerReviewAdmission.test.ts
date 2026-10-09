@@ -8,6 +8,7 @@ import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritative
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { InternalGitHubDependencyUnavailableError, TransientAuthoritativeReadError } from '../../src/github/authoritativeReadFailure';
 import { getBoundedRepositoryToken } from '../../src/github/boundedAppToken';
+import { OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS } from '../../src/review/operatorPassthrough';
 
 const HEAD_SHA = 'a'.repeat(40);
 const BASE_SHA = 'b'.repeat(40);
@@ -18,6 +19,23 @@ describe('trigger_review governed admission', () => {
     owner: 'exampleorg', repo: 'example-api', pull_number: 73,
     head_sha: HEAD_SHA,
   };
+  const createPausedTool = (readCurrentCandidate: any, resolvePolicy: any, recordOperatorPassthrough: any) =>
+    createTriggerReviewTool({
+      passthroughEnabled: true,
+      queryableDatabase: { query: vi.fn(async () => ({ rows: [] })) },
+      admissionRepository: { admit: vi.fn() } as any,
+      resolveGitHubPullRequest: vi.fn(),
+      authoritativePublishing: {
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
+        repositoryIds: [101],
+        repositoryIdentities: [{ repositoryId: 101, owner: 'exampleorg', repo: 'example-api' }],
+        acceptNewRequests: false,
+        resolver: { readCurrentCandidate, resolve: resolvePolicy },
+        recordOperatorPassthrough,
+      },
+    } as any);
+  const pausedContext = { authenticatedByConfiguredAuthenticator: true,
+    authorizedRepository: { owner: 'exampleorg', repo: 'example-api' } };
 
   it('fails closed when durable admission has no exact GitHub resolver', async () => {
     const admit = vi.fn();
@@ -203,7 +221,7 @@ describe('trigger_review governed admission', () => {
     });
     expect(resolvePullRequest).not.toHaveBeenCalled();
     expect(readCurrentCandidate).toHaveBeenCalledOnce();
-    expect(resolvePolicy).toHaveBeenCalledOnce();
+    expect(resolvePolicy).not.toHaveBeenCalled();
     expect(query).not.toHaveBeenCalled();
     expect(admit).not.toHaveBeenCalled();
     expect(recordOperatorPassthrough).toHaveBeenCalledOnce();
@@ -212,6 +230,7 @@ describe('trigger_review governed admission', () => {
         headSha: HEAD_SHA, baseSha: BASE_SHA },
       event: { transport: 'mcp', eventName: 'trigger_review',
         deliveryId: expect.stringMatching(/^mcp:/u), deliveryDigest: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+      scope: { deadlineAtMs: expect.any(Number), signal: expect.any(AbortSignal) },
     });
   });
 
@@ -256,6 +275,101 @@ describe('trigger_review governed admission', () => {
       publication_failure: { stage: 'gate', classification: 'preflight_timeout' } });
     expect(JSON.stringify(output)).not.toContain('token');
     expect(JSON.stringify(output)).not.toContain('exception');
+  });
+
+  it('shares the MCP deadline across delayed candidate resolution and paired publication', async () => {
+    vi.useFakeTimers();
+    try {
+      const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+      const candidate = { repositoryId: 101, owner: 'exampleorg', repo: 'example-api', prNumber: 73,
+        headSha: HEAD_SHA, baseSha: BASE_SHA, open: true, draft: false };
+      let readSignal: AbortSignal | undefined;
+      let remainingAtRecordMs = 0;
+      const readCurrentCandidate = vi.fn(async (_input: unknown, signal?: AbortSignal) => {
+        readSignal = signal;
+        await delay(5_000);
+        return candidate;
+      });
+      const resolvePolicy = vi.fn(async () => ({ identity: { headSha: HEAD_SHA }, prepared: { policy: {} } }));
+      const recordOperatorPassthrough = vi.fn(async (input: any) => {
+        expect(input.scope).toBeDefined();
+        expect(input.scope.signal).toBe(readSignal);
+        remainingAtRecordMs = input.scope.deadlineAtMs - performance.now();
+        await delay(8_000);
+        return { status: 'accepted' as const, candidateState: 'current' as const,
+          verdict: 'SHIP' as const, expectedLanes: 0 as const, completedLanes: 0 as const,
+          publicationId: 'f'.repeat(64), auditDigest: 'e'.repeat(64), publicationState: 'published' as const,
+          publicationReceiptAvailable: true, reviewCheckId: 5_001, gateCheckId: 5_002, mergeEligible: true,
+          message: 'Both exact-current App checks are durably published.' };
+      });
+      const tool = createPausedTool(readCurrentCandidate, resolvePolicy, recordOperatorPassthrough);
+      const pending = tool.execute(request, pausedContext);
+      let settled = false;
+      void pending.then(() => { settled = true; }, () => { settled = true; });
+      for (let elapsed = 0; elapsed < OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS && !settled; elapsed += 500) {
+        await vi.advanceTimersByTimeAsync(500);
+      }
+      expect(settled).toBe(true);
+      const result = await pending;
+      const output = JSON.parse((result.content[0] as any).text);
+
+      expect(readCurrentCandidate).toHaveBeenCalledOnce();
+      expect(readSignal).toBeDefined();
+      expect(remainingAtRecordMs).toBeGreaterThan(9_000);
+      expect(remainingAtRecordMs).toBeLessThan(11_000);
+      expect(resolvePolicy).not.toHaveBeenCalled();
+      expect(recordOperatorPassthrough).toHaveBeenCalledOnce();
+      expect(output).toMatchObject({ publication_state: 'published', merge_eligible: true,
+        review_check_id: 5_001, gate_check_id: 5_002 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels a stalled first authority read at the shared deadline without entering publication', async () => {
+    vi.useFakeTimers();
+    try {
+      const candidate = { repositoryId: 101, owner: 'exampleorg', repo: 'example-api', prNumber: 73,
+        headSha: HEAD_SHA, baseSha: BASE_SHA, open: true, draft: false };
+      const lateCandidate = Promise.withResolvers<typeof candidate>();
+      let readSignal: AbortSignal | undefined;
+      const readCurrentCandidate = vi.fn((_input: unknown, signal?: AbortSignal) => {
+        readSignal = signal;
+        return lateCandidate.promise;
+      });
+      const resolvePolicy = vi.fn(async () => ({ identity: { headSha: HEAD_SHA }, prepared: { policy: {} } }));
+      const recordOperatorPassthrough = vi.fn(async () => ({
+        status: 'accepted' as const, candidateState: 'current' as const,
+        verdict: 'SHIP' as const, expectedLanes: 0 as const, completedLanes: 0 as const,
+        publicationId: 'f'.repeat(64), auditDigest: 'e'.repeat(64), publicationState: 'published' as const,
+        publicationReceiptAvailable: true, reviewCheckId: 5_001, gateCheckId: 5_002, mergeEligible: true,
+        message: 'Both exact-current App checks are durably published.',
+      }));
+      const tool = createPausedTool(readCurrentCandidate, resolvePolicy, recordOperatorPassthrough);
+      const pending = tool.execute(request, pausedContext);
+      const outputPromise = pending.then((result) => JSON.parse((result.content[0] as any).text), () => null);
+      let settled = false;
+      void pending.then(() => { settled = true; }, () => { settled = true; });
+      await vi.advanceTimersByTimeAsync(OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS + 1);
+      const settledBeforeLateRead = settled;
+      const signalAbortedBeforeLateRead = readSignal?.aborted === true;
+      const publicationCallsBeforeLateRead = recordOperatorPassthrough.mock.calls.length;
+      lateCandidate.resolve(candidate);
+      await vi.advanceTimersByTimeAsync(0);
+      const output = await outputPromise;
+
+      expect(settledBeforeLateRead).toBe(true);
+      expect(signalAbortedBeforeLateRead).toBe(true);
+      expect(publicationCallsBeforeLateRead).toBe(0);
+      expect(readCurrentCandidate).toHaveBeenCalledOnce();
+      expect(resolvePolicy).not.toHaveBeenCalled();
+      expect(recordOperatorPassthrough).not.toHaveBeenCalled();
+      expect(output).toMatchObject({ candidate_state: 'unavailable', head_sha: null,
+        publication_id: null, publication_receipt_available: null, merge_eligible: false,
+        publication_failure: { stage: 'receipt', classification: 'receipt_deadline' } });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('returns SHIP before candidate or publication work while paused storage has not initialized', async () => {
@@ -517,7 +631,7 @@ describe('trigger_review governed admission', () => {
       merge_eligible: false,
       message: 'Operator pause authorizes SHIP with zero review lanes; official check publication is unavailable.',
     });
-    expect(resolve).toHaveBeenCalledOnce();
+    expect(resolve).not.toHaveBeenCalled();
     expect(readCurrentCandidate).toHaveBeenCalledOnce();
     expect(resolvePullRequest).not.toHaveBeenCalled();
     expect(recordOperatorPassthrough).toHaveBeenCalledOnce();

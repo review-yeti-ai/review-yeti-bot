@@ -455,6 +455,110 @@ describe('authoritative operator-pause admission responses', () => {
     } as unknown as OperatorPassthroughPublicationRepository;
   }
 
+  it('uses the caller-owned MCP scope for fresh resolution, record, publisher claims, and receipt readback', async () => {
+    const f = fixture();
+    mocks.currentCandidate.mockClear();
+    const controller = new AbortController();
+    const scope = { deadlineAtMs: performance.now() + OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS,
+      signal: controller.signal };
+    const publicationId = 'f'.repeat(64);
+    const auditDigest = 'd'.repeat(64);
+    const publisherScopes: unknown[] = [];
+    const repository = operatorRepository({
+      record: vi.fn(async (_input: unknown, _now: unknown, receivedScope: unknown) => {
+        expect(receivedScope).toBe(scope);
+        return { status: 'accepted', publicationId, auditDigest,
+          verdict: 'SHIP', expectedLanes: 0, completedLanes: 0 };
+      }),
+      claimPublication: vi.fn(async (_workerId: string, _now: number, _leaseMs: number,
+        _requestedPublicationId: string, receivedScope: unknown) => {
+        publisherScopes.push(receivedScope);
+        return null;
+      }),
+      getPublication: vi.fn(async (_requestedPublicationId: string, receivedScope: unknown) => {
+        expect(receivedScope).toBe(scope);
+        return { publicationId, auditDigest, reviewCheckId: null, reviewCreationState: 'reserved',
+          gateCheckId: null, gateCreationState: 'reserved', retirementRequestedAt: null,
+          retiredAt: null, readyForShip: false };
+      }),
+    });
+    const service = createAuthoritativeReviewService({ ...f.options,
+      operatorPassthroughRepository: repository, passthroughEnabled: true });
+
+    const result = await service.admission.recordOperatorPassthrough!({ ...request(), scope });
+
+    expect(mocks.currentCandidate).toHaveBeenCalled();
+    expect(mocks.currentCandidate.mock.calls.every(([, signal]) => signal instanceof AbortSignal)).toBe(true);
+    expect(repository.record).toHaveBeenCalledOnce();
+    expect(publisherScopes).toEqual([scope, scope]);
+    expect(repository.getPublication).toHaveBeenCalledExactlyOnceWith(publicationId, scope);
+    expect(result).toMatchObject({ publicationId, auditDigest, publicationState: 'pending',
+      publicationReceiptAvailable: true, mergeEligible: false });
+  });
+
+  it('does not allow an MCP receipt scope to widen non-MCP pause admissions', async () => {
+    const f = fixture();
+    mocks.currentCandidate.mockClear();
+    const repo = operatorRepository();
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    const controller = new AbortController();
+    const scope = { deadlineAtMs: performance.now() + OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS,
+      signal: controller.signal };
+    const nonMcpRequest = { ...request(), event: { ...request().event, transport: 'github-app' as const,
+      eventName: 'pull_request', deliveryId: 'github-app:scope-rejected' }, scope };
+
+    await expect(service.admission.recordOperatorPassthrough!(nonMcpRequest))
+      .rejects.toThrow('A caller-owned receipt scope is reserved for MCP passthrough');
+    expect(repo.record).not.toHaveBeenCalled();
+    expect(repo.claimPublication).not.toHaveBeenCalled();
+    expect(mocks.currentCandidate).not.toHaveBeenCalled();
+  });
+
+  it('validates a requested MCP review engine against the fresh service policy before recording', async () => {
+    const f = fixture();
+    const repo = operatorRepository();
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    const wrongEngine = f.prepared.config.review_engine === 'panel' ? 'composed' as const : 'panel' as const;
+
+    await expect(service.admission.recordOperatorPassthrough!({ ...request(), reviewEngine: wrongEngine }))
+      .rejects.toThrow('Requested review_engine is not permitted by the authoritative policy');
+    expect(repo.record).not.toHaveBeenCalled();
+    expect(repo.claimPublication).not.toHaveBeenCalled();
+  });
+
+  it('cancels a caller-owned MCP authority read before durable record or check creation', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    const scope = { deadlineAtMs: performance.now() + 1_000, signal: controller.signal };
+    const lateCandidate = Promise.withResolvers<typeof candidate>();
+    let candidateSignal: AbortSignal | undefined;
+    mocks.currentCandidate.mockImplementationOnce((_requested: unknown, signal: AbortSignal) => {
+      candidateSignal = signal;
+      return lateCandidate.promise;
+    });
+    const repository = operatorRepository({ record: vi.fn(), claimPublication: vi.fn(), getPublication: vi.fn() });
+    const service = createAuthoritativeReviewService({ ...f.options,
+      operatorPassthroughRepository: repository, passthroughEnabled: true });
+    const pending = service.admission.recordOperatorPassthrough!({ ...request(), scope });
+    const timer = setTimeout(() => controller.abort(), 1_000);
+    await vi.advanceTimersByTimeAsync(1_001);
+    clearTimeout(timer);
+    const result = await pending;
+
+    expect(candidateSignal?.aborted).toBe(true);
+    expect(repository.record).not.toHaveBeenCalled();
+    expect(repository.claimPublication).not.toHaveBeenCalled();
+    expect(repository.getPublication).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ candidateState: 'unavailable', publicationId: null, auditDigest: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null, mergeEligible: false,
+      publicationFailure: { stage: 'record', classification: 'receipt_deadline' } });
+    lateCandidate.resolve(candidate);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(repository.record).not.toHaveBeenCalled();
+  });
+
   it('publishes delayed App token and Check Runs requests within budget, scoped to the new publication', async () => {
     const f = fixture();
     const identity = operatorPassthroughIdentityForCandidate({

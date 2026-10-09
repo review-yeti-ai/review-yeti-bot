@@ -203,6 +203,9 @@ export interface OperatorPassthroughRecordInput {
 export interface OperatorPassthroughAdmissionRequest {
   requested: Omit<OperatorPassthroughCandidate, 'policyDigest'>;
   event: OperatorPassthroughEvent;
+  /** Internal shared MCP deadline; never supplied through the public tool arguments. */
+  scope?: OperatorPassthroughOperationScope;
+  reviewEngine?: 'composed' | 'panel';
 }
 
 /** Authenticated source identity for a no-current-coordinates SHIP response. */

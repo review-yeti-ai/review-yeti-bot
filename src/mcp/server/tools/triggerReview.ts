@@ -3,6 +3,13 @@ import { isPausedAuthorityReadUnavailable } from '../../../github/authoritativeR
 import { randomUUID } from 'node:crypto';
 import { TERMINAL_DEADLINE_MS } from '../../../config/terminalDeadline';
 import {
+  awaitOperatorPassthroughOperation,
+  OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS,
+  OperatorPassthroughOperationDeadlineExceededError,
+  withOperatorPassthroughReceiptBudget,
+  type OperatorPassthroughOperationScope,
+} from '../../../review/operatorPassthrough';
+import {
   type ToolDefinition,
   type ToolResult,
   buildToolResultJson,
@@ -82,297 +89,327 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
     definition: triggerReviewDefinition,
     schema: TriggerReviewInputSchema,
     execute: async (rawArgs: Record<string, unknown>, context?: McpExecutionContext): Promise<ToolResult> => {
-      const parsed = TriggerReviewInputSchema.safeParse(rawArgs);
-      if (!parsed.success) {
-        throw new Error(`Invalid arguments: ${parsed.error.issues.map((i) => i.message).join(', ')}`);
-      }
-      const {
-        owner,
-        repo,
-        pull_number,
-        head_sha,
-        force = false,
-        priority = 'normal',
-        review_engine,
-        incomplete_p2_recovery,
-      } = parsed.data;
+      const executeWithScope = async (pauseScope?: OperatorPassthroughOperationScope): Promise<ToolResult> => {
+        const parsed = TriggerReviewInputSchema.safeParse(rawArgs);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments: ${parsed.error.issues.map((i) => i.message).join(', ')}`);
+        }
+        const {
+          owner,
+          repo,
+          pull_number,
+          head_sha,
+          force = false,
+          priority = 'normal',
+          review_engine,
+          incomplete_p2_recovery,
+        } = parsed.data;
 
-      if (incomplete_p2_recovery === true) {
-        if (!deps.admissionRepository) {
-          throw new Error('Incomplete P2 recovery requires durable authoritative admission');
-        }
-        const caller = context?.caller;
-        const authorizedRepository = context?.authorizedRepository;
-        if (context?.authenticatedByConfiguredAuthenticator !== true
-          || !isMcpStaticAdminRecoveryCaller(caller) || !authorizedRepository
-          || authorizedRepository.owner.toLowerCase() !== owner.toLowerCase()
-          || authorizedRepository.repo.toLowerCase() !== repo.toLowerCase()) {
-          throw new Error('Incomplete P2 recovery requires verified static-token admin authentication and exact repository authorization');
-        }
-        if (force || review_engine !== undefined) {
-          throw new Error('Incomplete P2 recovery does not accept force or review_engine overrides');
-        }
-      }
-
-      const headSha = head_sha.toLowerCase();
-      const authoritative = (deps.authoritativePublishing as any)?.admission ?? deps.authoritativePublishing;
-      const resolver = authoritative?.resolver ?? (deps.authoritativePublishing as any)?.resolver;
-
-      // 1. Verify PR head commit against GitHub if resolver available
-      let baseSha = '0'.repeat(40);
-      let repositoryId = 1001;
-      let installationId = 2001;
-      const mappedPauseIdentity = deps.passthroughEnabled === true && authoritative
-        ? authoritativeRepositoryForName(authoritative, owner, repo) : undefined;
-      let mappedPauseCandidate: { repositoryId: number; owner: string; repo: string;
-        prNumber: number; headSha: string; baseSha: string; open: boolean; draft: boolean; private?: boolean } | undefined;
-
-      // MCP arguments carry no numeric repository identity. Paused authority
-      // must be established from an enrolled local name-to-ID map and the
-      // authenticated router context; caller-supplied names never select a
-      // network resolver as a substitute for missing local enrollment.
-      if (deps.passthroughEnabled === true) {
-        if (!authoritative || !mappedPauseIdentity) {
-          throw new Error('Paused MCP SHIP requires an enrolled local repository identity mapping');
-        }
-        if (typeof resolver?.readCurrentCandidate !== 'function') {
-          throw new Error('Paused MCP SHIP requires the authoritative current-candidate reader');
-        }
-        if (context?.authenticatedByConfiguredAuthenticator !== true || !context.authorizedRepository
-          || context.authorizedRepository.owner.toLowerCase() !== owner.toLowerCase()
-          || context.authorizedRepository.repo.toLowerCase() !== repo.toLowerCase()) {
-          throw new Error('Paused MCP SHIP requires verified caller authentication and exact repository authorization');
-        }
-        if (deps.storageInitialized?.() === false) {
-          return buildToolResultJson({
-            dispatched: false, job_crd_created: false, status: 'passthrough',
-            reason: 'operator_global_passthrough', review_started: false,
-            candidate_state: 'unavailable', owner, repo, pull_number, head_sha: null,
-            verdict: 'SHIP', expected_lanes: 0, completed_lanes: 0,
-            publication_id: null, audit_digest: null, publication_state: 'unavailable',
-            publication_receipt_available: null, review_check_id: null, gate_check_id: null,
-            merge_eligible: false,
-            message: 'Operator pause preserves logical SHIP with zero review lanes. Storage initialization is unavailable; no current candidate or durable publication receipt is asserted. Protected merge eligibility is false.',
-          } satisfies TriggerReviewOutput);
-        }
-        try {
-          const pauseCandidate = await resolver.readCurrentCandidate({ ...mappedPauseIdentity, prNumber: pull_number });
-          mappedPauseCandidate = pauseCandidate;
-          if (pauseCandidate.repositoryId !== mappedPauseIdentity.repositoryId
-            || pauseCandidate.owner !== mappedPauseIdentity.owner || pauseCandidate.repo !== mappedPauseIdentity.repo
-            || pauseCandidate.prNumber !== pull_number || pauseCandidate.open !== true
-            || pauseCandidate.draft !== false
-            || (isPublicReviewRepository(mappedPauseIdentity) && pauseCandidate.private !== false)
-            || !/^[a-f0-9]{40}$/iu.test(pauseCandidate.headSha)
-            || !/^[a-f0-9]{40}$/iu.test(pauseCandidate.baseSha)
-            || pauseCandidate.headSha.toLowerCase() !== headSha) {
-            throw new Error('Paused MCP SHIP candidate conflicts with the authenticated request or local enrollment');
+        if (incomplete_p2_recovery === true) {
+          if (!deps.admissionRepository) {
+            throw new Error('Incomplete P2 recovery requires durable authoritative admission');
           }
-          repositoryId = mappedPauseIdentity.repositoryId;
-          baseSha = pauseCandidate.baseSha.toLowerCase();
-        } catch (error) {
-          if (!isPausedAuthorityReadUnavailable(error)) throw error;
-          return buildToolResultJson({
-            dispatched: false, job_crd_created: false, status: 'passthrough',
-            reason: 'operator_global_passthrough', review_started: false,
-            candidate_state: 'unavailable', owner, repo, pull_number, head_sha: null,
-            verdict: 'SHIP', expected_lanes: 0, completed_lanes: 0,
-            publication_id: null, audit_digest: null, publication_state: 'unavailable',
-            publication_receipt_available: null, review_check_id: null, gate_check_id: null,
-            merge_eligible: false,
-            message: 'Operator pause preserves logical SHIP with zero review lanes. Current candidate and policy authority could not be confirmed; no current coordinates or durable publication receipt are asserted. Protected merge eligibility is false.',
-          } satisfies TriggerReviewOutput);
+          const caller = context?.caller;
+          const authorizedRepository = context?.authorizedRepository;
+          if (context?.authenticatedByConfiguredAuthenticator !== true
+            || !isMcpStaticAdminRecoveryCaller(caller) || !authorizedRepository
+            || authorizedRepository.owner.toLowerCase() !== owner.toLowerCase()
+            || authorizedRepository.repo.toLowerCase() !== repo.toLowerCase()) {
+            throw new Error('Incomplete P2 recovery requires verified static-token admin authentication and exact repository authorization');
+          }
+          if (force || review_engine !== undefined) {
+            throw new Error('Incomplete P2 recovery does not accept force or review_engine overrides');
+          }
         }
-      }
 
-      if (deps.passthroughEnabled !== true && deps.resolveGitHubPullRequest) {
-        const prSnapshot = await deps.resolveGitHubPullRequest(owner, repo, pull_number);
-        if (prSnapshot.headSha && prSnapshot.headSha.toLowerCase() !== headSha) {
-          throw new Error(
-            `Specified head_sha (${headSha}) does not match current GitHub PR #${pull_number} head SHA (${prSnapshot.headSha.toLowerCase()})`
-          );
+        const headSha = head_sha.toLowerCase();
+        const authoritative = (deps.authoritativePublishing as any)?.admission ?? deps.authoritativePublishing;
+        const resolver = authoritative?.resolver ?? (deps.authoritativePublishing as any)?.resolver;
+
+        // 1. Verify PR head commit against GitHub if resolver available
+        let baseSha = '0'.repeat(40);
+        let repositoryId = 1001;
+        let installationId = 2001;
+        const mappedPauseIdentity = deps.passthroughEnabled === true && authoritative
+          ? authoritativeRepositoryForName(authoritative, owner, repo) : undefined;
+        let mappedPauseCandidate: { repositoryId: number; owner: string; repo: string;
+          prNumber: number; headSha: string; baseSha: string; open: boolean; draft: boolean; private?: boolean } | undefined;
+
+        // MCP arguments carry no numeric repository identity. Paused authority
+        // must be established from an enrolled local name-to-ID map and the
+        // authenticated router context; caller-supplied names never select a
+        // network resolver as a substitute for missing local enrollment.
+        if (deps.passthroughEnabled === true) {
+          if (!authoritative || !mappedPauseIdentity) {
+            throw new Error('Paused MCP SHIP requires an enrolled local repository identity mapping');
+          }
+          if (typeof resolver?.readCurrentCandidate !== 'function') {
+            throw new Error('Paused MCP SHIP requires the authoritative current-candidate reader');
+          }
+          if (context?.authenticatedByConfiguredAuthenticator !== true || !context.authorizedRepository
+            || context.authorizedRepository.owner.toLowerCase() !== owner.toLowerCase()
+            || context.authorizedRepository.repo.toLowerCase() !== repo.toLowerCase()) {
+            throw new Error('Paused MCP SHIP requires verified caller authentication and exact repository authorization');
+          }
+          if (deps.storageInitialized?.() === false) {
+            return buildToolResultJson({
+              dispatched: false, job_crd_created: false, status: 'passthrough',
+              reason: 'operator_global_passthrough', review_started: false,
+              candidate_state: 'unavailable', owner, repo, pull_number, head_sha: null,
+              verdict: 'SHIP', expected_lanes: 0, completed_lanes: 0,
+              publication_id: null, audit_digest: null, publication_state: 'unavailable',
+              publication_receipt_available: null, review_check_id: null, gate_check_id: null,
+              merge_eligible: false,
+              message: 'Operator pause preserves logical SHIP with zero review lanes. Storage initialization is unavailable; no current candidate or durable publication receipt is asserted. Protected merge eligibility is false.',
+            } satisfies TriggerReviewOutput);
+          }
+          try {
+            const readCurrentCandidate = () => resolver.readCurrentCandidate!({ ...mappedPauseIdentity, prNumber: pull_number },
+              pauseScope?.signal);
+            const pauseCandidate = pauseScope
+              ? await awaitOperatorPassthroughOperation(readCurrentCandidate, pauseScope)
+              : await readCurrentCandidate();
+            mappedPauseCandidate = pauseCandidate;
+            if (pauseCandidate.repositoryId !== mappedPauseIdentity.repositoryId
+              || pauseCandidate.owner !== mappedPauseIdentity.owner || pauseCandidate.repo !== mappedPauseIdentity.repo
+              || pauseCandidate.prNumber !== pull_number || pauseCandidate.open !== true
+              || pauseCandidate.draft !== false
+              || (isPublicReviewRepository(mappedPauseIdentity) && pauseCandidate.private !== false)
+              || !/^[a-f0-9]{40}$/iu.test(pauseCandidate.headSha)
+              || !/^[a-f0-9]{40}$/iu.test(pauseCandidate.baseSha)
+              || pauseCandidate.headSha.toLowerCase() !== headSha) {
+              throw new Error('Paused MCP SHIP candidate conflicts with the authenticated request or local enrollment');
+            }
+            repositoryId = mappedPauseIdentity.repositoryId;
+            baseSha = pauseCandidate.baseSha.toLowerCase();
+          } catch (error) {
+            if (!isPausedAuthorityReadUnavailable(error)) throw error;
+            return buildToolResultJson({
+              dispatched: false, job_crd_created: false, status: 'passthrough',
+              reason: 'operator_global_passthrough', review_started: false,
+              candidate_state: 'unavailable', owner, repo, pull_number, head_sha: null,
+              verdict: 'SHIP', expected_lanes: 0, completed_lanes: 0,
+              publication_id: null, audit_digest: null, publication_state: 'unavailable',
+              publication_receipt_available: null, review_check_id: null, gate_check_id: null,
+              merge_eligible: false,
+              message: 'Operator pause preserves logical SHIP with zero review lanes. Current candidate and policy authority could not be confirmed; no current coordinates or durable publication receipt are asserted. Protected merge eligibility is false.',
+            } satisfies TriggerReviewOutput);
+          }
         }
-        if (prSnapshot.baseSha) baseSha = prSnapshot.baseSha;
-        if (prSnapshot.repositoryId) repositoryId = prSnapshot.repositoryId;
-        if (prSnapshot.installationId) installationId = prSnapshot.installationId;
-      }
 
-      if (deps.admissionRepository && !deps.resolveGitHubPullRequest && !mappedPauseCandidate) {
-        throw new Error('trigger_review requires exact GitHub pull request resolution');
-      }
-
-      const requested = { repositoryId, owner, repo, prNumber: pull_number, headSha, baseSha };
-      if (deps.admissionRepository && !authoritative) {
-        throw new Error('trigger_review requires authoritative publishing admission');
-      }
-      if (incomplete_p2_recovery === true
-        && ((authoritative?.acceptNewRequests !== true && deps.passthroughEnabled !== true)
-          || !authoritative.repositoryIds?.includes(repositoryId))) {
-        throw new Error('Incomplete P2 recovery requires an active authoritative repository admission');
-      }
-      if ((authoritative?.acceptNewRequests === false && deps.passthroughEnabled !== true)
-        || (authoritative && !authoritative.repositoryIds?.includes(repositoryId))) {
-        throw new Error('trigger_review repository is outside authoritative admission');
-      }
-      const resolveCandidate = {
-        ...requested,
-        ...(review_engine ? { review_engine } : {}),
-      };
-      if (deps.passthroughEnabled !== true
-        && typeof (deps.authoritativePublishing as any)?.admission === 'function') {
-        await (deps.authoritativePublishing as any).admission(resolveCandidate);
-      }
-      let resolved;
-      try { resolved = resolver ? await resolver.resolve(requested) : undefined; }
-      catch (error) {
-        if (deps.passthroughEnabled === true && mappedPauseIdentity
-          && isPausedAuthorityReadUnavailable(error)) {
-          return buildToolResultJson({
-            dispatched: false, job_crd_created: false, status: 'passthrough',
-            reason: 'operator_global_passthrough', review_started: false,
-            candidate_state: 'unavailable', owner, repo, pull_number, head_sha: null,
-            verdict: 'SHIP', expected_lanes: 0, completed_lanes: 0,
-            publication_id: null, audit_digest: null, publication_state: 'unavailable',
-            publication_receipt_available: null, review_check_id: null, gate_check_id: null,
-            merge_eligible: false,
-            message: 'Operator pause preserves logical SHIP with zero review lanes. Current candidate and policy authority could not be confirmed; no current coordinates or durable publication receipt are asserted. Protected merge eligibility is false.',
-          } satisfies TriggerReviewOutput);
+        if (deps.passthroughEnabled !== true && deps.resolveGitHubPullRequest) {
+          const prSnapshot = await deps.resolveGitHubPullRequest(owner, repo, pull_number);
+          if (prSnapshot.headSha && prSnapshot.headSha.toLowerCase() !== headSha) {
+            throw new Error(
+              `Specified head_sha (${headSha}) does not match current GitHub PR #${pull_number} head SHA (${prSnapshot.headSha.toLowerCase()})`
+            );
+          }
+          if (prSnapshot.baseSha) baseSha = prSnapshot.baseSha;
+          if (prSnapshot.repositoryId) repositoryId = prSnapshot.repositoryId;
+          if (prSnapshot.installationId) installationId = prSnapshot.installationId;
         }
-        throw error;
-      }
 
-      if (incomplete_p2_recovery === true && !resolved) {
-        throw new Error('Incomplete P2 recovery requires current authoritative identity resolution');
-      }
-
-      if (resolved && review_engine) {
-        if (resolved.prepared.config?.review_engine !== review_engine) {
-          throw new Error('Requested review_engine is not permitted by the authoritative policy');
+        if (deps.admissionRepository && !deps.resolveGitHubPullRequest && !mappedPauseCandidate) {
+          throw new Error('trigger_review requires exact GitHub pull request resolution');
         }
-      }
 
-      const resolvedIdentity = resolved?.identity || buildReviewRunIdentity(requested);
-      const resolvedRunId = deriveReviewRunId(resolvedIdentity);
-
-      if (deps.passthroughEnabled === true) {
-        if (!resolved || !authoritative?.recordOperatorPassthrough) {
-          throw new Error('Operator SHIP publication requires current authoritative candidate resolution');
+        const requested = { repositoryId, owner, repo, prNumber: pull_number, headSha, baseSha };
+        if (deps.admissionRepository && !authoritative) {
+          throw new Error('trigger_review requires authoritative publishing admission');
         }
-        const deliveryId = `mcp:${randomUUID()}`;
+        if (incomplete_p2_recovery === true
+          && ((authoritative?.acceptNewRequests !== true && deps.passthroughEnabled !== true)
+            || !authoritative.repositoryIds?.includes(repositoryId))) {
+          throw new Error('Incomplete P2 recovery requires an active authoritative repository admission');
+        }
+        if ((authoritative?.acceptNewRequests === false && deps.passthroughEnabled !== true)
+          || (authoritative && !authoritative.repositoryIds?.includes(repositoryId))) {
+          throw new Error('trigger_review repository is outside authoritative admission');
+        }
+        const resolveCandidate = {
+          ...requested,
+          ...(review_engine ? { review_engine } : {}),
+        };
+        if (deps.passthroughEnabled !== true
+          && typeof (deps.authoritativePublishing as any)?.admission === 'function') {
+          await (deps.authoritativePublishing as any).admission(resolveCandidate);
+        }
+        let resolved;
+        if (deps.passthroughEnabled !== true) {
+          resolved = resolver ? await resolver.resolve(requested) : undefined;
+        }
+
+        if (incomplete_p2_recovery === true && !resolved && deps.passthroughEnabled !== true) {
+          throw new Error('Incomplete P2 recovery requires current authoritative identity resolution');
+        }
+
+        if (resolved && review_engine) {
+          if (resolved.prepared.config?.review_engine !== review_engine) {
+            throw new Error('Requested review_engine is not permitted by the authoritative policy');
+          }
+        }
+
+        const resolvedIdentity = resolved?.identity || buildReviewRunIdentity(requested);
+        const resolvedRunId = deriveReviewRunId(resolvedIdentity);
+
+        if (deps.passthroughEnabled === true) {
+          if (!authoritative?.recordOperatorPassthrough) {
+            throw new Error('Operator SHIP publication requires authoritative candidate resolution');
+          }
+          const deliveryId = `mcp:${randomUUID()}`;
+          // The admission service performs the fresh policy/current-head resolve
+        // immediately before the durable record, inside this shared deadline.
         const exemption = await authoritative.recordOperatorPassthrough({
-          requested,
-          event: { transport: 'mcp', eventName: 'trigger_review', deliveryId,
-            deliveryDigest: sha256(canonicalJson({ deliveryId, repositoryId, owner, repo, pull_number,
-              headSha, baseSha, caller: context?.identity ?? 'configured-authenticator' })) },
-        });
-        const candidateFields = exemption.candidateState === 'unavailable'
-          ? { candidate_state: 'unavailable' as const, head_sha: null }
-          : { candidate_state: 'current' as const, head_sha: headSha };
+            requested,
+            event: { transport: 'mcp', eventName: 'trigger_review', deliveryId,
+              deliveryDigest: sha256(canonicalJson({ deliveryId, repositoryId, owner, repo, pull_number,
+                headSha, baseSha, caller: context?.identity ?? 'configured-authenticator' })) },
+            ...(pauseScope ? { scope: pauseScope } : {}),
+            ...(review_engine ? { reviewEngine: review_engine } : {}),
+          });
+            const candidateFields = exemption.candidateState === 'unavailable'
+              ? { candidate_state: 'unavailable' as const, head_sha: null }
+              : { candidate_state: 'current' as const, head_sha: headSha };
+            return buildToolResultJson({
+              dispatched: false,
+              job_crd_created: false,
+              status: 'passthrough',
+              reason: 'operator_global_passthrough',
+              review_started: false,
+              ...candidateFields,
+              owner,
+              repo,
+              pull_number,
+              verdict: exemption.verdict,
+              expected_lanes: exemption.expectedLanes,
+              completed_lanes: exemption.completedLanes,
+              publication_id: exemption.publicationId,
+              audit_digest: exemption.auditDigest,
+              publication_state: exemption.publicationState,
+              publication_receipt_available: exemption.publicationReceiptAvailable,
+              review_check_id: exemption.reviewCheckId,
+              gate_check_id: exemption.gateCheckId,
+              merge_eligible: exemption.mergeEligible,
+              ...(exemption.publicationFailure ? {
+                publication_failure: {
+                  stage: exemption.publicationFailure.stage,
+                  classification: exemption.publicationFailure.classification,
+                },
+              } : {}),
+              message: exemption.message ?? `Operator pause authorizes SHIP with zero review lanes; official check publication is ${exemption.publicationState}. Protected merge eligibility is ${exemption.mergeEligible ? 'available' : 'false'}.`,
+            } satisfies TriggerReviewOutput);
+          }
+
+        // 2. Active Run Conflict Detection
+        if (deps.queryableDatabase) {
+          const activeRes = await deps.queryableDatabase.query(
+            `SELECT run_id, attempt, status, head_sha
+               FROM review_runs
+              WHERE owner = $1 AND repo = $2 AND pr_number = $3
+                AND status IN ('queued', 'running', 'publishing')
+              LIMIT 1`,
+            [owner, repo, pull_number]
+          );
+
+          const activeRun = activeRes.rows[0];
+          if (activeRun) {
+            if (!force || activeRun.run_id === resolvedRunId) {
+              const err: any = new Error(
+                `Conflict: Review attempt ${activeRun.run_id} is currently running for this review identity.`
+              );
+              err.code = 409;
+              err.status = 409;
+              throw err;
+            }
+          }
+        }
+
+        // 3. Admission Enqueue
+        let attemptId = `review-attempt-${pull_number}-1`;
+        let admittedRunId = `run_${randomUUID().replace(/-/g, '')}`;
+
+        if (deps.admissionRepository) {
+          const receivedAt = nowFn();
+          const terminalDeadline = receivedAt + TERMINAL_DEADLINE_MS;
+          const deliveryId = `mcp-trigger-${randomUUID()}`;
+          const payloadDigest = sha256(`${deliveryId}:${headSha}:${receivedAt}`);
+          const admission = await deps.admissionRepository.admit({
+            deliveryId,
+            eventName: 'mcp.trigger_review',
+            repositoryId,
+            installationId,
+            receivedAt,
+            terminalDeadline,
+            payloadDigest,
+            publicationMode: 'app-gate',
+            centralActionDispatch: false,
+            debounce: false,
+            identity: resolvedIdentity,
+            dispatchPriority: priority,
+            ...(review_engine ? { reviewEngine: review_engine } : {}),
+            ...(incomplete_p2_recovery === true ? {
+              retryRequested: true,
+              incompleteP2Recovery: true as const,
+              incompleteP2RecoveryOrigin: createMcpStaticAdminRecoveryOrigin(
+                context!.caller!, context!.authorizedRepository!,
+              ),
+            } : {}),
+            ...(resolved && authoritative ? {
+              effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
+              authoritativeGate: {
+                expectedAppId: expectedReviewAppIdFor(authoritative, requested),
+                prepared: resolved.prepared,
+              },
+            } : {}),
+          });
+
+          admittedRunId = admission.run.runId;
+          attemptId = `review-attempt-${pull_number}-${admittedRunId.slice(4, 12)}`;
+        }
+
+        return buildToolResultJson({
+          dispatched: true,
+          attempt_id: attemptId,
+          // Projection is intentionally asynchronous and owned by the durable
+          // review-job dispatcher, never by the internet-facing MCP process.
+          job_crd_created: false,
+          message: `Review job queued successfully (priority: ${priority}${review_engine ? `, engine: ${review_engine}` : ''})`,
+        } satisfies TriggerReviewOutput);
+      };
+
+      if (deps.passthroughEnabled !== true) return executeWithScope();
+      try {
+        return await withOperatorPassthroughReceiptBudget((scope) => executeWithScope(scope),
+          OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS);
+      } catch (error) {
+        if (!(error instanceof OperatorPassthroughOperationDeadlineExceededError)) throw error;
+        const parsed = TriggerReviewInputSchema.safeParse(rawArgs);
+        if (!parsed.success) throw error;
         return buildToolResultJson({
           dispatched: false,
           job_crd_created: false,
           status: 'passthrough',
           reason: 'operator_global_passthrough',
           review_started: false,
-          ...candidateFields,
-          owner,
-          repo,
-          pull_number,
-          verdict: exemption.verdict,
-          expected_lanes: exemption.expectedLanes,
-          completed_lanes: exemption.completedLanes,
-          publication_id: exemption.publicationId,
-          audit_digest: exemption.auditDigest,
-          publication_state: exemption.publicationState,
-          publication_receipt_available: exemption.publicationReceiptAvailable,
-          review_check_id: exemption.reviewCheckId,
-          gate_check_id: exemption.gateCheckId,
-          merge_eligible: exemption.mergeEligible,
-          ...(exemption.publicationFailure ? {
-            publication_failure: {
-              stage: exemption.publicationFailure.stage,
-              classification: exemption.publicationFailure.classification,
-            },
-          } : {}),
-          message: exemption.message ?? `Operator pause authorizes SHIP with zero review lanes; official check publication is ${exemption.publicationState}. Protected merge eligibility is ${exemption.mergeEligible ? 'available' : 'false'}.`,
+          candidate_state: 'unavailable',
+          owner: parsed.data.owner,
+          repo: parsed.data.repo,
+          pull_number: parsed.data.pull_number,
+          head_sha: null,
+          verdict: 'SHIP',
+          expected_lanes: 0,
+          completed_lanes: 0,
+          publication_id: null,
+          audit_digest: null,
+          publication_state: 'unavailable',
+          publication_receipt_available: null,
+          review_check_id: null,
+          gate_check_id: null,
+          merge_eligible: false,
+          publication_failure: { stage: 'receipt', classification: 'receipt_deadline' },
+          message: 'Operator pause authorizes logical SHIP with zero review lanes. The MCP request deadline expired before current candidate and durable publication evidence were confirmed; protected merge eligibility is false.',
         } satisfies TriggerReviewOutput);
       }
-
-      // 2. Active Run Conflict Detection
-      if (deps.queryableDatabase) {
-        const activeRes = await deps.queryableDatabase.query(
-          `SELECT run_id, attempt, status, head_sha
-             FROM review_runs
-            WHERE owner = $1 AND repo = $2 AND pr_number = $3
-              AND status IN ('queued', 'running', 'publishing')
-            LIMIT 1`,
-          [owner, repo, pull_number]
-        );
-
-        const activeRun = activeRes.rows[0];
-        if (activeRun) {
-          if (!force || activeRun.run_id === resolvedRunId) {
-            const err: any = new Error(
-              `Conflict: Review attempt ${activeRun.run_id} is currently running for this review identity.`
-            );
-            err.code = 409;
-            err.status = 409;
-            throw err;
-          }
-        }
-      }
-
-      // 3. Admission Enqueue
-      let attemptId = `review-attempt-${pull_number}-1`;
-      let admittedRunId = `run_${randomUUID().replace(/-/g, '')}`;
-
-      if (deps.admissionRepository) {
-        const receivedAt = nowFn();
-        const terminalDeadline = receivedAt + TERMINAL_DEADLINE_MS;
-        const deliveryId = `mcp-trigger-${randomUUID()}`;
-        const payloadDigest = sha256(`${deliveryId}:${headSha}:${receivedAt}`);
-        const admission = await deps.admissionRepository.admit({
-          deliveryId,
-          eventName: 'mcp.trigger_review',
-          repositoryId,
-          installationId,
-          receivedAt,
-          terminalDeadline,
-          payloadDigest,
-          publicationMode: 'app-gate',
-          centralActionDispatch: false,
-          debounce: false,
-          identity: resolvedIdentity,
-          dispatchPriority: priority,
-          ...(review_engine ? { reviewEngine: review_engine } : {}),
-          ...(incomplete_p2_recovery === true ? {
-            retryRequested: true,
-            incompleteP2Recovery: true as const,
-            incompleteP2RecoveryOrigin: createMcpStaticAdminRecoveryOrigin(
-              context!.caller!, context!.authorizedRepository!,
-            ),
-          } : {}),
-          ...(resolved && authoritative ? {
-            effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
-            authoritativeGate: {
-              expectedAppId: expectedReviewAppIdFor(authoritative, requested),
-              prepared: resolved.prepared,
-            },
-          } : {}),
-        });
-
-        admittedRunId = admission.run.runId;
-        attemptId = `review-attempt-${pull_number}-${admittedRunId.slice(4, 12)}`;
-      }
-
-      return buildToolResultJson({
-        dispatched: true,
-        attempt_id: attemptId,
-        // Projection is intentionally asynchronous and owned by the durable
-        // review-job dispatcher, never by the internet-facing MCP process.
-        job_crd_created: false,
-        message: `Review job queued successfully (priority: ${priority}${review_engine ? `, engine: ${review_engine}` : ''})`,
-      } satisfies TriggerReviewOutput);
     },
   };
 }
