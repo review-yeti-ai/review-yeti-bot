@@ -105,6 +105,7 @@ export function createE2EEnvironment(options: E2ETestHarnessOptions = {}) {
     ENVIRONMENT: options.environment ?? 'staging',
     PARALLEL_MODE: options.parallelMode ?? 'true',
     PARALLEL_CHECK_NAME: options.parallelCheckName ?? 'Review Yeti (Cloudflare Canary)',
+    OPERATOR_GLOBAL_PASSTHROUGH: 'false',
     PILOT_REPOSITORIES: options.pilotRepositories ?? 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta',
     DOKS_FALLBACK_URL: options.doksFallbackUrl ?? '',
     GITHUB_WEBHOOK_SECRET: options.githubWebhookSecret ?? 'e2e-default-test-secret',

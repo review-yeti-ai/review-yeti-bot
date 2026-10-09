@@ -134,6 +134,7 @@ function createTestHarness(overrides: Partial<Record<string, any>> = {}): TestHa
     ENVIRONMENT: overrides.ENVIRONMENT ?? 'staging',
     PARALLEL_MODE: overrides.PARALLEL_MODE ?? 'true',
     PARALLEL_CHECK_NAME: overrides.PARALLEL_CHECK_NAME ?? 'Review Yeti (Cloudflare Canary)',
+    OPERATOR_GLOBAL_PASSTHROUGH: overrides.OPERATOR_GLOBAL_PASSTHROUGH ?? 'false',
     PILOT_REPOSITORIES: overrides.PILOT_REPOSITORIES ?? 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta',
     // Set to empty string by default to prevent unwanted external network calls during unit tests
     DOKS_FALLBACK_URL: overrides.DOKS_FALLBACK_URL ?? '',

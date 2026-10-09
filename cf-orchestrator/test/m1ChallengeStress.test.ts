@@ -104,6 +104,7 @@ function createStressTestEnv(overrides: Partial<Record<string, any>> = {}): Stre
     ENVIRONMENT: overrides.ENVIRONMENT ?? 'staging',
     PARALLEL_MODE: overrides.PARALLEL_MODE ?? 'true',
     PARALLEL_CHECK_NAME: overrides.PARALLEL_CHECK_NAME ?? 'Review Yeti (Cloudflare Canary)',
+    OPERATOR_GLOBAL_PASSTHROUGH: overrides.OPERATOR_GLOBAL_PASSTHROUGH ?? 'false',
     PILOT_REPOSITORIES: overrides.PILOT_REPOSITORIES ?? 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta',
     DOKS_FALLBACK_URL: overrides.DOKS_FALLBACK_URL ?? 'https://doks-internal.example.com/api/webhooks/github',
     GITHUB_WEBHOOK_SECRET: overrides.GITHUB_WEBHOOK_SECRET ?? 'challenge-secret-super-key-99',
@@ -694,6 +695,7 @@ describe('M1 Challenger Stress Test Suite', () => {
       let reviewRunInstance: ReviewRunDO;
 
       const env: any = {
+        OPERATOR_GLOBAL_PASSTHROUGH: 'false',
         REPO_GATE: {
           idFromName: (id: string) => id,
           get: () => ({
@@ -762,6 +764,7 @@ describe('M1 Challenger Stress Test Suite', () => {
       let reviewRunInstance: ReviewRunDO;
 
       const env: any = {
+        OPERATOR_GLOBAL_PASSTHROUGH: 'false',
         REPO_GATE: {
           idFromName: (id: string) => id,
           get: () => ({
@@ -825,6 +828,7 @@ describe('M1 Challenger Stress Test Suite', () => {
       let reviewRunInstance: ReviewRunDO;
 
       const env: any = {
+        OPERATOR_GLOBAL_PASSTHROUGH: 'false',
         REPO_GATE: {
           idFromName: (id: string) => id,
           get: () => ({

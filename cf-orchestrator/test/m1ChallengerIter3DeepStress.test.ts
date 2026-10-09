@@ -46,6 +46,7 @@ function createDeepHarness(): TestHarness {
   const env: any = {
     ENVIRONMENT: 'test',
     PARALLEL_MODE: 'shadow',
+    OPERATOR_GLOBAL_PASSTHROUGH: 'false',
     PILOT_REPOSITORIES: 'exampleorg/review-yeti,exampleorg/test-repo',
     GITHUB_WEBHOOK_SECRET: 'test-secret-deep-12345',
     DOKS_FALLBACK_URL: undefined,
