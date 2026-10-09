@@ -5,14 +5,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
-import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from '../../src/review/groundedEvidenceV2';
 import { OpenRouterClient, type FetchImplementation, type GroundedVerifierRequestContextV1,
   type ReviewModelClient } from '../../src/gateway/openRouterClient';
 import { ProviderAttemptBudget } from '../../src/gateway/providerAttemptBudget';
 import { ComposedRuntimeResourceObserver, completeComposedRuntimeResources } from '../../src/panel/composedResourceReceipt';
-import { runIndependentGroundedVerification } from '../../src/review/groundedReviewEngine';
-import { GROUNDED_VERIFICATION_VERSION } from '../../src/review/groundedReviewEngine';
-import { REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
+import { buildDeterministicCoverageManifest, runIndependentGroundedVerification,
+  GROUNDED_VERIFICATION_VERSION } from '../../src/review/groundedReviewEngine';
+import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, GROUNDED_REVIEW_RECEIPT_V2_VERSION } from '../../src/review/groundedEvidenceV2';
+import { createReviewDecisionV2, REVIEW_SEVERITY_POLICY_V2 } from '../../src/review/reviewDecision';
+import { changedLineNumbers } from '../../src/review/reviewCore';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { findingFingerprint } from '../../src/review/findingConvergence';
 import { createDisputedBlockerAdjudicatorClient } from '../../src/review/disputedBlockerAdjudicator';
@@ -742,6 +743,145 @@ describe('normal engine qualification source and capture', () => {
     expect(result.provider).toMatchObject({ captureStatus: 'captured',
       capturePath: normalEngineQualificationProviderCaptureRelativePath({ runId: request.runId,
         phase: request.phase, caseId: request.fixture.caseId }), captureSha256: '8'.repeat(64), captureUnavailableReason: null });
+  });
+
+  it('projects real grounded verifier diagnostics into the canonical qualification receipt without changing the incomplete Gate result', async () => {
+    const policyContent = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security', profile: 'balanced', review_engine: 'composed', severity_policy: 'review-yeti-severity.v2',
+      budget: { max_investigation_turns: 1 },
+    } });
+    const source = { repositoryId: 73099, repository: 'synthetic/policy-target', sha: 'a'.repeat(40),
+      path: 'policy/review-yeti.json', contentDigest: createHash('sha256').update(policyContent).digest('hex') };
+    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'qualification-primary' };
+    const prepared = preparePublishingPolicy({ source, content: policyContent }, transport,
+      { owner: 'synthetic', repo: 'policy-target' });
+    const caseEnv: NodeJS.ProcessEnv = { ...VALID_ENV,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_RUN_ID: 'nq_abcdef0123456789abcdef0123456789',
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_CASE_ID: 'ws5-p2-display-sort-v1',
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM: 'p2-only',
+      REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest,
+      REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
+      REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1',
+        config: prepared.config, transport }),
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID: String(source.repositoryId),
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_OWNER: 'synthetic',
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPO: 'policy-target',
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REF: source.sha,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH: source.path,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256: source.contentDigest,
+      REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: 'synthetic/policy-target',
+      OPENAI_BASE_URL: transport.baseUrl, OPENAI_API_KEY: 'qualification-test-key', REVIEW_MODEL: transport.model,
+    };
+    const request = parseNormalEngineQualificationRequest(caseEnv);
+    const sourceInput = buildNormalEngineQualificationSourceInput(request);
+    const sourcePath = sourceInput.source.changedPaths[0]!;
+    const changedFiles = parseChangedFiles(sourceInput.source.patches.map((row) => row.patch).join('\n'), {
+      repository: `${request.fixture.repository.owner}/${request.fixture.repository.repo}`,
+      headSha: request.fixture.headSha, baseSha: request.fixture.baseSha,
+    }).files;
+    const sourceFile = changedFiles.find((file) => file.path === sourcePath)!;
+    const sourcePatch = sourceFile.patch!;
+    const sourceLine = [...(changedLineNumbers(sourcePatch) ?? [])].sort((left, right) => left - right)[0] ?? 1;
+    const groundedProvider = createNormalEngineQualificationRepoFileProvider(request);
+    const providerAttemptBudget = new ProviderAttemptBudget({ totalLimit: 100, investigationLimit: 88, verificationLimit: 12 });
+    const task = { id: 'security', dimension: 'security' as const, paths: [sourcePath],
+      question: 'Review the changed source path.', rationale: 'This task covers the changed path.' };
+    const sourceDelivery = { version: 'TaskSourceDelivery.v1' as const, taskId: task.id,
+      headSha: request.fixture.headSha, baseSha: request.fixture.baseSha, contextDigests: ['f'.repeat(64)], complete: true,
+      files: [{ path: sourcePath, patchDigest: createHash('sha256').update(sourcePatch).digest('hex'),
+        totalChars: sourcePatch.length, ranges: [[0, sourcePatch.length] as [number, number]], inline: true }] };
+    const resourcesObserver = new ComposedRuntimeResourceObserver({ configDigest: request.policy.configDigest,
+      configuration: prepared.config.review_configuration_receipt, providerAttemptBudget });
+    resourcesObserver.configureBudget({ configuredTotalTurns: 100, investigationTurns: 88, verificationReserveTurns: 12 });
+    resourcesObserver.setPlan([task]);
+    resourcesObserver.markTaskStarted(task.id);
+    resourcesObserver.markTaskOutcome(task.id, 'completed', sourceDelivery);
+    const observation = resourcesObserver.snapshot('terminal');
+    if (!observation) throw new Error('expected qualification resource observation');
+    const groundedClient = { complete: vi.fn(async (modelRequest: { beforePhysicalAttempt?: () => void }) => {
+      modelRequest.beforePhysicalAttempt?.();
+      return { model: transport.model, content: JSON.stringify({ status: 'insufficient', citations: [] }),
+        usage: null, costUSD: null };
+    }) };
+    const verification = await runIndependentGroundedVerification({
+      findings: [{ severity: 'P1', path: sourcePath, line: sourceLine, title: 'Synthetic grounded verifier candidate' }],
+      changedFiles, provider: groundedProvider,
+      repository: `${request.fixture.repository.owner}/${request.fixture.repository.repo}`,
+      headSha: request.fixture.headSha, baseSha: request.fixture.baseSha, model: transport.model,
+      verificationVersion: GROUNDED_VERIFICATION_VERSION, severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
+      budget: { totalCalls: 12, callsPerTask: 12, concurrency: 1 }, providerAttemptBudget,
+      client: groundedClient as unknown as ReviewModelClient,
+    });
+    expect(verification).toMatchObject({ calls: 1, coverageComplete: false, outcomes: [{ status: 'insufficient',
+      diagnostic: { version: 'GroundedVerifierDiagnostic.v1', stage: 'response',
+        code: 'model_reported_insufficient', fieldGroup: 'status' } }] });
+
+    const resources = completeComposedRuntimeResources({ observation, configDigest: request.policy.configDigest,
+      verifierCalls: verification.calls, providerAttemptBudget: providerAttemptBudget.snapshot() });
+    if (!resources) throw new Error('expected qualification composed resources');
+
+    const coverage = buildDeterministicCoverageManifest(changedFiles);
+    const safeOutcomes = verification.outcomes.map(({ reason: _untrustedReason, scopeDecision: _scope, ...outcome }) => outcome);
+    const groundedReview = {
+      version: GROUNDED_REVIEW_RECEIPT_V2_VERSION,
+      semanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+      coverage: { digest: coverage.digest, regionCount: coverage.regions.length,
+        assignmentCount: coverage.assignments.length, coveredRegionCount: coverage.coveredRegionIds.length,
+        complete: coverage.complete, omissions: coverage.omissions },
+      history: { status: 'unavailable' as const, eventCount: 0, findingCount: 0, loadedEventCount: 0, loadedFindingCount: 0,
+        eventOmittedCount: 0, findingOmittedCount: 0, legacyOmittedCount: 0, omissions: ['synthetic test has no history'],
+        memorySources: { honcho: 'unavailable' as const, mcp: 'unavailable' as const },
+        verificationWrites: { attempted: 0, recorded: 0, failed: 0 } },
+      verification: { ...verification, outcomes: safeOutcomes },
+    };
+    const reviewDecision = createReviewDecisionV2({ schemaVersion: 'review-yeti-decision.v2',
+      policyVersion: REVIEW_SEVERITY_POLICY_V2, policyDigest: request.policy.policyDigest,
+      coverageComplete: false, quorumSatisfied: false, infrastructureFailure: false,
+      expectedLanes: 1, completedLanes: 1,
+      counts: { p0Count: 0, p1Count: 0, p2Count: 0, p3Count: 0, nitCount: 0 } });
+    const completion = {
+      version: 'WorkerReviewCompletion.v1', runId: `run_${request.runId.slice(3)}`,
+      repositoryId: request.fixture.repository.repositoryId, owner: request.fixture.repository.owner,
+      repo: request.fixture.repository.repo, prNumber: request.fixture.prNumber,
+      headSha: request.fixture.headSha, baseSha: request.fixture.baseSha,
+      policyDigest: request.policy.policyDigest, configDigest: request.policy.configDigest, executionAttempt: 1,
+      result: { version: 'WorkerReviewResult.v1', completedAt: '2026-10-06T00:00:10.000Z',
+        personas: [{ id: task.id, decision: 'APPROVE', findings: [], sourceDelivery }], taskPlan: [task],
+        coverageComplete: false, quorumSatisfied: false, reviewDecision, groundedReview, composedResources: resources },
+    };
+    const result = await runNormalEngineQualificationCase(caseEnv, {
+      verifyRuntimeManifest: async () => VALID_ENV.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256!,
+      runPublishingWorker: async (_workerEnv, workerDeps) => {
+        await workerDeps.normalEngineQualification!.onWorkerCompletion(completion as never);
+        return { verdict: 'INCOMPLETE', conclusion: 'failure',
+          coverage: { fullPanelComplete: false, groundedReviewComplete: false, quorumSatisfied: false } } as never;
+      },
+      persistProviderCapture: providerCapturePersistenceStub(),
+      persistComposedResources: async () => ({
+        path: normalEngineQualificationComposedResourcesRelativePath(request.runId, request.phase, request.fixture.caseId),
+        sha256: '9'.repeat(64), idempotent: false,
+      }),
+      persistCaseReceipt: async () => ({ receiptPath: 'private/receipt.json', sha256Path: 'private/receipt.sha256',
+        receiptSha256: 'e'.repeat(64), idempotent: false }),
+    });
+
+    expect(groundedClient.complete).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ terminal: { status: 'incomplete' },
+      outcome: { workerOutcomeClass: 'incomplete', gateOutcomeClass: 'incomplete', agreement: 'agreement' },
+      groundedVerification: { evidenceSemanticsVersion: GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION,
+        callCount: 1, outcomeCount: 1, coverageComplete: false,
+        diagnostics: [{ candidateFingerprintSha256: expect.any(String), path: sourcePath, severity: 'P1',
+          status: 'insufficient', diagnostic: { version: 'GroundedVerifierDiagnostic.v1', stage: 'response',
+            code: 'model_reported_insufficient', fieldGroup: 'status' } }] } });
+    expect(JSON.stringify(result)).not.toContain('verifier reported insufficient evidence');
+    expect(JSON.stringify(result)).not.toContain('Synthetic grounded verifier candidate');
+    expect(JSON.stringify(result)).not.toContain('"reason":"');
+    const untrustedDiagnostic = structuredClone(result) as any;
+    untrustedDiagnostic.groundedVerification.diagnostics[0].rawReason = 'model body text';
+    expect(() => assertNormalEngineQualificationReceipt(untrustedDiagnostic)).toThrow();
+    const mismatchedDiagnostic = structuredClone(result) as any;
+    mismatchedDiagnostic.groundedVerification.diagnostics[0].diagnostic.code = 'response_schema_invalid';
+    expect(() => assertNormalEngineQualificationReceipt(mismatchedDiagnostic)).toThrow();
   });
 
   it('persists the pre-dispatch-bound metadata-only provider capture with a private checksum', async () => {

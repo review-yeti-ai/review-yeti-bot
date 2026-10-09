@@ -4,6 +4,7 @@ import { chmod, link, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/p
 import { dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from '../review/groundedEvidenceV2';
+import { groundedVerifierDiagnosticSchema, type GroundedVerifierDiagnostic } from '../review/groundedReviewEngine';
 import { groundedVerifierRouteV1Schema, type GroundedVerifierRouteV1 } from '../review/groundedVerifierRoute';
 import { composedRuntimeResourcesSchema } from '../panel/composedResourceReceipt';
 
@@ -558,6 +559,13 @@ export interface NormalEngineQualificationReceipt {
     callCount: number | null;
     outcomeCount: number | null;
     coverageComplete: boolean | null;
+    diagnostics?: Array<{
+      candidateFingerprintSha256: string;
+      path: string;
+      severity: 'P0' | 'P1' | 'P2' | 'P3' | 'NIT';
+      status: 'insufficient';
+      diagnostic: GroundedVerifierDiagnostic;
+    }>;
     routeReceipts: Array<{
       findingFingerprint: string;
       path: string;
@@ -797,6 +805,13 @@ const qualificationGroundedVerifierRouteSchema = z.object({
   status: z.enum(['confirmed', 'contradicted', 'insufficient']),
   route: groundedVerifierRouteV1Schema,
 }).strict();
+const qualificationGroundedVerifierDiagnosticSchema = z.object({
+  candidateFingerprintSha256: digestSchema,
+  path: z.string().min(1).max(4096),
+  severity: z.enum(['P0', 'P1', 'P2', 'P3', 'NIT']),
+  status: z.literal('insufficient'),
+  diagnostic: groundedVerifierDiagnosticSchema,
+}).strict();
 
 const qualificationReceiptSchema = z.object({
   schemaVersion: z.literal('ReviewYetiNormalQualification.v1'),
@@ -907,18 +922,25 @@ const qualificationReceiptSchema = z.object({
     callCount: z.number().int().nonnegative().safe().nullable(),
     outcomeCount: z.number().int().nonnegative().safe().nullable(),
     coverageComplete: z.boolean().nullable(),
+    /** New receipts retain only enum diagnostics for insufficient outcomes; historical receipts may omit them. */
+    diagnostics: z.array(qualificationGroundedVerifierDiagnosticSchema).max(10_000).optional(),
     routeReceipts: z.array(qualificationGroundedVerifierRouteSchema).max(10_000),
   }).strict().superRefine((verification, context) => {
+    const diagnostics = verification.diagnostics ?? [];
     if (verification.evidenceSemanticsVersion === null
       ? verification.callCount !== null || verification.outcomeCount !== null || verification.coverageComplete !== null
-        || verification.routeReceipts.length !== 0
+        || verification.routeReceipts.length !== 0 || diagnostics.length !== 0
       : verification.callCount === null || verification.outcomeCount === null || verification.coverageComplete === null
-        || verification.routeReceipts.length > verification.outcomeCount) {
+        || verification.routeReceipts.length > verification.outcomeCount || diagnostics.length > verification.outcomeCount) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['evidenceSemanticsVersion'],
         message: 'qualification verifier route evidence is inconsistent' });
     }
     if (new Set(verification.routeReceipts.map((route) => route.findingFingerprint)).size !== verification.routeReceipts.length) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['routeReceipts'], message: 'qualification route fingerprints must be unique' });
+    }
+    if (new Set(diagnostics.map((row) => row.candidateFingerprintSha256)).size !== diagnostics.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['diagnostics'],
+        message: 'qualification verifier diagnostic fingerprints must be unique' });
     }
   }),
   qualificationControl: z.enum(['none', 'empty-history-ablation', 'history-unavailable',
