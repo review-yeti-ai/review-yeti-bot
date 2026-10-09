@@ -1,5 +1,6 @@
 import type { Env, ReviewRunSpec, ReviewRunState } from './types.js';
 import { fetchLivePullRequestDiff } from './auth/githubEdgeAuth.js';
+import { reviewRunSpecDigest } from './reviewRunIdentity.js';
 import {
   getInstallationToken,
   completeChecks,
@@ -221,7 +222,27 @@ export class ReviewRunDO {
     }
 
     if (this.runState.phase === 'Completed' || this.runState.phase === 'Failed') {
-      return { accepted: false, reason: 'already_terminal' };
+      const terminalReceipt = this.runState.terminalReceipt;
+      const isOperatorPassthroughDowngrade =
+        terminalReceipt?.operatorPassthrough === true &&
+        receipt?.operatorPassthrough === true &&
+        terminalReceipt?.runId === this.runState.spec.runId &&
+        receipt?.runId === this.runState.spec.runId &&
+        Number.isSafeInteger(terminalReceipt?.workerCheckId) &&
+        Number.isSafeInteger(terminalReceipt?.gateCheckId) &&
+        receipt?.workerCheckId === terminalReceipt.workerCheckId &&
+        receipt?.gateCheckId === terminalReceipt.gateCheckId &&
+        receipt?.status === 'failed' &&
+        receipt?.publicationState === 'unavailable';
+      if (!isOperatorPassthroughDowngrade) {
+        return { accepted: false, reason: 'already_terminal' };
+      }
+
+      this.runState.terminalReceipt = receipt;
+      this.runState.phase = 'Failed';
+      this.runState.completedAt = Date.now();
+      await this.state.storage.put('runState', this.runState);
+      return { accepted: true };
     }
 
     this.runState.terminalReceipt = receipt;
@@ -324,7 +345,10 @@ export class ReviewRunDO {
     cancelRequested: boolean;
     cancelReason?: string;
     fencingEpoch: number;
+    runId?: string;
     headSha?: string;
+    specDigest?: string;
+    terminalReceiptSummary?: { status: string | null; verdict: string | null; findingsCount: number } | null;
     workerId?: string;
     jobId?: string;
   }> {
@@ -333,13 +357,31 @@ export class ReviewRunDO {
       return { isCurrentHead: false, phase: 'Unknown', cancelRequested: true, fencingEpoch: 0 };
     }
 
+    const receipt = this.runState.terminalReceipt;
+    const rawFindingsCount = receipt?.findingsCount ?? receipt?.findings_count ?? receipt?.findingCount;
+    const findingsCount = Array.isArray(receipt?.findings)
+      ? receipt.findings.length
+      : rawFindingsCount === undefined
+        ? 0
+        : Number(rawFindingsCount);
+    const terminalReceiptSummary = receipt
+      ? {
+          status: typeof receipt.status === 'string' ? receipt.status : null,
+          verdict: typeof receipt.verdict === 'string' ? receipt.verdict : null,
+          findingsCount: Number.isSafeInteger(findingsCount) && findingsCount >= 0 ? findingsCount : Number.MAX_SAFE_INTEGER,
+        }
+      : null;
+
     return {
       isCurrentHead: !this.runState.cancelRequested && this.runState.phase !== 'Cancelled',
       phase: this.runState.phase,
       cancelRequested: this.runState.cancelRequested,
       cancelReason: this.runState.cancelReason,
       fencingEpoch: this.runState.fencingEpoch,
+      runId: this.runState.spec.runId,
       headSha: this.runState.spec.headSha,
+      specDigest: await reviewRunSpecDigest(this.runState.spec),
+      terminalReceiptSummary,
       workerId: this.runState.workerId,
       jobId: this.runState.jobId,
     };
@@ -810,4 +852,3 @@ export class ReviewRunDO {
     return new Response('Not Found', { status: 404 });
   }
 }
-

@@ -7,24 +7,11 @@ import { purgeExpiredR2WorkspaceCaches } from './runners/r2WorkspaceCache.js';
 import { defaultMcpRouter, constantTimeEquals } from './mcp/mcpRouter.js';
 import { handleDashboardApi } from './api/dashboardRoutes.js';
 import { handleActionDispatch } from './api/actionDispatchRoute.js';
+import { isPilotRepository } from './pilotRepository.js';
 
 export { RepoGateDO, ReviewRunDO, ReviewJobWorkflow, handleMergeGroupAttestation };
 export { defaultMcpRouter, handleDashboardApi, handleActionDispatch };
-
-/**
- * Validates whether a given repository full name is included in the pilot scope.
- * Supports comma-separated lists and wildcard 'all'. Case-insensitive and defensive.
- */
-export function isPilotRepository(repoFullName: string, pilotList?: string): boolean {
-  if (!repoFullName || typeof repoFullName !== 'string') return false;
-  if (!pilotList || pilotList.trim() === '') return false;
-  if (pilotList.trim().toLowerCase() === 'all') return true;
-  const pilots = pilotList
-    .split(',')
-    .map((p) => p.trim().toLowerCase())
-    .filter(Boolean);
-  return pilots.includes(repoFullName.toLowerCase());
-}
+export { isPilotRepository };
 
 /**
  * Validates incoming GitHub webhook HMAC-SHA256 signature against secret using Web Crypto API.
@@ -701,4 +688,3 @@ export default {
     }
   },
 };
-

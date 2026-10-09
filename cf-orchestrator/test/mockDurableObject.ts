@@ -66,5 +66,6 @@ export function createMockEnv(): any {
     },
     PARALLEL_CHECK_NAME: 'Review Yeti (Cloudflare Canary)',
     DEFAULT_WORKER_IMAGE: 'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
+    OPERATOR_GLOBAL_PASSTHROUGH: 'false',
   };
 }

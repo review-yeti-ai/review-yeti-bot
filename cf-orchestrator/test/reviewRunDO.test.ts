@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { ReviewRunDO } from '../src/reviewRunDO.js';
+import { reviewRunSpecDigest } from '../src/reviewRunIdentity.js';
 import { MockDurableObjectState } from './mockDurableObject.js';
 import type { ReviewRunSpec } from '../src/types.js';
 
@@ -166,6 +167,85 @@ describe('ReviewRunDO Coordinator & Fencing', () => {
     assert.equal(status.phase, 'Completed');
   });
 
+  it('allows unavailable operator passthrough to downgrade a terminal success receipt', async () => {
+    const state = new MockDurableObjectState();
+    const env: any = {};
+    const runDO = new ReviewRunDO(state as any, env);
+    const spec = {
+      runId: 'run_operator_pause_downgrade',
+      owner: 'exampleorg',
+      repo: 'sample-project',
+      prNumber: 7,
+      headSha: 'a'.repeat(40),
+      baseSha: 'b'.repeat(40),
+      installationId: 42,
+    };
+    await runDO.initialize(spec);
+
+    const success = await runDO.submitReceipt({
+      runId: spec.runId,
+      status: 'succeeded',
+      verdict: 'SHIP',
+      operatorPassthrough: true,
+      publicationState: 'published',
+      workerCheckId: 701,
+      gateCheckId: 702,
+    }, 1);
+    assert.equal(success.accepted, true);
+
+    const unavailable = await runDO.submitReceipt({
+      runId: spec.runId,
+      status: 'failed',
+      verdict: 'unavailable',
+      operatorPassthrough: true,
+      publicationState: 'unavailable',
+      workerCheckId: 701,
+      gateCheckId: 702,
+      mergeEligible: false,
+    }, 1);
+
+    assert.equal(unavailable.accepted, true);
+    const stored = await state.storage.get<any>('runState');
+    assert.equal(stored.phase, 'Failed');
+    assert.equal(stored.terminalReceipt.publicationState, 'unavailable');
+    assert.equal(stored.terminalReceipt.mergeEligible, false);
+  });
+
+  it('exposes only same-run receipt metadata needed for a trusted prior-outcome guard', async () => {
+    const state = new MockDurableObjectState();
+    const env: any = {};
+    const runDO = new ReviewRunDO(state as any, env);
+    const spec = {
+      runId: 'run_prior_metadata_fixture',
+      owner: 'exampleorg',
+      repo: 'sample-project',
+      prNumber: 7,
+      headSha: 'a'.repeat(40),
+      baseSha: 'b'.repeat(40),
+      installationId: 42,
+    };
+    await runDO.initialize(spec);
+    await runDO.submitReceipt({
+      runId: spec.runId,
+      status: 'failed',
+      verdict: 'action_required',
+      findings: [{ severity: 'P1', description: 'synthetic fixture detail' }],
+    }, 1);
+
+    const status: any = await runDO.getStatus();
+    assert.equal(status.runId, spec.runId);
+    assert.equal(status.headSha, spec.headSha);
+    assert.equal(status.specDigest, await reviewRunSpecDigest(spec));
+    assert.equal(Object.hasOwn(status, 'baseSha'), false);
+    assert.deepEqual(status.terminalReceiptSummary, {
+      status: 'failed',
+      verdict: 'action_required',
+      findingsCount: 1,
+    });
+    assert.equal(JSON.stringify(status).includes('synthetic fixture detail'), false);
+    assert.equal(Object.hasOwn(status, 'terminalReceipt'), false);
+  });
+
   it('rejects receipt submission on cancelled run or epoch mismatch', async () => {
     const state = new MockDurableObjectState();
     const env: any = {};
@@ -199,4 +279,3 @@ describe('ReviewRunDO Coordinator & Fencing', () => {
     assert.equal(statusData.fencingEpoch, 1);
   });
 });
-

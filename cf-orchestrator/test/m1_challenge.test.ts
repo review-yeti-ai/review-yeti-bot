@@ -46,6 +46,7 @@ function createEmpiricalTestEnv() {
   const env: any = {
     ENVIRONMENT: 'production',
     PARALLEL_MODE: 'shadow',
+    OPERATOR_GLOBAL_PASSTHROUGH: 'false',
     PILOT_REPOSITORIES: 'exampleorg/review-yeti,review-yeti-ai/review-yeti-bot',
     GITHUB_WEBHOOK_SECRET: 'm1-adversarial-challenge-secret-999',
     DOKS_FALLBACK_URL: 'https://doks-internal.example.com/webhooks/github',
