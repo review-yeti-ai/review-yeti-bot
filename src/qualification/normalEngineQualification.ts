@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { chmod, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { chmod, link, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION } from '../review/groundedEvidenceV2';
@@ -1200,50 +1200,103 @@ export async function persistNormalEngineQualificationReceipt(
 ): Promise<PersistedQualificationReceipt> {
   const receipt = assertNormalEngineQualificationReceipt(input);
   const body = `${JSON.stringify(JSON.parse(canonicalQualificationJson(receipt)), null, 2)}\n`;
-  const digest = createHash('sha256').update(body, 'utf8').digest('hex');
-  const finalDirectory = join(rootDirectory, receipt.runId, receipt.phase, receipt.target.caseId);
+  const receiptBytes = Buffer.from(body, 'utf8');
+  const digest = createHash('sha256').update(receiptBytes).digest('hex');
+  const digestBytes = Buffer.from(`${digest}\n`, 'utf8');
+  const storeRoot = resolve(rootDirectory);
+  const runDirectory = join(storeRoot, receipt.runId);
+  const finalDirectory = join(runDirectory, receipt.phase, receipt.target.caseId);
   const receiptPath = join(finalDirectory, 'receipt.json');
   const sha256Path = join(finalDirectory, 'receipt.sha256');
-  const readExisting = async (): Promise<PersistedQualificationReceipt | undefined> => {
+  const phaseDirectory = join(runDirectory, receipt.phase);
+
+  const ensureDirectory = async (directoryPath: string, errorMessage: string, createParents = false) => {
+    if (createParents) await mkdir(directoryPath, { recursive: true, mode: 0o700 });
+    else {
+      try { await mkdir(directoryPath, { mode: 0o700 }); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+    }
+    const info = await lstat(directoryPath);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(errorMessage);
+    await chmod(directoryPath, 0o700);
+  };
+  await ensureDirectory(storeRoot, 'normal-engine qualification store path is invalid', true);
+  await ensureDirectory(runDirectory, 'normal-engine qualification store path is invalid');
+  await ensureDirectory(phaseDirectory, 'normal-engine qualification store path is invalid');
+  await ensureDirectory(finalDirectory, 'normal-engine qualification receipt directory is invalid');
+
+  const readPrivateFile = async (filePath: string): Promise<Buffer | undefined> => {
     try {
-      const [existingBody, existingDigest] = await Promise.all([readFile(receiptPath, 'utf8'), readFile(sha256Path, 'utf8')]);
-      const actualDigest = createHash('sha256').update(existingBody, 'utf8').digest('hex');
-      if (actualDigest !== existingDigest.trim()) throw new Error('normal-engine qualification receipt store is corrupt');
-      if (actualDigest !== digest || existingBody !== body) throw new Error('normal-engine qualification receipt identity conflict');
-      return { receiptPath, sha256Path, receiptSha256: actualDigest, idempotent: true };
+      const info = await lstat(filePath);
+      if (info.isSymbolicLink() || !info.isFile() || (info.mode & 0o077) !== 0) {
+        throw new Error('normal-engine qualification receipt file is invalid');
+      }
+      return await readFile(filePath);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
       throw error;
     }
   };
+  const readExisting = async (): Promise<PersistedQualificationReceipt | undefined> => {
+    const [existingBody, existingDigest] = await Promise.all([
+      readPrivateFile(receiptPath), readPrivateFile(sha256Path),
+    ]);
+    if (!existingBody && !existingDigest) return undefined;
+    if (existingBody) {
+      const actualDigest = createHash('sha256').update(existingBody).digest('hex');
+      if (actualDigest !== digest || !existingBody.equals(receiptBytes)) {
+        throw new Error('normal-engine qualification receipt identity conflict');
+      }
+      if (existingDigest && existingDigest.toString('utf8').trim() !== actualDigest) {
+        throw new Error('normal-engine qualification receipt store is corrupt');
+      }
+      if (existingDigest) return { receiptPath, sha256Path, receiptSha256: actualDigest, idempotent: true };
+    }
+    if (existingDigest && existingDigest.toString('utf8').trim() !== digest) {
+      throw new Error('normal-engine qualification receipt identity conflict');
+    }
+    return undefined;
+  };
   const existing = await readExisting();
   if (existing) return existing;
 
-  const phaseDirectory = join(rootDirectory, receipt.runId, receipt.phase);
-  const temporaryDirectory = join(phaseDirectory, `.tmp-${receipt.target.caseId}-${randomUUID()}`);
-  await mkdir(phaseDirectory, { recursive: true, mode: 0o700 });
-  const phaseStat = await lstat(phaseDirectory);
-  if (!phaseStat.isDirectory() || phaseStat.isSymbolicLink()) throw new Error('normal-engine qualification store path is invalid');
-  await chmod(phaseDirectory, 0o700);
+  const temporaryDirectory = join(finalDirectory, `.tmp-receipt-${randomUUID()}`);
   await mkdir(temporaryDirectory, { mode: 0o700 });
   try {
-    const receiptHandle = await open(join(temporaryDirectory, 'receipt.json'), 'wx', 0o600);
-    try { await receiptHandle.writeFile(body, 'utf8'); await receiptHandle.sync(); }
+    const temporaryReceiptPath = join(temporaryDirectory, 'receipt.json');
+    const receiptHandle = await open(temporaryReceiptPath, 'wx', 0o600);
+    try { await receiptHandle.writeFile(receiptBytes); await receiptHandle.sync(); }
     finally { await receiptHandle.close(); }
-    const digestHandle = await open(join(temporaryDirectory, 'receipt.sha256'), 'wx', 0o600);
-    try { await digestHandle.writeFile(`${digest}\n`, 'utf8'); await digestHandle.sync(); }
+    const temporarySha256Path = join(temporaryDirectory, 'receipt.sha256');
+    const digestHandle = await open(temporarySha256Path, 'wx', 0o600);
+    try { await digestHandle.writeFile(digestBytes); await digestHandle.sync(); }
     finally { await digestHandle.close(); }
-    try {
-      await rename(temporaryDirectory, finalDirectory);
-    } catch (error) {
-      const raced = await readExisting();
-      if (raced) return raced;
-      throw error;
-    }
+
+    const publishFile = async (temporaryPath: string, finalPath: string, expected: Buffer): Promise<boolean> => {
+      try {
+        await link(temporaryPath, finalPath);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        const existingFile = await readPrivateFile(finalPath);
+        if (!existingFile?.equals(expected)) throw new Error('normal-engine qualification receipt identity conflict');
+        return false;
+      }
+    };
+
+    // Publish the digest first so a crash between links can be completed idempotently on retry.
+    const digestCreated = await publishFile(temporarySha256Path, sha256Path, digestBytes);
+    const receiptCreated = await publishFile(temporaryReceiptPath, receiptPath, receiptBytes);
+    const directoryHandle = await open(finalDirectory, 'r');
+    try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
+    const persisted = await readExisting();
+    if (!persisted) throw new Error('normal-engine qualification receipt write incomplete');
+    return { ...persisted, idempotent: !digestCreated && !receiptCreated };
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
-  return { receiptPath, sha256Path, receiptSha256: digest, idempotent: false };
 }
 
 const qualificationPlanReceiptSchema = z.object({

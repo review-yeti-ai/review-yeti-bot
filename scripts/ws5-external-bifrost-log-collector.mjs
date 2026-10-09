@@ -549,16 +549,17 @@ export function createExternalNormalV2ExactLogCollector({
     };
     await Promise.allSettled(Array.from({ length: Math.min(MAX_CONCURRENCY, work.length) }, worker));
     const sortedRows = rows.sort((a, b) => a.clientRequestIdSha256.localeCompare(b.clientRequestIdSha256));
+    const sortedRowDigests = sortedRows.map((row) => row.exactLogRowSha256).sort();
     const unqueried = calls.map((call) => call.clientRequestIdSha256).filter((cid) => !queriedCids.has(cid)).sort();
     if (failureCode || signal?.aborted || sortedRows.length !== calls.length) {
       return { status: 'unavailable', queriedCallCount: queriedCids.size, matchedRows: sortedRows.length,
         unqueriedCallCount: unqueried.length, unqueriedCidSetSha256: digest(canonicalJson(unqueried)),
         queriedCidSha256: [...queriedCids].sort(), unqueriedCidSha256: unqueried,
         failureCode: failureCode || 'capture_deadline_or_parent_abort',
-        partialRowSetSha256: digest(canonicalJson(sortedRows.map((row) => row.exactLogRowSha256))), rows: sortedRows };
+        partialRowSetSha256: digest(canonicalJson(sortedRowDigests)), rows: sortedRows };
     }
     return { status: 'captured', artifactCount: sortedRows.length,
-      artifactSetSha256: digest(canonicalJson(sortedRows.map((row) => row.exactLogRowSha256))),
+      artifactSetSha256: digest(canonicalJson(sortedRowDigests)),
       queriedCidSha256: [...queriedCids].sort(), unqueriedCidSha256: [], rows: sortedRows };
   };
 }

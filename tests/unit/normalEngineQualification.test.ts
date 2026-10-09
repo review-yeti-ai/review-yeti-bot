@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -585,6 +585,56 @@ describe('normal-engine qualification admission contract', () => {
       }, root)).rejects.toThrow(/qualification receipt identity conflict/u);
     } finally {
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('persists a receipt into an existing case directory without replacing sibling artifacts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'review-yeti-qualification-existing-case-'));
+    try {
+      const receipt = validQualificationReceipt();
+      const caseDirectory = join(root, receipt.runId, receipt.phase, receipt.target.caseId);
+      const providerCapturePath = join(caseDirectory, 'provider-capture.record', 'provider-capture.json');
+      const composedResourcesPath = join(caseDirectory, 'composed-resources.record', 'composed-runtime-resources.json');
+      await mkdir(join(caseDirectory, 'provider-capture.record'), { recursive: true, mode: 0o700 });
+      await mkdir(join(caseDirectory, 'composed-resources.record'), { recursive: true, mode: 0o700 });
+      await writeFile(providerCapturePath, '{"fixture":"provider-capture"}\n', { mode: 0o600 });
+      await writeFile(composedResourcesPath, '{"fixture":"composed-resources"}\n', { mode: 0o600 });
+
+      const persisted = await persistNormalEngineQualificationReceipt(receipt, root);
+      const replay = await persistNormalEngineQualificationReceipt(receipt, root);
+      const originalReceipt = await readFile(persisted.receiptPath, 'utf8');
+      const originalChecksum = await readFile(persisted.sha256Path, 'utf8');
+
+      expect(persisted.idempotent).toBe(false);
+      expect(replay.idempotent).toBe(true);
+      expect(await readFile(providerCapturePath, 'utf8')).toBe('{"fixture":"provider-capture"}\n');
+      expect(await readFile(composedResourcesPath, 'utf8')).toBe('{"fixture":"composed-resources"}\n');
+      expect((await readFile(persisted.sha256Path, 'utf8')).trim()).toBe(persisted.receiptSha256);
+      await expect(persistNormalEngineQualificationReceipt({ ...receipt,
+        terminal: { ...receipt.terminal, completedAt: '2026-10-06T00:00:11.000Z' },
+      }, root)).rejects.toThrow(/qualification receipt identity conflict/u);
+      expect(await readFile(persisted.receiptPath, 'utf8')).toBe(originalReceipt);
+      expect(await readFile(persisted.sha256Path, 'utf8')).toBe(originalChecksum);
+      expect(await readFile(providerCapturePath, 'utf8')).toBe('{"fixture":"provider-capture"}\n');
+      expect(await readFile(composedResourcesPath, 'utf8')).toBe('{"fixture":"composed-resources"}\n');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to follow a symlinked run directory while persisting a receipt', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'review-yeti-qualification-symlink-root-'));
+    const outside = await mkdtemp(join(tmpdir(), 'review-yeti-qualification-symlink-target-'));
+    try {
+      const receipt = validQualificationReceipt();
+      await symlink(outside, join(root, receipt.runId), 'dir');
+
+      await expect(persistNormalEngineQualificationReceipt(receipt, root))
+        .rejects.toThrow(/qualification store path is invalid/u);
+      await expect(lstat(join(outside, receipt.phase))).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
     }
   });
 

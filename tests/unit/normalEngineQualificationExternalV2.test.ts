@@ -7,6 +7,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { canonicalJson } from '../../src/review/reviewCore';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
+import { NormalEngineQualificationReceiptPersistError } from '../../src/qualification/normalEngineQualificationWorker';
 import { createBoundExternalNormalV2CaseExecutor, createPinnedWorkerImageExternalNormalV2Adapter,
   trustedPreparedBudget, validateExternalNormalV2PrivateBinding } from '../../src/qualification/normalEngineQualificationExternalV2';
 
@@ -327,6 +328,7 @@ describe('current-source external v2 worker adapter', () => {
     await Promise.all([chmod(policyRoot, 0o700), chmod(phaseRoot, 0o700)]);
     const canonicalPolicyRoot = await realpath(policyRoot);
     const canonicalPhaseRoot = await realpath(phaseRoot);
+    const canonicalStoreRoot = path.join(canonicalPhaseRoot, 'normal-engine-qualification-store');
     const imageRef = `ghcr.io/review-yeti-ai/review-yeti-worker@${runtime.workerImageDigest}`;
     const inspected: string[] = [];
     const dockerCalls: Array<{ args: string[]; env: NodeJS.ProcessEnv; stdin: string }> = [];
@@ -380,7 +382,7 @@ describe('current-source external v2 worker adapter', () => {
       expect(dockerCalls[0].args).toContain('--read-only');
       expect(dockerCalls[0].args).toContain('bridge');
       expect(dockerCalls[1].args).toContain(`type=bind,source=${canonicalPolicyRoot},target=/phase-inputs,readonly`);
-      expect(dockerCalls[1].args).toContain(`type=bind,source=${canonicalPhaseRoot},target=/phase`);
+      expect(dockerCalls[1].args).toContain(`type=bind,source=${canonicalStoreRoot},target=/phase`);
       expect(dockerCalls[1].args).not.toContain('qualification-test-key');
       expect(dockerCalls[1].env).not.toHaveProperty('KUBECONFIG');
       expect(dockerCalls[1].env.OPENAI_API_KEY).toBeUndefined();
@@ -509,13 +511,15 @@ describe('current-source external v2 worker adapter', () => {
           REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: env.REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET,
           REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID: env.REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_REPOSITORY_ID,
           inferenceCredentialPresent: env.OPENAI_API_KEY ? 'yes' : undefined } as NodeJS.ProcessEnv;
-        throw new Error('synthetic pre-provider case stub');
+        throw new NormalEngineQualificationReceiptPersistError();
       });
       const imageExecutor = createBoundExternalNormalV2CaseExecutor({ baseEnv: child.env, policyInputRoot: policyRoot,
         readInferenceKeyInMemory: () => syntheticCredential, runCase: imageRunCase as never });
       const imageResult = await imageExecutor(caseProjection, context);
       expect(imageRunCase).toHaveBeenCalledOnce();
       expect(imageResult).toMatchObject({ clientCalls: 0, terminalStatus: 'failed', failureCode: 'worker_execution_failed' });
+      expect(imageResult.workerFailure).toEqual({ stage: 'case_receipt_persistence', code: 'receipt_write_failed' });
+      expect(JSON.stringify(imageResult)).not.toContain('normal_engine_qualification_case_receipt_persist_failed');
       expect(imageResult.providerCalls).toEqual([]);
       expect(observedImageEnv).toMatchObject({ OPENAI_BASE_URL: inferenceBaseUrl, REVIEW_MODEL: testRouteAlias,
         REVIEW_CONFIG_DIGEST: configSha, REVIEW_POLICY_DIGEST: privateBinding.policy.effectivePolicySha256,
