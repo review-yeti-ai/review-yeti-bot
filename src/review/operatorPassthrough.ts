@@ -11,10 +11,35 @@ export type OperatorPassthroughTransport = 'github-app' | 'github-actions-oidc' 
 export type OperatorPassthroughCheckStage = 'review' | 'gate';
 export type OperatorPassthroughCheckState = 'reserved' | 'creating' | 'bound' | 'not-created';
 
-/** A short, admission-local deadline for the paused SHIP receipt path. */
+/** Default short deadline for status reads and non-MCP paused admissions. */
 export const OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS = 1_500;
+/** One authenticated MCP call has a 30-second ceiling; reserve half for candidate resolution and transport overhead. */
+export const OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS = 15_000;
 /** Time reserved inside the parent receipt budget for a confirmed pre-POST reset. */
 export const OPERATOR_PASSTHROUGH_FINALIZE_RESERVE_MS = 300;
+
+export type OperatorPassthroughFailureStage = 'record' | 'review' | 'gate' | 'receipt';
+export type OperatorPassthroughFailureClass =
+  | 'candidate_check'
+  | 'client_preparation'
+  | 'check_reconciliation'
+  | 'check_creation'
+  | 'check_update'
+  | 'unknown_create'
+  | 'preflight_timeout'
+  | 'preflight_reset_unconfirmed'
+  | 'receipt_deadline'
+  | 'identity_mismatch'
+  | 'transport'
+  | 'stale_claim'
+  | 'durable_record_unavailable'
+  | 'receipt_readback';
+
+/** Static, credential-free publication diagnostics. Never include an Error or response body. */
+export interface OperatorPassthroughPublicationFailure {
+  stage: OperatorPassthroughFailureStage;
+  classification: OperatorPassthroughFailureClass;
+}
 
 export interface OperatorPassthroughOperationScope {
   readonly deadlineAtMs: number;
@@ -90,12 +115,12 @@ export async function awaitOperatorPassthroughOperation<T>(
   }
 }
 
-/** Apply the same small budget to all storage and publication steps for one pause receipt. */
+/** Apply one finite budget to all storage and publication steps for one pause receipt. */
 export async function withOperatorPassthroughReceiptBudget<T>(
   operation: (scope: OperatorPassthroughOperationScope) => Promise<T>,
   budgetMs = OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS,
 ): Promise<T> {
-  if (!Number.isSafeInteger(budgetMs) || budgetMs < 1 || budgetMs > OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS) {
+  if (!Number.isSafeInteger(budgetMs) || budgetMs < 1 || budgetMs > OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS) {
     throw new Error('Invalid operator passthrough receipt budget');
   }
   const controller = new AbortController();
@@ -230,6 +255,7 @@ export interface OperatorPassthroughAdmissionReceipt {
   reviewCheckId: number | null;
   gateCheckId: number | null;
   mergeEligible: boolean;
+  publicationFailure?: OperatorPassthroughPublicationFailure;
   message: string;
 }
 

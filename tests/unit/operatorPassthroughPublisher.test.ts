@@ -542,7 +542,7 @@ describe('OperatorPassthroughPublisher', () => {
     }));
   });
 
-  it('records a known client-preparation failure as not-started and exposes no credential detail', async () => {
+  it('records a known client-preparation failure with only a safe stage/class and no credential detail', async () => {
     const publication = claim({ mayCreate: true });
     const f = repositoryFor([publication]);
     const clientFor = vi.fn(async () => { throw new Error(`token preparation failed: ${TOKEN}`); });
@@ -550,8 +550,10 @@ describe('OperatorPassthroughPublisher', () => {
 
     const result = await publisher.runOnce(publication.publicationId);
 
-    expect(result).toMatchObject({ status: 'retry' });
+    expect(result).toMatchObject({ status: 'retry', publicationId: publication.publicationId,
+      failure: { stage: 'review', classification: 'client_preparation' } });
     expect(JSON.stringify(result)).not.toContain(TOKEN);
+    expect(JSON.stringify(result)).not.toContain('token preparation failed');
     expect(f.callbackResults).toEqual([{ kind: 'not-started', retryDelayMs: 5_000 }]);
     expect(f.retryPublication).not.toHaveBeenCalled();
   });
@@ -660,7 +662,8 @@ describe('OperatorPassthroughPublisher', () => {
     const publisher = publisherFor(repository, clientFor);
 
     await expect(publisher.runOnce(publication.publicationId)).resolves.toEqual({ status: 'retry',
-      publicationId: publication.publicationId, preflightResetUnconfirmed: true });
+      publicationId: publication.publicationId, preflightResetUnconfirmed: true,
+      failure: { stage: 'review', classification: 'preflight_reset_unconfirmed' } });
     expect(retryPublication).not.toHaveBeenCalled();
     expect(clientFor).not.toHaveBeenCalled();
   });
@@ -679,7 +682,8 @@ describe('OperatorPassthroughPublisher', () => {
 
     const result = await publisher.runOnce(publication.publicationId);
 
-    expect(result).toEqual({ status: 'retry', publicationId: publication.publicationId });
+    expect(result).toEqual({ status: 'retry', publicationId: publication.publicationId,
+      failure: { stage: 'gate', classification: 'check_update' } });
     expect(JSON.stringify(result)).not.toContain(TOKEN);
     expect(api.fetchImplementation.mock.calls.map(([, init]) => init?.method)).toEqual(['GET', 'PATCH']);
     expect(f.retryPublication).toHaveBeenCalledWith(publication, 1_800_000_000_000, 5_000);

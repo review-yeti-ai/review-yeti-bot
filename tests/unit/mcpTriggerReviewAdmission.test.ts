@@ -215,6 +215,49 @@ describe('trigger_review governed admission', () => {
     });
   });
 
+  it('returns only static publication stage/class diagnostics and never forwards exception detail', async () => {
+    const identity = {
+      owner: 'exampleorg', repo: 'example-api', prNumber: 73,
+      headSha: HEAD_SHA, baseSha: BASE_SHA,
+    };
+    const prepared = { policy: { effectivePolicyDigest: POLICY_DIGEST } };
+    const readCurrentCandidate = vi.fn(async () => ({ repositoryId: 101, owner: 'exampleorg', repo: 'example-api',
+      prNumber: 73, headSha: HEAD_SHA, baseSha: BASE_SHA, open: true, draft: false }));
+    const resolvePolicy = vi.fn(async () => ({ identity, prepared }));
+    const recordOperatorPassthrough = vi.fn(async () => ({
+      status: 'accepted' as const, candidateState: 'current' as const, verdict: 'SHIP' as const,
+      expectedLanes: 0 as const, completedLanes: 0 as const,
+      publicationId: 'f'.repeat(64), auditDigest: 'e'.repeat(64), publicationState: 'pending' as const,
+      publicationReceiptAvailable: true, reviewCheckId: 5_001, gateCheckId: null, mergeEligible: false,
+      publicationFailure: { stage: 'gate' as const, classification: 'preflight_timeout' as const },
+      message: 'Operator pause preserves logical SHIP; publication is pending.',
+    }));
+    const tool = createTriggerReviewTool({
+      passthroughEnabled: true,
+      queryableDatabase: { query: vi.fn(async () => ({ rows: [] })) },
+      admissionRepository: { admit: vi.fn() } as any,
+      resolveGitHubPullRequest: vi.fn(),
+      authoritativePublishing: {
+        expectedAppId: AUTHORITATIVE_REVIEW_APP_ID,
+        repositoryIds: [101],
+        repositoryIdentities: [{ repositoryId: 101, owner: 'exampleorg', repo: 'example-api' }],
+        acceptNewRequests: false,
+        resolver: { readCurrentCandidate, resolve: resolvePolicy },
+        recordOperatorPassthrough,
+      },
+    } as any);
+
+    const result = await tool.execute(request, { authenticatedByConfiguredAuthenticator: true,
+      authorizedRepository: { owner: 'exampleorg', repo: 'example-api' } });
+    const output = JSON.parse((result.content[0] as any).text);
+
+    expect(output).toMatchObject({ publication_state: 'pending', publication_receipt_available: true,
+      review_check_id: 5_001, gate_check_id: null, merge_eligible: false,
+      publication_failure: { stage: 'gate', classification: 'preflight_timeout' } });
+    expect(JSON.stringify(output)).not.toContain('token');
+    expect(JSON.stringify(output)).not.toContain('exception');
+  });
+
   it('returns SHIP before candidate or publication work while paused storage has not initialized', async () => {
     const readCurrentCandidate = vi.fn();
     const resolve = vi.fn();
