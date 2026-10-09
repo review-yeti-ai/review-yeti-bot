@@ -24,7 +24,7 @@ import { composedRuntimeResourcesSchema, type ComposedRuntimeResources } from '.
 import { MAX_TASKS_HARD_CAP, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN, validateTaskPlan, type ReviewTask } from '../reviewTaskContract';
 import { buildDeterministicCoverageManifest, groundedAffectedContextDigest,
   GROUNDED_VERIFICATION_LEGACY_VERSION, GROUNDED_VERIFICATION_VERSION,
-  type AuthenticatedDisputedBlockerV1, type GroundedVerifiedEvidenceV2 } from './groundedReviewEngine';
+  groundedVerifierDiagnosticSchema, type AuthenticatedDisputedBlockerV1, type GroundedVerifiedEvidenceV2 } from './groundedReviewEngine';
 import { groundedCitationManifestDigest, isValidGroundedCitationV2, isValidGroundedSourceWindowV1,
   GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION, GROUNDED_REVIEW_RECEIPT_V2_VERSION,
   GROUNDED_VERIFICATION_V2_VERSION, sha256Bytes, type GroundedCitationV2, type GroundedDependencyEdgeV1,
@@ -391,6 +391,7 @@ const groundedOutcomeV2Schema = z.object({
   title: boundedText(MAX_TITLE_CHARACTERS), claimType: z.enum(['generic', 'absence', 'missing-tests']),
   severity: z.enum(['P0', 'P1', 'P2', 'P3', 'NIT']), candidateSide: z.enum(['head', 'base']).optional(),
   status: z.enum(['confirmed', 'contradicted', 'insufficient']), reason: boundedText(2_000).optional(),
+  diagnostic: groundedVerifierDiagnosticSchema.optional(),
   affectedContextDigest: digest, relatedDiffPaths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).max(13),
   evidenceDigest: digest.optional(), evidence: z.union([groundedConfirmedEvidenceV2Schema, groundedContradictedEvidenceV2Schema]).optional(),
   /** Exact current-head ancestry for the matched lifecycle origins; the Gate joins this to trusted history. */
@@ -410,6 +411,10 @@ const groundedOutcomeV2Schema = z.object({
   }
   if (outcome.status === 'insufficient' && (outcome.evidenceDigest !== undefined || outcome.evidence !== undefined)) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['evidence'], message: 'insufficient outcomes cannot carry verification proof' });
+  }
+  if (outcome.diagnostic !== undefined && outcome.status !== 'insufficient') {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['diagnostic'],
+      message: 'safe verifier diagnostics are only valid for insufficient outcomes' });
   }
   const origins = outcome.verifiedOriginAncestry;
   if (origins && origins.some((origin, index) => index > 0

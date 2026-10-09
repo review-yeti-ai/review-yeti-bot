@@ -1127,6 +1127,10 @@ describe('versioned v2 worker/Gate decision agreement', () => {
       verificationVersion: GROUNDED_VERIFICATION_VERSION, severityPolicyVersion: REVIEW_SEVERITY_POLICY_V2,
       budget: { totalCalls: 12, callsPerTask: 12, concurrency: 1 },
       client: { complete: verifier } as unknown as ReviewModelClient });
+    expect(mixedVerification.outcomes[0]).toMatchObject({ status: 'insufficient', diagnostic: {
+      version: 'GroundedVerifierDiagnostic.v1', stage: 'response',
+      code: 'response_schema_invalid', fieldGroup: 'response_object',
+    } });
     expect(mixedVerification).toMatchObject({ candidates: 25, calls: 12, insufficient: 25,
       unverifiedBlockerCount: 1, coverageComplete: false });
     const mixedApplied = applyGroundedVerificationToPersonas([{ id: 'security', findings: [p1Finding, ...findings.slice(1)] }],
@@ -1148,6 +1152,10 @@ describe('versioned v2 worker/Gate decision agreement', () => {
       verification: { ...mixedVerification, outcomes: mixedVerification.outcomes.map(({ reason: _reason, scopeDecision: _scope,
         ...outcome }) => outcome) },
     } as any;
+    const serializedOutcomes = (mixedLegacy.result.groundedReview as any).verification.outcomes;
+    expect(serializedOutcomes[0]).toHaveProperty('diagnostic.code', 'response_schema_invalid');
+    expect(serializedOutcomes[0]).not.toHaveProperty('reason');
+    expect(JSON.stringify(serializedOutcomes)).not.toContain('The source does not establish this advisory.');
     const genuineIncompleteP1 = derive(mixedLegacy, { ...v2Contract, changedFiles: admittedFiles });
     expect(genuineIncompleteP1, JSON.stringify(genuineIncompleteP1)).toMatchObject({ valid: true,
       evidence: { coverageComplete: false, verdict: 'BLOCK', reviewDecision: { eligible: false } } });

@@ -562,9 +562,27 @@ describe('grounded review engine', () => {
   });
 
   it.each([
-    { label: 'forged compact citation alias', response: JSON.stringify({ status: 'confirmed', citations: ['e999'] }) },
-    { label: 'oversized truncated response', response: `${JSON.stringify({ status: 'insufficient', citations: [] })}${' '.repeat(6_001)}` },
-  ])('keeps a v2 $label insufficient without proof', async ({ response }) => {
+    { label: 'explicit insufficient answer', response: JSON.stringify({ status: 'insufficient', citations: [] }),
+      diagnostic: { version: 'GroundedVerifierDiagnostic.v1', stage: 'response',
+        code: 'model_reported_insufficient', fieldGroup: 'status' } },
+    { label: 'invalid JSON', response: '{not-json', diagnostic: { version: 'GroundedVerifierDiagnostic.v1',
+      stage: 'response', code: 'response_invalid_json', fieldGroup: 'json' } },
+    { label: 'unsupported response schema', response: JSON.stringify({ status: 'insufficient', citations: [], hiddenReason: 'model text' }),
+      diagnostic: { version: 'GroundedVerifierDiagnostic.v1', stage: 'response',
+        code: 'response_schema_invalid', fieldGroup: 'response_object' } },
+    { label: 'forged compact citation alias', response: JSON.stringify({ status: 'confirmed', citations: ['e999'] }),
+      diagnostic: { version: 'GroundedVerifierDiagnostic.v1', stage: 'response',
+        code: 'citation_alias_invalid', fieldGroup: 'citations' } },
+    { label: 'missing candidate counterpart and differential', response: JSON.stringify({ status: 'confirmed', citations: ['e1'] }),
+      diagnostic: { version: 'GroundedVerifierDiagnostic.v1', stage: 'response',
+        code: 'candidate_evidence_missing', fieldGroup: 'candidate_and_diff_citations' } },
+    { label: 'confirmation missing required fields', response: JSON.stringify({ status: 'confirmed', citations: ['e1', 'e2', 'e3'] }),
+      diagnostic: { version: 'GroundedVerifierDiagnostic.v1', stage: 'response',
+        code: 'confirmation_fields_missing', fieldGroup: 'confirmation_fields' } },
+    { label: 'oversized truncated response', response: `${JSON.stringify({ status: 'insufficient', citations: [] })}${' '.repeat(6_001)}`,
+      diagnostic: { version: 'GroundedVerifierDiagnostic.v1', stage: 'response',
+        code: 'response_size_limit', fieldGroup: 'response_body' } },
+  ])('keeps a v2 $label insufficient without proof and retains only a safe diagnostic', async ({ response, diagnostic }) => {
     const path = 'src/alias.ts';
     const previous = 'oldOperation();\n';
     const current = 'newOperation();\n';
@@ -580,12 +598,66 @@ describe('grounded review engine', () => {
     const result = await runIndependentGroundedVerification({ findings: [{ severity: 'P1', path, line: 1,
       title: 'Unsafe changed call' }], changedFiles, provider, repository, headSha: head, baseSha: base,
       verificationVersion: GROUNDED_VERIFICATION_VERSION, model: 'test-model', client: { complete } as unknown as ReviewModelClient });
-    expect(result.outcomes[0]).toMatchObject({ status: 'insufficient' });
+    expect(result.outcomes[0]).toMatchObject({ status: 'insufficient', diagnostic });
     expect(result.outcomes[0]?.evidence).toBeUndefined();
     expect(result.unverifiedBlockerCount).toBe(1);
     expect(result.coverageComplete).toBe(false);
     expect(result.calls).toBe(1);
     expect(complete).toHaveBeenCalledOnce();
+    expect(JSON.stringify(result.outcomes[0]?.diagnostic)).not.toContain('hiddenReason');
+    expect(JSON.stringify(result.outcomes[0]?.diagnostic)).not.toContain('model text');
+  });
+
+  it('records source-fetch failures without spending verifier calls or retaining error text', async () => {
+    const path = 'src/consumer.ts';
+    const previous = 'export function run() { return oldValue(); }\n';
+    const current = 'export function run() { return newValue(); }\n';
+    const changedPatch = '@@ -1 +1 @@\n-export function run() { return oldValue(); }\n+export function run() { return newValue(); }\n';
+    const failedFetchProvider: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      readFileAt: async () => { throw new Error('private source fetch detail'); },
+      readDiff: () => ({ patch: changedPatch, identity: { repository, headSha: head, baseSha: base } }),
+    };
+    const sourceFetch = await runIndependentGroundedVerification({
+      findings: [{ severity: 'P1', path, line: 1, title: 'Changed source claim' }],
+      changedFiles: [{ path, patch: changedPatch }], provider: failedFetchProvider, repository, headSha: head, baseSha: base,
+      model: 'test-model', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      client: { complete: vi.fn() } as unknown as ReviewModelClient,
+    });
+    expect(sourceFetch).toMatchObject({ calls: 0, coverageComplete: false, outcomes: [{ status: 'insufficient',
+      diagnostic: { version: 'GroundedVerifierDiagnostic.v1', stage: 'source',
+        code: 'source_fetch_failed', fieldGroup: 'source_snapshot' } }] });
+    expect(JSON.stringify(sourceFetch.outcomes[0]?.diagnostic)).not.toContain('private source fetch detail');
+
+  });
+
+  it('records bounded source-prefetch budget exhaustion without spending verifier calls', async () => {
+    const path = 'src/security.ts';
+    const oldDefinition = 'export function authorize(request: Request) { return request.session !== null; }\n';
+    const importedPatch = `diff --git a/${path} b/${path}\ndeleted file mode 100644\n--- a/${path}\n+++ /dev/null\n@@ -1 +0,0 @@\n-${oldDefinition}`;
+    const changedFile = parseChangedFiles(importedPatch, { repository, headSha: head, baseSha: base }).files[0]!;
+    const providerWithMissingImports: RepoFileProvider = {
+      findFiles: async () => [], readFile: async () => null,
+      findReferences: async (symbol, sourcePath, side) => ({ version: 'PinnedSourceReferenceSearch.v1',
+        repository, sourcePath, symbol, side, revisionSha: head, candidatePaths: [], searchComplete: false, scannedFileCount: 13,
+        scannedBytes: 1, reason: 'scan_file_limit' }),
+      readFileAt: async (requestedPath, side) => requestedPath === path
+        ? { content: side === 'head' ? null : oldDefinition, sha: side === 'head' ? head : base,
+          presence: side === 'head' ? 'absent' : 'present', source: { repository, path: requestedPath, side } }
+        : { content: null, sha: side === 'head' ? head : base, presence: 'absent',
+          source: { repository, path: requestedPath, side } },
+      readDiff: (requestedPath) => requestedPath === path
+        ? { patch: importedPatch, identity: { repository, headSha: head, baseSha: base } } : null,
+    };
+    const prefetch = await runIndependentGroundedVerification({
+      findings: [{ severity: 'P1', path, line: 1, title: 'Deleted source export' }],
+      changedFiles: [changedFile], provider: providerWithMissingImports, repository,
+      headSha: head, baseSha: base, model: 'test-model', verificationVersion: GROUNDED_VERIFICATION_VERSION,
+      client: { complete: vi.fn() } as unknown as ReviewModelClient,
+    });
+    expect(prefetch).toMatchObject({ calls: 0, coverageComplete: false, outcomes: [{ status: 'insufficient',
+      diagnostic: { version: 'GroundedVerifierDiagnostic.v1', stage: 'source',
+        code: 'source_prefetch_budget_exhausted', fieldGroup: 'import_resolution_budget' } }] });
   });
 
   it('spends only the verifier partition of the shared physical request budget', async () => {

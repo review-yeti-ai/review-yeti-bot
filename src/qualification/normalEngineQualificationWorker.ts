@@ -801,13 +801,21 @@ function qualificationGroundedVerification(
   if (!grounded || grounded.version !== GROUNDED_REVIEW_RECEIPT_V2_VERSION
     || grounded.semanticsVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION
     || grounded.verification.semanticsVersion !== GROUNDED_REVIEW_EVIDENCE_SEMANTICS_VERSION) {
-    return { evidenceSemanticsVersion: null, callCount: null, outcomeCount: null, coverageComplete: null, routeReceipts: [] };
+    return { evidenceSemanticsVersion: null, callCount: null, outcomeCount: null, coverageComplete: null,
+      diagnostics: [], routeReceipts: [] };
   }
   return {
     evidenceSemanticsVersion: grounded.semanticsVersion,
     callCount: grounded.verification.calls,
     outcomeCount: grounded.verification.outcomes.length,
     coverageComplete: grounded.verification.coverageComplete,
+    diagnostics: grounded.verification.outcomes.flatMap((outcome) => outcome.status === 'insufficient' && outcome.diagnostic ? [{
+      candidateFingerprintSha256: createHash('sha256').update(outcome.fingerprint).digest('hex'),
+      path: outcome.path,
+      severity: outcome.severity,
+      status: 'insufficient' as const,
+      diagnostic: outcome.diagnostic,
+    }] : []).sort((left, right) => left.candidateFingerprintSha256.localeCompare(right.candidateFingerprintSha256)),
     routeReceipts: grounded.verification.outcomes.flatMap((outcome) => outcome.verifierRoute ? [{
       findingFingerprint: outcome.fingerprint,
       path: outcome.path,
