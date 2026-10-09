@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.124.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.123.0...v1.124.0) (2026-10-09)
+
+
+### Features
+
+* **qualification:** retain safe verifier diagnostics ([#1471](https://github.com/review-yeti-ai/review-yeti-bot/issues/1471)) ([6f5b43f](https://github.com/review-yeti-ai/review-yeti-bot/commit/6f5b43fb3b12f7f2f2515ca1a3d92178c9d3e12a))
+
 ## [1.123.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.122.8...v1.123.0) (2026-10-09)
 
 
