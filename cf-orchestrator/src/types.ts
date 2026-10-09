@@ -85,6 +85,8 @@ export interface Env {
   GITHUB_APP_PRIVATE_KEY?: string;
   REVIEW_YETI_MCP_AUTH_TOKEN?: string;
   GITHUB_TOKEN?: string;
+  OPERATOR_GLOBAL_PASSTHROUGH?: string;
+  ACTION_DISPATCH_ALLOW_APP_GATE?: string;
 }
 
 export type ReviewStage =

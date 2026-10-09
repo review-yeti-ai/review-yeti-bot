@@ -6,9 +6,10 @@ import type { DebounceMessagePayload, Env, ReviewRunSpec } from './types.js';
 import { purgeExpiredR2WorkspaceCaches } from './runners/r2WorkspaceCache.js';
 import { defaultMcpRouter, constantTimeEquals } from './mcp/mcpRouter.js';
 import { handleDashboardApi } from './api/dashboardRoutes.js';
+import { handleActionDispatch } from './api/actionDispatchRoute.js';
 
 export { RepoGateDO, ReviewRunDO, ReviewJobWorkflow, handleMergeGroupAttestation };
-export { defaultMcpRouter, handleDashboardApi };
+export { defaultMcpRouter, handleDashboardApi, handleActionDispatch };
 
 /**
  * Validates whether a given repository full name is included in the pilot scope.
@@ -245,6 +246,15 @@ export default {
         const runDOId = env.REVIEW_RUN.idFromName(runId);
         const runDO = env.REVIEW_RUN.get(runDOId);
         return await runDO.fetch('http://do/status');
+      }
+
+      // GitHub Actions OIDC Action Dispatch: /api/dispatch/action, /action, /api/qualification/dispatch/action
+      if (
+        url.pathname === '/api/dispatch/action' ||
+        url.pathname === '/action' ||
+        url.pathname === '/api/qualification/dispatch/action'
+      ) {
+        return await handleActionDispatch(request, env, ctx);
       }
 
       // Maintenance endpoint: Purge expired R2 workspace cache (>1 hour old)
