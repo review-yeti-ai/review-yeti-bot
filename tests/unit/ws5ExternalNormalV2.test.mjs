@@ -15,6 +15,9 @@ const runnerUrl = pathToFileURL(new URL('../../scripts/ws5-external-normal-v2.mj
 const runner = await import(runnerUrl.href).catch(() => null);
 const r2PlanBytes = await readFile(new URL('../fixtures/qualification/ws5-r2-cohort-plan.json', import.meta.url));
 const r2PlanTemplate = JSON.parse(r2PlanBytes.toString('utf8'));
+const R2_RUNTIME_SOURCE_REVISION = 'f8a07165a478b499536f55a80f0003b8540eaed0';
+const R2_HELPER_SOURCE_SHA256 = '4ab88f14b6dc7e263b866ae56715d41d25f3ae716b32429f6e92eb991504f4c3';
+const R2_HELPER_COMPILED_SHA256 = '972c1687e4d24f30352fbe464e4f420461aa2a48dbfab69636b24de9f1fd621d';
 const require = createRequire(import.meta.url);
 const loadedHostAdapter = require('../../dist/qualification/normalEngineQualificationExternalV2.js');
 await import('./ws5ExternalNormalR2Plan.test.mjs');
@@ -58,7 +61,7 @@ function routeIdentityFixture() {
 
 const fixtureBytes = (value) => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
 
-async function createCoordinatorHarness(repositoryRoot, { r2Cases } = {}) {
+async function createCoordinatorHarness(repositoryRoot, { r2Cases, runtimeSourceRevision } = {}) {
   const { plan: frozenTemplate, bundle, planSha256 } = await runner.readFrozenExternalNormalV2Plan(repositoryRoot);
   const r2Targets = new Map((r2Cases ?? []).map((entry) => [entry.repository.repositoryId, entry]));
   const template = r2Targets.size === 0 ? frozenTemplate : {
@@ -83,7 +86,8 @@ async function createCoordinatorHarness(repositoryRoot, { r2Cases } = {}) {
   const sourceDescriptor = { repository: 'exampleorg/review-policy-fixture', repositoryId: 73,
     sourceRef: 'b'.repeat(40), path: 'policy/candidate.json', candidateHead: 'd'.repeat(40),
     preparedFixtureReviewHead: 'e'.repeat(40) };
-  const runtime = { finalSourceRevision: template.runtime.preparedConfigHelperSourceRevision,
+  const helperSourceRevision = runtimeSourceRevision ?? template.runtime.preparedConfigHelperSourceRevision;
+  const runtime = { finalSourceRevision: helperSourceRevision,
     workerImageDigest: `sha256:${'1'.repeat(64)}`, runtimeManifestSha256: '2'.repeat(64),
     publicationAttestationSha256: '3'.repeat(64) };
   const candidateBytes = fixtureBytes({ schema: 'exampleorg.review-policy.v1' });
@@ -116,7 +120,7 @@ async function createCoordinatorHarness(repositoryRoot, { r2Cases } = {}) {
     candidate_policy: { repository: sourceDescriptor.repository, repository_id: sourceDescriptor.repositoryId,
       source_sha: sourceDescriptor.sourceRef, path: sourceDescriptor.path, content_sha256: candidateRawSha256 },
     prepared_by: { repository: 'review-yeti-ai/review-yeti-bot',
-      source_sha: template.runtime.preparedConfigHelperSourceRevision, helper: 'preparePublishingPolicy',
+      source_sha: helperSourceRevision, helper: 'preparePublishingPolicy',
       helper_path: 'src/review/preparedPublishingPolicy.ts',
       helper_source_file_sha256: template.runtime.preparedConfigHelperSourceFileSha256,
       helper_compiled_file_sha256: template.runtime.preparedConfigHelperCompiledFileSha256,
@@ -152,7 +156,7 @@ async function createCoordinatorHarness(repositoryRoot, { r2Cases } = {}) {
       source_sha: sourceDescriptor.sourceRef, content_sha256: candidateRawSha256 },
     helper: { repository: 'review-yeti-ai/review-yeti-bot', helper: 'preparePublishingPolicy',
       helper_path: 'src/review/preparedPublishingPolicy.ts',
-      source_sha: template.runtime.preparedConfigHelperSourceRevision,
+      source_sha: helperSourceRevision,
       source_file_sha256: template.runtime.preparedConfigHelperSourceFileSha256,
       compiled_file_sha256: template.runtime.preparedConfigHelperCompiledFileSha256 },
     transport: { provider: 'bifrost', baseUrl: transport.selectedBaseUrl, model: transport.modelAlias },
@@ -388,7 +392,8 @@ test('R2 parent entry validates the v3 cohort and rejects an invalid grant befor
   const bundleRelative = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3';
   const sourceBundlePath = path.join(repositoryRoot, bundleRelative, 'source-bundle.json');
   const sourceBundle = JSON.parse(await readFile(sourceBundlePath, 'utf8'));
-  const harness = await createCoordinatorHarness(repositoryRoot, { r2Cases: sourceBundle.cases });
+  const harness = await createCoordinatorHarness(repositoryRoot, { r2Cases: sourceBundle.cases,
+    runtimeSourceRevision: R2_RUNTIME_SOURCE_REVISION });
   const executionPlanSha256 = runner.sha256(r2PlanBytes);
   assert.equal(executionPlanSha256, '37fcfc37440e249e97b892186c2a0683b31654a540e146232ec579012160c233');
   let callbacks = 0;
@@ -420,6 +425,14 @@ test('R2 parent entry validates the v3 cohort and rejects an invalid grant befor
     assert.equal(prepared.authorizationTuple.inputManifestSha256,
       'fa792e36e552e025b9756a3d7ab58bc02db31f5d51b52156ec76d9be1500649f');
     assert.equal(prepared.authorizationTuple.privateBindingSha256, runner.sha256(runner.canonicalJson(harness.binding)));
+    const preparedFixture = JSON.parse(await readFile(path.join(harness.policyInputRoot,
+      'review-yeti-v2-prepared-execution-host.fixture.json'), 'utf8'));
+    const preparedManifest = JSON.parse(await readFile(path.join(harness.policyInputRoot,
+      'review-yeti-v2-prepared-execution-host.manifest.json'), 'utf8'));
+    assert.equal(preparedFixture.prepared_by.source_sha, R2_RUNTIME_SOURCE_REVISION);
+    assert.equal(preparedManifest.helper.source_sha, R2_RUNTIME_SOURCE_REVISION);
+    assert.equal(preparedManifest.helper.source_file_sha256, R2_HELPER_SOURCE_SHA256);
+    assert.equal(preparedManifest.helper.compiled_file_sha256, R2_HELPER_COMPILED_SHA256);
     const now = Date.now();
     const rootGo = { schemaVersion: runner.EXTERNAL_NORMAL_R2_ROOT_GO_SCHEMA, rootGo: true,
       grantId: randomUUID(), issuedAt: new Date(now - 1_000).toISOString(),
@@ -470,7 +483,8 @@ test('R2 runner joins a failed loaded-worker sidecar through the exact R2 collec
   const repositoryRoot = new URL('../../', import.meta.url).pathname;
   const bundleRelative = 'eval-baselines/competitive-review-benchmark/ws5-external-normal-v3';
   const sourceBundle = JSON.parse(await readFile(path.join(repositoryRoot, bundleRelative, 'source-bundle.json'), 'utf8'));
-  const harness = await createCoordinatorHarness(repositoryRoot, { r2Cases: sourceBundle.cases });
+  const harness = await createCoordinatorHarness(repositoryRoot, { r2Cases: sourceBundle.cases,
+    runtimeSourceRevision: R2_RUNTIME_SOURCE_REVISION });
   const syntheticRows = Array.from({ length: 25 }, () => ({ callerRequestId: randomUUID(),
     bifrostLogRequestId: null, upstreamResponseRequestId: null }));
   for (const row of syntheticRows) row.bifrostLogRequestId = row.callerRequestId;
@@ -739,6 +753,25 @@ test('pins prepared helper provenance to the exact source revision and bytes adm
   } }, boundPlan), false);
   assert.equal(runner.preparedConfigHelperProvenanceMatchesPlan(preparedManifest, { ...boundPlan,
     runtime: { ...boundPlan.runtime, finalSourceRevision: 'b'.repeat(40) } }), false);
+
+  const r2BoundPlan = { ...plan, runtime: { ...plan.runtime,
+    finalSourceRevision: R2_RUNTIME_SOURCE_REVISION,
+    preparedConfigHelperSourceRevision: R2_RUNTIME_SOURCE_REVISION } };
+  const r2PreparedManifest = { helper: { ...preparedManifest.helper,
+    source_sha: R2_RUNTIME_SOURCE_REVISION } };
+  assert.equal(runner.preparedConfigHelperProvenanceMatchesPlan(r2PreparedManifest, r2BoundPlan), true);
+  assert.equal(runner.preparedConfigHelperProvenanceMatchesPlan({ helper: {
+    ...r2PreparedManifest.helper, source_file_sha256: '54f90267c4e97ae5ec50d77e7241151e0d81f156305ad031326cea1c34535bb0',
+  } }, r2BoundPlan), false);
+  assert.equal(runner.preparedConfigHelperProvenanceMatchesPlan({ helper: {
+    ...r2PreparedManifest.helper, compiled_file_sha256: '0'.repeat(64),
+  } }, r2BoundPlan), false);
+  assert.equal(runner.preparedConfigHelperProvenanceMatchesPlan({ helper: {
+    ...r2PreparedManifest.helper, source_sha: 'a755abe90455b2b729c3f2eeaa5367481a90f7f3',
+  } }, r2BoundPlan), false);
+  assert.equal(runner.preparedConfigHelperProvenanceMatchesPlan({ helper: {
+    ...r2PreparedManifest.helper, source_file_sha256: '0'.repeat(64),
+  } }, r2BoundPlan), false);
 });
 
 test('ships only the exact pinned v2 and v3 source inputs into the worker image', async () => {

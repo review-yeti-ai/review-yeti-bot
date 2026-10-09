@@ -36,6 +36,8 @@ const HISTORICAL_PHYSICAL_ATTEMPTS = 150;
 const R2_PHASE_CLIENT_CALL_LIMIT = 275;
 const R2_PRIOR_COHORT_CLIENT_CALLS = 25;
 const R2_HISTORICAL_PHYSICAL_ATTEMPTS = HISTORICAL_PHYSICAL_ATTEMPTS + R2_PRIOR_COHORT_CLIENT_CALLS;
+const R2_PREPARED_CONFIG_HELPER_SOURCE_FILE_SHA256 = '4ab88f14b6dc7e263b866ae56715d41d25f3ae716b32429f6e92eb991504f4c3';
+const R2_PREPARED_CONFIG_HELPER_COMPILED_FILE_SHA256 = '972c1687e4d24f30352fbe464e4f420461aa2a48dbfab69636b24de9f1fd621d';
 const NORMAL_ARM_MS = 240_000;
 const CAPTURE_RESERVE_MS = 300_000;
 const RESERVED_OVERHEAD_MS = 180_000;
@@ -786,6 +788,11 @@ const R2_ASSESSMENT_STEP_IDS = Object.freeze({
 
 function createExternalNormalR2ExecutionPlan(template, admitted, bundle, privateBinding, routeIdentity) {
   const bound = bindExternalNormalV2PrivateInputs(template, privateBinding, routeIdentity);
+  if (bound.runtime.preparedConfigHelperSourceFileSha256 !== R2_PREPARED_CONFIG_HELPER_SOURCE_FILE_SHA256
+    || bound.runtime.preparedConfigHelperCompiledFileSha256 !== R2_PREPARED_CONFIG_HELPER_COMPILED_FILE_SHA256) {
+    throw new Error('external_normal_r2_prepared_config_helper_bytes_invalid');
+  }
+  const runtime = { ...bound.runtime, preparedConfigHelperSourceRevision: bound.runtime.finalSourceRevision };
   const casesByRepository = new Map();
   for (const entry of admitted.cases) {
     if (!casesByRepository.has(entry.repository.repositoryId)) {
@@ -834,6 +841,7 @@ function createExternalNormalR2ExecutionPlan(template, admitted, bundle, private
   const runs = admitted.runs;
   return {
     ...bound,
+    runtime,
     phaseId: admitted.phaseId,
     status: 'frozen-ready-awaiting-root-go',
     dispatchAuthorization: false,
