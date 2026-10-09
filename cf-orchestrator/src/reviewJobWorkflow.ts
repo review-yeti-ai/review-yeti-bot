@@ -4,6 +4,7 @@ import type { Env, ReviewRunSpec } from './types.js';
 import { type ContainerRunner, CloudflareContainerRunner } from './runners/containerRunner.js';
 import { DigitalOceanAgentRunner } from './runners/digitalOceanAgentRunner.js';
 import type { RunnerCostDetails } from './runners/runnerCost.js';
+import { publishOperatorPassthrough } from './operatorPassthroughPublisher.js';
 import {
   buildGitHubReviewPayload,
   createPendingChecks,
@@ -152,6 +153,15 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
     const spec = event.payload;
     const { runId, owner, repo, prNumber, headSha, baseSha } = spec;
     const repoKey = `${owner}/${repo}`.toLowerCase();
+
+    const pauseMode = this.env.OPERATOR_GLOBAL_PASSTHROUGH;
+    if (pauseMode !== 'false') {
+      const config = { timeout: '2 minutes', retries: { limit: 0, delay: '1 second' } };
+      const stepName = pauseMode === 'true' ? 'operator-passthrough-publication' : 'operator-passthrough-config-unavailable';
+      return await step.do(stepName, config, async () =>
+        publishOperatorPassthrough(this.env, spec)
+      );
+    }
 
     // Step 1: Mint scoped GitHub token (checks:write only)
     const tokenInfo = await step.do('mint-scoped-token', async () => {
@@ -309,7 +319,7 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
       try {
         containerOutcome = await step.do(
           'dispatch-container',
-          { timeout: '25 minutes', retries: { limit: 0 } },
+          { timeout: '25 minutes', retries: { limit: 0, delay: '1 second' } },
           async () => {
             const workerImage = spec.workerImage || this.env.DEFAULT_WORKER_IMAGE;
             // The operator endpoint is deployment-owned, not a tenant-specific

@@ -1,10 +1,330 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { ReviewJobWorkflow } from '../src/reviewJobWorkflow.js';
 import { MockContainerRunner, CloudflareContainerRunner } from '../src/runners/containerRunner.js';
 import { DigitalOceanAgentRunner } from '../src/runners/digitalOceanAgentRunner.js';
-import { createMockEnv } from './mockDurableObject.js';
+import { ReviewRunDO } from '../src/reviewRunDO.js';
+import {
+  REVIEW_GATE_CHECK_NAME,
+  REVIEW_WORKER_CHECK_NAME,
+  deriveGateExternalId,
+  deriveWorkerExternalId,
+} from '../src/github/edgeCheckPublisher.js';
+import { createMockEnv, MockDurableObjectState } from './mockDurableObject.js';
+import { reviewRunSpecDigest } from '../src/reviewRunIdentity.js';
 import type { ReviewRunSpec } from '../src/types.js';
+
+function assertCloudflareStepConfig(name: string, config: any): void {
+  if (config?.retries && !Object.hasOwn(config.retries, 'delay')) {
+    throw new Error(`Step config for ${name} is invalid: retries.delay is required`);
+  }
+}
+
+function createOperatorPauseSpec(): ReviewRunSpec {
+  return {
+    runId: 'run_operator_pause_fixture',
+    owner: 'exampleorg',
+    repo: 'sample-project',
+    prNumber: 7,
+    headSha: 'a'.repeat(40),
+    baseSha: 'b'.repeat(40),
+    installationId: 42,
+  };
+}
+
+function installOperatorPauseGitHubMock(options: { appId?: number; headSha?: string; priorChecks?: any[]; reviews?: any[] } = {}) {
+  const originalFetch = globalThis.fetch;
+  const timeline: string[] = [];
+  const requests: Array<{ method: string; path: string; body: any }> = [];
+  const checks = new Map<number, any>((options.priorChecks || []).map((check) => [check.id, check]));
+  const expectedAppId = options.appId ?? 12345;
+  let nextId = 701;
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const method = init?.method || 'GET';
+    const body = init?.body ? JSON.parse(String(init.body)) : {};
+    requests.push({ method, path: url.pathname, body });
+
+    if (url.pathname === '/repos/exampleorg/sample-project/pulls/7' && method === 'GET') {
+      timeline.push('get-current-pr');
+      return Response.json({
+        state: 'open',
+        draft: false,
+        head: { sha: options.headSha ?? 'a'.repeat(40) },
+        base: { sha: 'b'.repeat(40), ref: 'main' },
+      });
+    }
+
+    if (url.pathname === `/repos/exampleorg/sample-project/commits/${options.headSha ?? 'a'.repeat(40)}/check-runs` && method === 'GET') {
+      timeline.push('list-current-head-checks');
+      const priorChecks = options.priorChecks || [];
+      return Response.json({ total_count: priorChecks.length, check_runs: priorChecks });
+    }
+    if (url.pathname === '/repos/exampleorg/sample-project/pulls/7/reviews' && method === 'GET') {
+      timeline.push('list-current-pr-reviews');
+      return Response.json(options.reviews || []);
+    }
+
+    if (url.pathname === '/repos/exampleorg/sample-project/check-runs' && method === 'POST') {
+      const id = nextId++;
+      const check = { ...body, id, app: { id: expectedAppId } };
+      checks.set(id, check);
+      timeline.push(`create:${check.name}`);
+      return Response.json(check);
+    }
+
+    const checkMatch = url.pathname.match(/\/check-runs\/(\d+)$/u);
+    if (checkMatch) {
+      const id = Number(checkMatch[1]);
+      const current = checks.get(id);
+      if (method === 'GET') {
+        timeline.push(`read:${current?.name || id}:${current?.status || 'missing'}`);
+        return current ? Response.json(current) : new Response('Not Found', { status: 404 });
+      }
+      if (method === 'PATCH' && current) {
+        Object.assign(current, body);
+        timeline.push(`patch:${current.name}:${body.conclusion}`);
+        return Response.json(current);
+      }
+    }
+
+    if (url.pathname.includes('/issues/') && url.pathname.endsWith('/comments')) {
+      if (method === 'GET') return Response.json([]);
+      if (method === 'POST') return Response.json({ id: 703 });
+    }
+    if (url.pathname.endsWith('/pulls/7/reviews') && method === 'POST') {
+      return Response.json({ id: 704 });
+    }
+
+    return Response.json({});
+  }) as typeof fetch;
+
+  return {
+    checks,
+    requests,
+    timeline,
+    restore: () => { globalThis.fetch = originalFetch; },
+  };
+}
+
+function captureReviewRunReceipt(env: any, timeline: string[], failPrepared = false, events: any[] = []) {
+  const original = env.REVIEW_RUN;
+  let receipt: any;
+  env.REVIEW_RUN = {
+    idFromName: original.idFromName,
+    get: (id: string) => {
+      const stub = original.get(id);
+      return {
+        fetch: async (url: string, init?: RequestInit) => {
+          const path = new URL(url).pathname;
+          const body = init?.body ? JSON.parse(String(init.body)) : {};
+          if (path === '/events') {
+            timeline.push(`do-event:${body.type}`);
+            events.push(body);
+            if (failPrepared && body.type === 'operator_passthrough_prepared') {
+              return Response.json({ error: 'fixture storage unavailable' }, { status: 503 });
+            }
+          }
+          if (path === '/receipt') {
+            receipt = body.receipt;
+            timeline.push(`do-receipt:${receipt?.publicationState || 'missing'}`);
+          }
+          return stub.fetch(url, init);
+        },
+      };
+    },
+  };
+  return () => receipt;
+}
+
+async function installPriorRunWitness(
+  env: any,
+  spec: ReviewRunSpec,
+  runId: string,
+  workflowStatus: any,
+  terminalReceiptSummary: any
+) {
+  const original = env.REVIEW_RUN;
+  const specDigest = await reviewRunSpecDigest({ ...spec, runId });
+  env.REVIEW_RUN = {
+    idFromName: original.idFromName,
+    get: (id: string) => {
+      if (id !== runId) return original.get(id);
+      return {
+        fetch: async (url: string) => {
+          if (new URL(url).pathname !== '/status') return new Response('Not Found', { status: 404 });
+          return Response.json({
+            runId,
+            owner: spec.owner,
+            repo: spec.repo,
+            prNumber: spec.prNumber,
+            headSha: spec.headSha,
+            specDigest,
+            phase: terminalReceiptSummary.status === 'failed' ? 'Failed' : 'Running',
+            isCurrentHead: true,
+            cancelRequested: false,
+            terminalReceiptSummary,
+          });
+        },
+      };
+    },
+  };
+  env.REVIEW_JOB_WORKFLOW = {
+    get: async (id: string) => {
+      if (id !== runId) throw new Error('unknown workflow instance');
+      return { status: async () => workflowStatus };
+    },
+  };
+}
+
+async function createPriorFailedCheckPair(spec: ReviewRunSpec, runId: string) {
+  return [
+    {
+      id: 601,
+      name: REVIEW_WORKER_CHECK_NAME,
+      head_sha: spec.headSha,
+      status: 'completed',
+      conclusion: 'failure',
+      external_id: deriveWorkerExternalId(runId, 1),
+      app: { id: 12345 },
+      output: { annotations_count: 0 },
+    },
+    {
+      id: 602,
+      name: REVIEW_GATE_CHECK_NAME,
+      head_sha: spec.headSha,
+      status: 'completed',
+      conclusion: 'failure',
+      external_id: await deriveGateExternalId({
+        owner: spec.owner,
+        repo: spec.repo,
+        headSha: spec.headSha,
+        runId,
+        executionAttempt: 1,
+      }),
+      app: { id: 12345 },
+      output: { annotations_count: 0 },
+    },
+  ];
+}
+
+async function runOperatorPauseWithPriorOutcome(options: {
+  workflowStatus: any;
+  terminalReceiptSummary: any;
+  reviews?: any[];
+  activeChecks?: boolean;
+  activeGate?: boolean;
+  omitChecks?: boolean;
+}) {
+  const spec = createOperatorPauseSpec();
+  const priorRunId = `run_${'c'.repeat(32)}`;
+  const priorChecks = options.omitChecks ? [] : await createPriorFailedCheckPair(spec, priorRunId);
+  if (options.activeChecks) {
+    for (const check of priorChecks) {
+      check.status = 'in_progress';
+      delete (check as any).conclusion;
+    }
+  }
+  const env = {
+    ...createMockEnv(),
+    OPERATOR_GLOBAL_PASSTHROUGH: 'true',
+    PILOT_REPOSITORIES: 'exampleorg/sample-project',
+    GITHUB_APP_ID: '12345',
+    GITHUB_TOKEN: 'fixture-auth-value',
+  };
+  const repoGate = env.REPO_GATE.get(env.REPO_GATE.idFromName(`${spec.owner}/${spec.repo}`.toLowerCase()));
+  await repoGate.fetch('http://do/acquire', {
+    method: 'POST',
+    body: JSON.stringify({ runId: priorRunId, headSha: spec.headSha, prNumber: spec.prNumber }),
+  });
+  if (!options.activeGate) {
+    await repoGate.fetch('http://do/release', {
+      method: 'POST',
+      body: JSON.stringify({ runId: priorRunId }),
+    });
+  }
+  await installPriorRunWitness(env, spec, priorRunId, options.workflowStatus, options.terminalReceiptSummary);
+  const api = installOperatorPauseGitHubMock({ priorChecks, reviews: options.reviews });
+  const runner = new MockContainerRunner();
+  const workflow = new ReviewJobWorkflow(env, runner);
+  const receipt = captureReviewRunReceipt(env, api.timeline);
+  const mockStep = {
+    async do(_name: string, arg2: any, arg3?: any) {
+      return (typeof arg2 === 'function' ? arg2 : arg3)();
+    },
+    async sleep() {},
+  };
+  try {
+    const result = await workflow.run({ payload: spec }, mockStep as any);
+    return { result, receipt: receipt(), api, runner, spec, priorRunId };
+  } catch (error) {
+    api.restore();
+    throw error;
+  }
+}
+
+async function runOperatorPauseWithCurrentTerminalOutcome() {
+  const spec = createOperatorPauseSpec();
+  const env = {
+    ...createMockEnv(),
+    OPERATOR_GLOBAL_PASSTHROUGH: 'true',
+    PILOT_REPOSITORIES: 'exampleorg/sample-project',
+    GITHUB_APP_ID: '12345',
+    GITHUB_TOKEN: 'fixture-auth-value',
+  };
+  const originalRunBinding = env.REVIEW_RUN;
+  const instance = new ReviewRunDO(new MockDurableObjectState() as any, env);
+  const currentRunStub = {
+    fetch: async (url: string, init?: RequestInit) => instance.fetch(new Request(url, init)),
+  };
+  env.REVIEW_RUN = {
+    idFromName: originalRunBinding.idFromName,
+    get: (id: string) => id === spec.runId ? currentRunStub : originalRunBinding.get(id),
+  };
+  await currentRunStub.fetch('http://do/init', { method: 'POST', body: JSON.stringify(spec) });
+  const seeded = await currentRunStub.fetch('http://do/receipt', {
+    method: 'POST',
+    body: JSON.stringify({
+      receipt: {
+        status: 'failed',
+        verdict: 'action_required',
+        findings: [{ severity: 'P1', title: 'synthetic blocking finding' }],
+      },
+      epoch: 1,
+    }),
+  });
+  assert.equal((await seeded.json() as any).accepted, true);
+  const seededStatusResponse = await currentRunStub.fetch('http://do/status');
+  const seededStatus = await seededStatusResponse.json() as any;
+
+  const repoGate = env.REPO_GATE.get(env.REPO_GATE.idFromName(`${spec.owner}/${spec.repo}`.toLowerCase()));
+  await repoGate.fetch('http://do/acquire', {
+    method: 'POST',
+    body: JSON.stringify({ runId: spec.runId, headSha: spec.headSha, prNumber: spec.prNumber }),
+  });
+  await repoGate.fetch('http://do/release', { method: 'POST', body: JSON.stringify({ runId: spec.runId }) });
+
+  const api = installOperatorPauseGitHubMock();
+  const runner = new MockContainerRunner();
+  const workflow = new ReviewJobWorkflow(env, runner);
+  const receipt = captureReviewRunReceipt(env, api.timeline);
+  const mockStep = {
+    async do(_name: string, arg2: any, arg3?: any) {
+      return (typeof arg2 === 'function' ? arg2 : arg3)();
+    },
+    async sleep() {},
+  };
+  try {
+    const result = await workflow.run({ payload: spec }, mockStep as any);
+    return { result, receipt: receipt(), api, runner, spec, seededStatus };
+  } catch (error) {
+    api.restore();
+    throw error;
+  }
+}
 
 describe('ReviewJobWorkflow Durable Execution', () => {
   const sampleSpec: ReviewRunSpec = {
@@ -16,6 +336,381 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     baseSha: 'fedcba9876543210fedcba9876543210fedcba98',
     installationId: 1001,
   };
+
+  it('maps the existing deployment pause into Wrangler with a fail-closed default', async () => {
+    const wrangler = await readFile(resolve(process.cwd(), 'wrangler.toml'), 'utf8');
+    const workflow = await readFile(resolve(process.cwd(), '../.github/workflows/cf-orchestrator-ci.yaml'), 'utf8');
+    const deployJob = workflow.slice(workflow.indexOf('name: Deploy to Cloudflare Edge'));
+
+    assert.match(wrangler, /^OPERATOR_GLOBAL_PASSTHROUGH = "true"(?:\s+#.*)?$/mu);
+    assert.match(
+      deployJob,
+      /OPERATOR_GLOBAL_PASSTHROUGH:\s*\$\{\{\s*vars\.REVIEW_YETI_PASSTHROUGH\s*\|\|\s*'true'\s*\}\}/u
+    );
+    assert.match(deployJob, /vars:\s*\|[\s\S]*?\n\s+OPERATOR_GLOBAL_PASSTHROUGH\s*\n/u);
+  });
+
+  it('uses a Cloudflare-valid zero-retry config for container dispatch', async () => {
+    const env = createMockEnv();
+    const runner = new MockContainerRunner();
+    const workflow = new ReviewJobWorkflow(env, runner);
+    let dispatchConfig: any;
+    const mockStep = {
+      async do(name: string, arg2: any, arg3?: any) {
+        const config = typeof arg2 === 'function' ? undefined : arg2;
+        assertCloudflareStepConfig(name, config);
+        if (name === 'dispatch-container') dispatchConfig = config;
+        return (typeof arg2 === 'function' ? arg2 : arg3)();
+      },
+      async sleep() {},
+    };
+
+    const result = await workflow.run({ payload: sampleSpec }, mockStep as any);
+
+    assert.equal(result.status, 'succeeded');
+    assert.equal(dispatchConfig.retries.limit, 0);
+    assert.equal(dispatchConfig.retries.delay, '1 second');
+  });
+
+  it('publishes a durable, exact-head operator exemption pair without dispatching a runner', async () => {
+    const spec = { ...createOperatorPauseSpec(), operatorPassthrough: false } as ReviewRunSpec;
+    const env = {
+      ...createMockEnv(),
+      OPERATOR_GLOBAL_PASSTHROUGH: 'true',
+      PILOT_REPOSITORIES: 'exampleorg/sample-project',
+      GITHUB_APP_ID: '12345',
+      GITHUB_TOKEN: 'fixture-auth-value',
+    };
+    const runner = new MockContainerRunner();
+    const workflow = new ReviewJobWorkflow(env, runner);
+    const api = installOperatorPauseGitHubMock();
+    const durableTimeline = api.timeline;
+    const preparedEvents: any[] = [];
+    const readReceipt = captureReviewRunReceipt(env, durableTimeline, false, preparedEvents);
+    const mockStep = {
+      async do(_name: string, arg2: any, arg3?: any) {
+        return (typeof arg2 === 'function' ? arg2 : arg3)();
+      },
+      async sleep() {},
+    };
+
+    try {
+      const result = await workflow.run({ payload: spec }, mockStep as any);
+
+      assert.equal(result.status, 'succeeded');
+      assert.equal(runner.dispatched.length, 0);
+      assert.ok(api.requests.some((request) => request.path === '/repos/exampleorg/sample-project/pulls/7'));
+      assert.equal(api.checks.size, 2);
+      const worker = [...api.checks.values()].find((check) => check.name === REVIEW_WORKER_CHECK_NAME);
+      const gate = [...api.checks.values()].find((check) => check.name === REVIEW_GATE_CHECK_NAME);
+      assert.ok(worker);
+      assert.ok(gate);
+      assert.equal(worker.status, 'completed');
+      assert.equal(worker.conclusion, 'success');
+      assert.equal(worker.head_sha, spec.headSha);
+      assert.match(worker.output.title, /operator passthrough/iu);
+      assert.equal(worker.external_id, deriveWorkerExternalId(spec.runId));
+      assert.equal(worker.app.id, 12345);
+      assert.match(worker.output.summary, /operator passthrough.*no semantic review.*zero lanes/isu);
+      assert.ok(worker.output.summary.includes(spec.runId));
+      assert.equal(gate.status, 'completed');
+      assert.equal(gate.conclusion, 'success');
+      assert.equal(gate.head_sha, spec.headSha);
+      assert.equal(gate.external_id, await deriveGateExternalId({
+        owner: spec.owner,
+        repo: spec.repo,
+        headSha: spec.headSha,
+        runId: spec.runId,
+      }));
+      assert.equal(gate.app.id, 12345);
+      assert.match(gate.output.title, /operator passthrough/iu);
+      assert.match(gate.output.summary, /no semantic review.*zero lanes/isu);
+      assert.ok(gate.output.summary.includes(spec.runId));
+      assert.ok(api.timeline.indexOf('get-current-pr') >= 0);
+      assert.equal(api.requests.filter((request) => request.path === '/repos/exampleorg/sample-project/pulls/7').length, 3);
+      const preparedIndex = durableTimeline.indexOf('do-event:operator_passthrough_prepared');
+      const firstSuccessPatchIndex = durableTimeline.findIndex((entry) => entry.endsWith(':success'));
+      const terminalReceiptIndex = durableTimeline.findIndex((entry) => entry === 'do-receipt:published');
+      assert.ok(preparedIndex >= 0 && preparedIndex < firstSuccessPatchIndex);
+      assert.ok(terminalReceiptIndex > firstSuccessPatchIndex);
+      assert.equal(preparedEvents[0].data.appId, 12345);
+      assert.equal(preparedEvents[0].data.headSha, spec.headSha);
+      assert.equal(preparedEvents[0].data.baseSha, spec.baseSha);
+      assert.equal(preparedEvents[0].data.workerCheckId, worker.id);
+      assert.equal(preparedEvents[0].data.gateCheckId, gate.id);
+      const receipt = readReceipt();
+      assert.equal(receipt.status, 'succeeded');
+      assert.equal(receipt.verdict, 'SHIP');
+      assert.equal(receipt.reviewStarted, false);
+      assert.equal(receipt.expectedLanes, 0);
+      assert.equal(receipt.completedLanes, 0);
+      assert.equal(receipt.publicationState, 'published');
+      assert.equal(receipt.publicationReceiptAvailable, true);
+      assert.equal(receipt.workerCheckId, worker.id);
+      assert.equal(receipt.gateCheckId, gate.id);
+      assert.equal(receipt.headSha, spec.headSha);
+      assert.equal(receipt.baseSha, spec.baseSha);
+      assert.equal(receipt.preparedAuditDigest, preparedEvents[0].data.auditDigest);
+      assert.deepEqual(receipt.priorControlRunIds, []);
+      assert.ok(worker.output.summary.includes(receipt.preparedAuditDigest));
+      assert.ok(gate.output.summary.includes(receipt.preparedAuditDigest));
+      assert.equal(receipt.mergeEligible, true);
+      assert.match(receipt.auditDigest, /^sha256:[a-f0-9]{64}$/u);
+    } finally {
+      api.restore();
+    }
+  });
+
+  it('returns unavailable for a stale live PR and does not publish or dispatch', async () => {
+    const spec = createOperatorPauseSpec();
+    const env = {
+      ...createMockEnv(),
+      OPERATOR_GLOBAL_PASSTHROUGH: 'true',
+      PILOT_REPOSITORIES: 'exampleorg/sample-project',
+      GITHUB_APP_ID: '12345',
+      GITHUB_TOKEN: 'fixture-auth-value',
+    };
+    const runner = new MockContainerRunner();
+    const workflow = new ReviewJobWorkflow(env, runner);
+    const api = installOperatorPauseGitHubMock({ headSha: 'c'.repeat(40) });
+    const durableTimeline = api.timeline;
+    const readReceipt = captureReviewRunReceipt(env, durableTimeline);
+    const mockStep = {
+      async do(_name: string, arg2: any, arg3?: any) {
+        return (typeof arg2 === 'function' ? arg2 : arg3)();
+      },
+      async sleep() {},
+    };
+
+    try {
+      const result = await workflow.run({ payload: spec }, mockStep as any);
+
+      assert.equal(result.status, 'unavailable');
+      assert.equal(result.mergeEligible, false);
+      assert.equal(runner.dispatched.length, 0);
+      assert.equal(api.checks.size, 0);
+      assert.equal(readReceipt().publicationState, 'unavailable');
+      assert.equal(readReceipt().mergeEligible, false);
+      assert.equal(readReceipt().checksTerminalized, false);
+    } finally {
+      api.restore();
+    }
+  });
+
+  it('returns unavailable when the deployment pause binding is missing', async () => {
+    const spec = createOperatorPauseSpec();
+    const env = createMockEnv();
+    delete env.OPERATOR_GLOBAL_PASSTHROUGH;
+    const runner = new MockContainerRunner();
+    const workflow = new ReviewJobWorkflow(env, runner);
+    const durableTimeline: string[] = [];
+    const readReceipt = captureReviewRunReceipt(env, durableTimeline);
+    const mockStep = {
+      async do(_name: string, arg2: any, arg3?: any) {
+        return (typeof arg2 === 'function' ? arg2 : arg3)();
+      },
+      async sleep() {},
+    };
+
+    const result = await workflow.run({ payload: spec }, mockStep as any);
+
+    assert.equal(result.status, 'unavailable');
+    assert.equal(result.mergeEligible, false);
+    assert.equal(runner.dispatched.length, 0);
+    assert.equal(readReceipt().publicationState, 'unavailable');
+    assert.equal(readReceipt().mergeEligible, false);
+  });
+
+  it('returns unavailable and terminalizes the pair when a check belongs to another App', async () => {
+    const spec = createOperatorPauseSpec();
+    const env = {
+      ...createMockEnv(),
+      OPERATOR_GLOBAL_PASSTHROUGH: 'true',
+      PILOT_REPOSITORIES: 'exampleorg/sample-project',
+      GITHUB_APP_ID: '12345',
+      GITHUB_TOKEN: 'fixture-auth-value',
+    };
+    const runner = new MockContainerRunner();
+    const workflow = new ReviewJobWorkflow(env, runner);
+    const api = installOperatorPauseGitHubMock({ appId: 99999 });
+    const durableTimeline = api.timeline;
+    const readReceipt = captureReviewRunReceipt(env, durableTimeline);
+    const mockStep = {
+      async do(_name: string, arg2: any, arg3?: any) {
+        return (typeof arg2 === 'function' ? arg2 : arg3)();
+      },
+      async sleep() {},
+    };
+
+    try {
+      const result = await workflow.run({ payload: spec }, mockStep as any);
+
+      assert.equal(result.status, 'unavailable');
+      assert.equal(result.mergeEligible, false);
+      assert.equal(runner.dispatched.length, 0);
+      assert.equal(readReceipt().publicationState, 'unavailable');
+      assert.equal(readReceipt().mergeEligible, false);
+      assert.equal(api.checks.size, 2);
+      assert.ok([...api.checks.values()].every((check) => check.status === 'completed' && check.conclusion === 'failure'));
+    } finally {
+      api.restore();
+    }
+  });
+
+  it('terminalizes both checks as failures when the durable prepared audit write fails', async () => {
+    const spec = createOperatorPauseSpec();
+    const env = {
+      ...createMockEnv(),
+      OPERATOR_GLOBAL_PASSTHROUGH: 'true',
+      PILOT_REPOSITORIES: 'exampleorg/sample-project',
+      GITHUB_APP_ID: '12345',
+      GITHUB_TOKEN: 'fixture-auth-value',
+    };
+    const runner = new MockContainerRunner();
+    const workflow = new ReviewJobWorkflow(env, runner);
+    const api = installOperatorPauseGitHubMock();
+    const durableTimeline = api.timeline;
+    const readReceipt = captureReviewRunReceipt(env, durableTimeline, true);
+    const mockStep = {
+      async do(_name: string, arg2: any, arg3?: any) {
+        return (typeof arg2 === 'function' ? arg2 : arg3)();
+      },
+      async sleep() {},
+    };
+
+    try {
+      const result = await workflow.run({ payload: spec }, mockStep as any);
+
+      assert.equal(result.status, 'unavailable');
+      assert.equal(result.mergeEligible, false);
+      assert.equal(runner.dispatched.length, 0);
+      assert.equal(readReceipt().publicationState, 'unavailable');
+      assert.equal(readReceipt().mergeEligible, false);
+      assert.equal(readReceipt().checksTerminalized, true);
+      const conclusionsByName = new Map(
+        [...api.checks.values()].map((check) => [check.name, check.conclusion])
+      );
+      assert.equal(conclusionsByName.get(REVIEW_WORKER_CHECK_NAME), 'failure');
+      assert.equal(conclusionsByName.get(REVIEW_GATE_CHECK_NAME), 'failure');
+    } finally {
+      api.restore();
+    }
+  });
+
+  it('preserves a same-head semantic block despite the exact prior transport failure', async () => {
+    const prior = await runOperatorPauseWithPriorOutcome({
+      workflowStatus: { status: 'errored', error: { message: 'Step config for "dispatch-container" is in a invalid format. See https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/' } },
+      terminalReceiptSummary: { status: 'failed', verdict: 'action_required', findingsCount: 1, hasSemanticVerdict: true },
+    });
+    try {
+      assert.equal(prior.result.status, 'unavailable');
+      assert.equal(prior.result.mergeEligible, false);
+      assert.equal(prior.runner.dispatched.length, 0);
+      assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 0);
+      assert.equal(prior.receipt.publicationState, 'unavailable');
+      assert.equal(prior.receipt.mergeEligible, false);
+    } finally {
+      prior.api.restore();
+    }
+  });
+
+  it('preserves a same-head changes-requested review despite the exact prior transport failure', async () => {
+    const prior = await runOperatorPauseWithPriorOutcome({
+      workflowStatus: { status: 'errored', error: { message: 'Step config for "dispatch-container" is in a invalid format. See https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/' } },
+      terminalReceiptSummary: { status: 'failed', verdict: null, findingsCount: 0, hasSemanticVerdict: false },
+      reviews: [{ state: 'CHANGES_REQUESTED', commit_id: 'a'.repeat(40) }],
+    });
+    try {
+      assert.equal(prior.result.status, 'unavailable');
+      assert.equal(prior.result.mergeEligible, false);
+      assert.equal(prior.runner.dispatched.length, 0);
+      assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 0);
+    } finally {
+      prior.api.restore();
+    }
+  });
+
+  it('returns unavailable for an unknown same-head workflow failure', async () => {
+    const prior = await runOperatorPauseWithPriorOutcome({
+      workflowStatus: { status: 'errored', error: { message: 'Step config for dispatch-container is in a invalid format' } },
+      terminalReceiptSummary: { status: 'failed', verdict: null, findingsCount: 0, hasSemanticVerdict: false },
+    });
+    try {
+      assert.equal(prior.result.status, 'unavailable');
+      assert.equal(prior.result.mergeEligible, false);
+      assert.equal(prior.runner.dispatched.length, 0);
+      assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 0);
+    } finally {
+      prior.api.restore();
+    }
+  });
+
+  it('returns unavailable when a terminal same-head run has no matching App check pair', async () => {
+    const prior = await runOperatorPauseWithPriorOutcome({
+      workflowStatus: { status: 'errored', error: { message: 'Step config for "dispatch-container" is in a invalid format. See https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/' } },
+      terminalReceiptSummary: { status: 'failed', verdict: null, findingsCount: 0, hasSemanticVerdict: false },
+      omitChecks: true,
+    });
+    try {
+      assert.equal(prior.result.status, 'unavailable');
+      assert.equal(prior.result.mergeEligible, false);
+      assert.equal(prior.runner.dispatched.length, 0);
+      assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 0);
+    } finally {
+      prior.api.restore();
+    }
+  });
+
+  it('returns unavailable while a same-head prior review is still active', async () => {
+    const prior = await runOperatorPauseWithPriorOutcome({
+      workflowStatus: { status: 'running' },
+      terminalReceiptSummary: { status: 'running', verdict: null, findingsCount: 0, hasSemanticVerdict: false },
+      activeGate: true,
+      omitChecks: true,
+    });
+    try {
+      assert.equal(prior.result.status, 'unavailable');
+      assert.equal(prior.result.mergeEligible, false);
+      assert.equal(prior.runner.dispatched.length, 0);
+      assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 0);
+    } finally {
+      prior.api.restore();
+    }
+  });
+
+  it('rejects a same-run terminal semantic finding before creating checks when no prior pair is listed', async () => {
+    const prior = await runOperatorPauseWithCurrentTerminalOutcome();
+    try {
+      assert.equal(prior.seededStatus.phase, 'Completed');
+      assert.equal(prior.seededStatus.terminalReceiptSummary.verdict, 'action_required');
+      assert.equal(prior.seededStatus.terminalReceiptSummary.findingsCount, 1);
+      assert.equal(prior.result.status, 'unavailable');
+      assert.equal(prior.result.mergeEligible, false);
+      assert.equal(prior.runner.dispatched.length, 0);
+      assert.equal(prior.api.checks.size, 0);
+      assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 0);
+      assert.equal(prior.api.timeline.some((entry) => entry.startsWith('create:')), false);
+    } finally {
+      prior.api.restore();
+    }
+  });
+
+  it('allows only the exact same-run pre-dispatch configuration failure witness', async () => {
+    const prior = await runOperatorPauseWithPriorOutcome({
+      workflowStatus: { status: 'errored', error: { message: 'Step config for "dispatch-container" is in a invalid format. See https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/' } },
+      terminalReceiptSummary: { status: 'failed', verdict: null, findingsCount: 0, hasSemanticVerdict: false },
+    });
+    try {
+      assert.equal(prior.result.status, 'succeeded');
+      assert.equal(prior.result.mergeEligible, true);
+      assert.equal(prior.runner.dispatched.length, 0);
+      assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 2);
+      assert.equal(prior.receipt.publicationState, 'published');
+      assert.deepEqual(prior.receipt.priorControlRunIds, [prior.priorRunId]);
+    } finally {
+      prior.api.restore();
+    }
+  });
 
   it('orchestrates complete review lifecycle and releases repo slot', async () => {
     const env = createMockEnv();

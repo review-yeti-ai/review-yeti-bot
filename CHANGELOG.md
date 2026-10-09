@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.129.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.129.0...v1.129.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **ci:** remove invalid --domain flag from wrangler deploy [no-linear] ([#1484](https://github.com/review-yeti-ai/review-yeti-bot/issues/1484)) ([de1d50d](https://github.com/review-yeti-ai/review-yeti-bot/commit/de1d50d8c17a7272569de15c868bb137084a5d76))
+
 ## [1.129.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.128.0...v1.129.0) (2026-10-09)
 
 

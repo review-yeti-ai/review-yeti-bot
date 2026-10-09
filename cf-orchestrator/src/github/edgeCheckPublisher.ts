@@ -57,6 +57,9 @@ export interface CompleteCheckOptions {
   token: string;
   verdict: 'success' | 'action_required' | 'neutral' | 'failure' | 'cancelled' | 'timed_out';
   summaryMarkdown?: string;
+  workerTitle?: string;
+  gateTitle?: string;
+  gateSummary?: string;
   findings?: CheckFinding[];
   workerCheckId?: number;
   gateCheckId?: number;
@@ -243,6 +246,9 @@ export async function completeChecks(options: CompleteCheckOptions): Promise<Che
     token,
     verdict,
     summaryMarkdown,
+    workerTitle: workerTitleOverride,
+    gateTitle: gateTitleOverride,
+    gateSummary: gateSummaryOverride,
     findings = [],
     workerCheckId,
     gateCheckId,
@@ -275,7 +281,7 @@ export async function completeChecks(options: CompleteCheckOptions): Promise<Che
             ? 'timed_out'
             : 'failure';
 
-  const workerTitle =
+  const workerTitle = workerTitleOverride || (
     isSuccess
       ? 'Review Yeti: SHIP'
       : isNeutral
@@ -284,13 +290,13 @@ export async function completeChecks(options: CompleteCheckOptions): Promise<Che
           ? 'Review Yeti: CANCELLED'
           : isTimedOut
             ? 'Review Yeti: review did not complete'
-            : 'Review Yeti: BLOCK';
+            : 'Review Yeti: BLOCK');
 
   const gateConclusion: 'success' | 'failure' = isSuccess ? 'success' : 'failure';
-  const gateTitle = isSuccess ? 'Review Yeti Gate: Approved (SHIP)' : 'Review Yeti Gate: Failed';
-  const gateSummary = isSuccess
+  const gateTitle = gateTitleOverride || (isSuccess ? 'Review Yeti Gate: Approved (SHIP)' : 'Review Yeti Gate: Failed');
+  const gateSummary = gateSummaryOverride || (isSuccess
     ? 'Review Yeti completed this attempt and the policy eligibility gate passed.'
-    : 'Review Yeti completed this attempt but the policy eligibility gate failed.';
+    : 'Review Yeti completed this attempt but the policy eligibility gate failed.');
 
   const defaultWorkerSummary = `### ${workerTitle}\n\nReview Yeti completed evaluation with verdict: **${verdict.toUpperCase()}**.`;
   const annotations = formatCheckAnnotations(findings);

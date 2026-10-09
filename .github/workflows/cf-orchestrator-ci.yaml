@@ -99,6 +99,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           ALLOWED_ORIGINS: ${{ vars.CF_ALLOWED_ORIGINS }}
           DOKS_FALLBACK_URL: ${{ vars.DOKS_FALLBACK_URL }}
+          OPERATOR_GLOBAL_PASSTHROUGH: ${{ vars.REVIEW_YETI_PASSTHROUGH || 'true' }}
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -108,4 +109,5 @@ jobs:
           vars: |
             ALLOWED_ORIGINS
             DOKS_FALLBACK_URL
+            OPERATOR_GLOBAL_PASSTHROUGH
           command: deploy
