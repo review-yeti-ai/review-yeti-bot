@@ -4,14 +4,30 @@ import { SAMPLE_REPO_CDR, SAMPLE_REPO_META, SAMPLE_REPO_CDR_SLUG, SAMPLE_REPO_ME
  * Provides relational persistence for reviews, findings, repositories, and analytics.
  */
 
+export interface OrganizationRecord {
+  id: string; // lowercase organization owner slug (e.g. "calltelemetry")
+  name: string;
+  installationId?: number;
+  appId?: number;
+  enabled: boolean;
+  passthroughEnabled: boolean;
+  settingsJson?: Record<string, any>;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface RepositoryRecord {
-  id: string;
+  id: string; // 'owner/repo'
   owner: string;
   repo: string;
+  repositoryId?: number;
+  installationId?: number;
   defaultBranch: string;
   automationEnabled: boolean;
+  passthroughEnabled: boolean;
   generateFlowchart: boolean;
   customProfile: 'chill' | 'balanced' | 'assertive';
+  settingsJson?: Record<string, any>;
   createdAt: number;
   updatedAt: number;
 }
@@ -75,8 +91,10 @@ class InMemoryStore {
         id: 'reviewyeti-ai/review-yeti-bot',
         owner: 'reviewyeti-ai',
         repo: 'review-yeti-bot',
+        repositoryId: 1326169548,
         defaultBranch: 'main',
         automationEnabled: true,
+        passthroughEnabled: true,
         generateFlowchart: true,
         customProfile: 'assertive',
         createdAt: 1700000000000,
@@ -89,8 +107,10 @@ class InMemoryStore {
         id: SAMPLE_REPO_CDR,
         owner: SAMPLE_REPO_CDR.split('/')[0],
         repo: SAMPLE_REPO_CDR_SLUG,
+        repositoryId: 190468701,
         defaultBranch: 'main',
         automationEnabled: true,
+        passthroughEnabled: true,
         generateFlowchart: true,
         customProfile: 'assertive',
         createdAt: 1700000000000,
@@ -103,8 +123,10 @@ class InMemoryStore {
         id: SAMPLE_REPO_META,
         owner: SAMPLE_REPO_META.split('/')[0],
         repo: SAMPLE_REPO_META_SLUG,
+        repositoryId: 1232078607,
         defaultBranch: 'main',
         automationEnabled: true,
+        passthroughEnabled: true,
         generateFlowchart: true,
         customProfile: 'balanced',
         createdAt: 1700000000000,
@@ -113,14 +135,53 @@ class InMemoryStore {
     ],
   ]);
 
+  private orgs = new Map<string, OrganizationRecord>();
   private reviews = new Map<string, ReviewRecord>();
   private findings = new Map<string, FindingRecord>();
   private tasks = new Map<string, ReviewTaskRecord[]>();
   private overrides = new Map<string, any[]>();
   private guidances = new Map<string, any[]>();
 
-  getRepositories(): RepositoryRecord[] {
-    return Array.from(this.repos.values());
+  getOrganizations(): OrganizationRecord[] {
+    return Array.from(this.orgs.values());
+  }
+
+  getOrganization(owner: string): OrganizationRecord | null {
+    return this.orgs.get(owner.toLowerCase()) || null;
+  }
+
+  saveOrganization(org: OrganizationRecord): void {
+    this.orgs.set(org.id.toLowerCase(), org);
+  }
+
+  deleteOrganization(owner: string, cascadeRepos = false): { deleted: boolean; deletedReposCount: number } {
+    const key = owner.toLowerCase();
+    const deleted = this.orgs.delete(key);
+    let deletedReposCount = 0;
+    if (cascadeRepos) {
+      for (const [rKey, r] of this.repos.entries()) {
+        if (r.owner.toLowerCase() === key) {
+          this.repos.delete(rKey);
+          deletedReposCount++;
+        }
+      }
+    }
+    return { deleted, deletedReposCount };
+  }
+
+  getRepositories(filter?: { owner?: string; passthroughOnly?: boolean; enabledOnly?: boolean }): RepositoryRecord[] {
+    let list = Array.from(this.repos.values());
+    if (filter?.owner) {
+      const oKey = filter.owner.toLowerCase();
+      list = list.filter((r) => r.owner.toLowerCase() === oKey);
+    }
+    if (filter?.passthroughOnly) {
+      list = list.filter((r) => r.passthroughEnabled);
+    }
+    if (filter?.enabledOnly) {
+      list = list.filter((r) => r.automationEnabled);
+    }
+    return list;
   }
 
   getRepository(owner: string, repo: string): RepositoryRecord | null {
@@ -129,6 +190,10 @@ class InMemoryStore {
 
   saveRepository(repo: RepositoryRecord): void {
     this.repos.set(repo.id, repo);
+  }
+
+  deleteRepository(owner: string, repo: string): boolean {
+    return this.repos.delete(`${owner}/${repo}`);
   }
 
   saveReview(review: ReviewRecord): void {
@@ -242,33 +307,248 @@ export const inMemoryStore = new InMemoryStore();
 // D1 Database Operations
 // ============================================================================
 
-export async function fetchRepositoriesFromDb(db?: any): Promise<RepositoryRecord[]> {
+// Organization Operations
+export async function fetchOrganizationsFromDb(db?: any): Promise<OrganizationRecord[]> {
   if (!db || !db.prepare) {
-    return inMemoryStore.getRepositories();
+    return inMemoryStore.getOrganizations();
   }
 
   try {
     const { results } = await db
-      .prepare('SELECT id, owner, repo, default_branch, automation_enabled, generate_flowchart, custom_profile, created_at, updated_at FROM repositories ORDER BY repo ASC')
+      .prepare('SELECT id, name, installation_id, app_id, enabled, passthrough_enabled, settings_json, created_at, updated_at FROM organizations ORDER BY name ASC')
       .all();
 
     if (!results || results.length === 0) {
-      return inMemoryStore.getRepositories();
+      return inMemoryStore.getOrganizations();
+    }
+
+    return results.map((o: any) => ({
+      id: o.id,
+      name: o.name,
+      installationId: o.installation_id !== null && o.installation_id !== undefined ? Number(o.installation_id) : undefined,
+      appId: o.app_id !== null && o.app_id !== undefined ? Number(o.app_id) : 4385771,
+      enabled: Boolean(o.enabled),
+      passthroughEnabled: o.passthrough_enabled !== null && o.passthrough_enabled !== undefined ? Boolean(o.passthrough_enabled) : true,
+      settingsJson: typeof o.settings_json === 'string' ? JSON.parse(o.settings_json || '{}') : (o.settings_json || {}),
+      createdAt: Number(o.created_at),
+      updatedAt: Number(o.updated_at),
+    }));
+  } catch {
+    return inMemoryStore.getOrganizations();
+  }
+}
+
+export async function fetchOrganizationFromDb(db?: any, owner?: string): Promise<OrganizationRecord | null> {
+  if (!owner) return null;
+  const oKey = owner.toLowerCase();
+  if (!db || !db.prepare) {
+    return inMemoryStore.getOrganization(oKey);
+  }
+
+  try {
+    const row = await db
+      .prepare('SELECT id, name, installation_id, app_id, enabled, passthrough_enabled, settings_json, created_at, updated_at FROM organizations WHERE id = ?')
+      .bind(oKey)
+      .first();
+
+    if (!row) {
+      return inMemoryStore.getOrganization(oKey);
+    }
+
+    return {
+      id: row.id,
+      name: row.name,
+      installationId: row.installation_id !== null && row.installation_id !== undefined ? Number(row.installation_id) : undefined,
+      appId: row.app_id !== null && row.app_id !== undefined ? Number(row.app_id) : 4385771,
+      enabled: Boolean(row.enabled),
+      passthroughEnabled: row.passthrough_enabled !== null && row.passthrough_enabled !== undefined ? Boolean(row.passthrough_enabled) : true,
+      settingsJson: typeof row.settings_json === 'string' ? JSON.parse(row.settings_json || '{}') : (row.settings_json || {}),
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
+  } catch {
+    return inMemoryStore.getOrganization(oKey);
+  }
+}
+
+export async function saveOrganizationToDb(db: any, org: OrganizationRecord): Promise<OrganizationRecord> {
+  const normalized: OrganizationRecord = {
+    ...org,
+    id: org.id.toLowerCase(),
+    appId: org.appId || 4385771,
+    updatedAt: Date.now(),
+  };
+
+  inMemoryStore.saveOrganization(normalized);
+  if (!db || !db.prepare) return normalized;
+
+  try {
+    await db
+      .prepare(
+        `INSERT INTO organizations (id, name, installation_id, app_id, enabled, passthrough_enabled, settings_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           installation_id = COALESCE(excluded.installation_id, organizations.installation_id),
+           app_id = COALESCE(excluded.app_id, organizations.app_id),
+           enabled = excluded.enabled,
+           passthrough_enabled = excluded.passthrough_enabled,
+           settings_json = excluded.settings_json,
+           updated_at = excluded.updated_at`
+      )
+      .bind(
+        normalized.id,
+        normalized.name,
+        normalized.installationId ?? null,
+        normalized.appId ?? 4385771,
+        normalized.enabled ? 1 : 0,
+        normalized.passthroughEnabled ? 1 : 0,
+        JSON.stringify(normalized.settingsJson || {}),
+        normalized.createdAt,
+        normalized.updatedAt
+      )
+      .run();
+  } catch {
+    // InMemoryStore holds it
+  }
+
+  return normalized;
+}
+
+export async function deleteOrganizationFromDb(
+  db: any,
+  owner: string,
+  cascadeRepos = false
+): Promise<{ deleted: boolean; deletedReposCount: number }> {
+  const key = owner.toLowerCase();
+  const memResult = inMemoryStore.deleteOrganization(key, cascadeRepos);
+  if (!db || !db.prepare) return memResult;
+
+  let deletedReposCount = 0;
+  try {
+    if (cascadeRepos) {
+      const delRepos = await db.prepare('DELETE FROM repositories WHERE LOWER(owner) = ?').bind(key).run();
+      deletedReposCount = delRepos?.meta?.changes || 0;
+    }
+    const delOrg = await db.prepare('DELETE FROM organizations WHERE id = ?').bind(key).run();
+    const deleted = (delOrg?.meta?.changes || 0) > 0 || memResult.deleted;
+    return { deleted, deletedReposCount: deletedReposCount || memResult.deletedReposCount };
+  } catch {
+    return memResult;
+  }
+}
+
+// Repository Operations
+export async function fetchRepositoriesFromDb(
+  db?: any,
+  filter?: { owner?: string; passthroughOnly?: boolean; enabledOnly?: boolean }
+): Promise<RepositoryRecord[]> {
+  if (!db || !db.prepare) {
+    return inMemoryStore.getRepositories(filter);
+  }
+
+  try {
+    let query = 'SELECT * FROM repositories';
+    const conditions: string[] = [];
+    const params: any[] = [];
+
+    if (filter?.owner) {
+      conditions.push('LOWER(owner) = ?');
+      params.push(filter.owner.toLowerCase());
+    }
+    if (filter?.enabledOnly) {
+      conditions.push('automation_enabled = 1');
+    }
+    if (filter?.passthroughOnly) {
+      conditions.push('(passthrough_enabled = 1 OR passthrough_enabled IS NULL)');
+    }
+
+    if (conditions.length > 0) {
+      query += ` WHERE ${conditions.join(' AND ')}`;
+    }
+    query += ' ORDER BY repo ASC';
+
+    const { results } = await db.prepare(query).bind(...params).all();
+
+    if (!results || results.length === 0) {
+      return inMemoryStore.getRepositories(filter);
     }
 
     return results.map((r: any) => ({
       id: r.id,
       owner: r.owner,
       repo: r.repo,
-      defaultBranch: r.default_branch,
+      repositoryId: r.repository_id !== undefined && r.repository_id !== null ? Number(r.repository_id) : undefined,
+      installationId: r.installation_id !== undefined && r.installation_id !== null ? Number(r.installation_id) : undefined,
+      defaultBranch: r.default_branch || 'main',
       automationEnabled: Boolean(r.automation_enabled),
+      passthroughEnabled: r.passthrough_enabled !== undefined && r.passthrough_enabled !== null ? Boolean(r.passthrough_enabled) : true,
       generateFlowchart: Boolean(r.generate_flowchart),
       customProfile: r.custom_profile || 'assertive',
-      createdAt: r.created_at,
-      updatedAt: r.updated_at,
+      settingsJson: typeof r.settings_json === 'string' ? JSON.parse(r.settings_json || '{}') : (r.settings_json || {}),
+      createdAt: Number(r.created_at),
+      updatedAt: Number(r.updated_at),
     }));
   } catch {
-    return inMemoryStore.getRepositories();
+    return inMemoryStore.getRepositories(filter);
+  }
+}
+
+export async function fetchRepositoryFromDb(
+  db: any,
+  owner: string,
+  repo: string
+): Promise<RepositoryRecord | null> {
+  const id = `${owner}/${repo}`;
+  if (!db || !db.prepare) {
+    return inMemoryStore.getRepository(owner, repo);
+  }
+
+  try {
+    const r = await db
+      .prepare('SELECT * FROM repositories WHERE id = ? OR (LOWER(owner) = ? AND LOWER(repo) = ?)')
+      .bind(id, owner.toLowerCase(), repo.toLowerCase())
+      .first();
+    if (!r) {
+      return inMemoryStore.getRepository(owner, repo);
+    }
+    return {
+      id: r.id,
+      owner: r.owner,
+      repo: r.repo,
+      repositoryId: r.repository_id !== undefined && r.repository_id !== null ? Number(r.repository_id) : undefined,
+      installationId: r.installation_id !== undefined && r.installation_id !== null ? Number(r.installation_id) : undefined,
+      defaultBranch: r.default_branch || 'main',
+      automationEnabled: Boolean(r.automation_enabled),
+      passthroughEnabled: r.passthrough_enabled !== undefined && r.passthrough_enabled !== null ? Boolean(r.passthrough_enabled) : true,
+      generateFlowchart: Boolean(r.generate_flowchart),
+      customProfile: r.custom_profile || 'assertive',
+      settingsJson: typeof r.settings_json === 'string' ? JSON.parse(r.settings_json || '{}') : (r.settings_json || {}),
+      createdAt: Number(r.created_at),
+      updatedAt: Number(r.updated_at),
+    };
+  } catch {
+    return inMemoryStore.getRepository(owner, repo);
+  }
+}
+
+export async function deleteRepositoryFromDb(
+  db: any,
+  owner: string,
+  repo: string
+): Promise<boolean> {
+  const memDeleted = inMemoryStore.deleteRepository(owner, repo);
+  if (!db || !db.prepare) return memDeleted;
+
+  try {
+    const id = `${owner}/${repo}`;
+    const res = await db
+      .prepare('DELETE FROM repositories WHERE id = ? OR (LOWER(owner) = ? AND LOWER(repo) = ?)')
+      .bind(id, owner.toLowerCase(), repo.toLowerCase())
+      .run();
+    return (res?.meta?.changes || 0) > 0 || memDeleted;
+  } catch {
+    return memDeleted;
   }
 }
 
@@ -279,12 +559,13 @@ export async function updateRepositoryInDb(
   patch: Partial<RepositoryRecord>
 ): Promise<RepositoryRecord> {
   const id = `${owner}/${repo}`;
-  const existing = (await fetchRepositoriesFromDb(db)).find((r) => r.id === id) || {
+  const existing = (await fetchRepositoryFromDb(db, owner, repo)) || {
     id,
     owner,
     repo,
     defaultBranch: 'main',
     automationEnabled: true,
+    passthroughEnabled: true,
     generateFlowchart: true,
     customProfile: 'assertive' as const,
     createdAt: Date.now(),
@@ -294,43 +575,82 @@ export async function updateRepositoryInDb(
   const updated: RepositoryRecord = {
     ...existing,
     ...patch,
+    id,
+    owner: patch.owner || existing.owner,
+    repo: patch.repo || existing.repo,
     updatedAt: Date.now(),
   };
 
+  inMemoryStore.saveRepository(updated);
   if (!db || !db.prepare) {
-    inMemoryStore.saveRepository(updated);
     return updated;
   }
 
   try {
     await db
       .prepare(
-        `INSERT INTO repositories (id, owner, repo, default_branch, automation_enabled, generate_flowchart, custom_profile, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO repositories (id, owner, repo, repository_id, installation_id, default_branch, automation_enabled, passthrough_enabled, generate_flowchart, custom_profile, settings_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
+           repository_id = COALESCE(excluded.repository_id, repositories.repository_id),
+           installation_id = COALESCE(excluded.installation_id, repositories.installation_id),
+           default_branch = excluded.default_branch,
            automation_enabled = excluded.automation_enabled,
+           passthrough_enabled = excluded.passthrough_enabled,
            generate_flowchart = excluded.generate_flowchart,
            custom_profile = excluded.custom_profile,
+           settings_json = excluded.settings_json,
            updated_at = excluded.updated_at`
       )
       .bind(
         updated.id,
         updated.owner,
         updated.repo,
+        updated.repositoryId ?? null,
+        updated.installationId ?? null,
         updated.defaultBranch,
         updated.automationEnabled ? 1 : 0,
+        updated.passthroughEnabled ? 1 : 0,
         updated.generateFlowchart ? 1 : 0,
         updated.customProfile,
+        JSON.stringify(updated.settingsJson || {}),
         updated.createdAt,
         updated.updatedAt
       )
       .run();
   } catch {
-    inMemoryStore.saveRepository(updated);
+    try {
+      await db
+        .prepare(
+          `INSERT INTO repositories (id, owner, repo, default_branch, automation_enabled, generate_flowchart, custom_profile, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             automation_enabled = excluded.automation_enabled,
+             generate_flowchart = excluded.generate_flowchart,
+             custom_profile = excluded.custom_profile,
+             updated_at = excluded.updated_at`
+        )
+        .bind(
+          updated.id,
+          updated.owner,
+          updated.repo,
+          updated.defaultBranch,
+          updated.automationEnabled ? 1 : 0,
+          updated.generateFlowchart ? 1 : 0,
+          updated.customProfile,
+          updated.createdAt,
+          updated.updatedAt
+        )
+        .run();
+    } catch {
+      inMemoryStore.saveRepository(updated);
+    }
   }
 
   return updated;
 }
+
+export const saveRepositoryToDb = updateRepositoryInDb;
 
 export async function saveReviewToDb(db: any, review: ReviewRecord): Promise<void> {
   if (!db || !db.prepare) {

@@ -7,13 +7,14 @@ import { purgeExpiredR2WorkspaceCaches } from './runners/r2WorkspaceCache.js';
 import { defaultMcpRouter, constantTimeEquals } from './mcp/mcpRouter.js';
 import { handleDashboardApi } from './api/dashboardRoutes.js';
 import { handleActionDispatch } from './api/actionDispatchRoute.js';
+import { handleSettingsApi } from './api/settingsRoutes.js';
 import { readOperatorPassthroughByRunId } from './operatorPassthroughPublisher.js';
 import { isPilotRepository } from './pilotRepository.js';
 import { shouldShortCircuitActionPassthrough } from './passthroughAdmission.js';
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 
 export { RepoGateDO, ReviewRunDO, ReviewJobWorkflow, handleMergeGroupAttestation };
-export { defaultMcpRouter, handleDashboardApi, handleActionDispatch };
+export { defaultMcpRouter, handleDashboardApi, handleActionDispatch, handleSettingsApi };
 export { isPilotRepository };
 
 const cfAccessJwksCache = new Map<string, JWTVerifyGetKey>();
@@ -414,6 +415,12 @@ export default {
         if (dashboardResponse) {
           return dashboardResponse;
         }
+      }
+
+      // Review Yeti Settings & Onboarding REST API (Edge)
+      const settingsResponse = await handleSettingsApi(request, env);
+      if (settingsResponse) {
+        return settingsResponse;
       }
 
       // Webhook Ingest: /api/webhooks/github
