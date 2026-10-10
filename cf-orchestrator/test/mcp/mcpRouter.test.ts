@@ -32,7 +32,7 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
     assert.deepEqual(res.result, {});
   });
 
-  it('handles "tools/list" returning all 12 registered Review Yeti tools', async () => {
+  it('handles "tools/list" returning all registered Review Yeti tools', async () => {
     const res = await defaultMcpRouter.handleRpc({
       jsonrpc: '2.0',
       id: 2,
@@ -42,7 +42,7 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
     assert.equal(res.jsonrpc, '2.0');
     assert.ok(res.result);
     assert.ok(Array.isArray(res.result.tools));
-    assert.equal(res.result.tools.length, 12);
+    assert.equal(res.result.tools.length, 15);
 
     const toolNames = res.result.tools.map((t: any) => t.name);
     assert.ok(toolNames.includes('review_yeti_query_active_jobs'));

@@ -13,7 +13,7 @@ describe('Review Yeti MCP Worker Route Integration (/api/mcp)', () => {
     assert.ok(res.headers.get('Access-Control-Allow-Origin'));
     const data = (await res.json()) as any;
     assert.equal(data.name, 'review-yeti-cf-orchestrator');
-    assert.equal(data.toolsCount, 12);
+    assert.equal(data.toolsCount, 15);
     assert.ok(Array.isArray(data.tools));
   });
 
@@ -258,6 +258,6 @@ describe('Review Yeti MCP Worker Route Integration (/api/mcp)', () => {
     assert.equal(res.status, 200);
     const data = (await res.json()) as any;
     assert.equal(data.name, 'review-yeti-cf-orchestrator');
-    assert.equal(data.toolsCount, 12);
+    assert.equal(data.toolsCount, 15);
   });
 });
