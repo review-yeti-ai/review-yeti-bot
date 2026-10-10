@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.129.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.129.1...v1.129.2) (2026-10-10)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** publish open pass SHIP verdicts in passthrough mode [no-linear] ([#1490](https://github.com/review-yeti-ai/review-yeti-bot/issues/1490)) ([ef6b4d8](https://github.com/review-yeti-ai/review-yeti-bot/commit/ef6b4d8a255e67ec93396b1067be239adefea15f))
+* **REL-1698:** require current authority for paused Edge SHIP ([#1492](https://github.com/review-yeti-ai/review-yeti-bot/issues/1492)) ([3b34f81](https://github.com/review-yeti-ai/review-yeti-bot/commit/3b34f815dace5453adcd7e1e85236c3fb5b36e0d))
+
 ## [1.129.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.129.0...v1.129.1) (2026-10-09)
 
 
