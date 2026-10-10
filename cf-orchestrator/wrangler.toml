@@ -81,6 +81,9 @@ RUNNER_TYPE = "cloudflare" # Cloudflare Containers (default; falls back to Digit
 DO_AGENT_ID = "review-yeti-swarm" # Secondary option when RUNNER_TYPE is "digitalocean" or when used as fallback
 PUBLIC_READ_MCP = "true" # Enables public read access to status, metrics, reports, dashboards
 OPERATOR_GLOBAL_PASSTHROUGH = "true" # Fail closed unless the deployment-owned pause variable explicitly disables the pause
+# Paused publication has a separate exact ID/name enrollment; PILOT_REPOSITORIES does not grant it.
+OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES = '[{"repositoryId":1131452104,"owner":"calltelemetry","repo":"ai-workspace"},{"repositoryId":1355159090,"owner":"calltelemetry","repo":"ct-infrastructure"},{"repositoryId":1232078607,"owner":"calltelemetry","repo":"ct-meta"},{"repositoryId":1326169548,"owner":"review-yeti-ai","repo":"review-yeti-bot"}]'
+OPERATOR_PASSTHROUGH_POLICY_SOURCE = '{"repositoryId":1339040553,"owner":"calltelemetry","repo":"ct-review-actions","ref":"main","path":"policy/review-yeti.json"}'
 
 # Cron trigger for 1-hour aggressive R2 workspace cache purge
 [triggers]

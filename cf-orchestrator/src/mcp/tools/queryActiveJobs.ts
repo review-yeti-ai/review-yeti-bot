@@ -1,4 +1,5 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult, ActiveJobItem } from '../types.js';
+import { readOperatorPassthroughByRunId } from '../../operatorPassthroughPublisher.js';
 
 export const queryActiveJobsTool: McpToolHandler = {
   definition: {
@@ -8,6 +9,10 @@ export const queryActiveJobsTool: McpToolHandler = {
     inputSchema: {
       type: 'object',
       properties: {
+        runId: {
+          type: 'string',
+          description: 'Optional exact run ID for a fresh status and paused-publication verification.',
+        },
         owner: {
           type: 'string',
           description: 'GitHub organization or owner (e.g. "exampleorg")',
@@ -45,6 +50,30 @@ export const queryActiveJobsTool: McpToolHandler = {
     const env = context.env || {};
     const jobs: ActiveJobItem[] = [];
     let liveFetchSucceeded = false;
+
+    const requestedRunId = typeof args.runId === 'string' ? args.runId.trim() : '';
+    if (requestedRunId) {
+      if (!/^run_[A-Za-z0-9_-]{1,128}$/u.test(requestedRunId)
+        || !env.REVIEW_RUN?.idFromName || !env.REVIEW_RUN?.get) {
+        return { isError: true, content: [{ type: 'text', text: 'Error: a valid runId and ReviewRunDO binding are required.' }] };
+      }
+      try {
+        const runDO = env.REVIEW_RUN.get(env.REVIEW_RUN.idFromName(requestedRunId));
+        const response = await runDO.fetch('http://do/status');
+        if (!response.ok) throw new Error(`ReviewRunDO status HTTP ${response.status}`);
+        const status = await response.json() as Record<string, unknown>;
+        const paused = await readOperatorPassthroughByRunId(env, requestedRunId);
+        const report = paused
+          ? { ...status, operatorPassthrough: paused, mergeEligible: paused.mergeEligible, isCurrentHead: paused.status === 'succeeded' && paused.mergeEligible }
+          : status;
+        const summary = paused
+          ? `Paused publication for ${paused.owner || 'unknown repository'}/${paused.repo || 'unknown repository'}#${paused.prNumber || '?'}: ${paused.status}; merge eligible=${paused.mergeEligible}.`
+          : `Review run ${requestedRunId} status is ${String(status.phase || 'unknown')}; no current paused-publication receipt was found.`;
+        return { content: [{ type: 'text', text: summary }, { type: 'text', text: JSON.stringify(report, null, 2) }] };
+      } catch {
+        return { isError: true, content: [{ type: 'text', text: 'Error: failed to read run status.' }] };
+      }
+    }
 
     // 1. Query Cloudflare RepoGateDO and ReviewRunDO if bound
     if (orchestratorFilter === 'all' || orchestratorFilter === 'cloudflare') {

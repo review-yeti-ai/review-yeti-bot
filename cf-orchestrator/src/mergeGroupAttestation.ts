@@ -20,11 +20,7 @@
  */
 
 import type { Env } from './types.js';
-import {
-  isPassthroughMode,
-  OPERATOR_PASSTHROUGH_MODE_MARKER,
-  OPERATOR_PASSTHROUGH_ZERO_LANES_MARKER,
-} from './types.js';
+import { readOperatorPassthroughForTarget } from './operatorPassthroughPublisher.js';
 
 export const DEFAULT_REQUIRED_APP_ID = '4385771';
 export const REQUIRED_CHECK_NAME = 'Review Yeti';
@@ -398,9 +394,8 @@ export function verifyConstituentChecks(
     const nameMatch = c.name === requiredContext;
     const appIdMatch = c.app?.id !== undefined && c.app?.id !== null && String(c.app.id) === requiredAppId;
     const extId = typeof c.external_id === 'string' ? c.external_id : '';
-    const externalIdMatch = /^run_[a-f0-9]{32}:a[1-9][0-9]*$/.test(extId);
-    const passthroughExternalIdMatch = extId.includes('operator-passthrough') || extId.includes('passthrough');
-    return nameMatch && appIdMatch && (externalIdMatch || passthroughExternalIdMatch);
+    const externalIdMatch = /^run_[a-f0-9]{32}:a[1-9][0-9]*(?::review-mode=passthrough:op2)?$/u.test(extId);
+    return nameMatch && appIdMatch && externalIdMatch;
   });
 
   if (candidateReviews.length === 0) {
@@ -1086,7 +1081,7 @@ export async function handleMergeGroupAttestation(
   if (!token) {
     throw new Error('Configuration error: GITHUB_TOKEN is not set');
   }
-  const requiredAppId = env.GITHUB_APP_ID || DEFAULT_REQUIRED_APP_ID;
+  const requiredAppId = DEFAULT_REQUIRED_APP_ID;
 
   const baseBranch = normalizeBaseBranch(baseRef);
   const currentPrNumber = extractPrNumberFromHeadRef(headRef);
@@ -1100,32 +1095,6 @@ export async function handleMergeGroupAttestation(
       summary: `Merge group attestation blocked: Failed to parse base_ref ("${baseRef}") or PR number from head_ref ("${headRef}")`,
       fetchFn,
     });
-  }
-
-  // In operator passthrough mode, approve and attest merge group immediately with zero review lanes
-  if (isPassthroughMode(env)) {
-    const summary = `Merge group attestation approved: ${OPERATOR_PASSTHROUGH_MODE_MARKER}. ${OPERATOR_PASSTHROUGH_ZERO_LANES_MARKER} Operator pause authorizes SHIP with zero review lanes; policy eligibility gate passed.`;
-    const pubResult = await publishMergeGroupCheckRun({
-      owner,
-      repo,
-      headSha,
-      token,
-      conclusion: 'success',
-      title: ATTESTATION_CHECK_TITLE,
-      summary,
-      fetchFn,
-    });
-
-    return {
-      status: 'attested',
-      headSha,
-      conclusion: 'success',
-      title: ATTESTATION_CHECK_TITLE,
-      summary,
-      constituentPrs: currentPrNumber ? [currentPrNumber] : [],
-      bypassedHazardScan: true,
-      checkRunId: pubResult.checkRunId,
-    };
   }
 
   // 1. Resolve constituent PRs through merge queue GraphQL API
@@ -1217,12 +1186,98 @@ export async function handleMergeGroupAttestation(
     });
   }
 
-  // 4. Attestation Success: Publish successful check run directly to GitHub API
   const attestedNumbers = constituentPrs.map((p) => `#${p.number}`).join(', ');
   const hazardNote = hazardResult.bypassed
     ? 'Clean single-PR queue entry with no base drift bypassed composite hazard scan.'
     : 'Speculative composite delta hazard scan verified zero schema or contract collisions.';
 
+  if (env.OPERATOR_GLOBAL_PASSTHROUGH === 'true') {
+    const budget = 15_000;
+    const deadline = performance.now() + budget;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), budget);
+    const boundedFetch: typeof fetch = async (input, init = {}) => {
+      if (controller.signal.aborted || performance.now() >= deadline) throw new Error('paused publication deadline exceeded');
+      let onAbort: (() => void) | undefined;
+      const aborted = new Promise<never>((_resolve, reject) => {
+        onAbort = () => reject(new Error('paused publication deadline exceeded'));
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+      });
+      try {
+        const response = await Promise.race([
+          Promise.resolve(fetchFn(input, { ...init, signal: controller.signal })),
+          aborted,
+        ]);
+        if (controller.signal.aborted || performance.now() >= deadline) throw new Error('paused publication deadline exceeded');
+        return response;
+      } finally {
+        if (onAbort) controller.signal.removeEventListener('abort', onAbort);
+      }
+    };
+    try {
+      for (const pr of constituentPrs) {
+        const remaining = Math.floor(deadline - performance.now());
+        if (remaining <= 0 || controller.signal.aborted) {
+          return await createBlockedOutcome({
+            owner, repo, headSha, token,
+            summary: 'Merge group attestation blocked: current paused-publication verification exceeded its 15 second deadline.',
+            constituentPrs: constituentPrs.map((p) => p.number),
+            bypassedHazardScan: hazardResult.bypassed,
+            fetchFn: boundedFetch,
+          });
+        }
+        const receipt = await readOperatorPassthroughForTarget(env, { owner, repo, prNumber: pr.number }, {
+          headSha: pr.head_sha,
+        }, { fetchFn: boundedFetch, timeoutMs: Math.min(remaining, budget), signal: controller.signal });
+        if (receipt.status !== 'succeeded' || !receipt.mergeEligible || !receipt.publicationReceiptAvailable
+          || receipt.owner?.toLowerCase() !== owner.toLowerCase() || receipt.repo?.toLowerCase() !== repo.toLowerCase()
+          || receipt.headSha !== pr.head_sha) {
+          return await createBlockedOutcome({
+            owner, repo, headSha, token,
+            summary: `Merge group attestation blocked: PR #${pr.number} has no current durable App 4385771 raw/Gate passthrough publication receipt.`,
+            constituentPrs: constituentPrs.map((p) => p.number),
+            bypassedHazardScan: hazardResult.bypassed,
+            fetchFn: boundedFetch,
+          });
+        }
+      }
+      const remaining = Math.floor(deadline - performance.now());
+      if (remaining <= 0 || controller.signal.aborted) {
+        return await createBlockedOutcome({
+          owner, repo, headSha, token,
+          summary: 'Merge group attestation blocked: paused publication deadline expired before the merge-group check was written.',
+          constituentPrs: constituentPrs.map((p) => p.number),
+          bypassedHazardScan: hazardResult.bypassed,
+          fetchFn: boundedFetch,
+        });
+      }
+      const summary = `Merge group passed constituent, current durable App ${requiredAppId} raw/Gate publication, and hazard checks for [${attestedNumbers}]. No semantic review ran; zero lanes were started. ${hazardNote}`;
+      const pubResult = await publishMergeGroupCheckRun({
+        owner, repo, headSha, token, conclusion: 'success', title: ATTESTATION_CHECK_TITLE, summary,
+        fetchFn: boundedFetch,
+      });
+      if (!pubResult.success || controller.signal.aborted || performance.now() >= deadline) {
+        return await createBlockedOutcome({
+          owner, repo, headSha,
+          summary: `Merge group attestation failed to publish a current paused-publication check: ${pubResult.error || 'deadline exceeded'}`,
+          constituentPrs: constituentPrs.map((p) => p.number),
+          bypassedHazardScan: hazardResult.bypassed,
+          skipPublish: true,
+          checkRunError: pubResult.error || 'deadline exceeded',
+        });
+      }
+      return {
+        status: 'attested', headSha, conclusion: 'success', title: ATTESTATION_CHECK_TITLE, summary,
+        constituentPrs: constituentPrs.map((p) => p.number), bypassedHazardScan: hazardResult.bypassed,
+        checkRunId: pubResult.checkRunId,
+      };
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+    }
+  }
+
+  // 4. Attestation Success: Publish successful check run directly to GitHub API
   const summary = `Attested constituent pull request(s) [${attestedNumbers}] possess valid Review Yeti checks from App ID ${requiredAppId}. ${hazardNote}`;
 
   const pubResult = await publishMergeGroupCheckRun({

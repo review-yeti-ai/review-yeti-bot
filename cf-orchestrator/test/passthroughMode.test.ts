@@ -12,13 +12,13 @@ import { formatStickyCommentMarkdown, publishStickyComment } from '../src/github
 import { buildGitHubReviewPayload } from '../src/reviewPublisher.js';
 import { handleMergeGroupAttestation, verifyConstituentChecks } from '../src/mergeGroupAttestation.js';
 import { attestPrGateTool } from '../src/mcp/tools/attestPrGate.js';
+import { triggerReviewTool } from '../src/mcp/tools/triggerReview.js';
 import { ReviewJobWorkflow } from '../src/reviewJobWorkflow.js';
 import { MockContainerRunner } from '../src/runners/containerRunner.js';
 import { createMockEnv } from './mockDurableObject.js';
 import { handleActionDispatch } from '../src/api/actionDispatchRoute.js';
 import worker from '../src/worker.js';
 // @ts-ignore
-import { validatePassthroughReceipt } from '../../../scripts/dispatch-doks-action.mjs';
 import { generateKeyPair, SignJWT, type KeyLike } from 'jose';
 
 describe('Review Yeti Cloudflare Orchestrator - Operator Passthrough Mode ("Full Pass Open Pass Ship It")', () => {
@@ -126,7 +126,7 @@ describe('Review Yeti Cloudflare Orchestrator - Operator Passthrough Mode ("Full
     let publicKey: KeyLike;
     let mockKeySet: () => KeyLike;
 
-    it('returns published, mergeEligible: true ActionDispatchPassthrough.v1 when in app-gate mode', async () => {
+    it('fails closed when the OIDC target has no service-owned repository enrollment', async () => {
       const pair = await generateKeyPair('RS256');
       privateKey = pair.privateKey;
       publicKey = pair.publicKey;
@@ -202,31 +202,40 @@ describe('Review Yeti Cloudflare Orchestrator - Operator Passthrough Mode ("Full
         });
 
         const res = await handleActionDispatch(req, env, undefined, { keySet: mockKeySet });
-        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.status, 503);
 
         const receipt = (await res.json()) as any;
-        const validated = validatePassthroughReceipt(receipt, dispatchReq);
-
-        assert.strictEqual(validated.version, 'ActionDispatchPassthrough.v1');
-        assert.strictEqual(validated.status, 'passthrough');
-        assert.strictEqual(validated.verdict, 'SHIP');
-        assert.strictEqual(validated.expectedLanes, 0);
-        assert.strictEqual(validated.completedLanes, 0);
-        assert.strictEqual(validated.publicationState, 'published');
-        assert.strictEqual(validated.publicationReceiptAvailable, true);
-        assert.strictEqual(validated.mergeEligible, true);
-        assert.strictEqual(validated.reviewCheckId, 201);
-        assert.strictEqual(validated.gateCheckId, 202);
-        assert.match(validated.publicationId, /^[a-f0-9]{64}$/);
-        assert.match(validated.auditDigest, /^[a-f0-9]{64}$/);
+        assert.strictEqual(receipt.version, 'ActionDispatchPassthrough.v1');
+        assert.strictEqual(receipt.status, 'passthrough');
+        assert.strictEqual(receipt.publicationState, 'unavailable');
+        assert.strictEqual(receipt.publicationReceiptAvailable, false);
+        assert.strictEqual(receipt.mergeEligible, false);
+        assert.strictEqual(receipt.errorCode, 'service_configuration_unavailable');
+        assert.equal(calls.length, 0);
       } finally {
         globalThis.fetch = originalFetch;
       }
     });
   });
 
+  describe('MCP Trigger in Passthrough Mode', () => {
+    it('uses the shared publisher and does not acquire a provider slot when enrollment is missing', async () => {
+      const env = { ...createMockEnv(), OPERATOR_GLOBAL_PASSTHROUGH: 'true' };
+      const result = await triggerReviewTool.execute({ owner: 'exampleorg', repo: 'sample-repo', prNumber: 42 }, { env } as any);
+      assert.equal(result.isError, true);
+      const jsonContent = result.content?.find((item: any) => item.text?.startsWith('{'));
+      assert.ok(jsonContent);
+      const receipt = JSON.parse((jsonContent as any).text);
+      assert.equal(receipt.status, 'unavailable');
+      assert.equal(receipt.mergeEligible, false);
+      assert.equal(receipt.errorCode, 'service_configuration_unavailable');
+      const status = await env.REPO_GATE.get(env.REPO_GATE.idFromName('exampleorg/sample-repo')).fetch('http://do/status');
+      assert.equal((await status.json() as any).activeCount, 0);
+    });
+  });
+
   describe('Merge Group Attestation in Passthrough Mode', () => {
-    it('handleMergeGroupAttestation approves immediately with conclusion: success', async () => {
+    it('does not skip constituent and hazard checks during operator pause', async () => {
       const calls: Array<{ url: string; method: string; body: any }> = [];
       const mockFetch: typeof fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
@@ -262,15 +271,14 @@ describe('Review Yeti Cloudflare Orchestrator - Operator Passthrough Mode ("Full
         mockFetch
       );
 
-      assert.strictEqual(outcome.status, 'attested');
-      assert.strictEqual(outcome.conclusion, 'success');
+      assert.strictEqual(outcome.status, 'blocked');
+      assert.strictEqual(outcome.conclusion, 'failure');
       assert.strictEqual(outcome.title, 'Review Yeti (Merge Group Attestation)');
-      assert.ok(outcome.summary.includes(OPERATOR_PASSTHROUGH_MODE_MARKER));
-      assert.ok(outcome.summary.includes(OPERATOR_PASSTHROUGH_ZERO_LANES_MARKER));
-      assert.strictEqual(outcome.bypassedHazardScan, true);
+      assert.ok(outcome.summary.toLowerCase().includes('blocked'));
+      assert.notStrictEqual(outcome.bypassedHazardScan, true);
     });
 
-    it('verifyConstituentChecks accepts passthrough checks with operator-passthrough external IDs', () => {
+    it('verifyConstituentChecks requires the current worker check identity format', () => {
       const checks = [
         {
           id: 501,
@@ -278,18 +286,22 @@ describe('Review Yeti Cloudflare Orchestrator - Operator Passthrough Mode ("Full
           status: 'completed',
           conclusion: 'success',
           started_at: '2026-10-09T12:00:00Z',
-          external_id: 'review-yeti:operator-passthrough:0123456789abcdef:worker',
+          external_id: 'run_0123456789abcdef0123456789abcdef:a1',
           app: { id: 4385771 },
         },
       ];
 
       const res = verifyConstituentChecks(checks, 42, '0123456789abcdef0123456789abcdef01234567');
       assert.strictEqual(res.passed, true);
+      checks[0]!.external_id = 'run_0123456789abcdef0123456789abcdef:a1:review-mode=passthrough:op2';
+      assert.strictEqual(verifyConstituentChecks(checks, 42, '0123456789abcdef0123456789abcdef01234567').passed, true);
+      checks[0]!.external_id = 'review-yeti:operator-passthrough:0123456789abcdef:worker';
+      assert.strictEqual(verifyConstituentChecks(checks, 42, '0123456789abcdef0123456789abcdef01234567').passed, false);
     });
   });
 
   describe('MCP Gate Attestation Tool in Passthrough Mode', () => {
-    it('attestPrGateTool returns gate_status: PASSED with zero blockers and signed HMAC', async () => {
+    it('attestPrGateTool blocks without a current durable publication receipt', async () => {
       const result = await attestPrGateTool.execute(
         {
           owner: 'exampleorg',
@@ -310,16 +322,15 @@ describe('Review Yeti Cloudflare Orchestrator - Operator Passthrough Mode ("Full
       assert.ok(jsonContent);
       const parsed = JSON.parse((jsonContent as any).text);
 
-      assert.strictEqual(parsed.attested, true);
-      assert.strictEqual(parsed.gate_status, 'PASSED');
-      assert.deepStrictEqual(parsed.blockers, []);
-      assert.ok(parsed.attestation_token);
-      assert.match(parsed.attestation_token, /^[a-f0-9]{64}$/);
+      assert.strictEqual(parsed.attested, false);
+      assert.strictEqual(parsed.gate_status, 'BLOCKED');
+      assert.ok(parsed.blockers.length > 0);
+      assert.equal(parsed.attestation_token, '');
     });
   });
 
   describe('ReviewJobWorkflow in Passthrough Mode', () => {
-    it('executes zero container jobs and completes with verdict SHIP and status succeeded', async () => {
+    it('does not publish through the workflow when required service-owned enrollment is unavailable', async () => {
       const originalFetch = globalThis.fetch;
       const checks = new Map<number, any>();
       let nextId = 701;
@@ -408,11 +419,12 @@ describe('Review Yeti Cloudflare Orchestrator - Operator Passthrough Mode ("Full
           mockStep as any
         );
 
-        assert.strictEqual(result.runId, 'run_wf_passthrough_01');
-        assert.strictEqual(result.status, 'succeeded');
-        assert.strictEqual(result.verdict, 'SHIP');
-        assert.strictEqual(result.mergeEligible, true);
-        assert.strictEqual(result.publicationState, 'published');
+        assert.equal(result.status, 'unavailable');
+        assert.equal(result.verdict, 'unavailable');
+        assert.equal(result.mergeEligible, false);
+        assert.equal(result.publicationState, 'unavailable');
+        assert.equal(result.errorCode, 'service_configuration_unavailable');
+        assert.equal(checks.size, 0);
 
         // Verify zero container dispatch occurred!
         assert.strictEqual(runner.dispatched.length, 0);

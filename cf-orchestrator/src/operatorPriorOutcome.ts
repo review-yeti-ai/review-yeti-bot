@@ -71,11 +71,17 @@ async function isExactPreDispatchFailure(env: Env, spec: ReviewRunSpec, runId: s
   return workflow.status === 'errored' && workflow.error?.message === PRE_DISPATCH_CONFIG_ERROR;
 }
 
-export async function assertNoBlockingPriorOutcome(env: Env, spec: ReviewRunSpec, token: string, appId: number): Promise<string[]> {
+export async function assertNoBlockingPriorOutcome(
+  env: Env,
+  spec: ReviewRunSpec,
+  token: string,
+  appId: number,
+  fetchFn: typeof fetch = fetch
+): Promise<string[]> {
   const base = `https://api.github.com/repos/${encodeURIComponent(spec.owner)}/${encodeURIComponent(spec.repo)}`;
   await assertCurrentRunIsFresh(env, spec);
   const latestPriorRunId = await latestPriorRunForPr(env, spec);
-  const reviewResponse = await fetch(`${base}/pulls/${spec.prNumber}/reviews?per_page=100`, {
+  const reviewResponse = await fetchFn(`${base}/pulls/${spec.prNumber}/reviews?per_page=100`, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'review-yeti-cf-orchestrator' },
   });
   if (!reviewResponse.ok) reject('prior_review_state_unavailable');
@@ -83,7 +89,7 @@ export async function assertNoBlockingPriorOutcome(env: Env, spec: ReviewRunSpec
   if (!Array.isArray(reviews) || reviews.length >= 100 || reviewResponse.headers.get('Link')?.includes('rel="next"')) reject('prior_review_history_incomplete');
   if (reviews.some((review) => review.state === 'CHANGES_REQUESTED')) reject('prior_semantic_block');
 
-  const checkResponse = await fetch(`${base}/commits/${encodeURIComponent(spec.headSha)}/check-runs?filter=all&per_page=100`, {
+  const checkResponse = await fetchFn(`${base}/commits/${encodeURIComponent(spec.headSha)}/check-runs?filter=all&per_page=100`, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'review-yeti-cf-orchestrator' },
   });
   if (!checkResponse.ok) reject('prior_check_state_unavailable');
@@ -112,16 +118,25 @@ export async function assertNoBlockingPriorOutcome(env: Env, spec: ReviewRunSpec
   const usedGates = new Set<number>();
   const allowedTransportRunIds: string[] = [];
   for (const worker of workers) {
-    const match = String(worker.external_id || '').match(/^(run_[A-Za-z0-9_-]{1,128}):a([1-9][0-9]*)$/u);
+    const match = String(worker.external_id || '').match(/^(run_[A-Za-z0-9_-]{1,128}):a([1-9][0-9]*)(:review-mode=passthrough:op2)?$/u);
     if (!match) reject('prior_check_identity_unverified');
     const runId = match[1];
     const attempt = Number(match[2]);
-    if (worker.external_id !== deriveWorkerExternalId(runId, attempt)) reject('prior_check_identity_unverified');
-    const gateExternalId = await deriveGateExternalId({ owner: spec.owner, repo: spec.repo, headSha: spec.headSha, runId, executionAttempt: attempt });
+    const passthroughSuffix = match[3] || '';
+    const expectedWorkerExternalId = deriveWorkerExternalId(runId, attempt);
+    if (worker.external_id !== `${expectedWorkerExternalId}${passthroughSuffix}`) reject('prior_check_identity_unverified');
+    const gateBaseExternalId = await deriveGateExternalId({ owner: spec.owner, repo: spec.repo, headSha: spec.headSha, runId, executionAttempt: attempt });
+    const gateExternalId = `${gateBaseExternalId}${passthroughSuffix}`;
     const matchingGates = gates.filter((gate: any) => gate.external_id === gateExternalId);
     if (matchingGates.length !== 1) reject('prior_check_pair_incomplete');
     const gate = matchingGates[0];
     usedGates.add(Number(gate.id));
+
+    if (passthroughSuffix === ':review-mode=passthrough:op2'
+      && (!String(worker.output?.summary || '').includes('review-mode=passthrough')
+        || !String(gate.output?.summary || '').includes('review-mode=passthrough'))) {
+      reject('prior_check_identity_unverified');
+    }
 
     if (worker.conclusion === 'success' && gate.conclusion === 'success') {
       const status = await priorDoStatus(env, spec, runId);

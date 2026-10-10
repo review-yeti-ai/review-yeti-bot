@@ -1,4 +1,5 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult } from '../types.js';
+import { publishOperatorPassthroughForTarget } from '../../operatorPassthroughPublisher.js';
 
 export const triggerReviewTool: McpToolHandler = {
   definition: {
@@ -83,6 +84,25 @@ export const triggerReviewTool: McpToolHandler = {
 
     const runId = `run_cf_mcp_${Date.now()}_pr${prNumber}`;
     const env = context.env || {};
+
+    if (env.OPERATOR_GLOBAL_PASSTHROUGH === 'true') {
+      const expected = commitSha === 'latest-head' ? undefined : { headSha: commitSha };
+      const receipt = await publishOperatorPassthroughForTarget(env, { owner, repo, prNumber }, {}, expected);
+      const published = receipt.status === 'succeeded' && receipt.mergeEligible && receipt.publicationReceiptAvailable;
+      const trackingUrl = receipt.runId
+        ? `https://review-yeti-cf-orchestrator.example.workers.dev/api/dispatch/runs/${receipt.runId}/status`
+        : null;
+      const summary = published
+        ? `Operator passthrough publication is current for ${receipt.owner}/${receipt.repo}#${receipt.prNumber} at ${receipt.headSha}. No semantic review ran; zero lanes were started.`
+        : `Operator passthrough publication is unavailable for ${owner}/${repo}#${prNumber}. No semantic review ran; merge eligibility is false.`;
+      return {
+        isError: !published,
+        content: [
+          { type: 'text', text: summary },
+          { type: 'text', text: JSON.stringify({ ...receipt, slotGranted: false, dispatched: published, trackingUrl }, null, 2) },
+        ],
+      };
+    }
 
     let acquired = false;
     let queuePosition = 0;

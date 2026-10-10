@@ -20,7 +20,7 @@ import type { Env, ReviewRunSpec } from '../src/types.js';
 // Import verification functions directly from the GitHub Actions dispatch script
 // to prove 100% strict contract compatibility!
 // @ts-ignore
-import { validateReceipt, validatePassthroughReceipt } from '../../../scripts/dispatch-doks-action.mjs';
+import { validateReceipt } from '../../../scripts/dispatch-doks-action.mjs';
 
 describe('GitHub Actions OIDC Action Dispatch', () => {
   let privateKey: KeyLike;
@@ -454,7 +454,7 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
       assert.strictEqual(data.error, 'Action dispatch is not authorized');
     });
 
-    it('returns HTTP 200 with ActionDispatchPassthrough.v1 when operator passthrough mode is enabled', async () => {
+    it('fails closed without a service-owned current repository enrollment', async () => {
       const { env } = createTestWorkerEnv({
         OPERATOR_GLOBAL_PASSTHROUGH: 'true',
       });
@@ -471,22 +471,13 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
       });
 
       const res = await handleActionDispatch(req, env, undefined, { keySet: mockKeySet });
-      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.status, 503);
 
       const receipt = await res.json();
-
-      // Validate that our receipt strictly satisfies dispatch-doks-action.mjs's validator!
-      const validated = validatePassthroughReceipt(receipt, dispatchReq);
-      assert.strictEqual(validated.version, 'ActionDispatchPassthrough.v1');
-      assert.strictEqual(validated.status, 'passthrough');
-      assert.strictEqual(validated.verdict, 'SHIP');
-      assert.strictEqual(validated.expectedLanes, 0);
-      assert.strictEqual(validated.completedLanes, 0);
-      assert.strictEqual(validated.mergeEligible, false);
-      assert.strictEqual(validated.owner, 'exampleorg');
-      assert.strictEqual(validated.repo, 'sample-repo');
-      assert.strictEqual(validated.prNumber, 42);
-      assert.strictEqual(validated.deliveryId, dispatchReq.deliveryId);
+      assert.strictEqual((receipt as any).version, 'ActionDispatchPassthrough.v1');
+      assert.strictEqual((receipt as any).publicationState, 'unavailable');
+      assert.strictEqual((receipt as any).mergeEligible, false);
+      assert.strictEqual((receipt as any).errorCode, 'service_configuration_unavailable');
     });
 
     it('returns HTTP 202 with ActionDispatchAccepted.v1 and dispatches workflow on normal admission', async () => {

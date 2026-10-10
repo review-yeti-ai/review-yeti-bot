@@ -1,5 +1,4 @@
 import type { Env, ReviewRunSpec, ReviewRunState } from './types.js';
-import { isPassthroughMode } from './types.js';
 import { fetchLivePullRequestDiff } from './auth/githubEdgeAuth.js';
 import { reviewRunSpecDigest } from './reviewRunIdentity.js';
 import {
@@ -7,6 +6,15 @@ import {
   completeChecks,
   publishStickyComment,
 } from './github/index.js';
+import type {
+  OperatorPassthroughIdentity,
+  OperatorPassthroughReceipt,
+  OperatorPassthroughStageMutation,
+  OperatorPassthroughState,
+} from './operatorPassthroughTypes.js';
+
+const OPERATOR_PASSTHROUGH_STATE_KEY = 'operatorPassthrough.v1';
+const OPERATOR_PASSTHROUGH_LINK_KEY = 'operatorPassthroughLink.v1';
 
 interface InternalReviewRunState extends ReviewRunState {
   jobId?: string;
@@ -16,6 +24,8 @@ export class ReviewRunDO {
   private state: DurableObjectState;
   private env: Env;
   private runState: InternalReviewRunState | null = null;
+  private operatorPassthrough: OperatorPassthroughState | null = null;
+  private operatorPassthroughLink: { version: 'OperatorPassthroughLink.v1'; publicationRunId: string } | null = null;
   private initialized: Promise<void>;
   private eventLog: Array<{ type: string; data: any; timestamp: number }> = [];
   private activeStreams: Set<ReadableStreamDefaultController> = new Set();
@@ -34,11 +44,312 @@ export class ReviewRunDO {
       if (storedEvents) {
         this.eventLog = storedEvents;
       }
+      this.operatorPassthrough = await this.state.storage.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY) ?? null;
+      this.operatorPassthroughLink = await this.state.storage.get<{ version: 'OperatorPassthroughLink.v1'; publicationRunId: string }>(OPERATOR_PASSTHROUGH_LINK_KEY) ?? null;
     });
   }
 
   private async ensureInitialized(): Promise<void> {
     await this.initialized;
+  }
+
+  private validOperatorPassthroughIdentity(value: unknown): value is OperatorPassthroughIdentity {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const identity = value as OperatorPassthroughIdentity;
+    const allowedIdentityKeys = ['version', 'repositoryId', 'owner', 'repo', 'prNumber', 'headSha', 'baseSha', 'baseRef', 'appId', 'policyDigest', 'policySource'].sort();
+    const identityKeys = Object.keys(value).sort();
+    const safeName = (input: unknown): input is string => typeof input === 'string'
+      && /^[A-Za-z0-9_.-]{1,100}$/u.test(input) && input !== '.' && input !== '..';
+    const source = identity.policySource;
+    const allowedSourceKeys = ['repositoryId', 'owner', 'repo', 'ref', 'path', 'sha', 'contentDigest'].sort();
+    const sourceKeys = source && typeof source === 'object' ? Object.keys(source).sort() : [];
+    return identityKeys.length === allowedIdentityKeys.length && identityKeys.every((key, index) => key === allowedIdentityKeys[index])
+      && sourceKeys.length === allowedSourceKeys.length && sourceKeys.every((key, index) => key === allowedSourceKeys[index])
+      && identity.version === 'OperatorPassthroughIdentity.v1'
+      && Number.isSafeInteger(identity.repositoryId) && identity.repositoryId > 0
+      && safeName(identity.owner) && safeName(identity.repo)
+      && Number.isSafeInteger(identity.prNumber) && identity.prNumber > 0
+      && /^[a-f0-9]{40}$/iu.test(identity.headSha)
+      && /^[a-f0-9]{40}$/iu.test(identity.baseSha)
+      && typeof identity.baseRef === 'string' && /^[A-Za-z0-9_./-]{1,256}$/u.test(identity.baseRef)
+      && identity.appId === 4385771
+      && /^[a-f0-9]{64}$/u.test(identity.policyDigest)
+      && !!source && Number.isSafeInteger(source.repositoryId) && source.repositoryId > 0
+      && safeName(source.owner) && safeName(source.repo)
+      && typeof source.ref === 'string' && /^[A-Za-z0-9_./-]{1,256}$/u.test(source.ref)
+      && typeof source.path === 'string' && source.path.length > 0 && source.path.length <= 512
+      && !source.path.startsWith('/') && !source.path.split('/').some((part) => !part || part === '.' || part === '..')
+      && /^[a-f0-9]{40}$/iu.test(source.sha)
+      && /^[a-f0-9]{64}$/u.test(source.contentDigest);
+  }
+
+  private async reserveOperatorPassthrough(input: {
+    version: 'OperatorPassthroughReservation.v1';
+    runId: string;
+    publicationId: string;
+    identity: OperatorPassthroughIdentity;
+  }): Promise<{ accepted: boolean; state?: OperatorPassthroughState; reason?: string }> {
+    await this.ensureInitialized();
+    if (input.version !== 'OperatorPassthroughReservation.v1'
+      || !/^run_[a-f0-9]{32}$/u.test(input.runId)
+      || !/^[a-f0-9]{64}$/u.test(input.publicationId)
+      || !this.validOperatorPassthroughIdentity(input.identity)) {
+      return { accepted: false, reason: 'invalid_identity' };
+    }
+    if (this.runState?.cancelRequested || this.runState?.phase === 'Cancelled') {
+      return { accepted: false, reason: 'cancel_requested' };
+    }
+
+    const result = await this.state.storage.transaction(async (transaction) => {
+      const existing = await transaction.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY);
+      if (existing) {
+        const sameIdentity = existing.version === 'OperatorPassthroughState.v1'
+          && existing.runId === input.runId
+          && existing.publicationId === input.publicationId
+          && JSON.stringify(existing.identity) === JSON.stringify(input.identity);
+        if (!sameIdentity) return { accepted: false as const, reason: 'identity_conflict' };
+        return { accepted: true as const, state: existing };
+      }
+      if (this.runState?.cancelRequested || this.runState?.phase === 'Cancelled') {
+        return { accepted: false as const, reason: 'cancel_requested' };
+      }
+      const reserved: OperatorPassthroughState = {
+        version: 'OperatorPassthroughState.v1',
+        runId: input.runId,
+        publicationId: input.publicationId,
+        identity: input.identity,
+        createdAt: Date.now(),
+        cancelRequested: false,
+        priorOutcomeChecked: false,
+        priorControlRunIds: [],
+        stages: {
+          review: { creationState: 'not_started', checkId: null, patchState: 'not_started' },
+          gate: { creationState: 'not_started', checkId: null, patchState: 'not_started' },
+        },
+        receipt: null,
+      };
+      await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, reserved);
+      return { accepted: true as const, state: reserved };
+    });
+    if (result.accepted) this.operatorPassthrough = result.state!;
+    return result;
+  }
+
+  private async recordOperatorPassthroughAdmission(input: {
+    version: 'OperatorPassthroughAdmission.v1';
+    publicationId: string;
+    priorControlRunIds: string[];
+  }): Promise<{ accepted: boolean; reason?: string; state?: OperatorPassthroughState }> {
+    await this.ensureInitialized();
+    if (input.version !== 'OperatorPassthroughAdmission.v1' || !/^[a-f0-9]{64}$/u.test(input.publicationId)
+      || !Array.isArray(input.priorControlRunIds) || input.priorControlRunIds.length > 100
+      || input.priorControlRunIds.some((id) => typeof id !== 'string' || !/^run_[A-Za-z0-9_-]{1,128}$/u.test(id))) {
+      return { accepted: false, reason: 'invalid_prior_outcome_receipt' };
+    }
+    const result = await this.state.storage.transaction(async (transaction) => {
+      const stored = await transaction.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY);
+      if (!stored || stored.version !== 'OperatorPassthroughState.v1' || stored.publicationId !== input.publicationId) {
+        return { accepted: false as const, reason: 'reservation_missing' };
+      }
+      if (stored.priorOutcomeChecked) {
+        return JSON.stringify(stored.priorControlRunIds) === JSON.stringify(input.priorControlRunIds)
+          ? { accepted: true as const, state: stored }
+          : { accepted: false as const, reason: 'prior_outcome_identity_conflict' };
+      }
+      const next = { ...stored, priorOutcomeChecked: true, priorControlRunIds: [...input.priorControlRunIds] };
+      await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, next);
+      return { accepted: true as const, state: next };
+    });
+    if (result.state) this.operatorPassthrough = result.state;
+    return result;
+  }
+
+  private async mutateOperatorPassthroughStage(input: OperatorPassthroughStageMutation): Promise<{
+    accepted: boolean; state?: OperatorPassthroughState; action?: 'create' | 'reconcile' | 'already_created' | 'patch' | 'already_patched'; reason?: string;
+  }> {
+    await this.ensureInitialized();
+    if (input.version !== 'OperatorPassthroughStageMutation.v1'
+      || !/^[a-f0-9]{64}$/u.test(input.publicationId)
+      || (input.stage !== 'review' && input.stage !== 'gate')
+      || !['create-start', 'created', 'patch-start', 'patched'].includes(input.action)) {
+      return { accepted: false, reason: 'invalid_stage_mutation' };
+    }
+    if (input.checkId !== undefined && (!Number.isSafeInteger(input.checkId) || input.checkId <= 0)) {
+      return { accepted: false, reason: 'invalid_check_id' };
+    }
+
+    const result = await this.state.storage.transaction(async (transaction) => {
+      const stored = await transaction.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY);
+      if (!stored || stored.version !== 'OperatorPassthroughState.v1' || stored.publicationId !== input.publicationId) {
+        return { accepted: false as const, reason: 'reservation_missing' };
+      }
+      if (stored.cancelRequested || this.runState?.cancelRequested || this.runState?.phase === 'Cancelled') {
+        const cancelled = { ...stored, cancelRequested: true };
+        await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, cancelled);
+        return { accepted: false as const, state: cancelled, reason: 'cancel_requested' };
+      }
+      const stage = { ...stored.stages[input.stage] };
+      const next: OperatorPassthroughState = {
+        ...stored,
+        stages: { ...stored.stages, [input.stage]: stage },
+      };
+
+      if (input.action === 'create-start') {
+        if (stage.checkId !== null && stage.creationState === 'created') {
+          return { accepted: true as const, state: stored, action: 'already_created' as const };
+        }
+        if (stage.creationState === 'creating') {
+          return { accepted: true as const, state: stored, action: 'reconcile' as const };
+        }
+        stage.creationState = 'creating';
+        await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, next);
+        return { accepted: true as const, state: next, action: 'create' as const };
+      }
+
+      if (input.action === 'created') {
+        if (input.checkId === undefined) return { accepted: false as const, reason: 'check_id_required' };
+        if (stage.creationState === 'created' && stage.checkId !== input.checkId) {
+          return { accepted: false as const, reason: 'check_id_conflict' };
+        }
+        if (stage.creationState !== 'creating' && stage.checkId !== input.checkId) {
+          return { accepted: false as const, reason: 'create_not_reserved' };
+        }
+        stage.creationState = 'created';
+        stage.checkId = input.checkId;
+        await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, next);
+        return { accepted: true as const, state: next };
+      }
+
+      if (input.action === 'patch-start') {
+        if (stage.creationState !== 'created' || stage.checkId === null
+          || (input.checkId !== undefined && input.checkId !== stage.checkId)) {
+          return { accepted: false as const, reason: 'check_not_bound' };
+        }
+        if (stage.patchState === 'completed') {
+          return { accepted: true as const, state: stored, action: 'already_patched' as const };
+        }
+        stage.patchState = 'patching';
+        await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, next);
+        return { accepted: true as const, state: next, action: 'patch' as const };
+      }
+
+      if (stage.creationState !== 'created' || stage.checkId === null
+        || (input.checkId !== undefined && input.checkId !== stage.checkId)) {
+        return { accepted: false as const, reason: 'check_not_bound' };
+      }
+      stage.patchState = 'completed';
+      await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, next);
+      return { accepted: true as const, state: next };
+    });
+    if (result.state) this.operatorPassthrough = result.state;
+    return result;
+  }
+
+  private async saveOperatorPassthroughReceipt(input: {
+    version: 'OperatorPassthroughReceiptWrite.v1';
+    publicationId: string;
+    receipt: OperatorPassthroughReceipt;
+  }): Promise<{ accepted: boolean; reason?: string; state?: OperatorPassthroughState }> {
+    await this.ensureInitialized();
+    const result = await this.state.storage.transaction(async (transaction) => {
+      const stored = await transaction.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY);
+      const receipt = input.receipt;
+      if (input.version !== 'OperatorPassthroughReceiptWrite.v1' || !stored
+        || stored.version !== 'OperatorPassthroughState.v1' || stored.publicationId !== input.publicationId
+        || receipt?.version !== 'OperatorPassthroughReceipt.v2' || receipt.runId !== stored.runId
+        || receipt.publicationId !== stored.publicationId || receipt.policyDigest !== stored.identity.policyDigest
+        || receipt.repositoryId !== stored.identity.repositoryId || receipt.owner !== stored.identity.owner
+        || receipt.repo !== stored.identity.repo || receipt.prNumber !== stored.identity.prNumber
+        || receipt.headSha !== stored.identity.headSha || receipt.baseSha !== stored.identity.baseSha
+        || receipt.appId !== stored.identity.appId || receipt.reason !== 'operator_global_passthrough'
+        || receipt.reviewStarted !== false || receipt.expectedLanes !== 0 || receipt.completedLanes !== 0) {
+        return { accepted: false as const, reason: 'receipt_identity_mismatch' };
+      }
+      if (receipt.status === 'succeeded') {
+        const workerId = stored.stages.review.checkId;
+        const gateId = stored.stages.gate.checkId;
+        const worker = receipt.checks?.worker;
+        const gate = receipt.checks?.gate;
+        if (!receipt.mergeEligible || receipt.publicationState !== 'published'
+          || !receipt.publicationReceiptAvailable || !receipt.auditDigest
+          || receipt.publicationIdempotent !== true
+          || JSON.stringify(receipt.policySource) !== JSON.stringify(stored.identity.policySource)
+          || stored.cancelRequested || this.runState?.cancelRequested
+          || stored.stages.review.patchState !== 'completed' || stored.stages.gate.patchState !== 'completed'
+          || workerId === null || gateId === null
+          || receipt.workerCheckId !== workerId || receipt.gateCheckId !== gateId
+          || !stored.priorOutcomeChecked
+          || !Array.isArray(receipt.priorControlRunIds)
+          || JSON.stringify(receipt.priorControlRunIds) !== JSON.stringify(stored.priorControlRunIds)
+          || receipt.findingsCount !== 0
+          || worker?.id !== workerId || gate?.id !== gateId
+          || worker.appId !== 4385771 || gate.appId !== 4385771
+          || worker.annotationsCount !== 0 || gate.annotationsCount !== 0
+          || worker.name !== 'Review Yeti' || gate.name !== 'Review Yeti Gate'
+          || worker.headSha !== stored.identity.headSha || gate.headSha !== stored.identity.headSha
+          || worker.status !== 'completed' || gate.status !== 'completed'
+          || worker.conclusion !== 'success' || gate.conclusion !== 'success') {
+          return { accepted: false as const, reason: 'receipt_not_published' };
+        }
+      } else if (receipt.status !== 'unavailable' || receipt.mergeEligible
+        || receipt.publicationState !== 'unavailable' || receipt.verdict !== 'unavailable') {
+        return { accepted: false as const, reason: 'invalid_unavailable_receipt' };
+      }
+      if (stored.receipt?.status === 'succeeded' && receipt.status !== 'succeeded') {
+        return { accepted: false as const, reason: 'success_receipt_is_terminal' };
+      }
+      const next = { ...stored, receipt };
+      await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, next);
+      if (receipt.status === 'succeeded' && this.runState) {
+        this.runState.phase = 'Completed';
+        this.runState.completedAt = Date.now();
+        this.runState.terminalReceipt = receipt;
+        await transaction.put('runState', this.runState);
+      }
+      return { accepted: true as const, state: next };
+    });
+    if (result.state) this.operatorPassthrough = result.state;
+    return result;
+  }
+
+  private async saveOperatorPassthroughLink(publicationRunId: string): Promise<{ accepted: boolean; reason?: string }> {
+    await this.ensureInitialized();
+    if (!/^run_[A-Za-z0-9_-]{1,128}$/u.test(publicationRunId)) return { accepted: false, reason: 'invalid_publication_run_id' };
+    const result = await this.state.storage.transaction(async (transaction) => {
+      if (this.runState?.cancelRequested || this.runState?.phase === 'Cancelled') {
+        return { accepted: false as const, reason: 'cancel_requested' };
+      }
+      const existing = await transaction.get<{ version: 'OperatorPassthroughLink.v1'; publicationRunId: string }>(OPERATOR_PASSTHROUGH_LINK_KEY);
+      if (existing && existing.publicationRunId !== publicationRunId) return { accepted: false as const, reason: 'link_conflict' };
+      const link = { version: 'OperatorPassthroughLink.v1' as const, publicationRunId };
+      await transaction.put(OPERATOR_PASSTHROUGH_LINK_KEY, link);
+      return { accepted: true as const };
+    });
+    if (result.accepted) this.operatorPassthroughLink = { version: 'OperatorPassthroughLink.v1', publicationRunId };
+    return result;
+  }
+
+  async getOperatorPassthroughState(): Promise<OperatorPassthroughState | null> {
+    await this.ensureInitialized();
+    this.operatorPassthrough = await this.state.storage.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY) ?? null;
+    return this.operatorPassthrough;
+  }
+
+  async getOperatorPassthroughLink(): Promise<string | null> {
+    await this.ensureInitialized();
+    this.operatorPassthroughLink = await this.state.storage.get<{ version: 'OperatorPassthroughLink.v1'; publicationRunId: string }>(OPERATOR_PASSTHROUGH_LINK_KEY) ?? null;
+    return this.operatorPassthroughLink?.publicationRunId ?? null;
+  }
+
+  private async markOperatorPassthroughCancelled(): Promise<void> {
+    await this.state.storage.transaction(async (transaction) => {
+      const stored = await transaction.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY);
+      if (stored && stored.version === 'OperatorPassthroughState.v1' && !stored.cancelRequested) {
+        const next = { ...stored, cancelRequested: true };
+        await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, next);
+        this.operatorPassthrough = next;
+      }
+    });
   }
 
   async initialize(spec: ReviewRunSpec): Promise<ReviewRunState> {
@@ -161,6 +472,7 @@ export class ReviewRunDO {
       };
       this.runState = tombstone;
       await this.state.storage.put('runState', this.runState);
+      await this.markOperatorPassthroughCancelled();
       return {
         cancelled: false,
         previousPhase: 'Uninitialized',
@@ -178,6 +490,23 @@ export class ReviewRunDO {
     }
 
     if (this.runState.phase === 'Completed' || this.runState.phase === 'Failed') {
+      const operatorState = await this.getOperatorPassthroughState();
+      const linkedRunId = await this.getOperatorPassthroughLink();
+      if (operatorState || linkedRunId) {
+        await this.markOperatorPassthroughCancelled();
+        if (linkedRunId && this.env.REVIEW_RUN?.idFromName && this.env.REVIEW_RUN?.get) {
+          try {
+            const linked = this.env.REVIEW_RUN.get(this.env.REVIEW_RUN.idFromName(linkedRunId));
+            await linked.fetch('http://do/cancel', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ reason }),
+            });
+          } catch {
+            // The linked receipt is revalidated by status and remains fail-closed if this fails.
+          }
+        }
+        return { cancelled: true, previousPhase: this.runState.phase, fencingEpoch: this.runState.fencingEpoch, jobId: this.runState.jobId };
+      }
       return {
         cancelled: false,
         previousPhase: this.runState.phase,
@@ -193,6 +522,19 @@ export class ReviewRunDO {
     this.runState.completedAt = Date.now();
 
     await this.state.storage.put('runState', this.runState);
+    await this.markOperatorPassthroughCancelled();
+    const linkedRunId = await this.getOperatorPassthroughLink();
+    if (linkedRunId && this.env.REVIEW_RUN?.idFromName && this.env.REVIEW_RUN?.get) {
+      try {
+        const linked = this.env.REVIEW_RUN.get(this.env.REVIEW_RUN.idFromName(linkedRunId));
+        await linked.fetch('http://do/cancel', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason }),
+        });
+      } catch {
+        // A linked publication remains merge-ineligible if cancellation cannot be recorded.
+      }
+    }
     return {
       cancelled: true,
       previousPhase,
@@ -283,6 +625,10 @@ export class ReviewRunDO {
       return { published: false, error: 'incomplete_run_spec' };
     }
 
+    if (this.env.OPERATOR_GLOBAL_PASSTHROUGH === 'true') {
+      return { published: false, error: 'paused_publication_requires_authoritative_path' };
+    }
+
     let token: string | null = null;
     try {
       token = await getInstallationToken(this.env, owner, repo, installationId);
@@ -294,11 +640,9 @@ export class ReviewRunDO {
       return { published: false, error: 'no_valid_token' };
     }
 
-    const passthrough = isPassthroughMode(this.env);
-    const verdict = passthrough
-      ? 'success'
-      : (params?.verdict ||
-        (this.runState.phase === 'Completed' ? 'success' : this.runState.phase === 'Cancelled' ? 'cancelled' : 'failure'));
+    const passthrough = false;
+    const verdict = params?.verdict ||
+      (this.runState.phase === 'Completed' ? 'success' : this.runState.phase === 'Cancelled' ? 'cancelled' : 'failure');
     const findings = params?.findings || [];
     const summaryMarkdown = params?.summaryMarkdown;
 
@@ -355,12 +699,43 @@ export class ReviewRunDO {
     headSha?: string;
     specDigest?: string;
     terminalReceiptSummary?: { status: string | null; verdict: string | null; findingsCount: number } | null;
+    operatorPassthrough?: {
+      version: 'OperatorPassthroughState.v1';
+      runId: string;
+      publicationId: string;
+      status: 'succeeded' | 'unavailable' | 'pending';
+      mergeEligible: boolean;
+      reviewCheckId: number | null;
+      gateCheckId: number | null;
+      policyDigest: string;
+      cancelRequested: boolean;
+    };
     workerId?: string;
     jobId?: string;
   }> {
     await this.ensureInitialized();
+    const operatorState = await this.getOperatorPassthroughState();
+    const operatorPassthrough = operatorState ? {
+      version: operatorState.version,
+      runId: operatorState.runId,
+      publicationId: operatorState.publicationId,
+      status: operatorState.receipt?.status || 'pending',
+      // A stored receipt is not current proof. The Worker status route must
+      // re-read the PR, policy and App checks before exposing eligibility.
+      mergeEligible: false,
+      reviewCheckId: operatorState.stages.review.checkId,
+      gateCheckId: operatorState.stages.gate.checkId,
+      policyDigest: operatorState.identity.policyDigest,
+      cancelRequested: operatorState.cancelRequested,
+    } as const : undefined;
     if (!this.runState) {
-      return { isCurrentHead: false, phase: 'Unknown', cancelRequested: true, fencingEpoch: 0 };
+      return {
+        isCurrentHead: false,
+        phase: operatorPassthrough?.status === 'succeeded' ? 'Completed' : operatorPassthrough?.cancelRequested ? 'Cancelled' : operatorPassthrough ? 'Pending' : 'Unknown',
+        cancelRequested: operatorPassthrough?.cancelRequested ?? true,
+        fencingEpoch: 0,
+        ...(operatorPassthrough ? { runId: operatorPassthrough.runId, headSha: operatorState!.identity.headSha, operatorPassthrough } : {}),
+      };
     }
 
     const receipt = this.runState.terminalReceipt;
@@ -388,6 +763,7 @@ export class ReviewRunDO {
       headSha: this.runState.spec.headSha,
       specDigest: await reviewRunSpecDigest(this.runState.spec),
       terminalReceiptSummary,
+      ...(operatorPassthrough ? { operatorPassthrough } : {}),
       workerId: this.runState.workerId,
       jobId: this.runState.jobId,
     };
@@ -775,6 +1151,61 @@ export class ReviewRunDO {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+
+    if (request.method === 'POST' && path === '/operator-passthrough/reserve') {
+      const body = await request.json().catch(() => ({})) as {
+        version?: 'OperatorPassthroughReservation.v1';
+        runId?: string;
+        publicationId?: string;
+        identity?: OperatorPassthroughIdentity;
+      };
+      const result = await this.reserveOperatorPassthrough(body as any);
+      return Response.json(result, { status: result.accepted ? 200 : 409 });
+    }
+
+    if (request.method === 'POST' && path === '/operator-passthrough/admission') {
+      const body = await request.json().catch(() => ({})) as {
+        version: 'OperatorPassthroughAdmission.v1';
+        publicationId: string;
+        priorControlRunIds: string[];
+      };
+      const result = await this.recordOperatorPassthroughAdmission(body);
+      return Response.json(result, { status: result.accepted ? 200 : 409 });
+    }
+
+    if (request.method === 'POST' && path === '/operator-passthrough/stage') {
+      const body = await request.json().catch(() => ({})) as OperatorPassthroughStageMutation;
+      const result = await this.mutateOperatorPassthroughStage(body);
+      return Response.json(result, { status: result.accepted ? 200 : 409 });
+    }
+
+    if (request.method === 'POST' && path === '/operator-passthrough/receipt') {
+      const body = await request.json().catch(() => ({})) as {
+        version: 'OperatorPassthroughReceiptWrite.v1';
+        publicationId: string;
+        receipt: OperatorPassthroughReceipt;
+      };
+      const result = await this.saveOperatorPassthroughReceipt(body);
+      return Response.json(result, { status: result.accepted ? 200 : 409 });
+    }
+
+    if (request.method === 'POST' && path === '/operator-passthrough/link') {
+      const body = await request.json().catch(() => ({})) as { version?: string; publicationRunId?: string };
+      if (body.version !== 'OperatorPassthroughLink.v1' || typeof body.publicationRunId !== 'string') {
+        return Response.json({ accepted: false, reason: 'invalid_link' }, { status: 400 });
+      }
+      const result = await this.saveOperatorPassthroughLink(body.publicationRunId);
+      return Response.json(result, { status: result.accepted ? 200 : 409 });
+    }
+
+    if (request.method === 'GET' && path === '/operator-passthrough/read') {
+      const state = await this.getOperatorPassthroughState();
+      const link = await this.getOperatorPassthroughLink();
+      const effectiveState = state && (this.runState?.cancelRequested || this.runState?.phase === 'Cancelled')
+        ? { ...state, cancelRequested: true }
+        : state;
+      return Response.json({ state: effectiveState, link });
+    }
 
     if (request.method === 'POST' && path === '/init') {
       const spec = (await request.json()) as ReviewRunSpec;
