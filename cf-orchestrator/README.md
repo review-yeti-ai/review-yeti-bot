@@ -200,6 +200,43 @@ A durable, multi-step execution pipeline extending `WorkflowEntrypoint`:
 - **Step 4 (`verify-and-record-receipt`)**: Validates terminal outcome receipt and writes audit record to PostgreSQL via Hyperdrive.
 - **Step 5 (`cleanup-and-release`)**: Saga compensating step that guarantees token revocation and concurrency slot release.
 
+### 4. Dynamic Settings & Onboarding Engine (`settingsRoutes.ts`, `d1Client.ts`)
+- **Cloudflare D1 Relational Storage (`0003_settings_and_onboarding.sql`)**: Schemas for `organizations` and `repositories` storing numeric repository IDs, installation IDs, custom strictness profiles (`chill`, `balanced`, `assertive`), and operator passthrough flags.
+- **Dynamic Passthrough Enrollment**: `resolveRepositoryIdentities()` queries D1 storage at runtime to enroll private enterprise repositories on demand without hardcoding private customer names or repo IDs into public git files (`wrangler.toml`).
+- **Webhook Zero-Touch Auto-Enrollment**: Listens to GitHub's `installation` and `installation_repositories` events to automatically provision new organizations and repositories with passthrough enabled.
+- **REST Endpoints (`/api/settings/*`)**:
+  - `GET /api/settings/status`: Reports health, active storage engine, and repository count.
+  - `GET /api/settings/github/install-url`: Generates dynamic 1-click GitHub App install URL.
+  - `POST /api/settings/github/installations/:id/sync`: Synchronizes and enrolls authorized repositories.
+  - `GET /api/settings/github/installations/:id`: Retrieves installation metadata.
+  - Organization CRUD (`/api/settings/orgs`).
+  - Repository CRUD (`/api/settings/repos`).
+  - Bulk onboarding (`/api/settings/repos/bulk`).
+
+### 5. Edge Model Context Protocol (MCP) Server (18 Tools Total)
+Implements JSON-RPC 2.0 and Streamable SSE transport (`/api/mcp` and `/api/mcp/sse`) enabling AI coding agents to control and observe Review Yeti:
+- **Inspection & Reporting**:
+  - `review_yeti_query_active_jobs`: Active reviews in progress.
+  - `review_yeti_query_findings`: Query findings by severity and path.
+  - `review_yeti_get_cloudflare_status`: Edge Durable Object and R2 cache health.
+  - `review_yeti_get_billable_runtime_report`: Billable compute runtimes and savings.
+  - `review_yeti_get_runtime_metrics`: Turnaround latencies (p50, p75, p90, p95, p99).
+  - `review_yeti_get_analytics_dashboard`: Executive review KPIs and hotspot files.
+- **Lifecycle & Governance (Mutating)**:
+  - `review_yeti_trigger_review`: Manually trigger or re-run reviews.
+  - `review_yeti_cancel_review`: Evict and cancel in-flight jobs.
+  - `review_yeti_purge_cache`: Evict expired workspace caches.
+  - `review_yeti_attest_pr_gate`: Validate gate status and generate attestation tokens.
+  - `review_yeti_dispute_finding`: File developer disputes against false positive findings.
+  - `review_yeti_reply_review_thread`: Post replies to review threads.
+- **Settings & Onboarding**:
+  - `review_yeti_sync_github_installation` *(Mutating)*: Auto-discover and sync GitHub installations into D1.
+  - `review_yeti_get_onboarding_status`: Total organizations, active repositories, and passthrough counts.
+  - `review_yeti_list_repositories`: Filter enrolled repositories by owner, passthrough, and automation.
+  - `review_yeti_onboard_organization` *(Mutating)*: Register organizations and defaults.
+  - `review_yeti_onboard_repository` *(Mutating)*: Register repositories and configure passthrough.
+  - `review_yeti_update_repository_settings` *(Mutating)*: Adjust profiles, automation, or passthrough.
+
 ---
 
 ## Directory Structure
@@ -214,6 +251,15 @@ packages/cf-orchestrator/
 │   ├── reviewPublisher.ts         # Phase 2: 1-click inline ```suggestion``` reviews (APPROVE/REQUEST_CHANGES/COMMENT)
 │   ├── compareOrchestratorRuns.ts # Parity assertion logic, SHA-256 fingerprinting & CI ledger
 │   ├── types.ts                   # Types and Cloudflare environment bindings
+│   ├── api/
+│   │   ├── settingsRoutes.ts      # REST API for organizations, repositories, and GitHub App sync
+│   │   ├── dashboardRoutes.ts     # Dashboard backend & live feeds
+│   │   └── actionDispatchRoute.ts # GitHub Actions central ingress
+│   ├── mcp/                       # Model Context Protocol JSON-RPC router & 18 edge tools
+│   │   ├── mcpRouter.ts           # Protocol handler, CORS, and auth gates
+│   │   └── tools/                 # Tool implementations (sync, onboard, dispute, gate, etc.)
+│   ├── storage/
+│   │   └── d1Client.ts            # Cloudflare D1 relational client & in-memory test store
 │   ├── diffHarness/               # DeepSeek-style diff task harness & context compactor
 │   │   ├── diffTriage.ts          # Tiered triage (high-risk singular, medium cluster, lumped simple batch)
 │   │   ├── activeChangesLedger.ts # Sliding context compactor (< 300 token knowledge ledger)
@@ -226,17 +272,20 @@ packages/cf-orchestrator/
 │       ├── containerRunner.ts     # Container runner abstraction & Cloudflare Containers runner
 │       ├── digitalOceanAgentRunner.ts # DO Managed Agents runner (Firecracker microVMs)
 │       └── r2WorkspaceCache.ts    # Programmatic R2 .tar.zst cache hydration & verification
+├── migrations/                    # Cloudflare D1 SQL schema migrations (0001, 0002, 0003)
 ├── scripts/
 │   ├── restore-r2-cache.sh        # Sub-300ms R2 cache unpack replacing K8s PVCs
 │   └── stage-r2-cache.sh          # Stage .git & .zoekt index shards back to Cloudflare R2
-├── test/                          # Comprehensive test suite: 893 tests across 211 suites (100% pass)
+├── test/                          # Comprehensive test suite: 1,180 tests across 262 suites (100% pass)
 │   ├── e2e/                       # 74 Opaque-box E2E integration tests (Tiers 1–4)
+│   ├── mcp/                       # MCP JSON-RPC, SSE, mutating auth, and tool unit tests
+│   ├── settingsApi.test.ts        # Settings REST API, CRUD, bulk onboarding, and webhook tests
 │   ├── phase2_review_chatops.test.ts # Phase 2: 10 tests for suggestions, verdicts & ChatOps parsing
 │   ├── diffTaskHarness.test.ts    # DeepSeek task harness, triage, and context compactor tests
 │   ├── adversarial_control_plane.test.ts  # Tier 5: 40 Edge control plane stress tests
 │   ├── adversarial_runners_parity.test.ts # Tier 5: 53 Runner & parity stress tests
 │   └── adversarial_hardening.test.ts      # Tier 5: 22 Final hardening tests
-└── wrangler.toml                  # Cloudflare DO, Workflow, Queue, R2, Hyperdrive, and Concurrency config
+└── wrangler.toml                  # Cloudflare DO, Workflow, Queue, R2, D1, and Concurrency config
 ```
 
 ---
@@ -248,9 +297,8 @@ The orchestrator is fully integrated into GitHub Actions via `.github/workflows/
 - **Automatic Triggering**: Runs on every pull request and push touching `packages/cf-orchestrator/**` or `scripts/ci/**`.
 - **Complete Verification Pipeline**:
   - Compiles TypeScript (`npm run build`).
-  - Executes all 819 unit, contract, and adversarial tests (`npm test`).
-  - Executes the 74-test E2E integration suite (`npm run test:e2e`).
-  - Total: **893 tests across 211 suites (100% pass rate)**.
+  - Executes all 1,180 unit, contract, API, and MCP tests (`npm test`).
+  - Total: **1,180 tests across 262 suites (100% pass rate)**.
   - Verifies the CI parity CLI tool (`scripts/ci/compare-orchestrator-runs.js`).
 
 ---

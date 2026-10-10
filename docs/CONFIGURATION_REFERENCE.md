@@ -66,6 +66,7 @@ their transitive closure; provenance is generated from the exact clean release c
    - [CodeRabbit-Compatible `.coderabbit.yaml`](#coderabbit-compatible-coderabbityaml)
 9. [Historical OpenRouter infrastructure record](#historical-openrouter-infrastructure-record)
 10. [Hierarchical Configuration Passthrough & Extensibility](#hierarchical-configuration-passthrough--extensibility)
+11. [Dynamic Cloudflare D1 Storage & Onboarding Policies](#dynamic-cloudflare-d1-storage--onboarding-policies)
 
 ---
 
@@ -791,3 +792,49 @@ retry_analysis:
   max_transient_retries: 3
   fail_closed_on_schema_error: true
 ```
+
+---
+
+<a id="dynamic-cloudflare-d1-storage--onboarding-policies"></a>
+
+## 11. Dynamic Cloudflare D1 Storage & Onboarding Policies
+
+Enterprise deployments on Cloudflare Workers utilize **Cloudflare D1** to dynamically store organization and repository configurations. This allows repository enrollment, strictness profiling, and passthrough toggling without modifying public Git configuration files or redeploying the worker.
+
+### Schema Attributes in D1
+
+#### Organization Settings (`organizations` table)
+- `id`: Lowercase organization owner login (e.g. `calltelemetry`, `example-org`).
+- `name`: Human-readable display name.
+- `installation_id`: GitHub App installation numeric ID.
+- `app_id`: Service-owned GitHub App ID (default `4385771`).
+- `enabled`: Global toggle (`1` = active, `0` = disabled).
+- `passthrough_enabled`: Whether repositories under this org inherit operator passthrough.
+- `settings_json`: JSON object for default strictness and policies (`{"customProfile":"assertive"}`).
+
+#### Repository Settings (`repositories` table)
+- `id`: Canonical slug (`owner/repo`).
+- `owner`: Organization or user login.
+- `repo`: Repository name.
+- `repository_id`: GitHub numeric repository ID (e.g. `1185419805`).
+- `installation_id`: GitHub App installation numeric ID.
+- `default_branch`: Target primary branch (default `main`).
+- `automation_enabled`: Active review trigger toggle (`1` = automated, `0` = paused).
+- `passthrough_enabled`: Operator passthrough policy (`1` = enabled, `0` = disabled).
+- `generate_flowchart`: Whether to generate Mermaid execution diagrams (`1` = enabled).
+- `custom_profile`: Strictness profile (`chill`, `balanced`, `assertive`).
+
+### Strictness Profiles
+
+| Profile | Target Sensitivity | Review Scope |
+|:---|:---|:---|
+| **`chill`** | Low | High-confidence P0 security regressions, credential leaks, and data loss. Style suggestions and minor architectural nits are completely suppressed. |
+| **`balanced`** (Default) | Standard | Correctness bugs (P1), edge cases, null checks, missing tests, and key architectural invariants. |
+| **`assertive`** | Strict | Comprehensive multi-persona inspection, strict typing, complete defensive validation, and automatic flowchart generation. |
+
+### Operator Passthrough Policy
+
+When `passthrough_enabled` is set to `1` (true):
+1. Incoming pull request webhooks for the enrolled repository bypass costly model inference runs.
+2. The orchestrator mints an ephemeral GitHub App token scoped exclusively to the repository and immediately publishes a compliant green `Review Yeti: SHIP (passthrough: no review performed)` check run.
+3. This unblocks internal PR gates instantly while keeping audit ledgers and gate attestations valid.
