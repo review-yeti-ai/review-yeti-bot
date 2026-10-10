@@ -372,7 +372,7 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     assert.equal(dispatchConfig.retries.delay, '1 second');
   });
 
-  it('publishes a durable, exact-head operator exemption pair without dispatching a runner', async () => {
+  it('requires the service-owned enrollment before publishing through the workflow', async () => {
     const spec = { ...createOperatorPauseSpec(), operatorPassthrough: false } as ReviewRunSpec;
     const env = {
       ...createMockEnv(),
@@ -384,97 +384,6 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     const runner = new MockContainerRunner();
     const workflow = new ReviewJobWorkflow(env, runner);
     const api = installOperatorPauseGitHubMock();
-    const durableTimeline = api.timeline;
-    const preparedEvents: any[] = [];
-    const readReceipt = captureReviewRunReceipt(env, durableTimeline, false, preparedEvents);
-    const mockStep = {
-      async do(_name: string, arg2: any, arg3?: any) {
-        return (typeof arg2 === 'function' ? arg2 : arg3)();
-      },
-      async sleep() {},
-    };
-
-    try {
-      const result = await workflow.run({ payload: spec }, mockStep as any);
-
-      assert.equal(result.status, 'succeeded');
-      assert.equal(runner.dispatched.length, 0);
-      assert.ok(api.requests.some((request) => request.path === '/repos/exampleorg/sample-project/pulls/7'));
-      assert.equal(api.checks.size, 2);
-      const worker = [...api.checks.values()].find((check) => check.name === REVIEW_WORKER_CHECK_NAME);
-      const gate = [...api.checks.values()].find((check) => check.name === REVIEW_GATE_CHECK_NAME);
-      assert.ok(worker);
-      assert.ok(gate);
-      assert.equal(worker.status, 'completed');
-      assert.equal(worker.conclusion, 'success');
-      assert.equal(worker.head_sha, spec.headSha);
-      assert.match(worker.output.title, /operator passthrough/iu);
-      assert.equal(worker.external_id, deriveWorkerExternalId(spec.runId));
-      assert.equal(worker.app.id, 12345);
-      assert.match(worker.output.summary, /operator passthrough.*no semantic review.*zero lanes/isu);
-      assert.ok(worker.output.summary.includes(spec.runId));
-      assert.equal(gate.status, 'completed');
-      assert.equal(gate.conclusion, 'success');
-      assert.equal(gate.head_sha, spec.headSha);
-      assert.equal(gate.external_id, await deriveGateExternalId({
-        owner: spec.owner,
-        repo: spec.repo,
-        headSha: spec.headSha,
-        runId: spec.runId,
-      }));
-      assert.equal(gate.app.id, 12345);
-      assert.match(gate.output.title, /operator passthrough/iu);
-      assert.match(gate.output.summary, /no semantic review.*zero lanes/isu);
-      assert.ok(gate.output.summary.includes(spec.runId));
-      assert.ok(api.timeline.indexOf('get-current-pr') >= 0);
-      assert.equal(api.requests.filter((request) => request.path === '/repos/exampleorg/sample-project/pulls/7').length, 3);
-      const preparedIndex = durableTimeline.indexOf('do-event:operator_passthrough_prepared');
-      const firstSuccessPatchIndex = durableTimeline.findIndex((entry) => entry.endsWith(':success'));
-      const terminalReceiptIndex = durableTimeline.findIndex((entry) => entry === 'do-receipt:published');
-      assert.ok(preparedIndex >= 0 && preparedIndex < firstSuccessPatchIndex);
-      assert.ok(terminalReceiptIndex > firstSuccessPatchIndex);
-      assert.equal(preparedEvents[0].data.appId, 12345);
-      assert.equal(preparedEvents[0].data.headSha, spec.headSha);
-      assert.equal(preparedEvents[0].data.baseSha, spec.baseSha);
-      assert.equal(preparedEvents[0].data.workerCheckId, worker.id);
-      assert.equal(preparedEvents[0].data.gateCheckId, gate.id);
-      const receipt = readReceipt();
-      assert.equal(receipt.status, 'succeeded');
-      assert.equal(receipt.verdict, 'SHIP');
-      assert.equal(receipt.reviewStarted, false);
-      assert.equal(receipt.expectedLanes, 0);
-      assert.equal(receipt.completedLanes, 0);
-      assert.equal(receipt.publicationState, 'published');
-      assert.equal(receipt.publicationReceiptAvailable, true);
-      assert.equal(receipt.workerCheckId, worker.id);
-      assert.equal(receipt.gateCheckId, gate.id);
-      assert.equal(receipt.headSha, spec.headSha);
-      assert.equal(receipt.baseSha, spec.baseSha);
-      assert.equal(receipt.preparedAuditDigest, preparedEvents[0].data.auditDigest);
-      assert.deepEqual(receipt.priorControlRunIds, []);
-      assert.ok(worker.output.summary.includes(receipt.preparedAuditDigest));
-      assert.ok(gate.output.summary.includes(receipt.preparedAuditDigest));
-      assert.equal(receipt.mergeEligible, true);
-      assert.match(receipt.auditDigest, /^sha256:[a-f0-9]{64}$/u);
-    } finally {
-      api.restore();
-    }
-  });
-
-  it('returns unavailable for a stale live PR and does not publish or dispatch', async () => {
-    const spec = createOperatorPauseSpec();
-    const env = {
-      ...createMockEnv(),
-      OPERATOR_GLOBAL_PASSTHROUGH: 'true',
-      PILOT_REPOSITORIES: 'exampleorg/sample-project',
-      GITHUB_APP_ID: '12345',
-      GITHUB_TOKEN: 'fixture-auth-value',
-    };
-    const runner = new MockContainerRunner();
-    const workflow = new ReviewJobWorkflow(env, runner);
-    const api = installOperatorPauseGitHubMock({ headSha: 'c'.repeat(40) });
-    const durableTimeline = api.timeline;
-    const readReceipt = captureReviewRunReceipt(env, durableTimeline);
     const mockStep = {
       async do(_name: string, arg2: any, arg3?: any) {
         return (typeof arg2 === 'function' ? arg2 : arg3)();
@@ -486,12 +395,42 @@ describe('ReviewJobWorkflow Durable Execution', () => {
       const result = await workflow.run({ payload: spec }, mockStep as any);
 
       assert.equal(result.status, 'unavailable');
+      assert.equal(result.errorCode, 'service_configuration_unavailable');
       assert.equal(result.mergeEligible, false);
       assert.equal(runner.dispatched.length, 0);
       assert.equal(api.checks.size, 0);
-      assert.equal(readReceipt().publicationState, 'unavailable');
-      assert.equal(readReceipt().mergeEligible, false);
-      assert.equal(readReceipt().checksTerminalized, false);
+    } finally {
+      api.restore();
+    }
+  });
+
+  it('does not publish a workflow result without current service-owned enrollment', async () => {
+    const spec = createOperatorPauseSpec();
+    const env = {
+      ...createMockEnv(),
+      OPERATOR_GLOBAL_PASSTHROUGH: 'true',
+      PILOT_REPOSITORIES: 'exampleorg/sample-project',
+      GITHUB_APP_ID: '12345',
+      GITHUB_TOKEN: 'fixture-auth-value',
+    };
+    const runner = new MockContainerRunner();
+    const workflow = new ReviewJobWorkflow(env, runner);
+    const api = installOperatorPauseGitHubMock({ headSha: 'c'.repeat(40) });
+    const mockStep = {
+      async do(_name: string, arg2: any, arg3?: any) {
+        return (typeof arg2 === 'function' ? arg2 : arg3)();
+      },
+      async sleep() {},
+    };
+
+    try {
+      const result = await workflow.run({ payload: spec }, mockStep as any);
+
+      assert.equal(result.status, 'unavailable');
+      assert.equal(result.errorCode, 'service_configuration_unavailable');
+      assert.equal(result.mergeEligible, false);
+      assert.equal(runner.dispatched.length, 0);
+      assert.equal(api.checks.size, 0);
     } finally {
       api.restore();
     }
@@ -503,8 +442,6 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     delete env.OPERATOR_GLOBAL_PASSTHROUGH;
     const runner = new MockContainerRunner();
     const workflow = new ReviewJobWorkflow(env, runner);
-    const durableTimeline: string[] = [];
-    const readReceipt = captureReviewRunReceipt(env, durableTimeline);
     const mockStep = {
       async do(_name: string, arg2: any, arg3?: any) {
         return (typeof arg2 === 'function' ? arg2 : arg3)();
@@ -517,11 +454,10 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     assert.equal(result.status, 'unavailable');
     assert.equal(result.mergeEligible, false);
     assert.equal(runner.dispatched.length, 0);
-    assert.equal(readReceipt().publicationState, 'unavailable');
-    assert.equal(readReceipt().mergeEligible, false);
+    assert.equal(result.errorCode, 'pause_binding_unavailable');
   });
 
-  it('returns unavailable and terminalizes the pair when a check belongs to another App', async () => {
+  it('does not create a check pair before service-owned enrollment is configured', async () => {
     const spec = createOperatorPauseSpec();
     const env = {
       ...createMockEnv(),
@@ -533,8 +469,6 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     const runner = new MockContainerRunner();
     const workflow = new ReviewJobWorkflow(env, runner);
     const api = installOperatorPauseGitHubMock({ appId: 99999 });
-    const durableTimeline = api.timeline;
-    const readReceipt = captureReviewRunReceipt(env, durableTimeline);
     const mockStep = {
       async do(_name: string, arg2: any, arg3?: any) {
         return (typeof arg2 === 'function' ? arg2 : arg3)();
@@ -546,18 +480,16 @@ describe('ReviewJobWorkflow Durable Execution', () => {
       const result = await workflow.run({ payload: spec }, mockStep as any);
 
       assert.equal(result.status, 'unavailable');
+      assert.equal(result.errorCode, 'service_configuration_unavailable');
       assert.equal(result.mergeEligible, false);
       assert.equal(runner.dispatched.length, 0);
-      assert.equal(readReceipt().publicationState, 'unavailable');
-      assert.equal(readReceipt().mergeEligible, false);
-      assert.equal(api.checks.size, 2);
-      assert.ok([...api.checks.values()].every((check) => check.status === 'completed' && check.conclusion === 'failure'));
+      assert.equal(api.checks.size, 0);
     } finally {
       api.restore();
     }
   });
 
-  it('terminalizes both checks as failures when the durable prepared audit write fails', async () => {
+  it('does not create checks when the authoritative service config is absent', async () => {
     const spec = createOperatorPauseSpec();
     const env = {
       ...createMockEnv(),
@@ -569,8 +501,6 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     const runner = new MockContainerRunner();
     const workflow = new ReviewJobWorkflow(env, runner);
     const api = installOperatorPauseGitHubMock();
-    const durableTimeline = api.timeline;
-    const readReceipt = captureReviewRunReceipt(env, durableTimeline, true);
     const mockStep = {
       async do(_name: string, arg2: any, arg3?: any) {
         return (typeof arg2 === 'function' ? arg2 : arg3)();
@@ -582,46 +512,41 @@ describe('ReviewJobWorkflow Durable Execution', () => {
       const result = await workflow.run({ payload: spec }, mockStep as any);
 
       assert.equal(result.status, 'unavailable');
+      assert.equal(result.errorCode, 'service_configuration_unavailable');
       assert.equal(result.mergeEligible, false);
       assert.equal(runner.dispatched.length, 0);
-      assert.equal(readReceipt().publicationState, 'unavailable');
-      assert.equal(readReceipt().mergeEligible, false);
-      assert.equal(readReceipt().checksTerminalized, true);
-      const conclusionsByName = new Map(
-        [...api.checks.values()].map((check) => [check.name, check.conclusion])
-      );
-      assert.equal(conclusionsByName.get(REVIEW_WORKER_CHECK_NAME), 'failure');
-      assert.equal(conclusionsByName.get(REVIEW_GATE_CHECK_NAME), 'failure');
+      assert.equal(api.checks.size, 0);
     } finally {
       api.restore();
     }
   });
 
-  it('preserves a same-head semantic block despite the exact prior transport failure', async () => {
+  it('requires explicit target enrollment despite prior semantic history', async () => {
     const prior = await runOperatorPauseWithPriorOutcome({
       workflowStatus: { status: 'errored', error: { message: 'Step config for "dispatch-container" is in a invalid format. See https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/' } },
       terminalReceiptSummary: { status: 'failed', verdict: 'action_required', findingsCount: 1, hasSemanticVerdict: true },
     });
     try {
       assert.equal(prior.result.status, 'unavailable');
+      assert.equal(prior.result.errorCode, 'service_configuration_unavailable');
       assert.equal(prior.result.mergeEligible, false);
       assert.equal(prior.runner.dispatched.length, 0);
       assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 0);
-      assert.equal(prior.receipt.publicationState, 'unavailable');
-      assert.equal(prior.receipt.mergeEligible, false);
     } finally {
       prior.api.restore();
     }
   });
 
-  it('preserves a same-head changes-requested review despite the exact prior transport failure', async () => {
+  it('requires explicit target enrollment when prior review requested changes', async () => {
     const prior = await runOperatorPauseWithPriorOutcome({
       workflowStatus: { status: 'errored', error: { message: 'Step config for "dispatch-container" is in a invalid format. See https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/' } },
       terminalReceiptSummary: { status: 'failed', verdict: null, findingsCount: 0, hasSemanticVerdict: false },
-      reviews: [{ state: 'CHANGES_REQUESTED', commit_id: 'a'.repeat(40) }],
+      reviews: [{ id: 901, user: { id: 902 }, state: 'CHANGES_REQUESTED',
+        submitted_at: '2026-10-10T00:00:00Z', commit_id: 'a'.repeat(40) }],
     });
     try {
       assert.equal(prior.result.status, 'unavailable');
+      assert.equal(prior.result.errorCode, 'service_configuration_unavailable');
       assert.equal(prior.result.mergeEligible, false);
       assert.equal(prior.runner.dispatched.length, 0);
       assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 0);
@@ -630,13 +555,14 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     }
   });
 
-  it('returns unavailable for an unknown same-head workflow failure', async () => {
+  it('requires explicit target enrollment for an unknown same-head workflow failure', async () => {
     const prior = await runOperatorPauseWithPriorOutcome({
       workflowStatus: { status: 'errored', error: { message: 'Step config for dispatch-container is in a invalid format' } },
       terminalReceiptSummary: { status: 'failed', verdict: null, findingsCount: 0, hasSemanticVerdict: false },
     });
     try {
       assert.equal(prior.result.status, 'unavailable');
+      assert.equal(prior.result.errorCode, 'service_configuration_unavailable');
       assert.equal(prior.result.mergeEligible, false);
       assert.equal(prior.runner.dispatched.length, 0);
       assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 0);
@@ -645,7 +571,7 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     }
   });
 
-  it('returns unavailable when a terminal same-head run has no matching App check pair', async () => {
+  it('requires explicit target enrollment when a terminal same-head run lacks an App pair', async () => {
     const prior = await runOperatorPauseWithPriorOutcome({
       workflowStatus: { status: 'errored', error: { message: 'Step config for "dispatch-container" is in a invalid format. See https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/' } },
       terminalReceiptSummary: { status: 'failed', verdict: null, findingsCount: 0, hasSemanticVerdict: false },
@@ -653,6 +579,7 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     });
     try {
       assert.equal(prior.result.status, 'unavailable');
+      assert.equal(prior.result.errorCode, 'service_configuration_unavailable');
       assert.equal(prior.result.mergeEligible, false);
       assert.equal(prior.runner.dispatched.length, 0);
       assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 0);
@@ -661,7 +588,7 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     }
   });
 
-  it('returns unavailable while a same-head prior review is still active', async () => {
+  it('requires explicit target enrollment while a same-head prior review is active', async () => {
     const prior = await runOperatorPauseWithPriorOutcome({
       workflowStatus: { status: 'running' },
       terminalReceiptSummary: { status: 'running', verdict: null, findingsCount: 0, hasSemanticVerdict: false },
@@ -670,6 +597,7 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     });
     try {
       assert.equal(prior.result.status, 'unavailable');
+      assert.equal(prior.result.errorCode, 'service_configuration_unavailable');
       assert.equal(prior.result.mergeEligible, false);
       assert.equal(prior.runner.dispatched.length, 0);
       assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 0);
@@ -678,13 +606,14 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     }
   });
 
-  it('rejects a same-run terminal semantic finding before creating checks when no prior pair is listed', async () => {
+  it('requires explicit target enrollment before a same-run terminal semantic finding can publish', async () => {
     const prior = await runOperatorPauseWithCurrentTerminalOutcome();
     try {
       assert.equal(prior.seededStatus.phase, 'Completed');
       assert.equal(prior.seededStatus.terminalReceiptSummary.verdict, 'action_required');
       assert.equal(prior.seededStatus.terminalReceiptSummary.findingsCount, 1);
       assert.equal(prior.result.status, 'unavailable');
+      assert.equal(prior.result.errorCode, 'service_configuration_unavailable');
       assert.equal(prior.result.mergeEligible, false);
       assert.equal(prior.runner.dispatched.length, 0);
       assert.equal(prior.api.checks.size, 0);
@@ -695,18 +624,17 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     }
   });
 
-  it('allows only the exact same-run pre-dispatch configuration failure witness', async () => {
+  it('does not retry a prior transport failure without explicit target enrollment', async () => {
     const prior = await runOperatorPauseWithPriorOutcome({
       workflowStatus: { status: 'errored', error: { message: 'Step config for "dispatch-container" is in a invalid format. See https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/' } },
       terminalReceiptSummary: { status: 'failed', verdict: null, findingsCount: 0, hasSemanticVerdict: false },
     });
     try {
-      assert.equal(prior.result.status, 'succeeded');
-      assert.equal(prior.result.mergeEligible, true);
+      assert.equal(prior.result.status, 'unavailable');
+      assert.equal(prior.result.errorCode, 'service_configuration_unavailable');
+      assert.equal(prior.result.mergeEligible, false);
       assert.equal(prior.runner.dispatched.length, 0);
-      assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 2);
-      assert.equal(prior.receipt.publicationState, 'published');
-      assert.deepEqual(prior.receipt.priorControlRunIds, [prior.priorRunId]);
+      assert.equal(prior.api.requests.filter((request) => request.method === 'POST' && request.path.endsWith('/check-runs')).length, 0);
     } finally {
       prior.api.restore();
     }

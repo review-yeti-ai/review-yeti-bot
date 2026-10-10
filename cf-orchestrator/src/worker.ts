@@ -3,11 +3,11 @@ import { ReviewRunDO } from './reviewRunDO.js';
 import { ReviewJobWorkflow } from './reviewJobWorkflow.js';
 import { handleMergeGroupAttestation } from './mergeGroupAttestation.js';
 import type { DebounceMessagePayload, Env, ReviewRunSpec } from './types.js';
-import { isPassthroughMode } from './types.js';
 import { purgeExpiredR2WorkspaceCaches } from './runners/r2WorkspaceCache.js';
 import { defaultMcpRouter, constantTimeEquals } from './mcp/mcpRouter.js';
 import { handleDashboardApi } from './api/dashboardRoutes.js';
 import { handleActionDispatch } from './api/actionDispatchRoute.js';
+import { readOperatorPassthroughByRunId } from './operatorPassthroughPublisher.js';
 import { isPilotRepository } from './pilotRepository.js';
 
 export { RepoGateDO, ReviewRunDO, ReviewJobWorkflow, handleMergeGroupAttestation };
@@ -233,7 +233,13 @@ export default {
         }
         const runDOId = env.REVIEW_RUN.idFromName(runId);
         const runDO = env.REVIEW_RUN.get(runDOId);
-        return await runDO.fetch('http://do/status');
+        const response = await runDO.fetch('http://do/status');
+        if (!response.ok) return response;
+        const status = await response.json() as Record<string, unknown>;
+        const passthrough = await readOperatorPassthroughByRunId(env, runId);
+        return Response.json(passthrough
+          ? { ...status, operatorPassthrough: passthrough, mergeEligible: passthrough.mergeEligible }
+          : status);
       }
 
       // GitHub Actions OIDC Action Dispatch: /api/dispatch/action, /action, /api/qualification/dispatch/action
@@ -462,7 +468,7 @@ export default {
             };
 
             // In passthrough mode, bypass the 60s debounce queue and trigger the workflow immediately
-            if (isPassthroughMode(env)) {
+            if (env.OPERATOR_GLOBAL_PASSTHROUGH === 'true') {
               if (env.REVIEW_JOB_WORKFLOW && typeof env.REVIEW_JOB_WORKFLOW.create === 'function') {
                 await env.REVIEW_JOB_WORKFLOW.create({
                   id: runId,

@@ -292,6 +292,32 @@ describe('Review Yeti MCP Tools Implementation', () => {
     assert.ok(wfErrRes.content[0].text?.includes('Cloudflare Workflow quota exceeded'));
   });
 
+  it('builds tracking URLs only from a configured operator status base and omits the placeholder', async () => {
+    const workflow = { create: async () => ({ id: 'created' }) };
+    const unconfigured = await triggerReviewTool.execute(
+      { owner: 'exampleorg', repo: 'sample-repo', prNumber: 42 },
+      { env: { REVIEW_JOB_WORKFLOW: workflow } } as any,
+    );
+    const noUrl = JSON.parse(unconfigured.content[1].text!);
+    assert.equal(noUrl.trackingUrl, null);
+    assert.equal(unconfigured.content[0].text?.includes('example.workers.dev'), false);
+    assert.equal(unconfigured.content[0].text?.includes('Status Tracking Endpoint'), false);
+
+    const configured = await triggerReviewTool.execute(
+      { owner: 'exampleorg', repo: 'sample-repo', prNumber: 42 },
+      { env: {
+        REVIEW_JOB_WORKFLOW: workflow,
+        DISPATCH_STATUS_BASE_URL: 'https://operator.example.net/gateway/review-yeti/',
+      } } as any,
+    );
+    const withUrl = JSON.parse(configured.content[1].text!);
+    assert.equal(
+      withUrl.trackingUrl,
+      `https://operator.example.net/gateway/review-yeti/api/dispatch/runs/${encodeURIComponent(withUrl.runId)}/status`,
+    );
+    assert.equal(configured.content[0].text?.includes('example.workers.dev'), false);
+  });
+
   it('review_yeti_cancel_review triggers cancellation and evicts queued runs', async () => {
     const mockEnv = {
       REVIEW_RUN: {

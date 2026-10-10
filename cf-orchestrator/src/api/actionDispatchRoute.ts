@@ -1,6 +1,5 @@
 import type { Env, ReviewRunSpec } from '../types.js';
-import { isPassthroughMode } from '../types.js';
-import { completeChecks, getInstallationToken } from '../github/index.js';
+import { publishOperatorPassthroughForTarget } from '../operatorPassthroughPublisher.js';
 import {
   verifyGitHubActionsOidc,
   assertActionDispatchMatchesClaims,
@@ -282,83 +281,53 @@ export async function handleActionDispatch(
   }
 
   // 7. Operator Global Passthrough Mode
-  const passthroughEnabled = isPassthroughMode(env);
+  const passthroughEnabled = env.OPERATOR_GLOBAL_PASSTHROUGH === 'true';
   if (passthroughEnabled) {
-    const rawPublicationId = (crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '')).slice(0, 64);
-    const rawAuditDigest = (crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '')).slice(0, 64);
-
-    let reviewCheckId: number | null = dispatch.checkId && dispatch.checkId > 0 ? dispatch.checkId : null;
-    let gateCheckId: number | null = null;
-    let publicationState: 'published' | 'unavailable' = 'unavailable';
-    let publicationReceiptAvailable: boolean | null = null;
-
-    if (dispatch.publishMode === 'app-gate') {
-      let token: string | null = null;
-      try {
-        token = (await getInstallationToken(env, dispatch.owner, dispatch.repo)) || env.GITHUB_TOKEN || null;
-      } catch {
-        token = env.GITHUB_TOKEN || null;
-      }
-
-      if (token && !token.startsWith('ghs_dummy_') && !token.startsWith('ghs_ephemeral_')) {
-        try {
-          const pubResult = await completeChecks({
-            owner: dispatch.owner,
-            repo: dispatch.repo,
-            headSha: dispatch.headSha,
-            runId: `run_${rawPublicationId.slice(0, 32)}`,
-            token,
-            verdict: 'success',
-            passthroughMode: true,
-            findings: [],
-            executionAttempt: 1,
-          });
-          if (pubResult.workerCheckId && pubResult.gateCheckId) {
-            reviewCheckId = pubResult.workerCheckId;
-            gateCheckId = pubResult.gateCheckId;
-            publicationState = 'published';
-            publicationReceiptAvailable = true;
-          }
-        } catch (err) {
-          console.warn('Non-fatal error publishing passthrough checks in action dispatch:', err);
-        }
-      }
-    }
-
-    const isPublished = publicationState === 'published' && reviewCheckId !== null && gateCheckId !== null;
+    const publication = await publishOperatorPassthroughForTarget(env, {
+      owner: dispatch.owner,
+      repo: dispatch.repo,
+      prNumber: dispatch.prNumber,
+    }, {}, { headSha: dispatch.headSha, baseSha: dispatch.baseSha });
+    const isPublished = publication.status === 'succeeded' && publication.mergeEligible === true
+      && publication.publicationReceiptAvailable === true;
     const mergeEligible = isPublished;
-
     const passthroughReceipt = {
       version: 'ActionDispatchPassthrough.v1',
       status: 'passthrough',
       reason: 'operator_global_passthrough',
-      reviewStarted: false,
-      candidateState: 'current',
-      verdict: 'SHIP',
-      expectedLanes: 0,
-      completedLanes: 0,
-      publicationId: isPublished ? rawPublicationId : null,
-      auditDigest: isPublished ? rawAuditDigest : null,
+      reviewStarted: publication.reviewStarted,
+      candidateState: publication.candidateState,
+      verdict: publication.verdict,
+      expectedLanes: publication.expectedLanes,
+      completedLanes: publication.completedLanes,
+      publicationId: isPublished ? publication.publicationId : null,
+      auditDigest: isPublished ? publication.auditDigest : null,
       publicationState: isPublished ? 'published' : 'unavailable',
-      publicationReceiptAvailable: isPublished ? true : null,
-      reviewCheckId: isPublished ? reviewCheckId : null,
-      gateCheckId: isPublished ? gateCheckId : null,
+      publicationReceiptAvailable: publication.publicationReceiptAvailable,
+      reviewCheckId: isPublished ? publication.workerCheckId : null,
+      gateCheckId: isPublished ? publication.gateCheckId : null,
       mergeEligible,
       message: isPublished
-        ? 'Operator pause authorizes SHIP with zero review lanes; both official checks are published and protected merge is eligible.'
-        : 'Operator pause preserves logical SHIP with zero review lanes. Protected merge eligibility is false.',
+        ? 'Operator pause published a current, durable App check pair. No semantic review ran; zero lanes were started.'
+        : 'Operator pause publication is unavailable. No semantic review ran; protected merge eligibility is false.',
       deliveryId: dispatch.deliveryId,
       eventName: dispatch.caller.eventName,
-      repositoryId: dispatch.repositoryId,
-      owner: dispatch.owner,
-      repo: dispatch.repo,
-      prNumber: dispatch.prNumber,
-      headSha: dispatch.headSha,
-      baseSha: dispatch.baseSha,
+      repositoryId: publication.repositoryId,
+      owner: publication.owner,
+      repo: publication.repo,
+      prNumber: publication.prNumber,
+      headSha: publication.headSha,
+      baseSha: publication.baseSha,
+      appId: publication.appId,
+      policyDigest: publication.policyDigest,
+      runId: publication.runId,
+      errorCode: isPublished ? undefined : publication.errorCode,
       callerKind,
     } as const;
 
-    return Response.json(passthroughReceipt, { status: 200 });
+    return isPublished
+      ? Response.json(passthroughReceipt, { status: 200 })
+      : Response.json(passthroughReceipt, { status: 503 });
   }
 
   // 8. Normal Review Yeti Admission
