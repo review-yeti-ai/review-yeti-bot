@@ -42,7 +42,7 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
     assert.equal(res.jsonrpc, '2.0');
     assert.ok(res.result);
     assert.ok(Array.isArray(res.result.tools));
-    assert.equal(res.result.tools.length, 15);
+    assert.equal(res.result.tools.length, 18);
 
     const toolNames = res.result.tools.map((t: any) => t.name);
     assert.ok(toolNames.includes('review_yeti_query_active_jobs'));
@@ -57,6 +57,12 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
     assert.ok(toolNames.includes('review_yeti_attest_pr_gate'));
     assert.ok(toolNames.includes('review_yeti_dispute_finding'));
     assert.ok(toolNames.includes('review_yeti_reply_review_thread'));
+    assert.ok(toolNames.includes('review_yeti_onboard_organization'));
+    assert.ok(toolNames.includes('review_yeti_onboard_repository'));
+    assert.ok(toolNames.includes('review_yeti_update_repository_settings'));
+    assert.ok(toolNames.includes('review_yeti_sync_github_installation'));
+    assert.ok(toolNames.includes('review_yeti_get_onboarding_status'));
+    assert.ok(toolNames.includes('review_yeti_list_repositories'));
   });
 
   it('supports unprefixed tool name aliases and legacy aliases', () => {

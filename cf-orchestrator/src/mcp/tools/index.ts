@@ -13,3 +13,6 @@ export * from './replyReviewThread.js';
 export * from './onboardOrganization.js';
 export * from './onboardRepository.js';
 export * from './updateRepositorySettings.js';
+export * from './syncGithubInstallation.js';
+export * from './getOnboardingStatus.js';
+export * from './listRepositories.js';
