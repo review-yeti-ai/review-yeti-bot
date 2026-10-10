@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { generateKeyPair, SignJWT } from 'jose';
 import { ReviewRunDO } from '../src/reviewRunDO.js';
 import { RepoGateDO } from '../src/repoGateDO.js';
 import { ReviewJobWorkflow } from '../src/reviewJobWorkflow.js';
@@ -18,6 +19,10 @@ import { triggerReviewTool } from '../src/mcp/tools/triggerReview.js';
 import { MockDurableObjectState } from './mockDurableObject.js';
 import { MockContainerRunner } from '../src/runners/containerRunner.js';
 import worker from '../src/worker.js';
+import { reviewAppIdForRepository } from '../src/reviewAppAuthority.js';
+import { handleActionDispatch, type ActionDispatchRequest } from '../src/api/actionDispatchRoute.js';
+import { expectedActionDeliveryId, GITHUB_ACTIONS_OIDC_ISSUER } from '../src/auth/oidcVerifier.js';
+import { TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER } from '../src/auth/trustedCentralActionDispatch.js';
 
 const OWNER = 'review-yeti-ai';
 const REPO = 'review-yeti-bot';
@@ -43,9 +48,11 @@ interface MockCheck {
 }
 
 interface GithubMockOptions {
-  target?: { owner: string; repo: string; repositoryId: number; prNumber?: number; headSha?: string; baseSha?: string };
+  target?: { owner: string; repo: string; repositoryId: number; isPrivate?: boolean; prNumber?: number; headSha?: string; baseSha?: string };
   wrongAppOnCreate?: boolean;
   wrongRepositoryId?: boolean;
+  wrongConfiguredAppId?: boolean;
+  policyRepositoryPublic?: boolean;
   failFirstGatePatch?: boolean;
   failSuccessReadback?: boolean;
   changeHeadOnSecondRead?: boolean;
@@ -79,6 +86,13 @@ function jsonResponse(value: unknown, status = 200): Response {
 
 function createTestEnv(options: GithubMockOptions = {}) {
   const target = options.target || { owner: OWNER, repo: REPO, repositoryId: REPOSITORY_ID, headSha: HEAD_A, baseSha: BASE_A };
+  const targetAuthority = {
+    repositoryId: target.repositoryId,
+    owner: target.owner,
+    repo: target.repo,
+  };
+  const targetAppId = reviewAppIdForRepository(targetAuthority);
+  const targetIsPrivate = target.isPrivate ?? !(target.owner === OWNER && target.repo === REPO && target.repositoryId === REPOSITORY_ID);
   const targetHead = target.headSha || HEAD_A;
   const targetBase = target.baseSha || BASE_A;
   const targetPrNumber = target.prNumber || 42;
@@ -108,7 +122,11 @@ function createTestEnv(options: GithubMockOptions = {}) {
     DEFAULT_WORKER_IMAGE: 'test',
     OPERATOR_GLOBAL_PASSTHROUGH: 'true',
     OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES: JSON.stringify([
-      { repositoryId: target.repositoryId, owner: target.owner, repo: target.repo },
+      {
+        ...targetAuthority,
+        isPrivate: targetIsPrivate,
+        appId: options.wrongConfiguredAppId ? 4552718 : targetAppId,
+      },
     ]),
     OPERATOR_PASSTHROUGH_POLICY_SOURCE: JSON.stringify({
       repositoryId: POLICY_REPOSITORY_ID,
@@ -199,7 +217,7 @@ function createTestEnv(options: GithubMockOptions = {}) {
         id: options.wrongRepositoryId ? target.repositoryId + 1 : target.repositoryId,
         full_name: `${target.owner}/${target.repo}`,
         name: target.repo,
-        private: privateOnRead !== undefined && repositoryRead >= privateOnRead,
+        private: privateOnRead !== undefined && repositoryRead >= privateOnRead ? !targetIsPrivate : targetIsPrivate,
         default_branch: 'main',
         owner: { login: target.owner },
       });
@@ -231,7 +249,12 @@ function createTestEnv(options: GithubMockOptions = {}) {
       });
     }
     if (method === 'GET' && path === '/repos/calltelemetry/ct-review-actions') {
-      return jsonResponse({ id: POLICY_REPOSITORY_ID, full_name: 'calltelemetry/ct-review-actions', default_branch: 'main' });
+      return jsonResponse({
+        id: POLICY_REPOSITORY_ID,
+        full_name: 'calltelemetry/ct-review-actions',
+        private: !options.policyRepositoryPublic,
+        default_branch: 'main',
+      });
     }
     if (method === 'GET' && path === '/repos/calltelemetry/ct-review-actions/commits/main') {
       counts.policyReads += 1;
@@ -380,6 +403,100 @@ describe('Edge operator passthrough publication', () => {
     }
   });
 
+  it('publishes the paused App pair through the exact trusted CT central OIDC caller', async () => {
+    const headSha = HEAD_A;
+    const baseSha = BASE_A;
+    const target = {
+      owner: 'calltelemetry', repo: 'ai-workspace', repositoryId: 1131452104,
+      isPrivate: true, prNumber: 3546, headSha, baseSha,
+    };
+    const mock = createTestEnv({ target });
+    await configureAppKeys(mock.env);
+
+    const oidc = await generateKeyPair('RS256');
+    const caller = TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER;
+    const runId = '38029691203';
+    const runAttempt = 1;
+    const dispatch: ActionDispatchRequest = {
+      version: 'ActionDispatch.v1',
+      deliveryId: expectedActionDeliveryId({
+        caller: { runId, runAttempt }, repositoryId: target.repositoryId,
+        prNumber: target.prNumber, headSha,
+      }),
+      repositoryId: target.repositoryId,
+      owner: target.owner,
+      repo: target.repo,
+      prNumber: target.prNumber,
+      headSha,
+      baseSha,
+      actionSha: '5'.repeat(40),
+      publishMode: 'app-gate',
+      requestedAt: new Date().toISOString(),
+      caller: {
+        runId,
+        runAttempt,
+        eventName: 'workflow_dispatch',
+        workflowRef: caller.jobWorkflowRef,
+        workflowSha: caller.jobWorkflowSha,
+      },
+    };
+    const claims = {
+      repository: caller.repository,
+      repository_id: String(caller.repositoryId),
+      repository_owner_id: String(caller.repositoryOwnerId),
+      run_id: runId,
+      run_attempt: String(runAttempt),
+      event_name: 'workflow_dispatch',
+      ref: caller.ref,
+      workflow_ref: caller.workflowRef,
+      workflow_sha: caller.workflowSha,
+      job_workflow_ref: caller.jobWorkflowRef,
+      job_workflow_sha: caller.jobWorkflowSha,
+    };
+    const token = await new SignJWT(claims)
+      .setProtectedHeader({ alg: 'RS256' })
+      .setIssuer(GITHUB_ACTIONS_OIDC_ISSUER)
+      .setAudience('review-yeti-doks-dispatch')
+      .setIssuedAt()
+      .setExpirationTime('5m')
+      .sign(oidc.privateKey);
+    const request = new Request('http://worker/api/dispatch/action', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(dispatch),
+    });
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock.fetchFn;
+    try {
+      const response = await handleActionDispatch(request, mock.env, undefined, { keySet: () => oidc.publicKey });
+      assert.equal(response.status, 200);
+      const receipt = await response.json() as any;
+      assert.equal(receipt.version, 'ActionDispatchPassthrough.v1');
+      assert.equal(receipt.status, 'passthrough');
+      assert.equal(receipt.publicationState, 'published');
+      assert.equal(receipt.repositoryId, target.repositoryId);
+      assert.equal(receipt.owner, target.owner);
+      assert.equal(receipt.repo, target.repo);
+      assert.equal(receipt.prNumber, target.prNumber);
+      assert.equal(receipt.headSha, headSha);
+      assert.equal(receipt.baseSha, baseSha);
+      assert.equal(receipt.appId, 4385771);
+      assert.equal(receipt.mergeEligible, true);
+      assert.equal(receipt.reviewStarted, false);
+      assert.equal(receipt.expectedLanes, 0);
+      assert.equal(receipt.completedLanes, 0);
+      assert.equal(typeof receipt.publicationId, 'string');
+      assert.equal(typeof receipt.auditDigest, 'string');
+      assert.equal(mock.counts.creates, 2);
+      assert.ok(mock.counts.appIssuers.length > 0 && mock.counts.appIssuers.every((appId) => appId === 4385771));
+      assert.equal(mock.checks.get(receipt.reviewCheckId)?.app.id, 4385771);
+      assert.equal(mock.checks.get(receipt.gateCheckId)?.app.id, 4385771);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('rejects a same-external-ID check created by the wrong GitHub App', async () => {
     const mock = createTestEnv({ wrongAppOnCreate: true });
     await configureAppKeys(mock.env);
@@ -399,6 +516,58 @@ describe('Edge operator passthrough publication', () => {
     });
     assert.equal(receipt.status, 'unavailable');
     assert.equal(receipt.errorCode, 'repository_not_enrolled');
+    assert.equal(receipt.mergeEligible, false);
+    assert.equal(mock.counts.creates, 0);
+  });
+
+  it('rejects a private CT target whose live visibility or enrolled App authority drifts', async () => {
+    const target = {
+      owner: 'calltelemetry', repo: 'ai-workspace', repositoryId: 1131452104,
+      isPrivate: true, headSha: HEAD_A, baseSha: BASE_A,
+    };
+    const publicDrift = createTestEnv({ target, privateOnRepositoryRead: 1 });
+    await configureAppKeys(publicDrift.env);
+    const visibilityReceipt = await publishOperatorPassthroughForTarget(publicDrift.env, {
+      owner: target.owner, repo: target.repo, prNumber: 42,
+    }, { fetchFn: publicDrift.fetchFn });
+    assert.equal(visibilityReceipt.status, 'unavailable');
+    assert.equal(visibilityReceipt.errorCode, 'current_candidate_changed');
+    assert.equal(publicDrift.counts.creates, 0);
+
+    const wrongApp = createTestEnv({ target, wrongConfiguredAppId: true });
+    await configureAppKeys(wrongApp.env);
+    const appReceipt = await publishOperatorPassthroughForTarget(wrongApp.env, {
+      owner: target.owner, repo: target.repo, prNumber: 42,
+    }, { fetchFn: wrongApp.fetchFn });
+    assert.equal(appReceipt.status, 'unavailable');
+    assert.equal(appReceipt.errorCode, 'service_configuration_unavailable');
+    assert.equal(wrongApp.counts.creates, 0);
+  });
+
+  it('rejects a central-dispatch head or base that no longer matches the live PR before check creation', async () => {
+    const target = {
+      owner: 'calltelemetry', repo: 'ai-workspace', repositoryId: 1131452104,
+      isPrivate: true, headSha: HEAD_B, baseSha: BASE_B,
+    };
+    const mock = createTestEnv({ target });
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env, {
+      owner: target.owner, repo: target.repo, prNumber: 42,
+    }, { fetchFn: mock.fetchFn }, { headSha: HEAD_A, baseSha: BASE_A });
+    assert.equal(receipt.status, 'unavailable');
+    assert.equal(receipt.errorCode, 'current_candidate_changed');
+    assert.equal(receipt.mergeEligible, false);
+    assert.equal(mock.counts.creates, 0);
+  });
+
+  it('rejects a public or changed-identity protected policy source before check creation', async () => {
+    const mock = createTestEnv({ policyRepositoryPublic: true });
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env, {
+      owner: OWNER, repo: REPO, prNumber: 42,
+    }, { fetchFn: mock.fetchFn });
+    assert.equal(receipt.status, 'unavailable');
+    assert.equal(receipt.errorCode, 'policy_not_current');
     assert.equal(receipt.mergeEligible, false);
     assert.equal(mock.counts.creates, 0);
   });

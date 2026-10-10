@@ -9,6 +9,7 @@ import {
   GITHUB_ACTIONS_OIDC_ISSUER,
   type GitHubActionsOidcClaims,
 } from '../src/auth/oidcVerifier.js';
+import { TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER } from '../src/auth/trustedCentralActionDispatch.js';
 import {
   validateActionDispatchRequest,
   handleActionDispatch,
@@ -273,9 +274,135 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
         event_name: 'repository_dispatch',
       };
 
-      const externalTargets = new Map([['exampleorg/sample-repo', 123456]]);
+      const externalTargets = new Map([['exampleorg/sample-repo', {
+        repositoryId: 123456,
+        owner: 'exampleorg',
+        repo: 'sample-repo',
+        isPrivate: true,
+        appId: 4385771,
+      }]]);
       const kind = assertActionDispatchMatchesClaims(req, claims, externalTargets);
       assert.strictEqual(kind, 'central');
+    });
+
+    function createTrustedCentralRequest(overrides: Partial<ActionDispatchRequest> = {}): ActionDispatchRequest {
+      const runId = '38029691203';
+      const runAttempt = 1;
+      const repositoryId = 1131452104;
+      const prNumber = 3546;
+      const headSha = '4446d2b9f74af4cafbaf01814da80069e51d3cfa';
+      return createValidDispatchRequest({
+        owner: 'calltelemetry',
+        repo: 'ai-workspace',
+        repositoryId,
+        prNumber,
+        headSha,
+        baseSha: '59d7f03d8283148e41777f8cd85487fa85bfb675',
+        caller: {
+          runId,
+          runAttempt,
+          eventName: 'workflow_dispatch',
+          workflowRef: TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER.jobWorkflowRef,
+          workflowSha: TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER.jobWorkflowSha,
+        },
+        deliveryId: expectedActionDeliveryId({ caller: { runId, runAttempt }, repositoryId, prNumber, headSha }),
+        ...overrides,
+      });
+    }
+
+    function trustedCentralClaims(overrides: Partial<GitHubActionsOidcClaims> = {}): GitHubActionsOidcClaims {
+      const caller = TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER;
+      return {
+        repository: caller.repository,
+        repository_id: String(caller.repositoryId),
+        repository_owner_id: String(caller.repositoryOwnerId),
+        run_id: '38029691203',
+        run_attempt: '1',
+        event_name: 'workflow_dispatch',
+        ref: caller.ref,
+        workflow_ref: caller.workflowRef,
+        workflow_sha: caller.workflowSha,
+        job_workflow_ref: caller.jobWorkflowRef,
+        job_workflow_sha: caller.jobWorkflowSha,
+        ...overrides,
+      };
+    }
+
+    const trustedAiWorkspace = new Map([['calltelemetry/ai-workspace', {
+      repositoryId: 1131452104,
+      owner: 'calltelemetry',
+      repo: 'ai-workspace',
+      isPrivate: true,
+      appId: 4385771,
+    }]]);
+
+    it('admits the pinned CT central workflow only for the exact enrolled AI workspace identity', () => {
+      assert.equal(
+        assertActionDispatchMatchesClaims(createTrustedCentralRequest(), trustedCentralClaims(), trustedAiWorkspace),
+        'central',
+      );
+    });
+
+    it('rejects a CT central caller with the wrong repository name, numeric ID, or owner ID', () => {
+      const request = createTrustedCentralRequest();
+      for (const claims of [
+        trustedCentralClaims({ repository: 'calltelemetry/ct-meta' }),
+        trustedCentralClaims({ repository_id: '1339040554' }),
+        trustedCentralClaims({ repository_owner_id: '314096169' }),
+      ]) {
+        assert.throws(() => assertActionDispatchMatchesClaims(request, claims, trustedAiWorkspace));
+      }
+    });
+
+    it('rejects a fork and any unapproved dispatcher or reusable workflow ref/SHA', () => {
+      const request = createTrustedCentralRequest();
+      for (const claims of [
+        trustedCentralClaims({ repository: 'jasonbarbee/ct-review-actions', repository_id: '1339040553' }),
+        trustedCentralClaims({ event_name: 'pull_request_target' }),
+        trustedCentralClaims({ ref: 'refs/heads/feature/untrusted' }),
+        trustedCentralClaims({ workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/untrusted.yml@refs/heads/main' }),
+        trustedCentralClaims({ workflow_sha: 'a'.repeat(40) }),
+        trustedCentralClaims({ job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/heads/feature/untrusted' }),
+        trustedCentralClaims({ job_workflow_sha: 'b'.repeat(40) }),
+      ]) {
+        assert.throws(() => assertActionDispatchMatchesClaims(request, claims, trustedAiWorkspace));
+      }
+      assert.throws(() => assertActionDispatchMatchesClaims(createTrustedCentralRequest({
+        caller: {
+          runId: '38029691203', runAttempt: 1, eventName: 'workflow_dispatch',
+          workflowRef: 'calltelemetry/ct-review-actions/.github/workflows/untrusted.yml@refs/heads/main',
+          workflowSha: TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER.jobWorkflowSha,
+        },
+      }), trustedCentralClaims(), trustedAiWorkspace));
+      assert.throws(() => assertActionDispatchMatchesClaims(createTrustedCentralRequest({
+        caller: {
+          runId: '38029691203', runAttempt: 1, eventName: 'workflow_dispatch',
+          workflowRef: TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER.jobWorkflowRef,
+          workflowSha: 'c'.repeat(40),
+        },
+      }), trustedCentralClaims(), trustedAiWorkspace));
+    });
+
+    it('rejects caller-supplied target ID, App, and unenrolled repository substitutions', () => {
+      const request = createTrustedCentralRequest();
+      const claims = trustedCentralClaims();
+      const wrongId = createTrustedCentralRequest({
+        repositoryId: 1355159090,
+        deliveryId: expectedActionDeliveryId({
+          caller: { runId: '38029691203', runAttempt: 1 },
+          repositoryId: 1355159090,
+          prNumber: 3546,
+          headSha: '4446d2b9f74af4cafbaf01814da80069e51d3cfa',
+        }),
+      });
+      assert.throws(() => assertActionDispatchMatchesClaims(wrongId, claims, trustedAiWorkspace));
+      assert.throws(() => assertActionDispatchMatchesClaims(request, claims));
+      assert.throws(() => assertActionDispatchMatchesClaims(request, claims, new Map([['calltelemetry/ai-workspace', {
+        repositoryId: 1131452104, owner: 'calltelemetry', repo: 'ai-workspace', isPrivate: true, appId: 4552718,
+      }]])));
+      assert.throws(() => assertActionDispatchMatchesClaims(createTrustedCentralRequest({
+        owner: 'calltelemetry', repo: 'unlisted-repo', repositoryId: 999999999,
+      }), claims, trustedAiWorkspace));
     });
 
     it('rejects when repository does not match claims', async () => {
@@ -520,6 +647,143 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
       const gateRes = await repoGate.fetch('http://do/active-run/42');
       const gateData = (await gateRes.json()) as any;
       assert.strictEqual(gateData.latestRunId, validated.runId);
+    });
+
+    it('dispatches AI workspace only from the pinned CT central workflow and service enrollment', async () => {
+      const caller = TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER;
+      const runId = '38029691203';
+      const runAttempt = 1;
+      const repositoryId = 1131452104;
+      const prNumber = 3546;
+      const headSha = '4446d2b9f74af4cafbaf01814da80069e51d3cfa';
+      const baseSha = '59d7f03d8283148e41777f8cd85487fa85bfb675';
+      const { env, dispatchedWorkflows } = createTestWorkerEnv({
+        PILOT_REPOSITORIES: 'calltelemetry/ai-workspace',
+        OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES: JSON.stringify([
+          { repositoryId, owner: 'calltelemetry', repo: 'ai-workspace', isPrivate: true, appId: 4385771 },
+        ]),
+      });
+      const dispatchReq = createValidDispatchRequest({
+        owner: 'calltelemetry',
+        repo: 'ai-workspace',
+        repositoryId,
+        prNumber,
+        headSha,
+        baseSha,
+        caller: {
+          runId,
+          runAttempt,
+          eventName: 'workflow_dispatch',
+          workflowRef: caller.jobWorkflowRef,
+          workflowSha: caller.jobWorkflowSha,
+        },
+        deliveryId: expectedActionDeliveryId({ caller: { runId, runAttempt }, repositoryId, prNumber, headSha }),
+      });
+      const token = await createMockToken({
+        repository: caller.repository,
+        repository_id: String(caller.repositoryId),
+        repository_owner_id: String(caller.repositoryOwnerId),
+        run_id: runId,
+        run_attempt: String(runAttempt),
+        event_name: 'workflow_dispatch',
+        ref: caller.ref,
+        workflow_ref: caller.workflowRef,
+        workflow_sha: caller.workflowSha,
+        job_workflow_ref: caller.jobWorkflowRef,
+        job_workflow_sha: caller.jobWorkflowSha,
+      });
+      const req = new Request('http://worker/api/dispatch/action', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(dispatchReq),
+      });
+
+      const res = await handleActionDispatch(req, env, undefined, { keySet: mockKeySet });
+      assert.equal(res.status, 202);
+      assert.equal(dispatchedWorkflows.length, 1);
+      assert.equal(dispatchedWorkflows[0].params.owner, 'calltelemetry');
+      assert.equal(dispatchedWorkflows[0].params.repo, 'ai-workspace');
+      assert.equal(dispatchedWorkflows[0].params.headSha, headSha);
+      assert.equal(dispatchedWorkflows[0].params.baseSha, baseSha);
+    });
+
+    it('rejects central caller and target drift before registering or dispatching a workflow', async () => {
+      const caller = TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER;
+      const runId = '38029691203';
+      const runAttempt = 1;
+      const repositoryId = 1131452104;
+      const prNumber = 3546;
+      const headSha = '4446d2b9f74af4cafbaf01814da80069e51d3cfa';
+      const baseSha = '59d7f03d8283148e41777f8cd85487fa85bfb675';
+      const identities = [
+        { repositoryId, owner: 'calltelemetry', repo: 'ai-workspace', isPrivate: true, appId: 4385771 },
+      ];
+      const cases: Array<{
+        label: string;
+        claims?: Partial<GitHubActionsOidcClaims>;
+        request?: Partial<ActionDispatchRequest>;
+        removeEnrollment?: boolean;
+      }> = [
+        { label: 'wrong numeric caller repository ID', claims: { repository_id: '1339040554' } },
+        { label: 'wrong caller organization ID', claims: { repository_owner_id: '314096169' } },
+        { label: 'fork caller repository', claims: { repository: 'jasonbarbee/ct-review-actions', repository_id: '1339040553' } },
+        { label: 'unapproved dispatcher path', claims: { workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/untrusted.yml@refs/heads/main' } },
+        { label: 'unapproved dispatcher SHA', claims: { workflow_sha: 'a'.repeat(40) } },
+        { label: 'unapproved reusable workflow ref', claims: { job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/heads/feature/untrusted' } },
+        { label: 'unapproved reusable workflow SHA', claims: { job_workflow_sha: 'b'.repeat(40) } },
+        { label: 'unprotected ref', claims: { ref: 'refs/heads/feature/untrusted' } },
+        { label: 'caller-selected wrong target ID', request: { repositoryId: 1355159090 } },
+        { label: 'caller-selected unenrolled target', request: { owner: 'calltelemetry', repo: 'unlisted-repo', repositoryId: 999999999 } },
+        { label: 'missing service-owned enrollment', removeEnrollment: true },
+      ];
+
+      for (const testCase of cases) {
+        const { env, dispatchedWorkflows } = createTestWorkerEnv({
+          PILOT_REPOSITORIES: 'all',
+          OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES: testCase.removeEnrollment ? undefined : JSON.stringify(identities),
+        });
+        const target = {
+          owner: testCase.request?.owner ?? 'calltelemetry',
+          repo: testCase.request?.repo ?? 'ai-workspace',
+          repositoryId: testCase.request?.repositoryId ?? repositoryId,
+        };
+        const dispatchReq = createValidDispatchRequest({
+          ...target,
+          prNumber,
+          headSha,
+          baseSha,
+          caller: {
+            runId,
+            runAttempt,
+            eventName: 'workflow_dispatch',
+            workflowRef: caller.jobWorkflowRef,
+            workflowSha: caller.jobWorkflowSha,
+          },
+          deliveryId: expectedActionDeliveryId({ caller: { runId, runAttempt }, repositoryId: target.repositoryId, prNumber, headSha }),
+        });
+        const token = await createMockToken({
+          repository: caller.repository,
+          repository_id: String(caller.repositoryId),
+          repository_owner_id: String(caller.repositoryOwnerId),
+          run_id: runId,
+          run_attempt: String(runAttempt),
+          event_name: 'workflow_dispatch',
+          ref: caller.ref,
+          workflow_ref: caller.workflowRef,
+          workflow_sha: caller.workflowSha,
+          job_workflow_ref: caller.jobWorkflowRef,
+          job_workflow_sha: caller.jobWorkflowSha,
+          ...testCase.claims,
+        });
+        const req = new Request('http://worker/api/dispatch/action', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(dispatchReq),
+        });
+        const res = await handleActionDispatch(req, env, undefined, { keySet: mockKeySet });
+        assert.equal(res.status, 403, testCase.label);
+        assert.equal(dispatchedWorkflows.length, 0, testCase.label);
+      }
     });
 
     it('routes requests on the /action alias path through worker.fetch', async () => {
