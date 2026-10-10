@@ -285,6 +285,86 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
       assert.strictEqual(kind, 'central');
     });
 
+    it('retains workflow_dispatch for legacy central Review Yeti callers', () => {
+      const runId = '999998';
+      const runAttempt = 1;
+      const repositoryId = 1326169548;
+      const prNumber = 42;
+      const headSha = '1111111111111111111111111111111111111111';
+      const req = createValidDispatchRequest({
+        owner: 'review-yeti-ai',
+        repo: 'review-yeti-bot',
+        repositoryId,
+        caller: { runId, runAttempt, eventName: 'workflow_dispatch' },
+        deliveryId: expectedActionDeliveryId({ caller: { runId, runAttempt }, repositoryId, prNumber, headSha }),
+      });
+      const claims: GitHubActionsOidcClaims = {
+        repository: 'review-yeti-ai/review-yeti-bot',
+        repository_id: '1326169548',
+        repository_owner_id: '88888',
+        run_id: runId,
+        run_attempt: String(runAttempt),
+        event_name: 'workflow_dispatch',
+      };
+
+      assert.equal(assertActionDispatchMatchesClaims(req, claims), 'central');
+    });
+
+    it('rejects legacy central PR events and fork callers targeting the public self repository', () => {
+      const runId = '999997';
+      const runAttempt = 1;
+      const repositoryId = 1326169548;
+      const prNumber = 42;
+      const headSha = '1111111111111111111111111111111111111111';
+      const target = {
+        repositoryId,
+        owner: 'review-yeti-ai',
+        repo: 'review-yeti-bot',
+        isPrivate: false,
+        appId: 4552718,
+      };
+      const externalTargets = new Map([[`${target.owner}/${target.repo}`, target]]);
+
+      for (const eventName of ['pull_request', 'pull_request_target'] as const) {
+        const request = createValidDispatchRequest({
+          owner: target.owner,
+          repo: target.repo,
+          repositoryId,
+          caller: { runId, runAttempt, eventName },
+          deliveryId: expectedActionDeliveryId({ caller: { runId, runAttempt }, repositoryId, prNumber, headSha }),
+        });
+        const claims: GitHubActionsOidcClaims = {
+          repository: 'review-yeti-ai/review-yeti-action',
+          repository_id: '999999',
+          repository_owner_id: '88888',
+          run_id: runId,
+          run_attempt: String(runAttempt),
+          event_name: eventName,
+          ref: 'refs/pull/42/merge',
+          workflow_ref: 'review-yeti-ai/review-yeti-action/.github/workflows/untrusted.yml@refs/pull/42/merge',
+          workflow_sha: 'a'.repeat(40),
+        };
+        assert.throws(() => assertActionDispatchMatchesClaims(request, claims, externalTargets), eventName);
+      }
+
+      const forkRequest = createValidDispatchRequest({
+        owner: target.owner,
+        repo: target.repo,
+        repositoryId,
+        caller: { runId, runAttempt, eventName: 'workflow_dispatch' },
+        deliveryId: expectedActionDeliveryId({ caller: { runId, runAttempt }, repositoryId, prNumber, headSha }),
+      });
+      const forkClaims: GitHubActionsOidcClaims = {
+        repository: 'attacker/review-yeti-action',
+        repository_id: '999999',
+        repository_owner_id: '77777',
+        run_id: runId,
+        run_attempt: String(runAttempt),
+        event_name: 'workflow_dispatch',
+      };
+      assert.throws(() => assertActionDispatchMatchesClaims(forkRequest, forkClaims, externalTargets), /does not match OIDC token claims/);
+    });
+
     function createTrustedCentralRequest(overrides: Partial<ActionDispatchRequest> = {}): ActionDispatchRequest {
       const runId = '38029691203';
       const runAttempt = 1;
@@ -705,6 +785,109 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
       assert.equal(dispatchedWorkflows[0].params.repo, 'ai-workspace');
       assert.equal(dispatchedWorkflows[0].params.headSha, headSha);
       assert.equal(dispatchedWorkflows[0].params.baseSha, baseSha);
+    });
+
+    it('rejects legacy PR and fork claims before the paused publisher can create or read checks', async () => {
+      const originalFetch = globalThis.fetch;
+      let githubCalls = 0;
+      globalThis.fetch = (async () => {
+        githubCalls += 1;
+        return new Response('{}', { status: 503, headers: { 'Content-Type': 'application/json' } });
+      }) as typeof fetch;
+
+      try {
+        const repositoryId = 1326169548;
+        const prNumber = 42;
+        const headSha = '1111111111111111111111111111111111111111';
+        const baseSha = '0000000000000000000000000000000000000000';
+        const runId = '987650001';
+        const runAttempt = 1;
+        const targetIdentity = {
+          repositoryId,
+          owner: 'review-yeti-ai',
+          repo: 'review-yeti-bot',
+          isPrivate: false,
+          appId: 4552718,
+        };
+        const cases = [
+          {
+            eventName: 'pull_request' as const,
+            repository: 'review-yeti-ai/review-yeti-action',
+            repositoryId: '999999',
+            repositoryOwnerId: '88888',
+            ref: 'refs/pull/42/merge',
+            workflowRef: 'review-yeti-ai/review-yeti-action/.github/workflows/untrusted.yml@refs/pull/42/merge',
+            workflowSha: 'a'.repeat(40),
+          },
+          {
+            eventName: 'pull_request_target' as const,
+            repository: 'review-yeti-ai/review-yeti-action',
+            repositoryId: '999999',
+            repositoryOwnerId: '88888',
+            ref: 'refs/pull/42/merge',
+            workflowRef: 'review-yeti-ai/review-yeti-action/.github/workflows/untrusted.yml@refs/pull/42/merge',
+            workflowSha: 'a'.repeat(40),
+          },
+          {
+            eventName: 'workflow_dispatch' as const,
+            repository: 'attacker/review-yeti-action',
+            repositoryId: '999999',
+            repositoryOwnerId: '77777',
+            ref: 'refs/heads/main',
+            workflowRef: 'attacker/review-yeti-action/.github/workflows/review.yml@refs/heads/main',
+            workflowSha: 'b'.repeat(40),
+          },
+        ];
+
+        for (const [index, testCase] of cases.entries()) {
+          const { env, dispatchedWorkflows } = createTestWorkerEnv({
+            OPERATOR_GLOBAL_PASSTHROUGH: 'true',
+            OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES: JSON.stringify([targetIdentity]),
+            OPERATOR_PASSTHROUGH_POLICY_SOURCE: JSON.stringify({
+              repositoryId: 1339040553,
+              owner: 'calltelemetry',
+              repo: 'ct-review-actions',
+              ref: 'main',
+              path: 'policy/review-yeti.json',
+            }),
+            REVIEW_YETI_PUBLIC_TARGET_APP_ID: '4552718',
+          });
+          const dispatchReq = createValidDispatchRequest({
+            owner: targetIdentity.owner,
+            repo: targetIdentity.repo,
+            repositoryId,
+            prNumber,
+            headSha,
+            baseSha,
+            caller: { runId, runAttempt, eventName: testCase.eventName },
+            deliveryId: expectedActionDeliveryId({ caller: { runId, runAttempt }, repositoryId, prNumber, headSha }),
+          });
+          const token = await createMockToken({
+            repository: testCase.repository,
+            repository_id: testCase.repositoryId,
+            repository_owner_id: testCase.repositoryOwnerId,
+            run_id: runId,
+            run_attempt: String(runAttempt),
+            event_name: testCase.eventName,
+            ref: testCase.ref,
+            workflow_ref: testCase.workflowRef,
+            workflow_sha: testCase.workflowSha,
+          });
+          const request = new Request('http://worker/api/dispatch/action', {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify(dispatchReq),
+          });
+
+          githubCalls = 0;
+          const response = await handleActionDispatch(request, env, undefined, { keySet: mockKeySet });
+          assert.equal(response.status, 403, `case ${index}: ${testCase.repository} ${testCase.eventName}`);
+          assert.equal(githubCalls, 0, `case ${index}: rejected before any GitHub check read/write`);
+          assert.equal(dispatchedWorkflows.length, 0, `case ${index}: no workflow registered`);
+        }
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
 
     it('rejects central caller and target drift before registering or dispatching a workflow', async () => {

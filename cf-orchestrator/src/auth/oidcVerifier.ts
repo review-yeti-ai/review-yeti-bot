@@ -11,6 +11,9 @@ export const CENTRAL_REVIEW_REPOSITORIES = new Set([
   'review-yeti-ai/review-yeti-action',
   'review-yeti-ai/review-yeti-bot',
 ]);
+// Preserve the original central caller contract. PR-triggered runs are not
+// central dispatch authority, even when their repository identity is trusted.
+const LEGACY_CENTRAL_REVIEW_EVENTS = new Set(['repository_dispatch', 'workflow_dispatch']);
 
 export interface GitHubActionsOidcClaims {
   repository: string;
@@ -197,7 +200,8 @@ export function assertActionDispatchMatchesClaims(
     repository.toLowerCase() === claims.repository.toLowerCase() &&
     String(request.repositoryId) === claims.repository_id;
 
-  const isLegacyReviewYetiCentral = CENTRAL_REVIEW_REPOSITORIES.has(claims.repository)
+  const isLegacyReviewYetiCentral = CENTRAL_REVIEW_REPOSITORIES.has(claims.repository.toLowerCase())
+    && LEGACY_CENTRAL_REVIEW_EVENTS.has(request.caller.eventName)
     && (request.owner.toLowerCase() === CENTRAL_REVIEW_OWNER.toLowerCase() || isSupportedExternalTarget);
   const isTrustedCallTelemetryCentral = trustedCentralActionCallerMatches(request, claims, externalTarget);
   const isCentral = isLegacyReviewYetiCentral || isTrustedCallTelemetryCentral;
