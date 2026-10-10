@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { GitBranch, Search, Lock, Globe, Sparkles, Plus, Check, HelpCircle } from 'lucide-react';
+import { GitBranch, Search, Lock, Globe, Sparkles, Plus, Check, HelpCircle, Shield } from 'lucide-react';
 import { RepositorySetting } from '@/types/dashboard';
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip';
 
@@ -75,25 +75,51 @@ export function Step2ReposPicker({
           />
         </div>
 
-        {onAddRepo && (
-          <div className="flex items-center gap-2 w-full sm:w-auto">
-            <Input
-              placeholder="org/repository-name"
-              value={newRepoInput}
-              onChange={(e) => setNewRepoInput(e.target.value)}
-              className="bg-card/80 text-xs w-full sm:w-64"
-            />
-            <Button
-              size="sm"
-              onClick={handleCreateRepo}
-              disabled={!hasExplicitRepository}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs gap-1.5 shrink-0"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Add Repo
-            </Button>
-          </div>
-        )}
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              repositories.forEach((r) => onUpdateRepo(r.owner, r.repo, { passthroughEnabled: true }));
+            }}
+            className="text-xs text-sky-400 border-sky-500/30 hover:bg-sky-500/10 gap-1.5 h-8"
+          >
+            <Shield className="h-3.5 w-3.5" />
+            Enable Passthrough All
+          </Button>
+
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              repositories.forEach((r) => onUpdateRepo(r.owner, r.repo, { automationEnabled: true }));
+            }}
+            className="text-xs text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/10 gap-1.5 h-8"
+          >
+            <Check className="h-3.5 w-3.5" />
+            Enable Review All
+          </Button>
+
+          {onAddRepo && (
+            <div className="flex items-center gap-2">
+              <Input
+                placeholder="org/repository-name"
+                value={newRepoInput}
+                onChange={(e) => setNewRepoInput(e.target.value)}
+                className="bg-card/80 text-xs w-44 h-8"
+              />
+              <Button
+                size="sm"
+                onClick={handleCreateRepo}
+                disabled={!hasExplicitRepository}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs gap-1.5 shrink-0 h-8"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add Repo
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Repositories List */}
@@ -174,6 +200,31 @@ export function Step2ReposPicker({
                           </SelectContent>
                         </Select>
                       </div>
+
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant={item.passthroughEnabled !== false ? 'outline' : 'ghost'}
+                            size="sm"
+                            onClick={() =>
+                              onUpdateRepo(item.owner, item.repo, {
+                                passthroughEnabled: item.passthroughEnabled === false ? true : false,
+                              })
+                            }
+                            className={`h-8 text-xs font-semibold gap-1.5 ${
+                              item.passthroughEnabled !== false
+                                ? 'border-sky-500/40 text-sky-400 bg-sky-500/10 hover:bg-sky-500/20'
+                                : 'text-muted-foreground/60 hover:text-muted-foreground'
+                            }`}
+                          >
+                            <Shield className="h-3.5 w-3.5" />
+                            {item.passthroughEnabled !== false ? 'Passthrough: On' : 'Passthrough: Off'}
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">
+                          Operator Passthrough permits PRs from this repo to run through the operator without stalling.
+                        </TooltipContent>
+                      </Tooltip>
 
                       <Tooltip>
                         <TooltipTrigger asChild>
