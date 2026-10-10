@@ -7,11 +7,13 @@ import { purgeExpiredR2WorkspaceCaches } from './runners/r2WorkspaceCache.js';
 import { defaultMcpRouter, constantTimeEquals } from './mcp/mcpRouter.js';
 import { handleDashboardApi } from './api/dashboardRoutes.js';
 import { handleActionDispatch } from './api/actionDispatchRoute.js';
+import { handleSettingsApi } from './api/settingsRoutes.js';
 import { readOperatorPassthroughByRunId } from './operatorPassthroughPublisher.js';
 import { isPilotRepository } from './pilotRepository.js';
+import { saveOrganizationToDb, updateRepositoryInDb } from './storage/d1Client.js';
 
 export { RepoGateDO, ReviewRunDO, ReviewJobWorkflow, handleMergeGroupAttestation };
-export { defaultMcpRouter, handleDashboardApi, handleActionDispatch };
+export { defaultMcpRouter, handleDashboardApi, handleActionDispatch, handleSettingsApi };
 export { isPilotRepository };
 
 /**
@@ -296,6 +298,12 @@ export default {
       const dashboardResponse = await handleDashboardApi(request, env);
       if (dashboardResponse) {
         return dashboardResponse;
+      }
+
+      // Review Yeti Settings & Onboarding REST API (Edge)
+      const settingsResponse = await handleSettingsApi(request, env);
+      if (settingsResponse) {
+        return settingsResponse;
       }
 
       // Webhook Ingest: /api/webhooks/github
@@ -659,6 +667,152 @@ export default {
           }
           const outcome = await handleMergeGroupAttestation(payload, env);
           return Response.json(outcome);
+        }
+
+        // Handle installation events (Zero-Touch GitHub App Onboarding)
+        if (eventName === 'installation') {
+          const action = payload.action;
+          const inst = payload.installation;
+          const account = inst?.account;
+          const orgLogin = (account?.login || '').toLowerCase().trim();
+          const orgName = account?.name || account?.login || orgLogin;
+          const installationId = typeof inst?.id === 'number' ? inst.id : undefined;
+          const appId = typeof inst?.app_id === 'number' ? inst.app_id : undefined;
+
+          if (action === 'created' || action === 'unsuspend') {
+            if (orgLogin) {
+              await saveOrganizationToDb(env.DB, {
+                id: orgLogin,
+                name: orgName,
+                installationId,
+                appId,
+                enabled: true,
+                passthroughEnabled: true,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              });
+            }
+
+            const repos = Array.isArray(payload.repositories) ? payload.repositories : [];
+            const syncedRepos: string[] = [];
+            if (repos.length > 0) {
+              for (const r of repos) {
+                const parts = (r.full_name || '').split('/');
+                const owner = parts[0] || orgLogin;
+                const repo = parts[1] || r.name;
+                if (owner && repo) {
+                  await updateRepositoryInDb(env.DB, owner, repo, {
+                    repositoryId: typeof r.id === 'number' ? r.id : undefined,
+                    installationId,
+                    automationEnabled: true,
+                    passthroughEnabled: true,
+                    defaultBranch: 'main',
+                  });
+                  syncedRepos.push(`${owner}/${repo}`);
+                }
+              }
+            }
+
+            return Response.json({
+              status: 'processed_installation',
+              action,
+              organization: orgLogin,
+              installationId,
+              repositoriesCount: syncedRepos.length,
+              repositories: syncedRepos,
+            });
+          }
+
+          if (action === 'deleted' || action === 'suspend') {
+            if (orgLogin) {
+              await saveOrganizationToDb(env.DB, {
+                id: orgLogin,
+                name: orgName,
+                installationId,
+                appId,
+                enabled: false,
+                passthroughEnabled: false,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+              });
+            }
+            return Response.json({
+              status: 'processed_installation',
+              action,
+              organization: orgLogin,
+              installationId,
+            });
+          }
+
+          return Response.json({ status: 'ignored_installation_action', action, event: eventName });
+        }
+
+        // Handle installation_repositories events (Repository Addition/Removal)
+        if (eventName === 'installation_repositories') {
+          const action = payload.action;
+          const inst = payload.installation;
+          const account = inst?.account;
+          const orgLogin = (account?.login || '').toLowerCase().trim();
+          const installationId = typeof inst?.id === 'number' ? inst.id : undefined;
+
+          if (action === 'added') {
+            const added = Array.isArray(payload.repositories_added) ? payload.repositories_added : [];
+            const processed: string[] = [];
+            if (added.length > 0) {
+              for (const r of added) {
+                const parts = (r.full_name || '').split('/');
+                const owner = parts[0] || orgLogin;
+                const repo = parts[1] || r.name;
+                if (owner && repo) {
+                  await updateRepositoryInDb(env.DB, owner, repo, {
+                    repositoryId: typeof r.id === 'number' ? r.id : undefined,
+                    installationId,
+                    automationEnabled: true,
+                    passthroughEnabled: true,
+                    defaultBranch: 'main',
+                  });
+                  processed.push(`${owner}/${repo}`);
+                }
+              }
+            }
+            return Response.json({
+              status: 'processed_installation_repositories',
+              action,
+              organization: orgLogin,
+              installationId,
+              addedCount: processed.length,
+              added: processed,
+            });
+          }
+
+          if (action === 'removed') {
+            const removed = Array.isArray(payload.repositories_removed) ? payload.repositories_removed : [];
+            const processed: string[] = [];
+            if (removed.length > 0) {
+              for (const r of removed) {
+                const parts = (r.full_name || '').split('/');
+                const owner = parts[0] || orgLogin;
+                const repo = parts[1] || r.name;
+                if (owner && repo) {
+                  await updateRepositoryInDb(env.DB, owner, repo, {
+                    automationEnabled: false,
+                    passthroughEnabled: false,
+                  });
+                  processed.push(`${owner}/${repo}`);
+                }
+              }
+            }
+            return Response.json({
+              status: 'processed_installation_repositories',
+              action,
+              organization: orgLogin,
+              installationId,
+              removedCount: processed.length,
+              removed: processed,
+            });
+          }
+
+          return Response.json({ status: 'ignored_installation_repositories_action', action, event: eventName });
         }
 
         return Response.json({ status: 'ignored', event: eventName });

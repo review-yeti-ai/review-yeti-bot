@@ -41,7 +41,7 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   }
   if (!headers.has('Authorization')) {
     const sessionToken = typeof window !== 'undefined'
-      ? (localStorage.getItem('ct_session_token') || 'demo_token_public')
+      ? (localStorage.getItem('ct_session_token') || localStorage.getItem('ct_admin_token') || 'demo_token_public')
       : 'demo_token_public';
     headers.set('Authorization', `Bearer ${sessionToken}`);
   }
@@ -390,6 +390,57 @@ export async function runOnboardingScan(repoPath: string): Promise<OnboardingSca
     body: JSON.stringify({ repoPath }),
   });
   return res.scanResult || res.result!;
+}
+
+// Settings & Installation Onboarding API
+export async function fetchGitHubInstallUrl(): Promise<{ success: boolean; slug: string; url: string }> {
+  return request<{ success: boolean; slug: string; url: string }>('/api/settings/github/install-url');
+}
+
+export async function syncGitHubInstallation(
+  installationId: string | number,
+  payload?: { organization?: string; organizationName?: string; repositories?: any[] }
+): Promise<{
+  success: boolean;
+  organization: any;
+  repositories: RepositorySetting[];
+  count: number;
+}> {
+  return request(`/api/settings/github/installations/${encodeURIComponent(String(installationId))}/sync`, {
+    method: 'POST',
+    body: payload ? JSON.stringify(payload) : JSON.stringify({}),
+  });
+}
+
+export async function fetchInstallationDetails(installationId: string | number): Promise<{
+  success: boolean;
+  organization: any;
+  repositories: RepositorySetting[];
+  count: number;
+}> {
+  return request(`/api/settings/github/installations/${encodeURIComponent(String(installationId))}`);
+}
+
+export async function bulkSaveRepositories(
+  repositories: Array<Partial<RepositorySetting> & { owner: string; repo: string }>
+): Promise<{ success: boolean; repositories: RepositorySetting[]; count: number }> {
+  return request('/api/settings/repos/bulk', {
+    method: 'POST',
+    body: JSON.stringify({ repositories }),
+  });
+}
+
+export async function fetchSettingsStatus(): Promise<{
+  success: boolean;
+  status: {
+    totalOrganizations: number;
+    totalRepositories: number;
+    activeRepositories: number;
+    passthroughRepositories: number;
+    storageBackend: string;
+  };
+}> {
+  return request('/api/settings/status');
 }
 
 // AI Providers API

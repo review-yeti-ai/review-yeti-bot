@@ -25,6 +25,7 @@ import {
   isPublicReviewRepository,
   reviewAppIdForRepository,
 } from './reviewAppAuthority.js';
+import { fetchRepositoriesFromDb } from './storage/d1Client.js';
 
 const APP_ID = AUTHORITATIVE_REVIEW_APP_ID;
 const DEADLINE_MS = 15_000;
@@ -279,6 +280,47 @@ function parseRepositoryIdentities(env: Env): RepositoryIdentity[] {
   return identities;
 }
 
+export async function resolveRepositoryIdentities(
+  env: Env,
+  context?: DeadlineContext
+): Promise<RepositoryIdentity[]> {
+  const staticIdentities = parseRepositoryIdentities(env);
+  const names = new Set<string>(staticIdentities.map((i) => `${i.owner}/${i.repo}`.toLowerCase()));
+  const ids = new Set<number>(staticIdentities.map((i) => i.repositoryId));
+  const merged: RepositoryIdentity[] = [...staticIdentities];
+
+  try {
+    const fetchPromise = fetchRepositoriesFromDb(env.DB, { passthroughOnly: true });
+    const dbRepos = await (context ? context.run(() => fetchPromise) : fetchPromise);
+    for (const record of dbRepos) {
+      if (record.passthroughEnabled === false) continue;
+      const name = `${record.owner}/${record.repo}`.toLowerCase();
+      if (names.has(name)) continue;
+      const baseIdentity = {
+        repositoryId: record.repositoryId ?? 0,
+        owner: record.owner,
+        repo: record.repo,
+      };
+      let appId: number;
+      try {
+        appId = reviewAppIdForRepository(baseIdentity);
+      } catch {
+        continue;
+      }
+      const identity: RepositoryIdentity = { ...baseIdentity, appId };
+      names.add(name);
+      if (identity.repositoryId > 0) {
+        ids.add(identity.repositoryId);
+      }
+      merged.push(identity);
+    }
+  } catch {
+    // If DB is not available or throws, preserve static identities
+  }
+
+  return merged;
+}
+
 function parsePolicySource(env: Env): OperatorPassthroughPolicySource {
   const raw = env.OPERATOR_PASSTHROUGH_POLICY_SOURCE;
   if (typeof raw !== 'string' || raw.length === 0 || new TextEncoder().encode(raw).byteLength > 8_192) {
@@ -406,10 +448,14 @@ async function currentCandidate(
   const repositoryId = Number(repository?.id);
   const owner = repository?.owner?.login;
   const repo = repository?.name;
-  if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0 || repositoryId !== expected.repositoryId
+  if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0
+    || (expected.repositoryId > 0 && repositoryId !== expected.repositoryId)
     || owner !== expected.owner || repo !== expected.repo
     || String(repository.full_name || '').toLowerCase() !== `${expected.owner}/${expected.repo}`.toLowerCase()) {
     unavailable('repository_not_enrolled');
+  }
+  if (expected.repositoryId === 0) {
+    expected.repositoryId = repositoryId;
   }
   if (typeof repository.private !== 'boolean') unavailable('current_repository_unavailable');
   if (isPublicReviewRepository(expected) && repository.private !== false) unavailable('current_candidate_changed');
@@ -1105,7 +1151,7 @@ async function resolveIdentity(
 ): Promise<{ candidate: CurrentCandidate; identity: OperatorPassthroughIdentity; runId: string; publicationId: string; token: string; policyToken: string; source: OperatorPassthroughPolicySource }> {
   if (env.OPERATOR_GLOBAL_PASSTHROUGH !== 'true') unavailable('pause_binding_unavailable');
   const requested = parseTarget(target);
-  const identities = parseRepositoryIdentities(env);
+  const identities = await resolveRepositoryIdentities(env, context);
   const source = parsePolicySource(env);
   const enrolledByName = identities.find((entry) =>
     `${entry.owner}/${entry.repo}`.toLowerCase() === `${requested.owner}/${requested.repo}`.toLowerCase());
@@ -1130,8 +1176,9 @@ async function currentCoordinatesStillMatch(
   context: DeadlineContext
 ): Promise<boolean> {
   if (env.OPERATOR_GLOBAL_PASSTHROUGH !== 'true') return false;
+  const identities = await resolveRepositoryIdentities(env, context);
   const current = await currentCandidate({ owner: candidate.owner, repo: candidate.repo, prNumber: candidate.prNumber },
-    parseRepositoryIdentities(env), targetToken, context);
+    identities, targetToken, context);
   if (!sameCandidate(candidate, current)) return false;
   return policyRevisionIsCurrent(source, identity.policySource, policyToken, context);
 }

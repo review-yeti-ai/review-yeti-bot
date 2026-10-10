@@ -4,9 +4,28 @@ Welcome to **Review Yeti**! This guide walks you through setting up multi-person
 
 ---
 
-## ⚡ Quickstart Option A: 30-Second GitHub App Wizard (Recommended)
+## ⚡ Quickstart Option A: 1-Click Interactive Web Portal & GitHub App Onboarding (Recommended)
 
-The fastest, zero-friction way to set up Review Yeti with full superpowers—native Check Runs, 1-click commit suggestions, and interactive PR chat—is using the automated CLI onboarding wizard:
+The modern, zero-touch way to onboard an entire GitHub Organization or individual repositories into Review Yeti:
+
+1. **Open the Portal Onboarding Wizard**:
+   Navigate to the **Settings & Onboarding** page in your Review Yeti deployment (e.g. `https://review-bot.example.com/settings` or local `http://localhost:3000/settings`).
+2. **1-Click GitHub App Install**:
+   Click **"Install Review Yeti on GitHub"** to route directly to GitHub's authorization page (`https://github.com/apps/<app-slug>/installations/new`).
+3. **Select Organizations & Repositories**:
+   Authorize Review Yeti for **All repositories** or select specific repositories.
+4. **Automatic Synchronization & Enrollment**:
+   Upon completing installation, GitHub redirects back to the portal with `?installation_id=...`. The portal **automatically synchronizes** your authorized repositories into Cloudflare D1 storage.
+5. **Configure Strictness & Passthrough**:
+   - **Operator Passthrough**: Toggle passthrough per repository or use **"Enable Passthrough All"**.
+   - **Review Automation**: Pause or resume active automated reviews with one click.
+   - **Strictness Profiles**: Choose between `chill` (critical security only), `balanced` (balanced feedback), or `assertive` (comprehensive architecture & style inspection).
+
+---
+
+## ⚡ Quickstart Option B: 30-Second GitHub App Wizard (CLI)
+
+If you prefer setting up a dedicated GitHub App from your terminal, use the automated CLI onboarding wizard:
 
 ```bash
 # Run the 30-second GitHub App Setup Wizard
@@ -29,7 +48,7 @@ npx review-yeti init --org my-org --gh-secrets --repo my-org/my-repo
 
 ---
 
-## ⚡ Quickstart Option B: 60-Second Standalone GitHub Action
+## ⚡ Quickstart Option C: 60-Second Standalone GitHub Action
 
 If you prefer a pure YAML setup without creating a GitHub App, you can run Review Yeti directly inside GitHub Actions runners:
 
@@ -279,7 +298,74 @@ Because Review Yeti's control plane (Durable Objects, Workflows, Queues, R2) and
 2. **Cloudflare Pages**: Export the Next.js static build (`npm run build:frontend`) to `out/` and deploy to Cloudflare Pages edge CDN.
 3. **Cloudflare Tunnel (`cloudflared`)**: For local testing or hybrid validation alongside the DOKS operator.
 
-👉 **Follow the complete [Cloudflare Portal Setup Guide](CLOUDFLARE_PORTAL_SETUP.md)**.
+---
+
+## 🏢 Enterprise Dynamic Onboarding & Settings REST API
+
+In production environments, hardcoding private repository identities, organization IDs, or customer names into public Git repositories (such as `wrangler.toml`) creates credential and security leaks. Review Yeti provides a serverless **Settings & Onboarding API** backed by **Cloudflare D1** to dynamically enroll organizations and repositories.
+
+### Settings REST Endpoints (`/api/settings/*`)
+
+All mutating settings endpoints require authentication via `Authorization: Bearer <REVIEW_YETI_MCP_AUTH_TOKEN>` or `x-api-key: <TOKEN>`.
+
+| Endpoint | Method | Description |
+|:---|:---|:---|
+| `/api/settings/status` | `GET` | Health check, active storage mode (`Cloudflare D1` vs `In-Memory`), and repository counts. |
+| `/api/settings/github/install-url` | `GET` | Public endpoint returning the 1-click GitHub App install URL. |
+| `/api/settings/github/installations/:id/sync` | `POST` | Syncs an installation from GitHub, enrolling all authorized repositories into D1 with passthrough enabled. |
+| `/api/settings/github/installations/:id` | `GET` | Retrieves organization and repository metadata for a synced installation. |
+| `/api/settings/orgs` | `GET`, `POST` | List all organizations or onboard a new organization. |
+| `/api/settings/orgs/:owner` | `GET`, `PATCH`, `DELETE` | Retrieve, update settings, or delete an organization. |
+| `/api/settings/repos` | `GET`, `POST` | List enrolled repositories (supports `?owner=`, `?passthroughOnly=true`, `?enabledOnly=true`) or enroll a repository. |
+| `/api/settings/repos/:owner/:repo` | `GET`, `PATCH`, `DELETE` | Retrieve, update profile/passthrough flags, or delete a repository. |
+| `/api/settings/repos/bulk` | `POST` | Bulk onboard multiple repositories in a single atomic request. |
+
+### Webhook Zero-Touch Auto-Enrollment
+
+When Review Yeti is installed on a GitHub organization or repository permissions are changed, the orchestrator automatically intercepts GitHub's webhooks:
+- **`installation.created`**: Auto-registers the organization and all granted repositories into D1 with operator passthrough enabled.
+- **`installation_repositories.added`**: Auto-registers newly authorized repositories into D1.
+- **`installation_repositories.removed`**: Safely pauses automation on removed repositories.
+- **`installation.deleted`**: Disables the organization and revokes active passthrough permissions.
+
+---
+
+## 🤖 Model Context Protocol (MCP) Onboarding Tools
+
+Review Yeti implements an edge-native **Model Context Protocol (MCP)** server over JSON-RPC 2.0 (and SSE streaming transport) with **18 total tools**. AI coding agents and operators can manage onboarding directly:
+
+```json
+// Example: Sync an authorized GitHub installation
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "review_yeti_sync_github_installation",
+    "arguments": {
+      "installationId": 5829104,
+      "organization": "my-org",
+      "passthroughEnabled": true,
+      "customProfile": "assertive"
+    }
+  }
+}
+```
+
+### Available MCP Settings & Onboarding Tools
+
+1. **`review_yeti_sync_github_installation`** *(Mutating)*:
+   Discovers and enrolls all authorized repositories from a GitHub App installation into Cloudflare D1 storage.
+2. **`review_yeti_get_onboarding_status`** *(Read-Only)*:
+   Queries aggregate onboarding status, total organizations, active repositories, and operator passthrough counts.
+3. **`review_yeti_list_repositories`** *(Read-Only)*:
+   Lists enrolled repositories with filtering by `owner`, `passthroughOnly`, and `enabledOnly`.
+4. **`review_yeti_onboard_organization`** *(Mutating)*:
+   Enrolls an organization identity and configures default strictness policies.
+5. **`review_yeti_onboard_repository`** *(Mutating)*:
+   Enrolls an individual repository and sets initial passthrough flags.
+6. **`review_yeti_update_repository_settings`** *(Mutating)*:
+   Adjusts strictness profiles (`chill`, `balanced`, `assertive`), toggles review automation, or updates passthrough flags.
 
 ---
 

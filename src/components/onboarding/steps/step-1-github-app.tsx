@@ -17,10 +17,13 @@ import {
   Copy,
   Lock,
   HelpCircle,
+  ChevronDown,
+  Sparkles,
 } from 'lucide-react';
 import { GitHubAppConfig } from '@/types/dashboard';
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip';
 import { CopyButton } from '@/components/ui/copy-button';
+import { fetchGitHubInstallUrl } from '@/lib/api-client';
 
 interface Step1GitHubAppProps {
   config: Partial<GitHubAppConfig>;
@@ -114,7 +117,16 @@ export function Step1GitHubApp({
     }
   };
 
-  const manifestUrl = `https://github.com/settings/apps/new?state=ct_review_wizard`;
+  const [installUrl, setInstallUrl] = React.useState<string>('https://github.com/apps/review-yeti-bot/installations/new');
+  const [showAdvancedCredentials, setShowAdvancedCredentials] = React.useState<boolean>(false);
+
+  React.useEffect(() => {
+    fetchGitHubInstallUrl()
+      .then((data) => {
+        if (data?.url) setInstallUrl(data.url);
+      })
+      .catch(() => {});
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -127,24 +139,75 @@ export function Step1GitHubApp({
           <div>
             <h3 className="text-base font-semibold text-foreground">Step 1: GitHub Organization Connection</h3>
             <p className="text-xs text-muted-foreground">
-              Register GitHub App manifest, configure Webhook delivery, and upload RS256 Private Key (.pem).
+              Authorize Review Yeti on your GitHub organization with 1 click, or configure self-hosted App credentials.
             </p>
           </div>
         </div>
 
         <Button
           asChild
-          className="bg-indigo-600 hover:bg-indigo-500 text-white gap-2 shrink-0 text-xs font-semibold"
+          className="bg-indigo-600 hover:bg-indigo-500 text-white gap-2 shrink-0 text-xs font-semibold shadow-lg shadow-indigo-500/20"
         >
-          <a href={manifestUrl} target="_blank" rel="noreferrer">
+          <a href={installUrl} target="_blank" rel="noreferrer">
             <ExternalLink className="h-4 w-4" />
-            Install GitHub App on Org
+            Install Review Yeti on GitHub
           </a>
         </Button>
       </div>
 
-      {/* Grid Layout for Configuration Fields */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {/* Connected Organization Card if installation detected */}
+      {config.installationId && (
+        <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <CheckCircle2 className="h-5 w-5 text-emerald-400 shrink-0" />
+            <div>
+              <p className="text-xs font-semibold text-emerald-300 flex items-center gap-2">
+                GitHub App Installation Connected
+                <Badge variant="outline" className="bg-emerald-500/20 text-emerald-300 border-emerald-500/40 text-[10px]">
+                  Installation #{config.installationId}
+                </Badge>
+              </p>
+              <p className="text-[11px] text-emerald-400/80 mt-0.5">
+                Repositories in this installation are automatically discovered and enrolled in Cloudflare D1.
+              </p>
+            </div>
+          </div>
+          <Button
+            asChild
+            variant="outline"
+            size="sm"
+            className="text-xs border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/10 gap-1.5 shrink-0"
+          >
+            <a href={installUrl} target="_blank" rel="noreferrer">
+              <ExternalLink className="h-3.5 w-3.5" />
+              Manage Repos in GitHub
+            </a>
+          </Button>
+        </div>
+      )}
+
+      {/* Advanced Credentials Toggle */}
+      <div className="pt-2">
+        <button
+          type="button"
+          onClick={() => setShowAdvancedCredentials((prev) => !prev)}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors font-medium"
+        >
+          <ChevronDown
+            className={`h-3.5 w-3.5 transition-transform duration-200 ${
+              showAdvancedCredentials ? 'rotate-180' : ''
+            }`}
+          />
+          {showAdvancedCredentials
+            ? 'Hide Self-Hosted / BYO GitHub App Credentials'
+            : 'Advanced: Configure Self-Hosted GitHub App Credentials (BYOA)'}
+        </button>
+      </div>
+
+      {/* Collapsible Grid Layout for BYOA Credentials */}
+      {showAdvancedCredentials && (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* App IDs & Webhook Card */}
         <Card className="border-border/60 bg-card/50 backdrop-blur-sm">
           <CardHeader className="pb-3">
@@ -368,6 +431,8 @@ export function Step1GitHubApp({
           Verify RS256 Connection
         </Button>
       </div>
+        </>
+      )}
     </div>
   );
 }

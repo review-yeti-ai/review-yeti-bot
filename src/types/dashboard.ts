@@ -194,7 +194,10 @@ export interface RepositorySetting {
   repo: string;
   name?: string;
   full_name?: string;
+  repositoryId?: number;
+  installationId?: number;
   automationEnabled: boolean;
+  passthroughEnabled?: boolean;
   generateArchitecturalFlowchart?: boolean;
   customProfile?: 'chill' | 'balanced' | 'assertive';
   strictnessProfile?: 'chill' | 'balanced' | 'assertive';
