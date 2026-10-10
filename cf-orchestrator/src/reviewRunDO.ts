@@ -794,11 +794,12 @@ export class ReviewRunDO {
           findingsCount: Number.isSafeInteger(findingsCount) && findingsCount >= 0 ? findingsCount : Number.MAX_SAFE_INTEGER,
         }
       : null;
+    const operatorCancelRequested = operatorPassthrough?.cancelRequested === true;
 
     return {
-      isCurrentHead: !this.runState.cancelRequested && this.runState.phase !== 'Cancelled',
+      isCurrentHead: !this.runState.cancelRequested && this.runState.phase !== 'Cancelled' && !operatorCancelRequested,
       phase: this.runState.phase,
-      cancelRequested: this.runState.cancelRequested,
+      cancelRequested: this.runState.cancelRequested || operatorCancelRequested,
       cancelReason: this.runState.cancelReason,
       fencingEpoch: this.runState.fencingEpoch,
       runId: this.runState.spec.runId,

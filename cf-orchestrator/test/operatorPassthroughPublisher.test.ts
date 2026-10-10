@@ -9,6 +9,7 @@ import {
   readOperatorPassthroughByRunId,
   readOperatorPassthroughForTarget,
 } from '../src/operatorPassthroughPublisher.js';
+import { assertNoBlockingPriorOutcome } from '../src/operatorPriorOutcome.js';
 import type { Env } from '../src/types.js';
 import { queryActiveJobsTool } from '../src/mcp/tools/queryActiveJobs.js';
 import { attestPrGateTool } from '../src/mcp/tools/attestPrGate.js';
@@ -55,6 +56,7 @@ interface GithubMockOptions {
   reviewHistory?: any[];
   reviewAfterFirstGatePatch?: any;
   privateOnRepositoryRead?: number;
+  cancelOnReviewRead?: number;
 }
 
 function policyDocument(): string {
@@ -95,6 +97,7 @@ function createTestEnv(options: GithubMockOptions = {}) {
   let currentPolicySha: string | undefined;
   let gatePatchFailed = false;
   let cancelIssued = false;
+  let cancelOnReviewRead = options.cancelOnReviewRead;
   let privateOnRead = options.privateOnRepositoryRead;
 
   const env = {
@@ -203,6 +206,10 @@ function createTestEnv(options: GithubMockOptions = {}) {
     }
     if (method === 'GET' && path === `/repos/${target.owner}/${target.repo}/pulls/${targetPrNumber}/reviews`) {
       counts.reviewReads += 1;
+      if (cancelOnReviewRead === counts.reviewReads) {
+        cancelOnReviewRead = undefined;
+        await cancelActivePublications();
+      }
       return jsonResponse(reviewHistory);
     }
     if (method === 'GET' && path === `/repos/${target.owner}/${target.repo}/commits/${targetHead}/check-runs`) {
@@ -296,6 +303,7 @@ function createTestEnv(options: GithubMockOptions = {}) {
     env, fetchFn, checks, publications, counts, requests, reviewHistory,
     setPrivateOnRepositoryRead: (read: number | undefined) => { privateOnRead = read; },
     setPolicySha: (sha: string | undefined) => { currentPolicySha = sha; },
+    cancelOnNextReviewRead: () => { cancelOnReviewRead = counts.reviewReads + 1; },
   };
 }
 
@@ -488,6 +496,27 @@ describe('Edge operator passthrough publication', () => {
     });
     assert.equal(receipt.status, 'succeeded');
     assert.equal(receipt.mergeEligible, true);
+  });
+
+  it('does not let a later approval on an older or unknown commit clear a current-head veto', async () => {
+    for (const approvalCommit of [HEAD_B, 'malformed-commit', undefined]) {
+      const approval = {
+        id: 2, user: { id: 101 }, state: 'APPROVED',
+        submitted_at: '2026-10-10T00:01:00Z',
+        ...(approvalCommit === undefined ? {} : { commit_id: approvalCommit }),
+      };
+      const mock = createTestEnv({ reviewHistory: [
+        { id: 1, user: { id: 101 }, state: 'CHANGES_REQUESTED', submitted_at: '2026-10-10T00:00:00Z', commit_id: HEAD_A },
+        approval,
+      ] });
+      await configureAppKeys(mock.env);
+      const receipt = await publishOperatorPassthroughForTarget(mock.env,
+        { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+      assert.equal(receipt.status, 'unavailable');
+      assert.equal(receipt.errorCode, 'prior_semantic_block');
+      assert.equal(receipt.mergeEligible, false);
+      assert.equal(mock.counts.creates, 0);
+    }
   });
 
   it('allows an explicit dismissal to clear a reviewer veto but not an approval by a different reviewer', async () => {
@@ -722,6 +751,102 @@ describe('Edge operator passthrough publication', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('rejects a completed publisher whose real Durable Object is cancelled during status revalidation', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+    assert.equal(receipt.status, 'succeeded');
+    assert.ok(receipt.runId);
+
+    // Cancellation happens inside the current-review API read, after the cached
+    // publisher receipt and check pair have already been read from the Durable Object.
+    mock.cancelOnNextReviewRead();
+    const status = await readOperatorPassthroughByRunId(mock.env, receipt.runId!, { fetchFn: mock.fetchFn });
+    assert.equal(status?.status, 'unavailable');
+    assert.equal(status?.errorCode, 'cancel_requested');
+    assert.equal(status?.mergeEligible, false);
+
+    const publisherDO = mock.publications.get(receipt.runId!)!;
+    const durableStatus = await publisherDO.getStatus();
+    assert.equal(durableStatus.phase, 'Completed');
+    assert.equal(durableStatus.cancelRequested, true);
+    assert.equal(durableStatus.isCurrentHead, false);
+    assert.equal(durableStatus.operatorPassthrough?.cancelRequested, true);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock.fetchFn;
+    try {
+      const httpStatus = await worker.fetch(new Request(`https://operator.internal/api/dispatch/runs/${receipt.runId}/status`), mock.env);
+      assert.equal(httpStatus.status, 200);
+      const httpStatusBody = await httpStatus.json() as any;
+      assert.equal(httpStatusBody.phase, 'Completed');
+      assert.equal(httpStatusBody.cancelRequested, true);
+      assert.equal(httpStatusBody.isCurrentHead, false);
+      assert.equal(httpStatusBody.mergeEligible, false);
+      assert.equal(httpStatusBody.operatorPassthrough.errorCode, 'cancel_requested');
+
+      const gate = await attestPrGateTool.execute({
+        owner: OWNER, repo: REPO, pr_number: 42, head_sha: HEAD_A,
+      }, { env: mock.env } as any);
+      const body = gate.content?.find((item: any) => item.text?.startsWith('{'));
+      assert.ok(body);
+      const output = JSON.parse((body as any).text);
+      assert.equal(output.gate_status, 'BLOCKED');
+      assert.equal(output.attested, false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects a publication cancelled during the final prior-review recheck before returning success', async () => {
+    const mock = createTestEnv({ cancelOnReviewRead: 2 });
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+    assert.equal(receipt.status, 'unavailable');
+    assert.equal(receipt.errorCode, 'cancel_requested');
+    assert.equal(receipt.mergeEligible, false);
+    assert.equal(mock.counts.creates, 2);
+    assert.ok(receipt.runId);
+
+    const publisherDO = mock.publications.get(receipt.runId!)!;
+    const stored = await publisherDO.getOperatorPassthroughState();
+    const durableStatus = await publisherDO.getStatus();
+    assert.equal(stored?.cancelRequested, true);
+    assert.equal(durableStatus.phase, 'Completed');
+    assert.equal(durableStatus.cancelRequested, true);
+    assert.equal(durableStatus.isCurrentHead, false);
+  });
+
+  it('does not treat a completed publisher with operator-level cancellation as an eligible prior run', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+    assert.equal(receipt.status, 'succeeded');
+    assert.ok(receipt.runId);
+    const publisherDO = mock.publications.get(receipt.runId!)!;
+    await publisherDO.fetch(new Request('http://do/cancel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'terminal_publisher_cancelled' }),
+    }));
+
+    const workerCheck = [...mock.checks.values()].find((check) => check.name === 'Review Yeti')!;
+    const gateCheck = [...mock.checks.values()].find((check) => check.name === 'Review Yeti Gate')!;
+    await assert.rejects(assertNoBlockingPriorOutcome(mock.env, {
+      runId: receipt.runId!, owner: OWNER, repo: REPO, prNumber: 42,
+      headSha: HEAD_A, baseSha: BASE_A, installationId: 11,
+    }, 'ghs_target_scoped', 4552718, mock.fetchFn, {
+      allowCurrentPublisherTerminal: true,
+      currentPassthroughChecks: {
+        appId: 4552718,
+        workerExternalId: workerCheck.external_id,
+        gateExternalId: gateCheck.external_id,
+      },
+    }), /prior_do_identity_mismatch|prior_outcome_unknown/);
   });
 
   it('keeps merge-group passthrough current across enabled, disabled, missing, and stale-policy states', async () => {

@@ -777,6 +777,28 @@ function stateMatches(state: OperatorPassthroughState | null, identity: Operator
     && state.publicationId === publicationId && stableJson(state.identity) === stableJson(identity);
 }
 
+async function readDurableSuccessReceipt(
+  env: Env,
+  context: DeadlineContext,
+  identity: OperatorPassthroughIdentity,
+  runId: string,
+  publicationId: string,
+  expected: OperatorPassthroughReceipt
+): Promise<OperatorPassthroughReceipt> {
+  const readback = await readDurableState(env, runId, context);
+  if (!stateMatches(readback.state, identity, publicationId, runId)) unavailable('audit_unavailable');
+  if (readback.state.cancelRequested) unavailable('cancel_requested');
+  const receipt = readback.state.receipt;
+  if (!receipt || receipt.status !== 'succeeded' || !receipt.mergeEligible || receipt.publicationState !== 'published'
+    || receipt.runId !== runId || receipt.publicationId !== publicationId
+    || receipt.repositoryId !== identity.repositoryId || receipt.owner !== identity.owner || receipt.repo !== identity.repo
+    || receipt.prNumber !== identity.prNumber || receipt.headSha !== identity.headSha || receipt.baseSha !== identity.baseSha
+    || receipt.appId !== identity.appId || receipt.policyDigest !== identity.policyDigest
+    || receipt.auditDigest !== expected.auditDigest || receipt.workerCheckId !== expected.workerCheckId
+    || receipt.gateCheckId !== expected.gateCheckId || receipt.mergeEligible !== true) unavailable('audit_unavailable');
+  return receipt;
+}
+
 function failureReceipt(
   identity: OperatorPassthroughIdentity | null,
   runId: string | null,
@@ -1065,14 +1087,15 @@ async function writeReceiptAndReadBack(
   if (!saved.accepted) unavailable('audit_unavailable');
   const readback = await readDurableState(env, runId, context);
   if (!stateMatches(readback.state, identity, publicationId, runId)
-    || readback.state.cancelRequested || readback.state.receipt?.status !== 'succeeded'
+    || readback.state.receipt?.status !== 'succeeded'
     || readback.state.receipt.auditDigest !== receipt.auditDigest
     || readback.state.receipt.workerCheckId !== receipt.workerCheckId
     || readback.state.receipt.gateCheckId !== receipt.gateCheckId
     || readback.state.receipt.policyDigest !== identity.policyDigest
     || !readback.state.receipt.mergeEligible) unavailable('audit_unavailable');
+  if (readback.state.cancelRequested) unavailable('cancel_requested');
   await assertPriorOutcomeUnchanged(env, identity, readback.state, priorControlRunIds, token, context);
-  return readback.state.receipt;
+  return readDurableSuccessReceipt(env, context, identity, runId, publicationId, receipt);
 }
 
 async function resolveIdentity(
@@ -1297,8 +1320,13 @@ async function readPublishedWithContext(
     return failureReceipt(resolved.identity, resolved.runId, resolved.publicationId, 'current_candidate_changed', state, true)!;
   }
   const currentDurable = await readDurableState(env, resolved.runId, context);
-  if (!stateMatches(currentDurable.state, resolved.identity, resolved.publicationId, resolved.runId)
-    || currentDurable.state.cancelRequested || currentDurable.state.receipt?.auditDigest !== receipt.auditDigest
+  if (!stateMatches(currentDurable.state, resolved.identity, resolved.publicationId, resolved.runId)) {
+    return failureReceipt(resolved.identity, resolved.runId, resolved.publicationId, 'audit_unavailable', currentDurable.state, false)!;
+  }
+  if (currentDurable.state.cancelRequested) {
+    return failureReceipt(resolved.identity, resolved.runId, resolved.publicationId, 'cancel_requested', currentDurable.state, false)!;
+  }
+  if (currentDurable.state.receipt?.auditDigest !== receipt.auditDigest
     || currentDurable.state.receipt?.workerCheckId !== pair.worker.id
     || currentDurable.state.receipt?.gateCheckId !== pair.gate.id
     || currentDurable.state.receipt?.mergeEligible !== true) {
@@ -1311,7 +1339,12 @@ async function readPublishedWithContext(
     const code = error instanceof PassthroughUnavailable ? error.code : 'prior_outcome_unavailable';
     return failureReceipt(resolved.identity, resolved.runId, resolved.publicationId, code, currentDurable.state, true)!;
   }
-  return receipt;
+  try {
+    return await readDurableSuccessReceipt(env, context, resolved.identity, resolved.runId, resolved.publicationId, receipt);
+  } catch (error) {
+    const code = error instanceof PassthroughUnavailable ? error.code : 'durable_state_unavailable';
+    return failureReceipt(resolved.identity, resolved.runId, resolved.publicationId, code, null, false)!;
+  }
 }
 
 async function publishWithContext(

@@ -49,7 +49,7 @@ async function assertCurrentPublisherRunIsCurrent(env: Env, spec: ReviewRunSpec)
   if (status.workerId || status.jobId) reject('prior_outcome_unknown');
   if (status.phase === 'Pending' && status.terminalReceiptSummary === null) return;
   const operator = status.operatorPassthrough;
-  if (status.phase === 'Completed' && status.terminalReceiptSummary?.status === 'succeeded'
+  if (!operator?.cancelRequested && status.phase === 'Completed' && status.terminalReceiptSummary?.status === 'succeeded'
     && status.terminalReceiptSummary?.verdict === 'SHIP' && status.terminalReceiptSummary?.findingsCount === 0
     && operator?.version === 'OperatorPassthroughState.v2' && operator.runId === spec.runId
     && operator.status === 'succeeded' && operator.mergeEligible === false) return;
@@ -71,9 +71,10 @@ interface PriorOutcomeOptions {
   sourceRunId?: string | null;
 }
 
-function blockingReviewerPresent(reviews: any[]): boolean {
+function blockingReviewerPresent(reviews: any[], currentHeadSha: string): boolean {
   if (!Array.isArray(reviews)) reject('prior_review_state_unavailable');
-  const byReviewer = new Map<number, Array<{ id: number; at: number; state: string }>>();
+  if (!/^[a-f0-9]{40}$/u.test(currentHeadSha)) reject('prior_review_state_unavailable');
+  const byReviewer = new Map<number, Array<{ id: number; at: number; state: string; commitId: string | null }>>();
   const seenReviewIds = new Set<number>();
   for (const review of reviews) {
     const state = review?.state;
@@ -84,11 +85,13 @@ function blockingReviewerPresent(reviews: any[]): boolean {
     const reviewerId = Number(review?.user?.id);
     const id = Number(review?.id);
     const at = typeof review?.submitted_at === 'string' ? Date.parse(review.submitted_at) : Number.NaN;
+    const commitId = typeof review?.commit_id === 'string' && /^[a-f0-9]{40}$/iu.test(review.commit_id)
+      ? review.commit_id.toLowerCase() : null;
     if (!Number.isSafeInteger(reviewerId) || reviewerId <= 0 || !Number.isSafeInteger(id) || id <= 0
       || !Number.isFinite(at) || seenReviewIds.has(id)) reject('prior_review_state_unavailable');
     seenReviewIds.add(id);
     const history = byReviewer.get(reviewerId) || [];
-    history.push({ id, at, state });
+    history.push({ id, at, state, commitId });
     byReviewer.set(reviewerId, history);
   }
 
@@ -97,7 +100,8 @@ function blockingReviewerPresent(reviews: any[]): boolean {
     let blocking = false;
     for (const review of history) {
       if (review.state === 'CHANGES_REQUESTED') blocking = true;
-      else if (review.state === 'APPROVED' || review.state === 'DISMISSED') blocking = false;
+      else if (review.state === 'DISMISSED'
+        || (review.state === 'APPROVED' && review.commitId === currentHeadSha)) blocking = false;
     }
     if (blocking) return true;
   }
@@ -183,7 +187,7 @@ export async function assertNoBlockingPriorOutcome(
   if (!reviewResponse.ok) reject('prior_review_state_unavailable');
   const reviews = await reviewResponse.json() as any[];
   if (!Array.isArray(reviews) || reviews.length >= 100 || reviewResponse.headers.get('Link')?.includes('rel="next"')) reject('prior_review_history_incomplete');
-  if (blockingReviewerPresent(reviews)) reject('prior_semantic_block');
+  if (blockingReviewerPresent(reviews, spec.headSha)) reject('prior_semantic_block');
 
   const checkResponse = await fetchFn(`${base}/commits/${encodeURIComponent(spec.headSha)}/check-runs?filter=all&per_page=100`, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'review-yeti-cf-orchestrator' },
