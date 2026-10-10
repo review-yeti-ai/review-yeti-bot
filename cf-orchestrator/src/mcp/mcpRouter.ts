@@ -23,6 +23,9 @@ import {
   attestPrGateTool,
   disputeFindingTool,
   replyReviewThreadTool,
+  onboardOrganizationTool,
+  onboardRepositoryTool,
+  updateRepositorySettingsTool,
 } from './tools/index.js';
 
 export const MUTATING_TOOL_NAMES = new Set([
@@ -38,6 +41,12 @@ export const MUTATING_TOOL_NAMES = new Set([
   'dispute_finding',
   'review_yeti_reply_review_thread',
   'reply_review_thread',
+  'review_yeti_onboard_organization',
+  'onboard_organization',
+  'review_yeti_onboard_repository',
+  'onboard_repository',
+  'review_yeti_update_repository_settings',
+  'update_repository_settings',
 ]);
 
 export function constantTimeEquals(a: string, b: string): boolean {
@@ -109,6 +118,9 @@ export class McpRouter {
     this.registerTool(attestPrGateTool);
     this.registerTool(disputeFindingTool);
     this.registerTool(replyReviewThreadTool);
+    this.registerTool(onboardOrganizationTool);
+    this.registerTool(onboardRepositoryTool);
+    this.registerTool(updateRepositorySettingsTool);
   }
 
   public registerTool(handler: McpToolHandler): void {
