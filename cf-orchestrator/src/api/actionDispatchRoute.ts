@@ -1,11 +1,15 @@
 import type { Env, ReviewRunSpec } from '../types.js';
-import { publishOperatorPassthroughForTarget } from '../operatorPassthroughPublisher.js';
+import {
+  operatorPassthroughActionDispatchTargets,
+  publishOperatorPassthroughForTarget,
+} from '../operatorPassthroughPublisher.js';
 import {
   verifyGitHubActionsOidc,
   assertActionDispatchMatchesClaims,
   type GitHubActionsOidcClaims,
   type VerifyOidcOptions,
 } from '../auth/oidcVerifier.js';
+import { TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER } from '../auth/trustedCentralActionDispatch.js';
 import { isPilotRepository, registerPendingRunForPR } from '../worker.js';
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
@@ -253,7 +257,10 @@ export async function handleActionDispatch(
   let callerKind: 'direct' | 'central';
   try {
     claims = await verifyGitHubActionsOidc(token, verifierOptions);
-    callerKind = assertActionDispatchMatchesClaims(dispatch, claims);
+    const centralTargets = claims.repository.toLowerCase() === TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER.repository
+      ? operatorPassthroughActionDispatchTargets(env)
+      : undefined;
+    callerKind = assertActionDispatchMatchesClaims(dispatch, claims, centralTargets);
   } catch (err: any) {
     console.warn('Rejected GitHub Actions OIDC dispatch:', err?.message || err);
     return Response.json({ error: 'Action dispatch is not authorized' }, { status: 403 });

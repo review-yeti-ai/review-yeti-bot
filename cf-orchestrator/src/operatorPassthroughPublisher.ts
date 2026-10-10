@@ -1,4 +1,5 @@
 import type { Env, ReviewRunSpec } from './types.js';
+import type { ActionDispatchExternalTargetAuthority } from './auth/oidcVerifier.js';
 import {
   assertNoBlockingPriorOutcome,
 } from './operatorPriorOutcome.js';
@@ -93,6 +94,7 @@ interface RepositoryIdentity {
   repositoryId: number;
   owner: string;
   repo: string;
+  isPrivate: boolean;
   appId: number;
 }
 
@@ -104,6 +106,7 @@ interface CurrentCandidate extends OperatorPassthroughTarget {
   open: true;
   draft: false;
   isPrivate: boolean;
+  appId: number;
 }
 
 interface CurrentPolicy {
@@ -262,14 +265,16 @@ function parseRepositoryIdentities(env: Env): RepositoryIdentity[] {
   const names = new Set<string>();
   const identities: RepositoryIdentity[] = [];
   for (const entry of parsed) {
-    if (!isRecord(entry) || !exactKeys(entry, ['repositoryId', 'owner', 'repo'])
+    if (!isRecord(entry) || !exactKeys(entry, ['repositoryId', 'owner', 'repo', 'isPrivate', 'appId'])
       || !Number.isSafeInteger(entry.repositoryId) || Number(entry.repositoryId) <= 0
-      || !safeName(entry.owner) || !safeName(entry.repo)) unavailable('service_configuration_unavailable');
+      || !safeName(entry.owner) || !safeName(entry.repo) || typeof entry.isPrivate !== 'boolean'
+      || !Number.isSafeInteger(entry.appId) || Number(entry.appId) <= 0) unavailable('service_configuration_unavailable');
     const baseIdentity = { repositoryId: Number(entry.repositoryId), owner: entry.owner as string, repo: entry.repo as string };
     let appId: number;
     try { appId = reviewAppIdForRepository(baseIdentity); }
     catch { unavailable('service_configuration_unavailable'); }
-    const identity: RepositoryIdentity = { ...baseIdentity, appId };
+    if (Number(entry.appId) !== appId) unavailable('service_configuration_unavailable');
+    const identity: RepositoryIdentity = { ...baseIdentity, isPrivate: entry.isPrivate, appId };
     const name = `${identity.owner}/${identity.repo}`.toLowerCase();
     if (ids.has(identity.repositoryId) || names.has(name)) unavailable('service_configuration_unavailable');
     ids.add(identity.repositoryId);
@@ -277,6 +282,20 @@ function parseRepositoryIdentities(env: Env): RepositoryIdentity[] {
     identities.push(identity);
   }
   return identities;
+}
+
+/**
+ * Read the exact source-owned enrollment used by paused publication and expose
+ * it to the OIDC dispatcher. Caller payloads can select an entry, but cannot
+ * create or alter its repository ID, visibility, or App authority.
+ */
+export function operatorPassthroughActionDispatchTargets(
+  env: Env,
+): ReadonlyMap<string, ActionDispatchExternalTargetAuthority> {
+  return new Map(parseRepositoryIdentities(env).map((identity) => [
+    `${identity.owner}/${identity.repo}`.toLowerCase(),
+    { ...identity },
+  ]));
 }
 
 function parsePolicySource(env: Env): OperatorPassthroughPolicySource {
@@ -412,7 +431,8 @@ async function currentCandidate(
     unavailable('repository_not_enrolled');
   }
   if (typeof repository.private !== 'boolean') unavailable('current_repository_unavailable');
-  if (isPublicReviewRepository(expected) && repository.private !== false) unavailable('current_candidate_changed');
+  if (repository.private !== expected.isPrivate
+    || (isPublicReviewRepository(expected) && repository.private !== false)) unavailable('current_candidate_changed');
   const pull = await readJson(context, `${base}/pulls/${target.prNumber}`, token, 'current_pr_unavailable');
   const headSha = pull?.head?.sha;
   const baseSha = pull?.base?.sha;
@@ -433,6 +453,7 @@ async function currentCandidate(
     open: true,
     draft: false,
     isPrivate: repository.private,
+    appId: expected.appId,
   };
 }
 
@@ -455,7 +476,7 @@ async function currentPolicy(
   const base = `https://api.github.com/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}`;
   const repository = await readJson(context, base, token, 'policy_source_unavailable');
   if (Number(repository?.id) !== source.repositoryId || repository?.full_name !== `${source.owner}/${source.repo}`
-    || repository?.default_branch !== source.ref) unavailable('policy_not_current');
+    || repository?.private !== true || repository?.default_branch !== source.ref) unavailable('policy_not_current');
   const commit = await readJson(context, `${base}/commits/${encodeURIComponent(source.ref)}`, token, 'policy_source_unavailable');
   const revision = commit?.sha;
   if (!SHA_RE.test(revision || '')) unavailable('policy_source_unavailable');
@@ -528,7 +549,7 @@ async function policyRevisionIsCurrent(
   const base = `https://api.github.com/repos/${encodeURIComponent(source.owner)}/${encodeURIComponent(source.repo)}`;
   const repository = await readJson(context, base, token, 'policy_source_unavailable');
   if (Number(repository?.id) !== source.repositoryId || repository?.full_name !== `${source.owner}/${source.repo}`
-    || repository?.default_branch !== source.ref) return false;
+    || repository?.private !== true || repository?.default_branch !== source.ref) return false;
   const commit = await readJson(context, `${base}/commits/${encodeURIComponent(source.ref)}`, token, 'policy_source_unavailable');
   return typeof commit?.sha === 'string' && commit.sha.toLowerCase() === expected.sha;
 }
@@ -541,7 +562,7 @@ async function shaIdentity(identity: OperatorPassthroughIdentity): Promise<{ pub
 function sameCandidate(left: CurrentCandidate, right: CurrentCandidate): boolean {
   return left.repositoryId === right.repositoryId && left.owner === right.owner && left.repo === right.repo
     && left.prNumber === right.prNumber && left.headSha === right.headSha && left.baseSha === right.baseSha
-    && left.baseRef === right.baseRef && left.open === right.open && left.draft === right.draft
+    && left.baseRef === right.baseRef && left.open === right.open && left.draft === right.draft && left.appId === right.appId
     && left.isPrivate === right.isPrivate;
 }
 
@@ -556,7 +577,7 @@ function identityFrom(candidate: CurrentCandidate, policy: CurrentPolicy): Opera
     baseSha: candidate.baseSha,
     baseRef: candidate.baseRef,
     isPrivate: candidate.isPrivate,
-    appId: reviewAppIdForRepository(candidate),
+    appId: candidate.appId,
     policyDigest: policy.policyDigest,
     policySource: policy.identity,
   };

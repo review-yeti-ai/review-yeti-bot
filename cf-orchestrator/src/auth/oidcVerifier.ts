@@ -1,4 +1,6 @@
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
+import { reviewAppIdForRepository } from '../reviewAppAuthority.js';
+import { TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER } from './trustedCentralActionDispatch.js';
 
 export const GITHUB_ACTIONS_OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
 export const GITHUB_ACTIONS_JWKS_URL = new URL('https://token.actions.githubusercontent.com/.well-known/jwks');
@@ -9,6 +11,9 @@ export const CENTRAL_REVIEW_REPOSITORIES = new Set([
   'review-yeti-ai/review-yeti-action',
   'review-yeti-ai/review-yeti-bot',
 ]);
+// Preserve the original central caller contract. PR-triggered runs are not
+// central dispatch authority, even when their repository identity is trusted.
+const LEGACY_CENTRAL_REVIEW_EVENTS = new Set(['repository_dispatch', 'workflow_dispatch']);
 
 export interface GitHubActionsOidcClaims {
   repository: string;
@@ -122,6 +127,61 @@ export interface ActionDispatchClaimSubject {
   };
 }
 
+export interface ActionDispatchExternalTargetAuthority {
+  repositoryId: number;
+  owner: string;
+  repo: string;
+  isPrivate: boolean;
+  appId: number;
+}
+
+function trustedExternalTargetMatches(
+  repository: string,
+  repositoryId: number,
+  target: ActionDispatchExternalTargetAuthority | undefined,
+): target is ActionDispatchExternalTargetAuthority {
+  if (!target || `${target.owner}/${target.repo}`.toLowerCase() !== repository.toLowerCase()
+      || target.repositoryId !== repositoryId || typeof target.isPrivate !== 'boolean') return false;
+  try {
+    return target.appId === reviewAppIdForRepository(target);
+  } catch {
+    return false;
+  }
+}
+
+function trustedCentralActionCallerMatches(
+  request: ActionDispatchClaimSubject,
+  claims: GitHubActionsOidcClaims,
+  target: ActionDispatchExternalTargetAuthority | undefined,
+): boolean {
+  const caller = TRUSTED_CENTRAL_ACTION_DISPATCH_CALLER;
+  const configuredCallerIsValid = caller.repository === 'calltelemetry/ct-review-actions'
+    && caller.repositoryId === 1339040553
+    && caller.repositoryOwnerId === 57884877
+    && caller.repositoryPrivate === true
+    && caller.appId === reviewAppIdForRepository({
+      repositoryId: caller.repositoryId,
+      owner: 'calltelemetry',
+      repo: 'ct-review-actions',
+    });
+  if (!configuredCallerIsValid) return false;
+
+  const requestRepository = `${request.owner}/${request.repo}`;
+  return claims.repository.toLowerCase() === caller.repository
+    && claims.repository_id === String(caller.repositoryId)
+    && claims.repository_owner_id === String(caller.repositoryOwnerId)
+    && claims.ref === caller.ref
+    && claims.workflow_ref === caller.workflowRef
+    && claims.workflow_sha === caller.workflowSha
+    && claims.job_workflow_ref === caller.jobWorkflowRef
+    && claims.job_workflow_sha === caller.jobWorkflowSha
+    && caller.eventNames.includes(request.caller.eventName as typeof caller.eventNames[number])
+    && claims.event_name === request.caller.eventName
+    && request.caller.workflowRef === caller.jobWorkflowRef
+    && request.caller.workflowSha === caller.jobWorkflowSha
+    && trustedExternalTargetMatches(requestRepository, request.repositoryId, target);
+}
+
 /**
  * Asserts that the verified GitHub Actions OIDC claims match the dispatch request.
  * Enforces repository identity, caller run ID, attempt, event name, and delivery ID.
@@ -130,29 +190,21 @@ export interface ActionDispatchClaimSubject {
 export function assertActionDispatchMatchesClaims(
   request: ActionDispatchClaimSubject,
   claims: GitHubActionsOidcClaims,
-  centralExternalRepositories?: ReadonlyMap<string, number>
+  centralExternalRepositories?: ReadonlyMap<string, ActionDispatchExternalTargetAuthority>
 ): 'direct' | 'central' {
   const repository = `${request.owner}/${request.repo}`;
-  const configuredExternalId = centralExternalRepositories?.get(repository);
-  if (configuredExternalId !== undefined && request.repositoryId !== configuredExternalId) {
-    throw new Error('Action dispatch repository ID does not match configured external target');
-  }
+  const externalTarget = centralExternalRepositories?.get(repository.toLowerCase());
+  const isSupportedExternalTarget = trustedExternalTargetMatches(repository, request.repositoryId, externalTarget);
 
   const isDirect =
     repository.toLowerCase() === claims.repository.toLowerCase() &&
     String(request.repositoryId) === claims.repository_id;
 
-  const isSupportedExternalTarget = configuredExternalId === request.repositoryId;
-  const isCentralTarget =
-    request.owner.toLowerCase() === CENTRAL_REVIEW_OWNER.toLowerCase() || isSupportedExternalTarget;
-
-  const isCentralRepositoryDispatch = request.caller.eventName === 'repository_dispatch';
-  const isCentralManualDispatch = request.caller.eventName === 'workflow_dispatch';
-
-  const isCentral =
-    (isCentralRepositoryDispatch || isCentralManualDispatch) &&
-    CENTRAL_REVIEW_REPOSITORIES.has(claims.repository) &&
-    isCentralTarget;
+  const isLegacyReviewYetiCentral = CENTRAL_REVIEW_REPOSITORIES.has(claims.repository.toLowerCase())
+    && LEGACY_CENTRAL_REVIEW_EVENTS.has(request.caller.eventName)
+    && (request.owner.toLowerCase() === CENTRAL_REVIEW_OWNER.toLowerCase() || isSupportedExternalTarget);
+  const isTrustedCallTelemetryCentral = trustedCentralActionCallerMatches(request, claims, externalTarget);
+  const isCentral = isLegacyReviewYetiCentral || isTrustedCallTelemetryCentral;
 
   const callerKind: 'direct' | 'central' | null = isCentral ? 'central' : isDirect ? 'direct' : null;
 
