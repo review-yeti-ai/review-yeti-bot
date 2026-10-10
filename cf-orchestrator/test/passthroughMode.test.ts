@@ -294,7 +294,10 @@ describe('Review Yeti Cloudflare Orchestrator - Operator Passthrough Mode ("Full
       const res = verifyConstituentChecks(checks, 42, '0123456789abcdef0123456789abcdef01234567');
       assert.strictEqual(res.passed, true);
       checks[0]!.external_id = 'run_0123456789abcdef0123456789abcdef:a1:review-mode=passthrough:op2';
-      assert.strictEqual(verifyConstituentChecks(checks, 42, '0123456789abcdef0123456789abcdef01234567').passed, true);
+      assert.strictEqual(verifyConstituentChecks(checks, 42, '0123456789abcdef0123456789abcdef01234567').passed, false);
+      assert.strictEqual(verifyConstituentChecks(
+        checks, 42, '0123456789abcdef0123456789abcdef01234567', undefined, undefined, true,
+      ).passed, true);
       checks[0]!.external_id = 'review-yeti:operator-passthrough:0123456789abcdef:worker';
       assert.strictEqual(verifyConstituentChecks(checks, 42, '0123456789abcdef0123456789abcdef01234567').passed, false);
     });

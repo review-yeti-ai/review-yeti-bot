@@ -12,8 +12,9 @@ import type {
   OperatorPassthroughStageMutation,
   OperatorPassthroughState,
 } from './operatorPassthroughTypes.js';
+import { reviewAppIdForRepository } from './reviewAppAuthority.js';
 
-const OPERATOR_PASSTHROUGH_STATE_KEY = 'operatorPassthrough.v1';
+const OPERATOR_PASSTHROUGH_STATE_KEY = 'operatorPassthrough.v2';
 const OPERATOR_PASSTHROUGH_LINK_KEY = 'operatorPassthroughLink.v1';
 
 interface InternalReviewRunState extends ReviewRunState {
@@ -53,26 +54,55 @@ export class ReviewRunDO {
     await this.initialized;
   }
 
+  async getSourceRunIdentity(): Promise<{
+    version: 'ReviewRunSourceIdentity.v1';
+    runId: string;
+    owner: string;
+    repo: string;
+    prNumber: number;
+    headSha: string;
+    baseSha: string;
+    specDigest: string;
+  } | null> {
+    await this.ensureInitialized();
+    if (!this.runState) return null;
+    const spec = this.runState.spec;
+    return {
+      version: 'ReviewRunSourceIdentity.v1',
+      runId: spec.runId,
+      owner: spec.owner,
+      repo: spec.repo,
+      prNumber: spec.prNumber,
+      headSha: spec.headSha,
+      baseSha: spec.baseSha,
+      specDigest: await reviewRunSpecDigest(spec),
+    };
+  }
+
   private validOperatorPassthroughIdentity(value: unknown): value is OperatorPassthroughIdentity {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const identity = value as OperatorPassthroughIdentity;
-    const allowedIdentityKeys = ['version', 'repositoryId', 'owner', 'repo', 'prNumber', 'headSha', 'baseSha', 'baseRef', 'appId', 'policyDigest', 'policySource'].sort();
+    const allowedIdentityKeys = ['version', 'repositoryId', 'owner', 'repo', 'prNumber', 'headSha', 'baseSha', 'baseRef', 'isPrivate', 'appId', 'policyDigest', 'policySource'].sort();
     const identityKeys = Object.keys(value).sort();
     const safeName = (input: unknown): input is string => typeof input === 'string'
       && /^[A-Za-z0-9_.-]{1,100}$/u.test(input) && input !== '.' && input !== '..';
     const source = identity.policySource;
     const allowedSourceKeys = ['repositoryId', 'owner', 'repo', 'ref', 'path', 'sha', 'contentDigest'].sort();
     const sourceKeys = source && typeof source === 'object' ? Object.keys(source).sort() : [];
+    let expectedAppId: number;
+    try { expectedAppId = reviewAppIdForRepository(identity); }
+    catch { return false; }
     return identityKeys.length === allowedIdentityKeys.length && identityKeys.every((key, index) => key === allowedIdentityKeys[index])
       && sourceKeys.length === allowedSourceKeys.length && sourceKeys.every((key, index) => key === allowedSourceKeys[index])
-      && identity.version === 'OperatorPassthroughIdentity.v1'
+      && identity.version === 'OperatorPassthroughIdentity.v2'
       && Number.isSafeInteger(identity.repositoryId) && identity.repositoryId > 0
       && safeName(identity.owner) && safeName(identity.repo)
       && Number.isSafeInteger(identity.prNumber) && identity.prNumber > 0
       && /^[a-f0-9]{40}$/iu.test(identity.headSha)
       && /^[a-f0-9]{40}$/iu.test(identity.baseSha)
       && typeof identity.baseRef === 'string' && /^[A-Za-z0-9_./-]{1,256}$/u.test(identity.baseRef)
-      && identity.appId === 4385771
+      && typeof identity.isPrivate === 'boolean'
+      && identity.appId === expectedAppId
       && /^[a-f0-9]{64}$/u.test(identity.policyDigest)
       && !!source && Number.isSafeInteger(source.repositoryId) && source.repositoryId > 0
       && safeName(source.owner) && safeName(source.repo)
@@ -88,11 +118,14 @@ export class ReviewRunDO {
     runId: string;
     publicationId: string;
     identity: OperatorPassthroughIdentity;
+    sourceRunId?: string | null;
   }): Promise<{ accepted: boolean; state?: OperatorPassthroughState; reason?: string }> {
     await this.ensureInitialized();
     if (input.version !== 'OperatorPassthroughReservation.v1'
       || !/^run_[a-f0-9]{32}$/u.test(input.runId)
       || !/^[a-f0-9]{64}$/u.test(input.publicationId)
+      || (input.sourceRunId !== undefined && input.sourceRunId !== null
+        && !/^run_[A-Za-z0-9_-]{1,128}$/u.test(input.sourceRunId))
       || !this.validOperatorPassthroughIdentity(input.identity)) {
       return { accepted: false, reason: 'invalid_identity' };
     }
@@ -103,21 +136,30 @@ export class ReviewRunDO {
     const result = await this.state.storage.transaction(async (transaction) => {
       const existing = await transaction.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY);
       if (existing) {
-        const sameIdentity = existing.version === 'OperatorPassthroughState.v1'
+        const sameIdentity = existing.version === 'OperatorPassthroughState.v2'
           && existing.runId === input.runId
           && existing.publicationId === input.publicationId
           && JSON.stringify(existing.identity) === JSON.stringify(input.identity);
         if (!sameIdentity) return { accepted: false as const, reason: 'identity_conflict' };
+        if (existing.sourceRunId && input.sourceRunId && existing.sourceRunId !== input.sourceRunId) {
+          return { accepted: false as const, reason: 'source_run_identity_conflict' };
+        }
+        if (!existing.sourceRunId && input.sourceRunId) {
+          const next = { ...existing, sourceRunId: input.sourceRunId };
+          await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, next);
+          return { accepted: true as const, state: next };
+        }
         return { accepted: true as const, state: existing };
       }
       if (this.runState?.cancelRequested || this.runState?.phase === 'Cancelled') {
         return { accepted: false as const, reason: 'cancel_requested' };
       }
       const reserved: OperatorPassthroughState = {
-        version: 'OperatorPassthroughState.v1',
+        version: 'OperatorPassthroughState.v2',
         runId: input.runId,
         publicationId: input.publicationId,
         identity: input.identity,
+        sourceRunId: input.sourceRunId || null,
         createdAt: Date.now(),
         cancelRequested: false,
         priorOutcomeChecked: false,
@@ -148,7 +190,7 @@ export class ReviewRunDO {
     }
     const result = await this.state.storage.transaction(async (transaction) => {
       const stored = await transaction.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY);
-      if (!stored || stored.version !== 'OperatorPassthroughState.v1' || stored.publicationId !== input.publicationId) {
+      if (!stored || stored.version !== 'OperatorPassthroughState.v2' || stored.publicationId !== input.publicationId) {
         return { accepted: false as const, reason: 'reservation_missing' };
       }
       if (stored.priorOutcomeChecked) {
@@ -180,7 +222,7 @@ export class ReviewRunDO {
 
     const result = await this.state.storage.transaction(async (transaction) => {
       const stored = await transaction.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY);
-      if (!stored || stored.version !== 'OperatorPassthroughState.v1' || stored.publicationId !== input.publicationId) {
+      if (!stored || stored.version !== 'OperatorPassthroughState.v2' || stored.publicationId !== input.publicationId) {
         return { accepted: false as const, reason: 'reservation_missing' };
       }
       if (stored.cancelRequested || this.runState?.cancelRequested || this.runState?.phase === 'Cancelled') {
@@ -255,7 +297,7 @@ export class ReviewRunDO {
       const stored = await transaction.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY);
       const receipt = input.receipt;
       if (input.version !== 'OperatorPassthroughReceiptWrite.v1' || !stored
-        || stored.version !== 'OperatorPassthroughState.v1' || stored.publicationId !== input.publicationId
+        || stored.version !== 'OperatorPassthroughState.v2' || stored.publicationId !== input.publicationId
         || receipt?.version !== 'OperatorPassthroughReceipt.v2' || receipt.runId !== stored.runId
         || receipt.publicationId !== stored.publicationId || receipt.policyDigest !== stored.identity.policyDigest
         || receipt.repositoryId !== stored.identity.repositoryId || receipt.owner !== stored.identity.owner
@@ -283,7 +325,7 @@ export class ReviewRunDO {
           || JSON.stringify(receipt.priorControlRunIds) !== JSON.stringify(stored.priorControlRunIds)
           || receipt.findingsCount !== 0
           || worker?.id !== workerId || gate?.id !== gateId
-          || worker.appId !== 4385771 || gate.appId !== 4385771
+          || worker.appId !== stored.identity.appId || gate.appId !== stored.identity.appId
           || worker.annotationsCount !== 0 || gate.annotationsCount !== 0
           || worker.name !== 'Review Yeti' || gate.name !== 'Review Yeti Gate'
           || worker.headSha !== stored.identity.headSha || gate.headSha !== stored.identity.headSha
@@ -344,7 +386,7 @@ export class ReviewRunDO {
   private async markOperatorPassthroughCancelled(): Promise<void> {
     await this.state.storage.transaction(async (transaction) => {
       const stored = await transaction.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY);
-      if (stored && stored.version === 'OperatorPassthroughState.v1' && !stored.cancelRequested) {
+      if (stored && stored.version === 'OperatorPassthroughState.v2' && !stored.cancelRequested) {
         const next = { ...stored, cancelRequested: true };
         await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, next);
         this.operatorPassthrough = next;
@@ -700,7 +742,7 @@ export class ReviewRunDO {
     specDigest?: string;
     terminalReceiptSummary?: { status: string | null; verdict: string | null; findingsCount: number } | null;
     operatorPassthrough?: {
-      version: 'OperatorPassthroughState.v1';
+      version: 'OperatorPassthroughState.v2';
       runId: string;
       publicationId: string;
       status: 'succeeded' | 'unavailable' | 'pending';
@@ -1158,6 +1200,7 @@ export class ReviewRunDO {
         runId?: string;
         publicationId?: string;
         identity?: OperatorPassthroughIdentity;
+        sourceRunId?: string | null;
       };
       const result = await this.reserveOperatorPassthrough(body as any);
       return Response.json(result, { status: result.accepted ? 200 : 409 });
@@ -1279,6 +1322,10 @@ export class ReviewRunDO {
     if (request.method === 'GET' && path === '/events') {
       await this.ensureInitialized();
       return Response.json({ ok: true, events: this.eventLog });
+    }
+
+    if (request.method === 'GET' && path === '/source-identity') {
+      return Response.json(await this.getSourceRunIdentity());
     }
 
     if (request.method === 'GET' && (path === '/status' || path.endsWith('/status'))) {

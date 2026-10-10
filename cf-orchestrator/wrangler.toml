@@ -80,6 +80,7 @@ PARALLEL_FILE_CONCURRENCY = "5"
 RUNNER_TYPE = "cloudflare" # Cloudflare Containers (default; falls back to DigitalOcean if CONTAINERS binding is not attached)
 DO_AGENT_ID = "review-yeti-swarm" # Secondary option when RUNNER_TYPE is "digitalocean" or when used as fallback
 PUBLIC_READ_MCP = "true" # Enables public read access to status, metrics, reports, dashboards
+REVIEW_YETI_PUBLIC_TARGET_APP_ID = "4552718" # Matches Node authoritative self-review authority; private key uses the same-named Worker secret.
 OPERATOR_GLOBAL_PASSTHROUGH = "true" # Fail closed unless the deployment-owned pause variable explicitly disables the pause
 # Paused publication has a separate exact ID/name enrollment; PILOT_REPOSITORIES does not grant it.
 OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES = '[{"repositoryId":1131452104,"owner":"calltelemetry","repo":"ai-workspace"},{"repositoryId":1355159090,"owner":"calltelemetry","repo":"ct-infrastructure"},{"repositoryId":1232078607,"owner":"calltelemetry","repo":"ct-meta"},{"repositoryId":1326169548,"owner":"review-yeti-ai","repo":"review-yeti-bot"}]'

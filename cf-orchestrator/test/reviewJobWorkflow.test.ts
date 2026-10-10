@@ -541,7 +541,8 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     const prior = await runOperatorPauseWithPriorOutcome({
       workflowStatus: { status: 'errored', error: { message: 'Step config for "dispatch-container" is in a invalid format. See https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/' } },
       terminalReceiptSummary: { status: 'failed', verdict: null, findingsCount: 0, hasSemanticVerdict: false },
-      reviews: [{ state: 'CHANGES_REQUESTED', commit_id: 'a'.repeat(40) }],
+      reviews: [{ id: 901, user: { id: 902 }, state: 'CHANGES_REQUESTED',
+        submitted_at: '2026-10-10T00:00:00Z', commit_id: 'a'.repeat(40) }],
     });
     try {
       assert.equal(prior.result.status, 'unavailable');

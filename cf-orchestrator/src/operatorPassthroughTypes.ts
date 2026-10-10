@@ -19,7 +19,7 @@ export interface OperatorPassthroughPolicyIdentity extends OperatorPassthroughPo
 
 /** Resolved only from current GitHub state and service-owned policy. */
 export interface OperatorPassthroughIdentity {
-  version: 'OperatorPassthroughIdentity.v1';
+  version: 'OperatorPassthroughIdentity.v2';
   repositoryId: number;
   owner: string;
   repo: string;
@@ -27,6 +27,7 @@ export interface OperatorPassthroughIdentity {
   headSha: string;
   baseSha: string;
   baseRef: string;
+  isPrivate: boolean;
   appId: number;
   policyDigest: string;
   policySource: OperatorPassthroughPolicyIdentity;
@@ -125,10 +126,12 @@ export interface OperatorPassthroughStageState {
 }
 
 export interface OperatorPassthroughState {
-  version: 'OperatorPassthroughState.v1';
+  version: 'OperatorPassthroughState.v2';
   runId: string;
   publicationId: string;
   identity: OperatorPassthroughIdentity;
+  /** Exact registered source workflow admitted for this publication, if any. */
+  sourceRunId: string | null;
   createdAt: number;
   cancelRequested: boolean;
   priorOutcomeChecked: boolean;

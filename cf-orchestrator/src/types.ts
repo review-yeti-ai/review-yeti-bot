@@ -83,6 +83,9 @@ export interface Env {
   GITHUB_APP_ID?: string;
   GITHUB_APP_INSTALLATION_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
+  /** Same dedicated public-target App binding used by Node's authoritative review service. */
+  REVIEW_YETI_PUBLIC_TARGET_APP_ID?: string;
+  REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY?: string;
   /** Service-owned exact repository identity manifest for paused publication. */
   OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES?: string;
   /** Service-owned central protected policy source used for paused publication. */

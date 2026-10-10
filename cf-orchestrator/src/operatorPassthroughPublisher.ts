@@ -19,8 +19,14 @@ import type {
   OperatorPassthroughState,
   OperatorPassthroughTarget,
 } from './operatorPassthroughTypes.js';
+import {
+  AUTHORITATIVE_REVIEW_APP_ID,
+  PUBLIC_REVIEW_APP_ID,
+  isPublicReviewRepository,
+  reviewAppIdForRepository,
+} from './reviewAppAuthority.js';
 
-const APP_ID = 4385771;
+const APP_ID = AUTHORITATIVE_REVIEW_APP_ID;
 const DEADLINE_MS = 15_000;
 const POLICY_MAX_BYTES = 256 * 1024;
 const NAME_RE = /^[A-Za-z0-9_.-]{1,100}$/u;
@@ -46,6 +52,20 @@ type ErrorCode =
   | 'durable_state_unavailable'
   | 'prior_outcome_unavailable'
   | 'prior_semantic_block'
+  | 'prior_do_unavailable'
+  | 'prior_do_identity_mismatch'
+  | 'prior_outcome_unknown'
+  | 'prior_review_active'
+  | 'prior_queue_state_unavailable'
+  | 'prior_review_state_unavailable'
+  | 'prior_review_history_incomplete'
+  | 'prior_check_state_unavailable'
+  | 'prior_check_history_incomplete'
+  | 'prior_check_identity_unverified'
+  | 'prior_check_pair_incomplete'
+  | 'prior_check_metadata_unavailable'
+  | 'prior_semantic_findings'
+  | 'prior_semantic_outcome_unknown'
   | 'check_publication_unavailable'
   | 'check_identity_unverified'
   | 'check_readback_unavailable'
@@ -67,14 +87,13 @@ export interface OperatorPassthroughOptions {
   /** Test seam; production always uses the fixed 15 second contract. */
   timeoutMs?: number;
   signal?: AbortSignal;
-  /** Internal workflow cancellation alias; never controls candidate identity. */
-  sourceRunId?: string;
 }
 
 interface RepositoryIdentity {
   repositoryId: number;
   owner: string;
   repo: string;
+  appId: number;
 }
 
 interface CurrentCandidate extends OperatorPassthroughTarget {
@@ -84,7 +103,7 @@ interface CurrentCandidate extends OperatorPassthroughTarget {
   baseRef: string;
   open: true;
   draft: false;
-  isPrivate?: boolean;
+  isPrivate: boolean;
 }
 
 interface CurrentPolicy {
@@ -98,6 +117,7 @@ interface PublishedCheck extends OperatorPassthroughCheckReceipt {
 
 interface DeadlineContext {
   signal: AbortSignal;
+  sourceRunId?: string;
   deadlineAt: number;
   fetch(url: string, init?: RequestInit): Promise<Response>;
   run<T>(operation: () => Promise<T>): Promise<T>;
@@ -137,7 +157,7 @@ async function digest(value: string): Promise<string> {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function makeDeadline(env: Env, options: OperatorPassthroughOptions): DeadlineContext {
+function makeDeadline(env: Env, options: OperatorPassthroughOptions, sourceRunId?: string): DeadlineContext {
   const timeoutMs = options.timeoutMs ?? DEADLINE_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > DEADLINE_MS) {
     unavailable('service_configuration_unavailable');
@@ -192,10 +212,10 @@ function makeDeadline(env: Env, options: OperatorPassthroughOptions): DeadlineCo
     if (controller.signal.aborted || performance.now() >= deadlineAt) {
       unavailable(endedBy === 'caller' ? 'cancel_requested' : 'deadline_exceeded');
     }
-    if (!options.sourceRunId) return;
-    if (!/^run_[A-Za-z0-9_-]{1,128}$/u.test(options.sourceRunId)
+    if (!sourceRunId) return;
+    if (!/^run_[A-Za-z0-9_-]{1,128}$/u.test(sourceRunId)
       || !env.REVIEW_RUN?.idFromName || !env.REVIEW_RUN?.get) unavailable('durable_state_unavailable');
-    const source = env.REVIEW_RUN.get(env.REVIEW_RUN.idFromName(options.sourceRunId));
+    const source = env.REVIEW_RUN.get(env.REVIEW_RUN.idFromName(sourceRunId));
     const response = await run(() => source.fetch('http://do/status'));
     if (!response.ok) unavailable('durable_state_unavailable');
     const status = await run(() => response.json()) as any;
@@ -205,6 +225,7 @@ function makeDeadline(env: Env, options: OperatorPassthroughOptions): DeadlineCo
   const fetchImplementation = options.fetchFn || fetch;
   return {
     signal: controller.signal,
+    sourceRunId,
     deadlineAt,
     run,
     guard,
@@ -244,7 +265,11 @@ function parseRepositoryIdentities(env: Env): RepositoryIdentity[] {
     if (!isRecord(entry) || !exactKeys(entry, ['repositoryId', 'owner', 'repo'])
       || !Number.isSafeInteger(entry.repositoryId) || Number(entry.repositoryId) <= 0
       || !safeName(entry.owner) || !safeName(entry.repo)) unavailable('service_configuration_unavailable');
-    const identity = { repositoryId: Number(entry.repositoryId), owner: entry.owner as string, repo: entry.repo as string };
+    const baseIdentity = { repositoryId: Number(entry.repositoryId), owner: entry.owner as string, repo: entry.repo as string };
+    let appId: number;
+    try { appId = reviewAppIdForRepository(baseIdentity); }
+    catch { unavailable('service_configuration_unavailable'); }
+    const identity: RepositoryIdentity = { ...baseIdentity, appId };
     const name = `${identity.owner}/${identity.repo}`.toLowerCase();
     if (ids.has(identity.repositoryId) || names.has(name)) unavailable('service_configuration_unavailable');
     ids.add(identity.repositoryId);
@@ -277,10 +302,14 @@ function parsePolicySource(env: Env): OperatorPassthroughPolicySource {
   };
 }
 
-function requireServiceApp(env: Env): { appId: number; privateKey: string } {
-  if (Number(env.GITHUB_APP_ID) !== APP_ID || typeof env.GITHUB_APP_PRIVATE_KEY !== 'string'
-    || !env.GITHUB_APP_PRIVATE_KEY.trim()) unavailable('app_identity_unavailable');
-  return { appId: APP_ID, privateKey: env.GITHUB_APP_PRIVATE_KEY };
+function requireServiceApp(env: Env, appId: number): { appId: number; privateKey: string } {
+  const isPublicApp = appId === PUBLIC_REVIEW_APP_ID;
+  const configuredId = isPublicApp ? env.REVIEW_YETI_PUBLIC_TARGET_APP_ID : env.GITHUB_APP_ID;
+  const privateKey = isPublicApp ? env.REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY : env.GITHUB_APP_PRIVATE_KEY;
+  if (Number(configuredId) !== appId || typeof privateKey !== 'string' || !privateKey.trim()) {
+    unavailable('app_identity_unavailable');
+  }
+  return { appId, privateKey };
 }
 
 async function readJson(context: DeadlineContext, url: string, token: string, code: ErrorCode): Promise<any> {
@@ -302,9 +331,10 @@ async function scopedInstallationToken(
   env: Env,
   owner: string,
   repo: string,
+  appId: number,
   context: DeadlineContext
 ): Promise<string> {
-  const { appId, privateKey } = requireServiceApp(env);
+  const { privateKey } = requireServiceApp(env, appId);
   const cacheKey = `operator-passthrough-v2:${appId}:${owner.toLowerCase()}/${repo.toLowerCase()}`;
   if (env.AUTH_CACHE?.get) {
     try {
@@ -381,6 +411,8 @@ async function currentCandidate(
     || String(repository.full_name || '').toLowerCase() !== `${expected.owner}/${expected.repo}`.toLowerCase()) {
     unavailable('repository_not_enrolled');
   }
+  if (typeof repository.private !== 'boolean') unavailable('current_repository_unavailable');
+  if (isPublicReviewRepository(expected) && repository.private !== false) unavailable('current_candidate_changed');
   const pull = await readJson(context, `${base}/pulls/${target.prNumber}`, token, 'current_pr_unavailable');
   const headSha = pull?.head?.sha;
   const baseSha = pull?.base?.sha;
@@ -400,7 +432,7 @@ async function currentCandidate(
     baseRef,
     open: true,
     draft: false,
-    ...(typeof repository.private === 'boolean' ? { isPrivate: repository.private } : {}),
+    isPrivate: repository.private,
   };
 }
 
@@ -509,12 +541,13 @@ async function shaIdentity(identity: OperatorPassthroughIdentity): Promise<{ pub
 function sameCandidate(left: CurrentCandidate, right: CurrentCandidate): boolean {
   return left.repositoryId === right.repositoryId && left.owner === right.owner && left.repo === right.repo
     && left.prNumber === right.prNumber && left.headSha === right.headSha && left.baseSha === right.baseSha
-    && left.baseRef === right.baseRef && left.open === right.open && left.draft === right.draft;
+    && left.baseRef === right.baseRef && left.open === right.open && left.draft === right.draft
+    && left.isPrivate === right.isPrivate;
 }
 
 function identityFrom(candidate: CurrentCandidate, policy: CurrentPolicy): OperatorPassthroughIdentity {
   return {
-    version: 'OperatorPassthroughIdentity.v1',
+    version: 'OperatorPassthroughIdentity.v2',
     repositoryId: candidate.repositoryId,
     owner: candidate.owner,
     repo: candidate.repo,
@@ -522,7 +555,8 @@ function identityFrom(candidate: CurrentCandidate, policy: CurrentPolicy): Opera
     headSha: candidate.headSha,
     baseSha: candidate.baseSha,
     baseRef: candidate.baseRef,
-    appId: APP_ID,
+    isPrivate: candidate.isPrivate,
+    appId: reviewAppIdForRepository(candidate),
     policyDigest: policy.policyDigest,
     policySource: policy.identity,
   };
@@ -582,7 +616,7 @@ function checkIdentityMatches(
 ): PublishedCheck {
   const name = checkName(stage);
   if (!isRecord(check) || !Number.isSafeInteger(Number(check.id)) || Number(check.id) <= 0
-    || Number(check.app?.id) !== APP_ID || check.name !== name || check.external_id !== externalId
+    || Number(check.app?.id) !== identity.appId || check.name !== name || check.external_id !== externalId
     || String(check.head_sha || '').toLowerCase() !== identity.headSha
     || !isRecord(check.output) || typeof check.output.title !== 'string' || typeof check.output.summary !== 'string') {
     unavailable('check_identity_unverified');
@@ -629,8 +663,8 @@ async function computeAuditDigest(
     runId,
     priorControlRunIds,
     checks: {
-      worker: { appId: APP_ID, name: REVIEW_WORKER_CHECK_NAME, externalId: externalIdPair.worker },
-      gate: { appId: APP_ID, name: REVIEW_GATE_CHECK_NAME, externalId: externalIdPair.gate },
+      worker: { appId: identity.appId, name: REVIEW_WORKER_CHECK_NAME, externalId: externalIdPair.worker },
+      gate: { appId: identity.appId, name: REVIEW_GATE_CHECK_NAME, externalId: externalIdPair.gate },
     },
     reviewStarted: false,
     expectedLanes: 0,
@@ -739,7 +773,7 @@ async function readDurableState(env: Env, runId: string, context: DeadlineContex
 
 function stateMatches(state: OperatorPassthroughState | null, identity: OperatorPassthroughIdentity,
   publicationId: string, runId: string): state is OperatorPassthroughState {
-  return !!state && state.version === 'OperatorPassthroughState.v1' && state.runId === runId
+  return !!state && state.version === 'OperatorPassthroughState.v2' && state.runId === runId
     && state.publicationId === publicationId && stableJson(state.identity) === stableJson(identity);
 }
 
@@ -803,7 +837,7 @@ function responseFromReceipt(receipt: OperatorPassthroughReceipt | null, fallbac
       headSha: null,
       baseSha: null,
       baseRef: null,
-      appId: APP_ID,
+      appId: 0,
       policyDigest: null,
       policySource: null,
       reviewStarted: false as const,
@@ -1021,7 +1055,9 @@ async function writeReceiptAndReadBack(
   identity: OperatorPassthroughIdentity,
   runId: string,
   publicationId: string,
-  receipt: OperatorPassthroughReceipt
+  receipt: OperatorPassthroughReceipt,
+  priorControlRunIds: string[],
+  token: string
 ): Promise<OperatorPassthroughReceipt> {
   const saved = await doRequest<{ accepted?: boolean }>(env, runId, '/operator-passthrough/receipt', 'POST', context, {
     version: 'OperatorPassthroughReceiptWrite.v1', publicationId, receipt,
@@ -1035,6 +1071,7 @@ async function writeReceiptAndReadBack(
     || readback.state.receipt.gateCheckId !== receipt.gateCheckId
     || readback.state.receipt.policyDigest !== identity.policyDigest
     || !readback.state.receipt.mergeEligible) unavailable('audit_unavailable');
+  await assertPriorOutcomeUnchanged(env, identity, readback.state, priorControlRunIds, token, context);
   return readback.state.receipt;
 }
 
@@ -1047,13 +1084,13 @@ async function resolveIdentity(
   const requested = parseTarget(target);
   const identities = parseRepositoryIdentities(env);
   const source = parsePolicySource(env);
-  requireServiceApp(env);
   const enrolledByName = identities.find((entry) =>
     `${entry.owner}/${entry.repo}`.toLowerCase() === `${requested.owner}/${requested.repo}`.toLowerCase());
   if (!enrolledByName) unavailable('repository_not_enrolled');
-  const token = await scopedInstallationToken(env, enrolledByName.owner, enrolledByName.repo, context);
+  const token = await scopedInstallationToken(env, enrolledByName.owner, enrolledByName.repo, enrolledByName.appId, context);
   const candidate = await currentCandidate(requested, identities, token, context);
-  const policyToken = await scopedInstallationToken(env, source.owner, source.repo, context);
+  const sourceAppId = reviewAppIdForRepository(source);
+  const policyToken = await scopedInstallationToken(env, source.owner, source.repo, sourceAppId, context);
   const policy = await currentPolicy(candidate, source, policyToken, context);
   const identity = identityFrom(candidate, policy);
   const derived = await shaIdentity(identity);
@@ -1074,6 +1111,51 @@ async function currentCoordinatesStillMatch(
     parseRepositoryIdentities(env), targetToken, context);
   if (!sameCandidate(candidate, current)) return false;
   return policyRevisionIsCurrent(source, identity.policySource, policyToken, context);
+}
+
+async function recheckCurrentPriorOutcome(
+  env: Env,
+  identity: OperatorPassthroughIdentity,
+  state: OperatorPassthroughState,
+  token: string,
+  context: DeadlineContext
+): Promise<string[]> {
+  const external = await externalIds(identity, state.runId);
+  try {
+    return await context.run(() => assertNoBlockingPriorOutcome(
+      env,
+      reviewSpec(identity, state.runId),
+      token,
+      identity.appId,
+      context.fetch as unknown as typeof fetch,
+      {
+        allowCurrentPublisherTerminal: true,
+        currentPassthroughChecks: {
+          appId: identity.appId,
+          workerExternalId: external.worker,
+          gateExternalId: external.gate,
+        },
+        sourceRunId: state.sourceRunId,
+      },
+    ));
+  } catch (error) {
+    if (error instanceof PassthroughUnavailable) throw error;
+    const code = error instanceof Error && /^prior_[a-z_]+$/u.test(error.message)
+      ? error.message as ErrorCode : 'prior_outcome_unavailable';
+    unavailable(code);
+  }
+}
+
+async function assertPriorOutcomeUnchanged(
+  env: Env,
+  identity: OperatorPassthroughIdentity,
+  state: OperatorPassthroughState,
+  expectedRunIds: string[],
+  token: string,
+  context: DeadlineContext
+): Promise<void> {
+  const current = await recheckCurrentPriorOutcome(env, identity, state, token, context);
+  if (stableJson(current) !== stableJson(expectedRunIds)) unavailable('prior_outcome_unavailable');
 }
 
 async function reserveAndCheckPriorOutcome(
@@ -1099,22 +1181,16 @@ async function reserveAndCheckPriorOutcome(
 
   const reservation = await doRequest<{ accepted?: boolean; reason?: string; state?: OperatorPassthroughState }>(env, runId,
     '/operator-passthrough/reserve', 'POST', context,
-    { version: 'OperatorPassthroughReservation.v1', runId, publicationId, identity });
+    { version: 'OperatorPassthroughReservation.v1', runId, publicationId, identity, sourceRunId: context.sourceRunId || null });
   if (!reservation.accepted || !stateMatches(reservation.state ?? null, identity, publicationId, runId)) {
     unavailable(reservation.reason === 'cancel_requested' ? 'cancel_requested' : 'durable_state_unavailable');
   }
   let state = reservation.state!;
   if (state.cancelRequested || initialized?.state?.cancelRequested) unavailable('cancel_requested');
-  if (state.priorOutcomeChecked) return { state, priorControlRunIds: state.priorControlRunIds };
-
-  let priorControlRunIds: string[];
-  try {
-    priorControlRunIds = await context.run(() => assertNoBlockingPriorOutcome(
-      env, spec, token, APP_ID, context.fetch as unknown as typeof fetch));
-  } catch (error) {
-    if (error instanceof PassthroughUnavailable) throw error;
-    const code = error instanceof Error && error.message === 'prior_semantic_block' ? 'prior_semantic_block' : 'prior_outcome_unavailable';
-    unavailable(code);
+  const priorControlRunIds = await recheckCurrentPriorOutcome(env, identity, state, token, context);
+  if (state.priorOutcomeChecked) {
+    if (stableJson(priorControlRunIds) !== stableJson(state.priorControlRunIds)) unavailable('prior_outcome_unavailable');
+    return { state, priorControlRunIds: state.priorControlRunIds };
   }
   const admitted = await doRequest<{ accepted?: boolean; state?: OperatorPassthroughState }>(env, runId,
     '/operator-passthrough/admission', 'POST', context,
@@ -1209,7 +1285,7 @@ async function readPublishedWithContext(
   }
   const receipt = state.receipt;
   if (!receipt || receipt.status !== 'succeeded' || !receipt.mergeEligible || receipt.publicationState !== 'published'
-    || receipt.appId !== APP_ID || receipt.policyDigest !== resolved.identity.policyDigest
+    || receipt.appId !== resolved.identity.appId || receipt.policyDigest !== resolved.identity.policyDigest
     || receipt.auditDigest === null || receipt.workerCheckId === null || receipt.gateCheckId === null) {
     return failureReceipt(resolved.identity, resolved.runId, resolved.publicationId,
       'check_readback_unavailable', state, true)!;
@@ -1227,6 +1303,13 @@ async function readPublishedWithContext(
     || currentDurable.state.receipt?.gateCheckId !== pair.gate.id
     || currentDurable.state.receipt?.mergeEligible !== true) {
     return failureReceipt(resolved.identity, resolved.runId, resolved.publicationId, 'audit_unavailable', currentDurable.state, false)!;
+  }
+  try {
+    await assertPriorOutcomeUnchanged(env, resolved.identity, currentDurable.state!,
+      currentDurable.state!.priorControlRunIds, resolved.token, context);
+  } catch (error) {
+    const code = error instanceof PassthroughUnavailable ? error.code : 'prior_outcome_unavailable';
+    return failureReceipt(resolved.identity, resolved.runId, resolved.publicationId, code, currentDurable.state, true)!;
   }
   return receipt;
 }
@@ -1277,7 +1360,8 @@ async function publishWithContext(
 
     const success = await makeSuccessReceipt(identity, runId, publicationId, auditDigest,
       admission.priorControlRunIds, pair);
-    return await writeReceiptAndReadBack(env, context, identity, runId, publicationId, success);
+    return await writeReceiptAndReadBack(env, context, identity, runId, publicationId, success,
+      admission.priorControlRunIds, resolved.token);
   } catch (error) {
     const errorCode: ErrorCode = error instanceof PassthroughUnavailable
       ? error.code
@@ -1302,18 +1386,28 @@ async function readForTargetWithContext(
   }
 }
 
+async function publishOperatorPassthroughForTargetInternal(
+  env: Env,
+  target: OperatorPassthroughTarget,
+  options: OperatorPassthroughOptions = {},
+  expected?: Partial<Pick<CurrentCandidate, 'headSha' | 'baseSha'>>,
+  sourceRunId?: string
+): Promise<OperatorPassthroughResult> {
+  const context = makeDeadline(env, options, sourceRunId);
+  try { return await publishWithContext(env, target, context, expected); }
+  catch (error) {
+    const code = error instanceof PassthroughUnavailable ? error.code : 'authoritative_read_unavailable';
+    return responseFromReceipt(null, code);
+  } finally { context.dispose(); }
+}
+
 export async function publishOperatorPassthroughForTarget(
   env: Env,
   target: OperatorPassthroughTarget,
   options: OperatorPassthroughOptions = {},
   expected?: Partial<Pick<CurrentCandidate, 'headSha' | 'baseSha'>>
 ): Promise<OperatorPassthroughResult> {
-  const context = makeDeadline(env, options);
-  try { return await publishWithContext(env, target, context, expected); }
-  catch (error) {
-    const code = error instanceof PassthroughUnavailable ? error.code : 'authoritative_read_unavailable';
-    return responseFromReceipt(null, code);
-  } finally { context.dispose(); }
+  return publishOperatorPassthroughForTargetInternal(env, target, options, expected);
 }
 
 export async function readOperatorPassthroughForTarget(
@@ -1349,7 +1443,7 @@ async function readByRunIdWithContext(
   }
   if (stored.link === runId) return responseFromReceipt(null, 'durable_state_unavailable');
   const state = stored.state;
-  if (!state || state.version !== 'OperatorPassthroughState.v1' || state.runId !== runId) return null;
+  if (!state || state.version !== 'OperatorPassthroughState.v2' || state.runId !== runId) return null;
   const receipt = await readForTargetWithContext(env, {
     owner: state.identity.owner,
     repo: state.identity.repo,
@@ -1374,7 +1468,11 @@ export async function readOperatorPassthroughByRunId(
 }
 
 /** Backward-compatible workflow entrypoint; the supplied run tuple is ignored. */
-export async function publishOperatorPassthrough(env: Env, spec: ReviewRunSpec): Promise<OperatorPassthroughResult> {
+export async function publishOperatorPassthrough(
+  env: Env,
+  spec: ReviewRunSpec,
+  options: OperatorPassthroughOptions = {}
+): Promise<OperatorPassthroughResult> {
   if (!/^run_[A-Za-z0-9_-]{1,128}$/u.test(spec.runId)) return responseFromReceipt(null, 'durable_state_unavailable');
   const original = doStub(env, spec.runId);
   try {
@@ -1394,7 +1492,7 @@ export async function publishOperatorPassthrough(env: Env, spec: ReviewRunSpec):
   }
 
   const target = { owner: spec.owner, repo: spec.repo, prNumber: spec.prNumber };
-  const receipt = await publishOperatorPassthroughForTarget(env, target, { sourceRunId: spec.runId });
+  const receipt = await publishOperatorPassthroughForTargetInternal(env, target, options, undefined, spec.runId);
   if (receipt.status !== 'succeeded' || !receipt.runId || !receipt.owner || !receipt.repo || !receipt.prNumber) return receipt;
 
   const invalidatePublishedReceipt = async (): Promise<OperatorPassthroughResult> => {

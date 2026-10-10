@@ -1,6 +1,19 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult } from '../types.js';
 import { publishOperatorPassthroughForTarget } from '../../operatorPassthroughPublisher.js';
 
+function configuredTrackingUrl(env: McpExecutionContext['env'] | undefined, runId: string): string | null {
+  const baseValue = env?.DISPATCH_STATUS_BASE_URL || env?.OPERATOR_STATUS_BASE_URL;
+  if (!baseValue) return null;
+  try {
+    const base = new URL(baseValue);
+    if ((base.protocol !== 'http:' && base.protocol !== 'https:') || base.username || base.password) return null;
+    if (!base.pathname.endsWith('/')) base.pathname += '/';
+    return new URL(`api/dispatch/runs/${encodeURIComponent(runId)}/status`, base).toString();
+  } catch {
+    return null;
+  }
+}
+
 export const triggerReviewTool: McpToolHandler = {
   definition: {
     name: 'review_yeti_trigger_review',
@@ -89,9 +102,7 @@ export const triggerReviewTool: McpToolHandler = {
       const expected = commitSha === 'latest-head' ? undefined : { headSha: commitSha };
       const receipt = await publishOperatorPassthroughForTarget(env, { owner, repo, prNumber }, {}, expected);
       const published = receipt.status === 'succeeded' && receipt.mergeEligible && receipt.publicationReceiptAvailable;
-      const trackingUrl = receipt.runId
-        ? `https://review-yeti-cf-orchestrator.example.workers.dev/api/dispatch/runs/${receipt.runId}/status`
-        : null;
+      const trackingUrl = receipt.runId ? configuredTrackingUrl(env, receipt.runId) : null;
       const summary = published
         ? `Operator passthrough publication is current for ${receipt.owner}/${receipt.repo}#${receipt.prNumber} at ${receipt.headSha}. No semantic review ran; zero lanes were started.`
         : `Operator passthrough publication is unavailable for ${owner}/${repo}#${prNumber}. No semantic review ran; merge eligibility is false.`;
@@ -328,7 +339,7 @@ export const triggerReviewTool: McpToolHandler = {
 
     const isDispatched = workflowCreated || reviewRunInitialized;
     const isSimulated = !env.REVIEW_JOB_WORKFLOW && !env.REVIEW_RUN && !env.REPO_GATE;
-    const trackingUrl = `https://review-yeti-cf-orchestrator.example.workers.dev/api/dispatch/runs/${runId}/status`;
+    const trackingUrl = configuredTrackingUrl(env, runId);
 
     const summaryText =
       `### 🚀 Review Yeti Job Dispatched${isSimulated ? ' (Simulation / Local Mode)' : ''}\n\n` +
@@ -351,7 +362,7 @@ export const triggerReviewTool: McpToolHandler = {
           ? `⏳ **Queued (Position #${queuePosition})**`
           : '⚠️ **Unallocated (No Concurrency Slot Granted / Simulated Mode)**'
       }\n` +
-      `- **Status Tracking Endpoint:** [${trackingUrl}](${trackingUrl})\n`;
+      (trackingUrl ? `- **Status Tracking Endpoint:** [${trackingUrl}](${trackingUrl})\n` : '');
 
     return {
       content: [
