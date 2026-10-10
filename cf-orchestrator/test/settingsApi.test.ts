@@ -451,4 +451,218 @@ describe('Settings & Onboarding API (/api/settings/*)', () => {
       assert.equal(updated.repositoryId, 77889900); // Preserved
     });
   });
+
+  describe('GitHub Installation Onboarding & Sync (/api/settings/github/*)', () => {
+    it('GET /api/settings/github/install-url returns public install URL without authentication', async () => {
+      const env = { ...createMockEnv(), GITHUB_APP_SLUG: 'review-yeti-test-app' };
+      const req = new Request('https://worker.dev/api/settings/github/install-url', {
+        method: 'GET',
+      });
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+      const data = (await res.json()) as any;
+      assert.equal(data.success, true);
+      assert.equal(data.slug, 'review-yeti-test-app');
+      assert.equal(data.url, 'https://github.com/apps/review-yeti-test-app/installations/new');
+    });
+
+    it('POST /api/settings/github/installations/:id/sync syncs organization and repos', async () => {
+      const env = createMockEnv();
+      const payload = {
+        organization: 'acme-corp',
+        organizationName: 'ACME Corporation',
+        repositories: [
+          { id: 991122, name: 'api-gateway', full_name: 'acme-corp/api-gateway', default_branch: 'main' },
+          { id: 991123, name: 'auth-service', full_name: 'acme-corp/auth-service', default_branch: 'develop' },
+        ],
+      };
+
+      const req = new Request('https://worker.dev/api/settings/github/installations/554433/sync', {
+        method: 'POST',
+        headers: authedHeaders(),
+        body: JSON.stringify(payload),
+      });
+
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+      const data = (await res.json()) as any;
+      assert.equal(data.success, true);
+      assert.equal(data.organization.id, 'acme-corp');
+      assert.equal(data.organization.installationId, 554433);
+      assert.equal(data.count, 2);
+
+      const repo1 = inMemoryStore.getRepository('acme-corp', 'api-gateway');
+      assert.ok(repo1);
+      assert.equal(repo1.repositoryId, 991122);
+      assert.equal(repo1.passthroughEnabled, true);
+      assert.equal(repo1.automationEnabled, true);
+
+      const repo2 = inMemoryStore.getRepository('acme-corp', 'auth-service');
+      assert.ok(repo2);
+      assert.equal(repo2.defaultBranch, 'develop');
+    });
+
+    it('GET /api/settings/github/installations/:id retrieves synced installation from D1', async () => {
+      const env = createMockEnv();
+      const req = new Request('https://worker.dev/api/settings/github/installations/554433', {
+        method: 'GET',
+        headers: authedHeaders(),
+      });
+
+      const res = await worker.fetch(req, env);
+      assert.equal(res.status, 200);
+      const data = (await res.json()) as any;
+      assert.equal(data.success, true);
+      assert.equal(data.organization.id, 'acme-corp');
+      assert.equal(data.repositories.length, 2);
+    });
+  });
+
+  describe('GitHub Webhook Installation Auto-Enrollment', () => {
+    const WEBHOOK_SECRET = 'whsec_test_secret_12345';
+
+    async function signedWebhookRequest(event: string, payload: any, env: any): Promise<Response> {
+      const body = JSON.stringify(payload);
+      const enc = new TextEncoder();
+      const key = await crypto.subtle.importKey(
+        'raw',
+        enc.encode(WEBHOOK_SECRET),
+        { name: 'HMAC', hash: 'SHA-256' },
+        false,
+        ['sign']
+      );
+      const sigBytes = await crypto.subtle.sign('HMAC', key, enc.encode(body));
+      const hex = Array.from(new Uint8Array(sigBytes))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+
+      const req = new Request('https://worker.dev/api/webhooks/github', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-GitHub-Event': event,
+          'X-Hub-Signature-256': `sha256=${hex}`,
+        },
+        body,
+      });
+
+      return await worker.fetch(req, {
+        ...env,
+        GITHUB_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      });
+    }
+
+    it('auto-registers organization and repos on installation.created event', async () => {
+      const env = createMockEnv();
+      const payload = {
+        action: 'created',
+        installation: {
+          id: 771122,
+          app_id: 4385771,
+          account: {
+            login: 'auto-enrolled-org',
+            name: 'Auto Enrolled Org',
+          },
+        },
+        repositories: [
+          { id: 11223344, name: 'core-api', full_name: 'auto-enrolled-org/core-api' },
+        ],
+      };
+
+      const res = await signedWebhookRequest('installation', payload, env);
+      assert.equal(res.status, 200);
+      const data = (await res.json()) as any;
+      assert.equal(data.status, 'processed_installation');
+      assert.equal(data.organization, 'auto-enrolled-org');
+      assert.equal(data.repositoriesCount, 1);
+
+      const org = inMemoryStore.getOrganization('auto-enrolled-org');
+      assert.ok(org);
+      assert.equal(org.enabled, true);
+      assert.equal(org.installationId, 771122);
+
+      const repo = inMemoryStore.getRepository('auto-enrolled-org', 'core-api');
+      assert.ok(repo);
+      assert.equal(repo.passthroughEnabled, true);
+      assert.equal(repo.automationEnabled, true);
+    });
+
+    it('disables organization on installation.deleted event', async () => {
+      const env = createMockEnv();
+      const payload = {
+        action: 'deleted',
+        installation: {
+          id: 771122,
+          account: {
+            login: 'auto-enrolled-org',
+          },
+        },
+      };
+
+      const res = await signedWebhookRequest('installation', payload, env);
+      assert.equal(res.status, 200);
+      const data = (await res.json()) as any;
+      assert.equal(data.status, 'processed_installation');
+      assert.equal(data.action, 'deleted');
+
+      const org = inMemoryStore.getOrganization('auto-enrolled-org');
+      assert.ok(org);
+      assert.equal(org.enabled, false);
+      assert.equal(org.passthroughEnabled, false);
+    });
+
+    it('auto-registers repos on installation_repositories.added event', async () => {
+      const env = createMockEnv();
+      const payload = {
+        action: 'added',
+        installation: {
+          id: 771122,
+          account: {
+            login: 'auto-enrolled-org',
+          },
+        },
+        repositories_added: [
+          { id: 556677, name: 'extra-service', full_name: 'auto-enrolled-org/extra-service' },
+        ],
+      };
+
+      const res = await signedWebhookRequest('installation_repositories', payload, env);
+      assert.equal(res.status, 200);
+      const data = (await res.json()) as any;
+      assert.equal(data.status, 'processed_installation_repositories');
+      assert.equal(data.addedCount, 1);
+
+      const repo = inMemoryStore.getRepository('auto-enrolled-org', 'extra-service');
+      assert.ok(repo);
+      assert.equal(repo.passthroughEnabled, true);
+      assert.equal(repo.automationEnabled, true);
+    });
+
+    it('pauses repos on installation_repositories.removed event', async () => {
+      const env = createMockEnv();
+      const payload = {
+        action: 'removed',
+        installation: {
+          id: 771122,
+          account: {
+            login: 'auto-enrolled-org',
+          },
+        },
+        repositories_removed: [
+          { id: 556677, name: 'extra-service', full_name: 'auto-enrolled-org/extra-service' },
+        ],
+      };
+
+      const res = await signedWebhookRequest('installation_repositories', payload, env);
+      assert.equal(res.status, 200);
+      const data = (await res.json()) as any;
+      assert.equal(data.status, 'processed_installation_repositories');
+      assert.equal(data.removedCount, 1);
+
+      const repo = inMemoryStore.getRepository('auto-enrolled-org', 'extra-service');
+      assert.ok(repo);
+      assert.equal(repo.automationEnabled, false);
+      assert.equal(repo.passthroughEnabled, false);
+    });
+  });
 });
