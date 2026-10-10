@@ -450,6 +450,124 @@ describe('Settings & Onboarding API (/api/settings/*)', () => {
       assert.equal(updated.automationEnabled, false);
       assert.equal(updated.repositoryId, 77889900); // Preserved
     });
+
+    it('executes review_yeti_sync_github_installation tool via JSON-RPC', async () => {
+      const env = createMockEnv();
+      const rpcReq: any = {
+        jsonrpc: '2.0',
+        id: 4,
+        method: 'tools/call',
+        params: {
+          name: 'review_yeti_sync_github_installation',
+          arguments: {
+            installationId: 667788,
+            organization: 'mcp-synced-org',
+            organizationName: 'MCP Synced Org Inc',
+            repositories: ['mcp-synced-org/repo-alpha', 'mcp-synced-org/repo-beta'],
+            passthroughEnabled: true,
+            customProfile: 'assertive',
+          },
+        },
+      };
+
+      const req = new Request('https://worker.dev/api/mcp', {
+        method: 'POST',
+        headers: authedHeaders(),
+        body: JSON.stringify(rpcReq),
+      });
+
+      const res = await defaultMcpRouter.handleHttpRequest(req, env);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as any;
+      assert.equal(body.jsonrpc, '2.0');
+      assert.ok(!body.error);
+      const textItem = body.result.content?.find((c: any) => c.text?.includes('GitHub Installation Synced'));
+      assert.ok(textItem);
+
+      const org = inMemoryStore.getOrganization('mcp-synced-org');
+      assert.ok(org);
+      assert.equal(org.installationId, 667788);
+
+      const repo = inMemoryStore.getRepository('mcp-synced-org', 'repo-alpha');
+      assert.ok(repo);
+      assert.equal(repo.passthroughEnabled, true);
+    });
+
+    it('executes review_yeti_get_onboarding_status tool via JSON-RPC', async () => {
+      const env = createMockEnv();
+      const rpcReq: any = {
+        jsonrpc: '2.0',
+        id: 5,
+        method: 'tools/call',
+        params: {
+          name: 'review_yeti_get_onboarding_status',
+          arguments: {},
+        },
+      };
+
+      const req = new Request('https://worker.dev/api/mcp', {
+        method: 'POST',
+        headers: authedHeaders(),
+        body: JSON.stringify(rpcReq),
+      });
+
+      const res = await defaultMcpRouter.handleHttpRequest(req, env);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as any;
+      assert.equal(body.jsonrpc, '2.0');
+      assert.ok(!body.error);
+      const textItem = body.result.content?.find((c: any) => c.text?.includes('Review Yeti Onboarding Status'));
+      assert.ok(textItem);
+      const jsonItem = body.result.content?.find((c: any) => {
+        try {
+          const parsed = JSON.parse(c.text);
+          return parsed.ok && typeof parsed.totalOrganizations === 'number';
+        } catch {
+          return false;
+        }
+      });
+      assert.ok(jsonItem);
+    });
+
+    it('executes review_yeti_list_repositories tool via JSON-RPC with filter', async () => {
+      const env = createMockEnv();
+      const rpcReq: any = {
+        jsonrpc: '2.0',
+        id: 6,
+        method: 'tools/call',
+        params: {
+          name: 'review_yeti_list_repositories',
+          arguments: {
+            owner: 'mcp-synced-org',
+            passthroughOnly: true,
+          },
+        },
+      };
+
+      const req = new Request('https://worker.dev/api/mcp', {
+        method: 'POST',
+        headers: authedHeaders(),
+        body: JSON.stringify(rpcReq),
+      });
+
+      const res = await defaultMcpRouter.handleHttpRequest(req, env);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as any;
+      assert.equal(body.jsonrpc, '2.0');
+      assert.ok(!body.error);
+      const jsonItem = body.result.content?.find((c: any) => {
+        try {
+          const parsed = JSON.parse(c.text);
+          return parsed.ok && Array.isArray(parsed.repositories);
+        } catch {
+          return false;
+        }
+      });
+      assert.ok(jsonItem);
+      const data = JSON.parse(jsonItem.text);
+      assert.ok(data.count >= 2);
+      assert.ok(data.repositories.every((r: any) => r.owner === 'mcp-synced-org' && r.passthroughEnabled));
+    });
   });
 
   describe('GitHub Installation Onboarding & Sync (/api/settings/github/*)', () => {

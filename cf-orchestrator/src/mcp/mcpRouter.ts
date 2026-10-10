@@ -33,6 +33,7 @@ import {
   manageMemoryGraphTool,
   onboardOrganizationTool,
   onboardRepositoryTool,
+  syncGithubInstallationTool,
 } from './tools/index.js';
 
 export const MUTATING_TOOL_NAMES = new Set([
@@ -58,6 +59,8 @@ export const MUTATING_TOOL_NAMES = new Set([
   'onboard_organization',
   'review_yeti_onboard_repository',
   'onboard_repository',
+  'review_yeti_sync_github_installation',
+  'sync_github_installation',
 ]);
 
 export function constantTimeEquals(a: string, b: string): boolean {
@@ -139,6 +142,7 @@ export class McpRouter {
     this.registerTool(manageMemoryGraphTool);
     this.registerTool(onboardOrganizationTool);
     this.registerTool(onboardRepositoryTool);
+    this.registerTool(syncGithubInstallationTool);
   }
 
   public registerTool(handler: McpToolHandler): void {

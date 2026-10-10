@@ -13,3 +13,4 @@ export * from './replyReviewThread.js';
 export * from './apiParityTools.js';
 export * from './onboardOrganization.js';
 export * from './onboardRepository.js';
+export * from './syncGithubInstallation.js';
