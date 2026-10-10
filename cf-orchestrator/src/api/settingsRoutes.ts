@@ -12,7 +12,7 @@ import {
   type OrganizationRecord,
   type RepositoryRecord,
 } from '../storage/d1Client.js';
-import { getInstallationToken } from '../github/githubAppAuth.js';
+import { getInstallationToken, signGitHubAppJwt } from '../github/githubAppAuth.js';
 
 function corsHeaders(): Record<string, string> {
   return {
@@ -82,15 +82,25 @@ export async function handleSettingsApi(
   const path = url.pathname;
 
   // Handle CORS pre-flight
-  if (request.method === 'OPTIONS' && path.startsWith('/api/settings')) {
+  if (request.method === 'OPTIONS' && (path.startsWith('/api/settings') || path.startsWith('/api/auth/github'))) {
     return new Response(null, { status: 204, headers: corsHeaders() });
   }
 
-  if (!path.startsWith('/api/settings')) {
+  if (!path.startsWith('/api/settings') && !path.startsWith('/api/auth/github')) {
     return null;
   }
 
-  // Enforce administrative authentication
+  // Public GitHub App installation URL endpoint (no admin token required)
+  if ((path === '/api/settings/github/install-url' || path === '/api/auth/github/install-url') && request.method === 'GET') {
+    const appSlug = (env.GITHUB_APP_SLUG || 'review-yeti-bot').trim();
+    const installUrl = `https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new`;
+    return new Response(
+      JSON.stringify({ success: true, slug: appSlug, url: installUrl }),
+      { headers: corsHeaders() }
+    );
+  }
+
+  // Enforce administrative authentication for all other settings endpoints
   const auth = authenticateSettingsRequest(request, env);
   if (!auth.authorized) {
     return new Response(
@@ -467,6 +477,154 @@ export async function handleSettingsApi(
         { headers: corsHeaders() }
       );
     }
+  }
+
+  // 6. Sync Repositories & Org from GitHub Installation
+  const instSyncMatch = path.match(/^\/api\/settings\/github\/installations\/(\d+)\/sync$/);
+  if (instSyncMatch && request.method === 'POST') {
+    const installationId = parseInt(instSyncMatch[1], 10);
+    if (isNaN(installationId) || installationId <= 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Valid positive numeric installationId required' }),
+        { status: 400, headers: corsHeaders() }
+      );
+    }
+
+    let orgLogin = '';
+    let orgName = '';
+    let repos: Array<{ id: number; name: string; full_name: string; default_branch?: string }> = [];
+
+    // Fetch metadata from GitHub API if credentials exist
+    if (env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY) {
+      try {
+        const jwt = await signGitHubAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
+        // Get installation info
+        const instRes = await fetch(`https://api.github.com/app/installations/${installationId}`, {
+          headers: {
+            Authorization: `Bearer ${jwt}`,
+            Accept: 'application/vnd.github.v3+json',
+            'User-Agent': 'review-yeti-cf-orchestrator',
+          },
+        });
+        if (instRes.ok) {
+          const instData = (await instRes.json()) as any;
+          if (instData?.account?.login) {
+            orgLogin = String(instData.account.login).toLowerCase();
+            orgName = instData.account.name || instData.account.login;
+          }
+        }
+
+        // Get installation access token to list repositories
+        const token = await getInstallationToken(env, '', '', installationId);
+        if (token && !token.startsWith('ghs_dummy_') && !token.startsWith('ghs_ephemeral_')) {
+          const reposRes = await fetch(`https://api.github.com/installation/repositories?per_page=100`, {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/vnd.github.v3+json',
+              'User-Agent': 'review-yeti-cf-orchestrator',
+            },
+          });
+          if (reposRes.ok) {
+            const reposData = (await reposRes.json()) as any;
+            if (Array.isArray(reposData.repositories)) {
+              repos = reposData.repositories;
+            }
+          }
+        }
+      } catch {
+        // Fallback to request body if supplied
+      }
+    }
+
+    // Support fallback/manual payload in body if GitHub API could not be reached (e.g. in test environments or offline)
+    const body = (await request.json().catch(() => ({}))) as any;
+    if (!orgLogin && body.organization) {
+      orgLogin = String(body.organization).toLowerCase().trim();
+      orgName = body.organizationName || orgLogin;
+    }
+    if (repos.length === 0 && Array.isArray(body.repositories)) {
+      repos = body.repositories.map((r: any) => ({
+        id: typeof r.id === 'number' ? r.id : 0,
+        name: r.name || (r.full_name ? r.full_name.split('/')[1] : r),
+        full_name: r.full_name || (orgLogin ? `${orgLogin}/${r.name || r}` : String(r)),
+        default_branch: r.default_branch || 'main',
+      }));
+    }
+
+    if (!orgLogin) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Could not determine organization from GitHub installation or request payload' }),
+        { status: 400, headers: corsHeaders() }
+      );
+    }
+
+    // Upsert Organization in D1
+    const savedOrg = await saveOrganizationToDb(env.DB, {
+      id: orgLogin,
+      name: orgName || orgLogin,
+      installationId,
+      appId: env.GITHUB_APP_ID ? parseInt(env.GITHUB_APP_ID, 10) : 4385771,
+      enabled: true,
+      passthroughEnabled: true,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    // Upsert Repositories in D1
+    const savedRepos: RepositoryRecord[] = [];
+    for (const r of repos) {
+      const parts = r.full_name.split('/');
+      const owner = (parts[0] || orgLogin).toLowerCase();
+      const repoName = parts[1] || r.name;
+      const saved = await updateRepositoryInDb(env.DB, owner, repoName, {
+        repositoryId: r.id || undefined,
+        installationId,
+        defaultBranch: r.default_branch || 'main',
+        automationEnabled: true,
+        passthroughEnabled: true,
+      });
+      savedRepos.push(saved);
+    }
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        organization: savedOrg,
+        repositories: savedRepos,
+        count: savedRepos.length,
+      }),
+      { headers: corsHeaders() }
+    );
+  }
+
+  // 7. Get Synced Installation details from D1
+  const getInstMatch = path.match(/^\/api\/settings\/github\/installations\/(\d+)$/);
+  if (getInstMatch && request.method === 'GET') {
+    const installationId = parseInt(getInstMatch[1], 10);
+    const [allOrgs, allRepos] = await Promise.all([
+      fetchOrganizationsFromDb(env.DB),
+      fetchRepositoriesFromDb(env.DB),
+    ]);
+
+    const org = allOrgs.find((o) => o.installationId === installationId);
+    const repos = allRepos.filter((r) => r.installationId === installationId);
+
+    if (!org && repos.length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: `No organization or repositories found for installation ${installationId}` }),
+        { status: 404, headers: corsHeaders() }
+      );
+    }
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        organization: org || null,
+        repositories: repos,
+        count: repos.length,
+      }),
+      { headers: corsHeaders() }
+    );
   }
 
   return new Response('Not Found', { status: 404, headers: corsHeaders() });
