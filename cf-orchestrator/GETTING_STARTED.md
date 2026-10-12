@@ -175,6 +175,9 @@ npx wrangler secret put GITHUB_WEBHOOK_SECRET
 npx wrangler secret put GITHUB_APP_ID
 npx wrangler secret put GITHUB_APP_PRIVATE_KEY
 
+# Optional exact private identities for paused publication
+npx wrangler secret put OPERATOR_PASSTHROUGH_PRIVATE_REPOSITORY_IDENTITIES
+
 # DigitalOcean MARS Token (Firecracker microVM provisioning)
 npx wrangler secret put DO_API_TOKEN
 

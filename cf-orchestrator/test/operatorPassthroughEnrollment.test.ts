@@ -59,4 +59,16 @@ describe('service-owned paused publication enrollment', () => {
     assert.match(edgeTypes, /REVIEW_YETI_PUBLIC_TARGET_APP_ID\?: string/u);
     assert.match(edgeTypes, /REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY\?: string/u);
   });
+
+  it('keeps optional private enrollment as a Worker secret outside checked-in vars', async () => {
+    const wrangler = await readFile(resolve(process.cwd(), 'wrangler.toml'), { encoding: 'utf8' });
+    const workflow = await readFile(resolve(process.cwd(), '../.github/workflows/cf-orchestrator-ci.yaml'), { encoding: 'utf8' });
+    const edgeTypes = await readFile(resolve(process.cwd(), 'src/types.ts'), { encoding: 'utf8' });
+
+    assert.match(edgeTypes, /OPERATOR_PASSTHROUGH_PRIVATE_REPOSITORY_IDENTITIES\?: string/u);
+    assert.doesNotMatch(wrangler, /OPERATOR_PASSTHROUGH_PRIVATE_REPOSITORY_IDENTITIES/u);
+    assert.match(workflow, /uses:\s*cloudflare\/wrangler-action@v3/u);
+    assert.match(workflow, /command:\s*deploy/u);
+    assert.doesNotMatch(workflow, /OPERATOR_PASSTHROUGH_PRIVATE_REPOSITORY_IDENTITIES/u);
+  });
 });

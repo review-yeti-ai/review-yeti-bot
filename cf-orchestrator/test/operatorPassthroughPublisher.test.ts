@@ -44,6 +44,8 @@ interface MockCheck {
 
 interface GithubMockOptions {
   target?: { owner: string; repo: string; repositoryId: number; prNumber?: number; headSha?: string; baseSha?: string };
+  legacyRepositoryIdentities?: Array<{ repositoryId: number; owner: string; repo: string }>;
+  privateRepositoryIdentities?: string;
   wrongAppOnCreate?: boolean;
   wrongRepositoryId?: boolean;
   failFirstGatePatch?: boolean;
@@ -107,9 +109,12 @@ function createTestEnv(options: GithubMockOptions = {}) {
     PILOT_REPOSITORIES: 'all',
     DEFAULT_WORKER_IMAGE: 'test',
     OPERATOR_GLOBAL_PASSTHROUGH: 'true',
-    OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES: JSON.stringify([
+    OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES: JSON.stringify(options.legacyRepositoryIdentities ?? [
       { repositoryId: target.repositoryId, owner: target.owner, repo: target.repo },
     ]),
+    ...(options.privateRepositoryIdentities === undefined ? {} : {
+      OPERATOR_PASSTHROUGH_PRIVATE_REPOSITORY_IDENTITIES: options.privateRepositoryIdentities,
+    }),
     OPERATOR_PASSTHROUGH_POLICY_SOURCE: JSON.stringify({
       repositoryId: POLICY_REPOSITORY_ID,
       owner: 'calltelemetry',
@@ -401,6 +406,83 @@ describe('Edge operator passthrough publication', () => {
     assert.equal(receipt.errorCode, 'repository_not_enrolled');
     assert.equal(receipt.mergeEligible, false);
     assert.equal(mock.counts.creates, 0);
+  });
+
+  it('publishes for an exact repository identity supplied by the optional private secret binding', async () => {
+    const target = { owner: 'fixture-owner', repo: 'enrolled-private-target', repositoryId: 987654321 };
+    const mock = createTestEnv({
+      target,
+      legacyRepositoryIdentities: [{ repositoryId: 987654322, owner: 'fixture-legacy', repo: 'legacy-target' }],
+      privateRepositoryIdentities: JSON.stringify([target]),
+      privateOnRepositoryRead: 1,
+    });
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: target.owner, repo: target.repo, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.equal(receipt.status, 'succeeded', JSON.stringify({ receipt, requests: mock.requests }));
+    assert.equal(receipt.repositoryId, target.repositoryId);
+    assert.equal(receipt.appId, 4385771);
+    assert.equal(receipt.mergeEligible, true);
+    assert.equal(mock.counts.creates, 2);
+  });
+
+  it('keeps a private target unenrolled when the optional binding is absent', async () => {
+    const target = { owner: 'fixture-owner', repo: 'unenrolled-private-target', repositoryId: 987654323 };
+    const mock = createTestEnv({
+      target,
+      legacyRepositoryIdentities: [{ repositoryId: 987654322, owner: 'fixture-legacy', repo: 'legacy-target' }],
+    });
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: target.owner, repo: target.repo, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.equal(receipt.status, 'unavailable');
+    assert.equal(receipt.errorCode, 'repository_not_enrolled');
+    assert.equal(receipt.mergeEligible, false);
+    assert.equal(mock.requests.length, 0);
+    assert.equal(mock.counts.creates, 0);
+  });
+
+  it('fails closed on malformed, wildcard, empty, or extra-field private identity manifests', async () => {
+    const invalidManifests = [
+      '{',
+      JSON.stringify([{ repositoryId: 987654324, owner: 'fixture-owner', repo: '*' }]),
+      JSON.stringify([]),
+      JSON.stringify([{ repositoryId: 987654324, owner: 'fixture-owner', repo: 'private-target', extra: true }]),
+    ];
+
+    for (const privateRepositoryIdentities of invalidManifests) {
+      const mock = createTestEnv({ privateRepositoryIdentities });
+      const receipt = await publishOperatorPassthroughForTarget(mock.env,
+        { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+      assert.equal(receipt.status, 'unavailable', privateRepositoryIdentities);
+      assert.equal(receipt.errorCode, 'service_configuration_unavailable', privateRepositoryIdentities);
+      assert.equal(receipt.mergeEligible, false, privateRepositoryIdentities);
+      assert.equal(mock.requests.length, 0, privateRepositoryIdentities);
+      assert.equal(mock.counts.creates, 0, privateRepositoryIdentities);
+    }
+  });
+
+  it('rejects repository-name and repository-ID collisions between legacy and private manifests', async () => {
+    const legacyIdentity = { repositoryId: 987654325, owner: 'fixture-owner', repo: 'legacy-target' };
+    const collisions = [
+      [{ repositoryId: 987654326, owner: 'FIXTURE-OWNER', repo: 'LEGACY-TARGET' }],
+      [{ repositoryId: legacyIdentity.repositoryId, owner: 'another-fixture-owner', repo: 'private-target' }],
+    ];
+
+    for (const privateIdentities of collisions) {
+      const mock = createTestEnv({
+        legacyRepositoryIdentities: [legacyIdentity],
+        privateRepositoryIdentities: JSON.stringify(privateIdentities),
+      });
+      const receipt = await publishOperatorPassthroughForTarget(mock.env,
+        { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+      assert.equal(receipt.status, 'unavailable');
+      assert.equal(receipt.errorCode, 'service_configuration_unavailable');
+      assert.equal(receipt.mergeEligible, false);
+      assert.equal(mock.requests.length, 0);
+      assert.equal(mock.counts.creates, 0);
+    }
   });
 
   it('fails closed when the dedicated public self-review App binding is missing', async () => {

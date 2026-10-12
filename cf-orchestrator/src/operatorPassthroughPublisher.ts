@@ -250,8 +250,7 @@ function parseTarget(input: OperatorPassthroughTarget): OperatorPassthroughTarge
   return { owner: input.owner, repo: input.repo, prNumber: input.prNumber };
 }
 
-function parseRepositoryIdentities(env: Env): RepositoryIdentity[] {
-  const raw = env.OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES;
+function parseRepositoryIdentityManifest(raw: unknown): RepositoryIdentity[] {
   if (typeof raw !== 'string' || raw.length === 0 || new TextEncoder().encode(raw).byteLength > 8_192) {
     unavailable('service_configuration_unavailable');
   }
@@ -277,6 +276,25 @@ function parseRepositoryIdentities(env: Env): RepositoryIdentity[] {
     identities.push(identity);
   }
   return identities;
+}
+
+function parseRepositoryIdentities(env: Env): RepositoryIdentity[] {
+  const identities = parseRepositoryIdentityManifest(env.OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES);
+  const privateRaw = env.OPERATOR_PASSTHROUGH_PRIVATE_REPOSITORY_IDENTITIES;
+  if (privateRaw === undefined) return identities;
+
+  const privateIdentities = parseRepositoryIdentityManifest(privateRaw);
+  if (identities.length + privateIdentities.length > 100) unavailable('service_configuration_unavailable');
+
+  const ids = new Set(identities.map(({ repositoryId }) => repositoryId));
+  const names = new Set(identities.map(({ owner, repo }) => `${owner}/${repo}`.toLowerCase()));
+  for (const identity of privateIdentities) {
+    const name = `${identity.owner}/${identity.repo}`.toLowerCase();
+    if (ids.has(identity.repositoryId) || names.has(name)) unavailable('service_configuration_unavailable');
+    ids.add(identity.repositoryId);
+    names.add(name);
+  }
+  return [...identities, ...privateIdentities];
 }
 
 function parsePolicySource(env: Env): OperatorPassthroughPolicySource {
