@@ -88,6 +88,8 @@ export interface Env {
   REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY?: string;
   /** Service-owned exact repository identity manifest for paused publication. */
   OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES?: string;
+  /** Optional Cloudflare Worker secret-text manifest for additional exact paused-publication identities. */
+  OPERATOR_PASSTHROUGH_PRIVATE_REPOSITORY_IDENTITIES?: string;
   /** Service-owned central protected policy source used for paused publication. */
   OPERATOR_PASSTHROUGH_POLICY_SOURCE?: string;
   REVIEW_YETI_MCP_AUTH_TOKEN?: string;
