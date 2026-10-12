@@ -20,6 +20,7 @@ describe('service-owned paused publication enrollment', () => {
       'calltelemetry/company-news-mcp:1412107639',
       'calltelemetry/ct-infrastructure:1355159090',
       'calltelemetry/ct-meta:1232078607',
+      'calltelemetry/ct-uat:1185419805',
       'review-yeti-ai/review-yeti-bot:1326169548',
     ]);
 
