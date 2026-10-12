@@ -6,7 +6,7 @@ import { AUTHORITATIVE_REVIEW_APP_ID, PUBLIC_REVIEW_APP_ID, PUBLIC_REVIEW_REPOSI
   PUBLIC_REVIEW_REPOSITORY_ID, reviewAppIdForRepository } from '../src/reviewAppAuthority.js';
 
 describe('service-owned paused publication enrollment', () => {
-  it('pins only the four current RHEL task repositories and the Review Yeti source repo by numeric identity', async () => {
+  it('pins only the enrolled operator-passthrough repositories by numeric identity', async () => {
     const wrangler = await readFile(resolve(process.cwd(), 'wrangler.toml'), { encoding: 'utf8' });
     const identitiesMatch = wrangler.match(/^OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES\s*=\s*'([^']+)'\s*$/mu);
     const policyMatch = wrangler.match(/^OPERATOR_PASSTHROUGH_POLICY_SOURCE\s*=\s*'([^']+)'\s*$/mu);
@@ -17,6 +17,7 @@ describe('service-owned paused publication enrollment', () => {
     const normalized = identities.map(({ repositoryId, owner, repo }) => `${owner}/${repo}:${repositoryId}`).sort();
     assert.deepEqual(normalized, [
       'calltelemetry/ai-workspace:1131452104',
+      'calltelemetry/company-news-mcp:1412107639',
       'calltelemetry/ct-infrastructure:1355159090',
       'calltelemetry/ct-meta:1232078607',
       'review-yeti-ai/review-yeti-bot:1326169548',
