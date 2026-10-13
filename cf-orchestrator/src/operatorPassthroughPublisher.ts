@@ -11,6 +11,9 @@ import {
 } from './github/index.js';
 import type {
   OperatorPassthroughCheckReceipt,
+  OperatorPassthroughDiagnostic,
+  OperatorPassthroughDiagnosticCategory,
+  OperatorPassthroughDiagnosticStage,
   OperatorPassthroughIdentity,
   OperatorPassthroughPolicyIdentity,
   OperatorPassthroughPolicySource,
@@ -75,11 +78,13 @@ type ErrorCode =
   | 'deadline_exceeded';
 
 class PassthroughUnavailable extends Error {
-  constructor(readonly code: ErrorCode) {
+  constructor(readonly code: ErrorCode, readonly diagnostic?: PassthroughDiagnosticObservation) {
     super(code);
     this.name = 'PassthroughUnavailable';
   }
 }
+
+type PassthroughDiagnosticObservation = Omit<OperatorPassthroughDiagnostic, 'claimState' | 'observedAt'>;
 
 export interface OperatorPassthroughOptions {
   /** Test seam. Production callers use the Edge fetch implementation. */
@@ -125,8 +130,32 @@ interface DeadlineContext {
   dispose(): void;
 }
 
-function unavailable(code: ErrorCode): never {
-  throw new PassthroughUnavailable(code);
+function unavailable(code: ErrorCode, diagnostic?: PassthroughDiagnosticObservation): never {
+  throw new PassthroughUnavailable(code, diagnostic);
+}
+
+function httpReadFailureCategory(status: number): OperatorPassthroughDiagnosticCategory {
+  if (status === 401 || status === 403) return 'auth_failure';
+  if (status === 429) return 'rate_limited';
+  if (status === 408 || status === 504) return 'timeout';
+  return 'existing_check_read_failure';
+}
+
+function checkReadDiagnostic(stage: OperatorPassthroughDiagnosticStage, identity: OperatorPassthroughIdentity,
+  checkId: number | null, category: OperatorPassthroughDiagnosticCategory,
+  httpStatus: number | null = null, observedAppId: number | null = null,
+  externalCheckPresent?: boolean): PassthroughDiagnosticObservation {
+  return { category, stage, httpStatus, checkId, expectedAppId: identity.appId, observedAppId,
+    ...(externalCheckPresent === undefined ? {} : { externalCheckPresent }) };
+}
+
+function checkReadError(error: unknown, identity: OperatorPassthroughIdentity,
+  stage: OperatorPassthroughDiagnosticStage, checkId: number | null): PassthroughUnavailable {
+  const timeout = error instanceof PassthroughUnavailable && error.code === 'deadline_exceeded'
+    || error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+  const code = error instanceof PassthroughUnavailable ? error.code : 'check_readback_unavailable';
+  return new PassthroughUnavailable(code, checkReadDiagnostic(stage, identity, checkId,
+    timeout ? 'timeout' : 'existing_check_read_failure'));
 }
 
 function safeName(value: unknown): value is string {
@@ -633,26 +662,42 @@ function checkIdentityMatches(
   auditDigest: string
 ): PublishedCheck {
   const name = checkName(stage);
-  if (!isRecord(check) || !Number.isSafeInteger(Number(check.id)) || Number(check.id) <= 0
-    || Number(check.app?.id) !== identity.appId || check.name !== name || check.external_id !== externalId
-    || String(check.head_sha || '').toLowerCase() !== identity.headSha
-    || !isRecord(check.output) || typeof check.output.title !== 'string' || typeof check.output.summary !== 'string') {
-    unavailable('check_identity_unverified');
+  const observedAppId = Number.isSafeInteger(Number(check?.app?.id)) && Number(check.app.id) > 0
+    ? Number(check.app.id) : null;
+  const checkId = Number.isSafeInteger(Number(check?.id)) && Number(check.id) > 0 ? Number(check.id) : null;
+  if (!isRecord(check) || checkId === null || observedAppId === null) {
+    unavailable('check_identity_unverified', checkReadDiagnostic(stage, identity, checkId,
+      'identity_unverified', null, observedAppId));
+  }
+  if (observedAppId !== identity.appId || check.name !== name || check.external_id !== externalId
+    || String(check.head_sha || '').toLowerCase() !== identity.headSha) {
+    unavailable('check_identity_unverified', checkReadDiagnostic(stage, identity, checkId,
+      'identity_mismatch', null, observedAppId));
+  }
+  if (!isRecord(check.output) || typeof check.output.title !== 'string' || typeof check.output.summary !== 'string') {
+    unavailable('check_summary_unverified', checkReadDiagnostic(stage, identity, checkId,
+      'summary_mismatch', null, observedAppId));
   }
   const summaryText = check.output.summary as string;
   const annotationsCount = check.output.annotations_count;
   if (!Number.isSafeInteger(annotationsCount) || annotationsCount < 0 || annotationsCount > 0) {
-    unavailable('check_summary_unverified');
+    unavailable('check_summary_unverified', checkReadDiagnostic(stage, identity, Number(check.id), 'summary_mismatch'));
   }
   if (!summaryText.includes(SUMMARY_SENTENCE) || !summaryText.includes(`Current policy digest: ${identity.policyDigest}`)
     || !summaryText.includes(`Head: ${identity.headSha}`) || !summaryText.includes(`Base: ${identity.baseSha}`)) {
-    unavailable('check_summary_unverified');
+    unavailable('check_summary_unverified', checkReadDiagnostic(stage, identity, Number(check.id), 'summary_mismatch'));
   }
-  if (auditDigest && !summaryText.includes(`Audit digest: ${auditDigest}`)) unavailable('check_summary_unverified');
+  if (auditDigest && !summaryText.includes(`Audit digest: ${auditDigest}`)) {
+    unavailable('check_summary_unverified', checkReadDiagnostic(stage, identity, Number(check.id), 'summary_mismatch'));
+  }
   const status = check.status;
   const conclusion = check.conclusion;
-  if (status !== 'in_progress' && status !== 'completed') unavailable('check_identity_unverified');
-  if (status === 'completed' && conclusion !== 'success' && conclusion !== 'failure') unavailable('check_identity_unverified');
+  if (status !== 'in_progress' && status !== 'completed') {
+    unavailable('check_identity_unverified', checkReadDiagnostic(stage, identity, Number(check.id), 'identity_mismatch'));
+  }
+  if (status === 'completed' && conclusion !== 'success' && conclusion !== 'failure') {
+    unavailable('check_identity_unverified', checkReadDiagnostic(stage, identity, Number(check.id), 'identity_mismatch'));
+  }
   return {
     id: Number(check.id),
     appId: Number(check.app.id),
@@ -694,27 +739,54 @@ function githubHeaders(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'review-yeti-cf-orchestrator' };
 }
 
+interface CheckReadDiagnosticScope {
+  stage: OperatorPassthroughDiagnosticStage;
+  checkId?: number | null;
+}
+
 async function listChecks(
   identity: OperatorPassthroughIdentity,
   token: string,
-  context: DeadlineContext
+  context: DeadlineContext,
+  diagnosticScope?: CheckReadDiagnosticScope
 ): Promise<any[]> {
   const all: any[] = [];
   for (let page = 1; page <= 20; page += 1) {
     const url = `https://api.github.com/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}`
       + `/commits/${encodeURIComponent(identity.headSha)}/check-runs?filter=all&per_page=100&page=${page}`;
-    const response = await context.fetch(url, { headers: githubHeaders(token) });
-    if (!response.ok) unavailable('check_readback_unavailable');
-    const payload = await context.run(() => response.json()) as any;
-    if (!Array.isArray(payload?.check_runs) || !Number.isSafeInteger(payload.total_count)) unavailable('check_readback_unavailable');
+    let response: Response;
+    try { response = await context.fetch(url, { headers: githubHeaders(token) }); }
+    catch (error) {
+      if (!diagnosticScope) throw error;
+      throw checkReadError(error, identity, diagnosticScope.stage, diagnosticScope.checkId ?? null);
+    }
+    if (!response.ok) unavailable('check_readback_unavailable', diagnosticScope
+      ? checkReadDiagnostic(diagnosticScope.stage, identity, diagnosticScope.checkId ?? null,
+        httpReadFailureCategory(response.status), response.status)
+      : undefined);
+    let payload: any;
+    try { payload = await context.run(() => response.json()); }
+    catch (error) {
+      if (!diagnosticScope) throw error;
+      throw checkReadError(error, identity, diagnosticScope.stage, diagnosticScope.checkId ?? null);
+    }
+    if (!Array.isArray(payload?.check_runs) || !Number.isSafeInteger(payload.total_count)) {
+      unavailable('check_readback_unavailable', diagnosticScope
+        ? checkReadDiagnostic(diagnosticScope.stage, identity, diagnosticScope.checkId ?? null, 'existing_check_read_failure')
+        : undefined);
+    }
     all.push(...payload.check_runs);
     const next = response.headers.get('Link')?.includes('rel="next"') === true;
     if (!next) {
-      if (payload.total_count > all.length) unavailable('check_readback_unavailable');
+      if (payload.total_count > all.length) unavailable('check_readback_unavailable', diagnosticScope
+        ? checkReadDiagnostic(diagnosticScope.stage, identity, diagnosticScope.checkId ?? null, 'existing_check_read_failure')
+        : undefined);
       return all;
     }
   }
-  unavailable('check_readback_unavailable');
+  unavailable('check_readback_unavailable', diagnosticScope
+    ? checkReadDiagnostic(diagnosticScope.stage, identity, diagnosticScope.checkId ?? null, 'existing_check_read_failure')
+    : undefined);
 }
 
 function findCheckByExternalId(
@@ -726,7 +798,9 @@ function findCheckByExternalId(
 ): PublishedCheck | null {
   const matching = checks.filter((check) => check?.external_id === externalId);
   if (matching.length === 0) return null;
-  if (matching.length !== 1) unavailable('check_identity_unverified');
+  if (matching.length !== 1) unavailable('check_identity_unverified', checkReadDiagnostic(stage, identity,
+    Number.isSafeInteger(Number(matching[0]?.id)) ? Number(matching[0].id) : null,
+    'identity_ambiguous', null, Number.isSafeInteger(Number(matching[0]?.app?.id)) ? Number(matching[0].app.id) : null));
   return checkIdentityMatches(matching[0], stage, identity, externalId, auditDigest);
 }
 
@@ -737,13 +811,29 @@ async function getCheckById(
   externalId: string,
   auditDigest: string,
   token: string,
-  context: DeadlineContext
+  context: DeadlineContext,
+  diagnosticReadOnly = false
 ): Promise<PublishedCheck> {
-  const response = await context.fetch(`https://api.github.com/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/check-runs/${id}`, {
-    headers: githubHeaders(token),
-  });
-  if (!response.ok) unavailable('check_readback_unavailable');
-  const check = await context.run(() => response.json());
+  const diagnosticScope = diagnosticReadOnly ? { stage, checkId: id } : undefined;
+  let response: Response;
+  try {
+    response = await context.fetch(`https://api.github.com/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/check-runs/${id}`, {
+      headers: githubHeaders(token),
+    });
+  } catch (error) {
+    if (!diagnosticScope) throw error;
+    throw checkReadError(error, identity, stage, id);
+  }
+  if (!response.ok) unavailable('check_readback_unavailable', diagnosticScope
+    ? checkReadDiagnostic(stage, identity, id, response.status === 404 ? 'missing_check' : httpReadFailureCategory(response.status),
+      response.status)
+    : undefined);
+  let check: unknown;
+  try { check = await context.run(() => response.json()); }
+  catch (error) {
+    if (!diagnosticScope) throw error;
+    throw checkReadError(error, identity, stage, id);
+  }
   return checkIdentityMatches(check, stage, identity, externalId, auditDigest);
 }
 
@@ -944,23 +1034,45 @@ async function verifyCheckPair(
   reviewCheckId: number,
   gateCheckId: number,
   token: string,
-  context: DeadlineContext
+  context: DeadlineContext,
+  diagnosticReadOnly = false
 ): Promise<{ worker: PublishedCheck; gate: PublishedCheck }> {
   const external = await externalIds(identity, runId);
-  const listed = await listChecks(identity, token, context);
+  const listed = await listChecks(identity, token, context,
+    diagnosticReadOnly ? { stage: 'pair' } : undefined);
   const workerByExternal = findCheckByExternalId(listed, 'review', identity, external.worker, auditDigest);
   const gateByExternal = findCheckByExternalId(listed, 'gate', identity, external.gate, auditDigest);
-  if (!workerByExternal || !gateByExternal || workerByExternal.id !== reviewCheckId || gateByExternal.id !== gateCheckId) {
-    unavailable('check_readback_unavailable');
+  if (!workerByExternal) unavailable('check_readback_unavailable', checkReadDiagnostic('review', identity,
+    reviewCheckId, 'missing_check', null, null, false));
+  if (!gateByExternal) unavailable('check_readback_unavailable', checkReadDiagnostic('gate', identity,
+    gateCheckId, 'missing_check', null, null, false));
+  if (workerByExternal.id !== reviewCheckId || gateByExternal.id !== gateCheckId) {
+    const stage = workerByExternal.id !== reviewCheckId ? 'review' : 'gate';
+    const observed = stage === 'review' ? workerByExternal : gateByExternal;
+    unavailable('check_readback_unavailable', checkReadDiagnostic(stage, identity, observed.id,
+      'identity_mismatch', null, observed.appId, true));
   }
-  const worker = await getCheckById(reviewCheckId, 'review', identity, external.worker, auditDigest, token, context);
-  const gate = await getCheckById(gateCheckId, 'gate', identity, external.gate, auditDigest, token, context);
+  const worker = await getCheckById(reviewCheckId, 'review', identity, external.worker, auditDigest, token, context,
+    diagnosticReadOnly);
+  const gate = await getCheckById(gateCheckId, 'gate', identity, external.gate, auditDigest, token, context,
+    diagnosticReadOnly);
   if (worker.status !== 'completed' || worker.conclusion !== 'success'
     || gate.status !== 'completed' || gate.conclusion !== 'success'
     || worker.annotationsCount !== 0 || gate.annotationsCount !== 0
-    || worker.title !== REVIEW_TITLE || gate.title !== GATE_TITLE) unavailable('check_readback_unavailable');
+    || worker.title !== REVIEW_TITLE || gate.title !== GATE_TITLE) {
+    const stage = worker.status !== 'completed' || worker.conclusion !== 'success'
+      || worker.annotationsCount !== 0 || worker.title !== REVIEW_TITLE ? 'review' : 'gate';
+    const checkId = stage === 'review' ? worker.id : gate.id;
+    unavailable('check_readback_unavailable', checkReadDiagnostic(stage, identity, checkId, 'receipt_incomplete', null,
+      stage === 'review' ? worker.appId : gate.appId, true));
+  }
   const expectedSummary = checkSummary(identity, runId, publicationId, auditDigest);
-  if (worker.summary !== expectedSummary || gate.summary !== expectedSummary) unavailable('check_summary_unverified');
+  if (worker.summary !== expectedSummary || gate.summary !== expectedSummary) {
+    const stage = worker.summary !== expectedSummary ? 'review' : 'gate';
+    const check = stage === 'review' ? worker : gate;
+    unavailable('check_summary_unverified', checkReadDiagnostic(stage, identity, check.id,
+      'summary_mismatch', null, check.appId, true));
+  }
   return { worker, gate };
 }
 
@@ -1308,11 +1420,65 @@ async function makeSuccessReceipt(
   };
 }
 
+function withReadDiagnostic(receipt: OperatorPassthroughReceipt | null, state: OperatorPassthroughState,
+  observation: PassthroughDiagnosticObservation): OperatorPassthroughReceipt | null {
+  if (!receipt) return null;
+  const claimState = observation.stage === 'review' || observation.stage === 'gate'
+    ? state.stages[observation.stage]?.creationState ?? null : null;
+  const diagnostic: OperatorPassthroughDiagnostic = {
+    ...observation,
+    claimState,
+    observedAt: new Date().toISOString(),
+  };
+  return { ...receipt, diagnostic };
+}
+
+async function diagnoseIncompletePublication(
+  resolved: Awaited<ReturnType<typeof resolveIdentity>>,
+  state: OperatorPassthroughState,
+  receipt: OperatorPassthroughReceipt | null,
+  context: DeadlineContext
+): Promise<PassthroughDiagnosticObservation> {
+  const external = await externalIds(resolved.identity, resolved.runId);
+  for (const stage of ['review', 'gate'] as const) {
+    const stageState = state.stages[stage];
+    if (stageState.creationState !== 'creating' || stageState.checkId !== null) continue;
+    try {
+      const listed = await listChecks(resolved.identity, resolved.token, context, { stage });
+      const externalId = stage === 'review' ? external.worker : external.gate;
+      const matching = listed.filter((check) => check?.external_id === externalId);
+      if (matching.length === 0) {
+        return checkReadDiagnostic(stage, resolved.identity, null, 'creating_check_absent', null, null, false);
+      }
+      if (matching.length > 1) {
+        const observedAppId = Number.isSafeInteger(Number(matching[0]?.app?.id))
+          ? Number(matching[0].app.id) : null;
+        const checkId = Number.isSafeInteger(Number(matching[0]?.id)) ? Number(matching[0].id) : null;
+        return checkReadDiagnostic(stage, resolved.identity, checkId, 'identity_ambiguous', null, observedAppId, true);
+      }
+      const check = checkIdentityMatches(matching[0], stage, resolved.identity, externalId, receipt?.auditDigest || '');
+      return checkReadDiagnostic(stage, resolved.identity, check.id, 'creating_check_unbound', null, check.appId, true);
+    } catch (error) {
+      if (error instanceof PassthroughUnavailable && error.diagnostic) return error.diagnostic;
+      return checkReadDiagnostic(stage, resolved.identity, null,
+        error instanceof PassthroughUnavailable && error.code === 'deadline_exceeded' ? 'timeout' : 'existing_check_read_failure');
+    }
+  }
+
+  const missingStage = !receipt?.workerCheckId ? 'review' : !receipt.gateCheckId ? 'gate' : null;
+  if (missingStage) {
+    return checkReadDiagnostic(missingStage, resolved.identity, state.stages[missingStage].checkId,
+      'missing_check', null, null);
+  }
+  return checkReadDiagnostic('receipt', resolved.identity, null, 'receipt_incomplete');
+}
+
 async function readPublishedWithContext(
   env: Env,
   resolved: Awaited<ReturnType<typeof resolveIdentity>>,
   context: DeadlineContext,
-  expected?: Partial<Pick<CurrentCandidate, 'headSha' | 'baseSha'>>
+  expected?: Partial<Pick<CurrentCandidate, 'headSha' | 'baseSha'>>,
+  readOnlyDiagnostic = false
 ): Promise<OperatorPassthroughResult> {
   verifyExpectedCandidate(resolved.candidate, expected);
   const durable = await readDurableState(env, resolved.runId, context);
@@ -1328,11 +1494,26 @@ async function readPublishedWithContext(
   if (!receipt || receipt.status !== 'succeeded' || !receipt.mergeEligible || receipt.publicationState !== 'published'
     || receipt.appId !== resolved.identity.appId || receipt.policyDigest !== resolved.identity.policyDigest
     || receipt.auditDigest === null || receipt.workerCheckId === null || receipt.gateCheckId === null) {
-    return failureReceipt(resolved.identity, resolved.runId, resolved.publicationId,
+    const failed = failureReceipt(resolved.identity, resolved.runId, resolved.publicationId,
       'check_readback_unavailable', state, true)!;
+    if (!readOnlyDiagnostic) return failed;
+    const observation = await diagnoseIncompletePublication(resolved, state, receipt, context);
+    return withReadDiagnostic(failed, state, observation)!;
   }
-  const pair = await verifyCheckPair(resolved.identity, resolved.runId, resolved.publicationId, receipt.auditDigest,
-    receipt.workerCheckId, receipt.gateCheckId, resolved.token, context);
+  let pair: { worker: PublishedCheck; gate: PublishedCheck };
+  try {
+    pair = await verifyCheckPair(resolved.identity, resolved.runId, resolved.publicationId, receipt.auditDigest,
+      receipt.workerCheckId, receipt.gateCheckId, resolved.token, context, readOnlyDiagnostic);
+  } catch (error) {
+    if (!readOnlyDiagnostic) throw error;
+    const observation = error instanceof PassthroughUnavailable && error.diagnostic
+      ? error.diagnostic
+      : checkReadDiagnostic('pair', resolved.identity, null,
+        error instanceof PassthroughUnavailable && error.code === 'deadline_exceeded' ? 'timeout' : 'existing_check_read_failure');
+    const code = error instanceof PassthroughUnavailable ? error.code : 'check_readback_unavailable';
+    return withReadDiagnostic(failureReceipt(resolved.identity, resolved.runId, resolved.publicationId,
+      code, state, true), state, observation)!;
+  }
   if (!await currentCoordinatesStillMatch(env, resolved.candidate, resolved.identity, resolved.token,
     resolved.policyToken, resolved.source, context)) {
     return failureReceipt(resolved.identity, resolved.runId, resolved.publicationId, 'current_candidate_changed', state, true)!;
@@ -1430,7 +1611,7 @@ async function readForTargetWithContext(
 ): Promise<OperatorPassthroughResult> {
   try {
     const resolved = await resolveIdentity(env, parseTarget(target), context);
-    return await readPublishedWithContext(env, resolved, context, expected);
+    return await readPublishedWithContext(env, resolved, context, expected, true);
   } catch (error) {
     const errorCode: ErrorCode = error instanceof PassthroughUnavailable ? error.code : 'authoritative_read_unavailable';
     return responseFromReceipt(null, errorCode);

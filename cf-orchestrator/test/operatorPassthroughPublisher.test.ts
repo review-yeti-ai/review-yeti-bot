@@ -48,6 +48,8 @@ interface GithubMockOptions {
   privateRepositoryIdentities?: string;
   wrongAppOnCreate?: boolean;
   wrongRepositoryId?: boolean;
+  failCheckCreateStatus?: number;
+  checkReadFailureStatus?: number;
   failFirstGatePatch?: boolean;
   failSuccessReadback?: boolean;
   changeHeadOnSecondRead?: boolean;
@@ -97,6 +99,7 @@ function createTestEnv(options: GithubMockOptions = {}) {
   let repositoryRead = 0;
   let policyRead = 0;
   let currentPolicySha: string | undefined;
+  let checkReadFailureStatus = options.checkReadFailureStatus;
   let gatePatchFailed = false;
   let cancelIssued = false;
   let cancelOnReviewRead = options.cancelOnReviewRead;
@@ -257,6 +260,9 @@ function createTestEnv(options: GithubMockOptions = {}) {
     }
     if (method === 'POST' && path === `/repos/${target.owner}/${target.repo}/check-runs`) {
       counts.creates += 1;
+      if (options.failCheckCreateStatus) {
+        return jsonResponse({ message: 'private diagnostic' }, options.failCheckCreateStatus);
+      }
       const body = JSON.parse(String(init.body || '{}'));
       const check: MockCheck = {
         id: nextCheckId++,
@@ -279,6 +285,9 @@ function createTestEnv(options: GithubMockOptions = {}) {
 
     const checkMatch = path.match(new RegExp(`^/repos/${target.owner}/${target.repo}/check-runs/(\\d+)$`, 'u'));
     if (checkMatch && method === 'GET') {
+      if (checkReadFailureStatus) {
+        return jsonResponse({ message: 'private diagnostic' }, checkReadFailureStatus);
+      }
       const check = checks.get(Number(checkMatch[1]));
       return check ? jsonResponse(check) : jsonResponse({ message: 'Not Found' }, 404);
     }
@@ -308,6 +317,7 @@ function createTestEnv(options: GithubMockOptions = {}) {
     env, fetchFn, checks, publications, counts, requests, reviewHistory,
     setPrivateOnRepositoryRead: (read: number | undefined) => { privateOnRead = read; },
     setPolicySha: (sha: string | undefined) => { currentPolicySha = sha; },
+    setCheckReadFailureStatus: (status: number | undefined) => { checkReadFailureStatus = status; },
     cancelOnNextReviewRead: () => { cancelOnReviewRead = counts.reviewReads + 1; },
   };
 }
@@ -833,6 +843,117 @@ describe('Edge operator passthrough publication', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('reports an exact missing check in read-only run diagnostics', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+    assert.equal(receipt.status, 'succeeded');
+    assert.ok(receipt.runId);
+    assert.ok(receipt.workerCheckId);
+    mock.checks.delete(receipt.workerCheckId!);
+    const createsBeforeRead = mock.counts.creates;
+    const patchesBeforeRead = mock.counts.patches;
+
+    const status = await readOperatorPassthroughByRunId(mock.env, receipt.runId!, { fetchFn: mock.fetchFn });
+    const diagnostic = (status as any)?.diagnostic;
+    assert.equal(diagnostic?.category, 'missing_check');
+    assert.equal(diagnostic?.stage, 'review');
+    assert.equal(diagnostic?.claimState, 'created');
+    assert.equal(diagnostic?.checkId, receipt.workerCheckId);
+    assert.equal(diagnostic?.externalCheckPresent, false);
+    assert.match(diagnostic?.observedAt, /^\d{4}-\d{2}-\d{2}T/u);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = mock.fetchFn;
+    try {
+      const result = await queryActiveJobsTool.execute({ runId: receipt.runId }, { env: mock.env } as any);
+      const body = result.content?.find((item: any) => item.text?.startsWith('{'));
+      assert.ok(body);
+      const report = JSON.parse((body as any).text);
+      assert.equal(report.operatorPassthrough.diagnostic.category, 'missing_check');
+      assert.equal(report.operatorPassthrough.diagnostic.stage, 'review');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.equal(mock.counts.creates, createsBeforeRead);
+    assert.equal(mock.counts.patches, patchesBeforeRead);
+  });
+
+  it('classifies exact-check HTTP failures without exposing response bodies', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+    assert.equal(receipt.status, 'succeeded');
+    const createsBeforeRead = mock.counts.creates;
+    const patchesBeforeRead = mock.counts.patches;
+
+    for (const [httpStatus, category] of [
+      [403, 'auth_failure'], [429, 'rate_limited'], [504, 'timeout'], [404, 'missing_check'],
+      [500, 'existing_check_read_failure'],
+    ] as const) {
+      mock.setCheckReadFailureStatus(httpStatus);
+      const status = await readOperatorPassthroughByRunId(mock.env, receipt.runId!, { fetchFn: mock.fetchFn });
+      const diagnostic = (status as any)?.diagnostic;
+      assert.equal(diagnostic?.category, category);
+      assert.equal(diagnostic?.httpStatus, httpStatus);
+      assert.equal(diagnostic?.stage, 'review');
+      assert.equal(diagnostic?.checkId, receipt.workerCheckId);
+      if (httpStatus === 404) assert.equal(diagnostic?.externalCheckPresent, undefined);
+      assert.equal(JSON.stringify(diagnostic).includes('private diagnostic'), false);
+    }
+    assert.equal(mock.counts.creates, createsBeforeRead);
+    assert.equal(mock.counts.patches, patchesBeforeRead);
+  });
+
+  it('reports expected and observed App IDs for an exact-check identity mismatch', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+    assert.equal(receipt.status, 'succeeded');
+    const check = mock.checks.get(receipt.workerCheckId!)!;
+    check.app.id = 999999;
+
+    const status = await readOperatorPassthroughByRunId(mock.env, receipt.runId!, { fetchFn: mock.fetchFn });
+    const diagnostic = (status as any)?.diagnostic;
+    assert.equal(diagnostic?.category, 'identity_mismatch');
+    assert.equal(diagnostic?.stage, 'review');
+    assert.equal(diagnostic?.checkId, receipt.workerCheckId);
+    assert.equal(diagnostic?.expectedAppId, 4552718);
+    assert.equal(diagnostic?.observedAppId, 999999);
+
+    check.app.id = 4552718;
+    const output = check.output as Partial<MockCheck['output']>;
+    delete output.summary;
+    const summaryStatus = await readOperatorPassthroughByRunId(mock.env, receipt.runId!, { fetchFn: mock.fetchFn });
+    const summaryDiagnostic = (summaryStatus as any)?.diagnostic;
+    assert.equal(summaryDiagnostic?.category, 'summary_mismatch');
+    assert.equal(summaryDiagnostic?.stage, 'review');
+    assert.equal(summaryDiagnostic?.checkId, receipt.workerCheckId);
+  });
+
+  it('reports a creating claim with no matching check as a read-only observation', async () => {
+    const mock = createTestEnv({ failCheckCreateStatus: 503 });
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+    assert.equal(receipt.status, 'unavailable');
+    assert.ok(receipt.runId);
+    const createsBeforeRead = mock.counts.creates;
+    const patchesBeforeRead = mock.counts.patches;
+
+    const status = await readOperatorPassthroughByRunId(mock.env, receipt.runId!, { fetchFn: mock.fetchFn });
+    const diagnostic = (status as any)?.diagnostic;
+    assert.equal(diagnostic?.category, 'creating_check_absent');
+    assert.equal(diagnostic?.stage, 'review');
+    assert.equal(diagnostic?.claimState, 'creating');
+    assert.equal(diagnostic?.checkId, null);
+    assert.equal(diagnostic?.externalCheckPresent, false);
+    assert.equal(mock.counts.creates, createsBeforeRead);
+    assert.equal(mock.counts.patches, patchesBeforeRead);
   });
 
   it('rejects a completed publisher whose real Durable Object is cancelled during status revalidation', async () => {

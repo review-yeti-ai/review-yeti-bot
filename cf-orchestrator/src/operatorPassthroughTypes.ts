@@ -46,11 +46,42 @@ export interface OperatorPassthroughCheckReceipt {
   summary: string;
 }
 
+export type OperatorPassthroughDiagnosticCategory =
+  | 'auth_failure'
+  | 'creating_check_absent'
+  | 'creating_check_unbound'
+  | 'existing_check_read_failure'
+  | 'identity_ambiguous'
+  | 'identity_mismatch'
+  | 'identity_unverified'
+  | 'missing_check'
+  | 'rate_limited'
+  | 'receipt_incomplete'
+  | 'summary_mismatch'
+  | 'timeout';
+
+export type OperatorPassthroughDiagnosticStage = 'review' | 'gate' | 'pair' | 'receipt';
+
+/** Safe, read-only status fields; never contains a provider or GitHub response body. */
+export interface OperatorPassthroughDiagnostic {
+  category: OperatorPassthroughDiagnosticCategory;
+  stage: OperatorPassthroughDiagnosticStage;
+  claimState: OperatorPassthroughStageState['creationState'] | null;
+  observedAt: string;
+  httpStatus: number | null;
+  checkId: number | null;
+  expectedAppId: number | null;
+  observedAppId: number | null;
+  externalCheckPresent?: boolean;
+}
+
 export interface OperatorPassthroughReceipt {
   version: 'OperatorPassthroughReceipt.v2';
   status: 'succeeded' | 'unavailable';
   reason: 'operator_global_passthrough';
   errorCode?: string;
+  /** Added only to read-only status responses; publisher behavior is unchanged. */
+  diagnostic?: OperatorPassthroughDiagnostic;
   runId: string;
   publicationId: string;
   repositoryId: number;
