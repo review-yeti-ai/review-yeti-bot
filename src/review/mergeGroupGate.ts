@@ -37,8 +37,32 @@ const mergeGroupWebhook = z.object({
 const QUEUE_QUERY = 'query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,name:$name){mergeQueue(branch:$branch){id entries(first:100){totalCount nodes{position state baseCommit{oid} headCommit{oid} pullRequest{number state baseRefName headRefOid repository{nameWithOwner}}} pageInfo{hasNextPage}}}}}';
 const QUALIFYING_STATES = new Set(['QUEUED', 'AWAITING_CHECKS', 'LOCKED', 'MERGEABLE']);
 const CHECK_LOOKUP_CONCURRENCY = 5;
-const OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MS = 30_000;
+/** Default ceiling for a constituent's operator SHIP publication to become durable. */
+export const OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MS = 300_000;
+/** The merge-group claim lease is 10 minutes; the wait must finish well inside it. */
+const OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MIN_MS = 1_000;
+const OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MAX_MS = 480_000;
 const OPERATOR_PASSTHROUGH_PUBLICATION_RECHECK_MS = 1_000;
+const OPERATOR_PASSTHROUGH_PUBLICATION_RECHECK_MAX_MS = 10_000;
+
+/**
+ * Parse the optional bounded-wait ceiling. Invalid values fail closed at
+ * startup rather than silently shortening or disabling the wait.
+ */
+export function mergeGroupOperatorWaitMsFromEnv(
+  environment: Readonly<Record<string, string | undefined>>,
+): number | undefined {
+  const raw = environment.REVIEW_YETI_MERGE_GROUP_OPERATOR_WAIT_MS;
+  if (raw === undefined || raw === '') return undefined;
+  const value = Number(raw);
+  if (!/^[1-9][0-9]*$/u.test(raw) || !Number.isSafeInteger(value)
+    || value < OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MIN_MS
+    || value > OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MAX_MS) {
+    throw new Error('REVIEW_YETI_MERGE_GROUP_OPERATOR_WAIT_MS must be an integer between '
+      + `${OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MIN_MS} and ${OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MAX_MS}`);
+  }
+  return value;
+}
 
 type MergeGroupOperatorReceipt = Pick<OperatorPassthroughAdmissionReceipt,
   'publicationId' | 'auditDigest' | 'mergeEligible' | 'publicationState' | 'publicationReceiptAvailable'>;
@@ -78,6 +102,8 @@ export interface MergeGroupGateOptions {
   baseUrl?: string;
   githubClientFor?(token: string): GitHubJsonClient;
   ensureOperatorPassthrough?(input: MergeGroupOperatorAdmission): Promise<MergeGroupOperatorReceipt | null>;
+  /** Gate-wide ceiling for pending operator SHIP publications (default 5 minutes). */
+  operatorPassthroughWaitMs?: number;
 }
 
 async function mapConcurrent<T, U>(items: readonly T[], concurrency: number, operation: (item: T) => Promise<U>): Promise<U[]> {
@@ -220,6 +246,27 @@ function terminalOperatorPassthroughFailure(prNumber: number, receipt: MergeGrou
   return `PR #${prNumber}: operator SHIP publication reached terminal state ${receipt.publicationState}`;
 }
 
+function isOfficialApp(run: any): boolean {
+  return Number(run?.app?.id) === AUTHORITATIVE_REVIEW_APP_ID && run?.app?.slug === AUTHORITATIVE_REVIEW_APP_SLUG;
+}
+
+/** Human-readable state of the expected passthrough pair, for the timeout verdict. */
+function describePassthroughPair(checks: any, head: string,
+  receipt: MergeGroupOperatorReceipt & { publicationId: string; auditDigest: string }): string {
+  const runs: any[] = Array.isArray(checks?.check_runs) ? checks.check_runs : [];
+  const state = (name: string, checkName: typeof REVIEW_WORKER_CHECK_NAME | typeof REVIEW_GATE_CHECK_NAME) => {
+    const expected = deriveOperatorPassthroughExternalId(receipt.publicationId, receipt.auditDigest, checkName);
+    const run = runs.filter((candidate) => candidate?.name === name && isOfficialApp(candidate)
+      && candidate?.head_sha === head && candidate?.external_id === expected)
+      .sort((left, right) => Number(left.id) - Number(right.id)).at(-1);
+    if (!run) return 'missing';
+    return run.status === 'completed' ? String(run.conclusion) : String(run.status);
+  };
+  return ` (publication=pending; passthrough ${AUTHORITATIVE_REVIEW_CHECK_NAME} check: `
+    + `${state(AUTHORITATIVE_REVIEW_CHECK_NAME, REVIEW_WORKER_CHECK_NAME)}; `
+    + `paired ${REVIEW_GATE_CHECK_NAME}: ${state(REVIEW_GATE_CHECK_NAME, REVIEW_GATE_CHECK_NAME)})`;
+}
+
 function exactReviewFailure(checks: any, expectedHead: string,
   operatorReceipt?: MergeGroupOperatorReceipt): string | undefined {
   if (!Number.isSafeInteger(checks?.total_count) || !Array.isArray(checks?.check_runs)
@@ -298,6 +345,11 @@ function exactMergeGroupCheck(value: any, identity: ReturnType<typeof validatePa
 }
 
 export function createMergeGroupGate(options: MergeGroupGateOptions) {
+  const operatorWaitMs = options.operatorPassthroughWaitMs ?? OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MS;
+  if (!Number.isSafeInteger(operatorWaitMs) || operatorWaitMs < 1
+    || operatorWaitMs > OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MAX_MS) {
+    throw new Error('Merge-group operator publication wait is out of range');
+  }
   return async (payload: unknown, delivery?: MergeGroupGateDelivery): Promise<MergeGroupGateState & { constituents: number }> => {
     const identity = validatePayload(payload, options.config);
     const repositoryName = identity.repository.full_name;
@@ -416,6 +468,9 @@ export function createMergeGroupGate(options: MergeGroupGateOptions) {
       }
       const failures: string[] = [];
       const constituentCount = queue.entries.length;
+      // One gate-wide deadline: a queue of pending constituents must not stack
+      // waits past the claim lease.
+      const deadlineAt = performance.now() + operatorWaitMs;
       try {
         const constituentFailures = await mapConcurrent(queue.entries, CHECK_LOOKUP_CONCURRENCY, async (entry) => {
           const head = entry.pullRequest.headRefOid;
@@ -430,23 +485,40 @@ export function createMergeGroupGate(options: MergeGroupGateOptions) {
               prNumber: entry.pullRequest.number, headSha: head, queueSnapshotDigest: digest,
               deliveryId: `github-app:merge-group:${delivery.deliveryId}:${entry.pullRequest.number}:${head}`,
               deliveryDigest: itemDigest };
-            const deadlineAt = performance.now() + OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MS;
             let operatorReceipt = await options.ensureOperatorPassthrough(operatorAdmission);
-            const timeoutMessage = `PR #${entry.pullRequest.number}: operator SHIP publication did not become durable within ${OPERATOR_PASSTHROUGH_PUBLICATION_WAIT_MS}ms`;
-            if (performance.now() >= deadlineAt) return timeoutMessage;
+            const timeoutMessage = (detail = '') => `PR #${entry.pullRequest.number}: operator SHIP publication did not become durable within ${operatorWaitMs}ms${detail}`;
+            if (performance.now() >= deadlineAt) return timeoutMessage();
+            let recheckMs = OPERATOR_PASSTHROUGH_PUBLICATION_RECHECK_MS;
+            let pairDetail = '';
             while (!isDurableOperatorReceipt(operatorReceipt) && isPendingDurableOperatorReceipt(operatorReceipt)) {
               const remainingMs = deadlineAt - performance.now();
-              if (remainingMs <= 0) return timeoutMessage;
-              await new Promise<void>((resolve) => setTimeout(resolve,
-                Math.min(OPERATOR_PASSTHROUGH_PUBLICATION_RECHECK_MS, remainingMs)));
-              if (performance.now() >= deadlineAt) return timeoutMessage;
+              if (remainingMs <= 0) return timeoutMessage(pairDetail);
+              await new Promise<void>((resolve) => setTimeout(resolve, Math.min(recheckMs, remainingMs)));
+              recheckMs = Math.min(recheckMs * 2, OPERATOR_PASSTHROUGH_PUBLICATION_RECHECK_MAX_MS);
+              if (performance.now() >= deadlineAt) return timeoutMessage(pairDetail);
               const pendingSnapshot = await queueRead();
               if (boundSnapshotDigest(pendingSnapshot.snapshot) !== digest) {
                 return `PR #${entry.pullRequest.number}: merge queue changed during operator SHIP publication wait`;
               }
-              if (performance.now() >= deadlineAt) return timeoutMessage;
+              if (performance.now() >= deadlineAt) return timeoutMessage(pairDetail);
               operatorReceipt = await options.ensureOperatorPassthrough(operatorAdmission);
-              if (performance.now() >= deadlineAt) return timeoutMessage;
+              if (performance.now() >= deadlineAt) return timeoutMessage(pairDetail);
+              if (!isPendingDurableOperatorReceipt(operatorReceipt)) continue;
+              // The durable receipt can lag the checks themselves. When the exact
+              // official passthrough pair for this receipt is already on the head
+              // (same publication id and audit digest, both successful), the
+              // publication has happened; otherwise keep waiting and remember what
+              // is missing for the verdict. An unreadable head is not evidence.
+              try {
+                const observed = await client.request(`${api}/commits/${head}/check-runs?filter=all&per_page=100`);
+                const publishedView = { ...operatorReceipt, mergeEligible: true as const,
+                  publicationState: 'published' as const };
+                if (exactReviewFailure(observed, head, publishedView) === undefined) {
+                  operatorReceipt = publishedView;
+                } else {
+                  pairDetail = describePassthroughPair(observed, head, operatorReceipt);
+                }
+              } catch { pairDetail = ' (publication=pending; passthrough check evidence unreadable)'; }
             }
             if (!isDurableOperatorReceipt(operatorReceipt)) {
               return terminalOperatorPassthroughFailure(entry.pullRequest.number, operatorReceipt);
