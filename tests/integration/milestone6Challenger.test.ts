@@ -1,85 +1,21 @@
 import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
-import { EventEmitter } from 'node:events';
-import { IncomingMessage } from 'node:http';
-import { Writable } from 'stream';
+import request from 'supertest';
 import { createApp, providerPool } from '../../src/app';
 import { authService } from '../../src/dashboard/authService';
 
 async function dispatchPost(app: any, path: string, body: any, customHeaders?: Record<string, string>) {
   const session = authService.login('admin', 'admin123');
-  const socket: any = new EventEmitter();
-  socket.readable = true;
-  socket.readableHighWaterMark = 16 * 1024;
-  socket.destroyed = false;
-  socket.destroy = (error?: Error) => {
-    socket.destroyed = true;
-    socket.emit('close', error);
-    return socket;
-  };
-  socket.setTimeout = () => socket;
-  const req: any = new IncomingMessage(socket);
-  req._read = () => {};
-  req.complete = true;
-  req.method = 'POST';
-  req.url = path;
-
   const rawBody = typeof body === 'string' ? body : JSON.stringify(body);
-  const bodyBuffer = Buffer.from(rawBody);
-  req.headers = {
-    'content-type': 'application/json',
-    'content-length': String(bodyBuffer.length),
-    'authorization': `Bearer ${session?.token}`,
-    ...customHeaders,
-  };
-
-  let responseData = '';
-  const res: any = new Writable({
-    write(chunk, _encoding, callback) {
-      if (chunk) responseData += chunk.toString();
-      callback();
-    },
-  });
-  res.statusCode = 200;
-  res.headers = {};
-  res._headers = res.headers;
-  res.setHeader = (k: string, v: string) => {
-    res.headers[k.toLowerCase()] = String(v);
-  };
-  res.getHeader = (k: string) => res.headers[k.toLowerCase()];
-  res.removeHeader = (k: string) => {
-    delete res.headers[k.toLowerCase()];
-  };
-  res.hasHeader = (k: string) => Boolean(res.headers[k.toLowerCase()]);
-  res.status = (code: number) => {
-    res.statusCode = code;
-    return res;
-  };
-  res.json = (data: any) => {
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify(data));
-  };
-
-  return new Promise<{ status: number; body: any }>((resolve) => {
-    const originalEnd = res.end.bind(res);
-    res.end = (chunk?: any, encoding?: any, cb?: any) => {
-      if (chunk && typeof chunk !== 'function') {
-        responseData += chunk.toString();
-      }
-      originalEnd();
-      let parsed = responseData;
-      try {
-        parsed = JSON.parse(responseData);
-      } catch {}
-      resolve({ status: res.statusCode, body: parsed });
-    };
-
-    app(req, res);
-    setImmediate(() => {
-      req.complete = true;
-      req.push(bodyBuffer);
-      req.push(null);
-    });
-  });
+  let pending = request(app).post(path)
+    .set('Authorization', `Bearer ${session?.token}`)
+    .set('Content-Type', 'application/json');
+  for (const [name, value] of Object.entries(customHeaders ?? {})) pending = pending.set(name, value);
+  const response = await pending.send(rawBody);
+  let responseBody: any = response.body;
+  if (responseBody === undefined && response.text) {
+    try { responseBody = JSON.parse(response.text); } catch { responseBody = response.text; }
+  }
+  return { status: response.status, body: responseBody };
 }
 
 describe('Milestone 6 Challenger: Dynamic Provider & Live Router Stress Test Harness', () => {

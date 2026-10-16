@@ -379,7 +379,8 @@ async function scopedInstallationToken(
   owner: string,
   repo: string,
   appId: number,
-  context: DeadlineContext
+  context: DeadlineContext,
+  failureCode: 'app_identity_unavailable' | 'policy_source_unavailable' = 'app_identity_unavailable'
 ): Promise<string> {
   const { privateKey } = requireServiceApp(env, appId);
   const cacheKey = `operator-passthrough-v2:${appId}:${owner.toLowerCase()}/${repo.toLowerCase()}`;
@@ -404,10 +405,10 @@ async function scopedInstallationToken(
   const encodedRepo = encodeURIComponent(repo);
   const installation = await readJson(context,
     `https://api.github.com/repos/${encodedOwner}/${encodedRepo}/installation`, jwt,
-    owner === 'calltelemetry' && repo === 'ct-review-actions' ? 'policy_source_unavailable' : 'app_identity_unavailable');
+    failureCode);
   const installationId = Number(installation?.id);
   if (!Number.isSafeInteger(installationId) || installationId <= 0) {
-    unavailable(owner === 'calltelemetry' && repo === 'ct-review-actions' ? 'policy_source_unavailable' : 'app_identity_unavailable');
+    unavailable(failureCode);
   }
   const tokenResponse = await context.fetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
     method: 'POST',
@@ -419,16 +420,16 @@ async function scopedInstallationToken(
     },
     body: JSON.stringify({ repositories: [repo] }),
   });
-  if (!tokenResponse.ok) unavailable(owner === 'calltelemetry' && repo === 'ct-review-actions' ? 'policy_source_unavailable' : 'app_identity_unavailable');
+  if (!tokenResponse.ok) unavailable(failureCode);
   let tokenData: any;
   try { tokenData = await context.run(() => tokenResponse.json()); }
   catch (error) {
     if (error instanceof PassthroughUnavailable) throw error;
-    unavailable('app_identity_unavailable');
+    unavailable(failureCode);
   }
   const token = tokenData?.token;
   if (typeof token !== 'string' || !token.startsWith('ghs_') || token.startsWith('ghs_dummy_')
-    || token.startsWith('ghs_ephemeral_')) unavailable('app_identity_unavailable');
+    || token.startsWith('ghs_ephemeral_')) unavailable(failureCode);
   if (env.AUTH_CACHE?.put) {
     try { await context.run(() => env.AUTH_CACHE.put(cacheKey, token, { expirationTtl: 3_000 })); }
     catch (error) {
@@ -1243,7 +1244,8 @@ async function resolveIdentity(
   const token = await scopedInstallationToken(env, enrolledByName.owner, enrolledByName.repo, enrolledByName.appId, context);
   const candidate = await currentCandidate(requested, identities, token, context);
   const sourceAppId = reviewAppIdForRepository(source);
-  const policyToken = await scopedInstallationToken(env, source.owner, source.repo, sourceAppId, context);
+  const policyToken = await scopedInstallationToken(env, source.owner, source.repo, sourceAppId, context,
+    'policy_source_unavailable');
   const policy = await currentPolicy(candidate, source, policyToken, context);
   const identity = identityFrom(candidate, policy);
   const derived = await shaIdentity(identity);

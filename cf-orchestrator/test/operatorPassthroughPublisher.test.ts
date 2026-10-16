@@ -18,11 +18,13 @@ import { triggerReviewTool } from '../src/mcp/tools/triggerReview.js';
 import { MockDurableObjectState } from './mockDurableObject.js';
 import { MockContainerRunner } from '../src/runners/containerRunner.js';
 import worker from '../src/worker.js';
+import { PUBLIC_REVIEW_REPOSITORY, PUBLIC_REVIEW_REPOSITORY_ID, reviewAppIdForRepository } from '../src/reviewAppAuthority.js';
 
-const OWNER = 'review-yeti-ai';
-const REPO = 'review-yeti-bot';
-const REPOSITORY_ID = 1326169548;
-const POLICY_REPOSITORY_ID = 1339040553;
+const [OWNER, REPO] = PUBLIC_REVIEW_REPOSITORY.split('/');
+const REPOSITORY_ID = PUBLIC_REVIEW_REPOSITORY_ID;
+const POLICY_OWNER = 'synthetic-policy-owner';
+const POLICY_REPO = 'synthetic-policy-source';
+const POLICY_REPOSITORY_ID = 987654322;
 const HEAD_A = '1'.repeat(40);
 const HEAD_B = '3'.repeat(40);
 const BASE_A = '2'.repeat(40);
@@ -49,6 +51,7 @@ interface GithubMockOptions {
   wrongAppOnCreate?: boolean;
   wrongRepositoryId?: boolean;
   failCheckCreateStatus?: number;
+  failPolicyInstallationStatus?: number;
   checkReadFailureStatus?: number;
   failFirstGatePatch?: boolean;
   failSuccessReadback?: boolean;
@@ -65,14 +68,14 @@ interface GithubMockOptions {
 
 function policyDocument(): string {
   return JSON.stringify({
-    schema: 'calltelemetry.review-policy.v1',
+    schema: 'synthetic-owner.review-policy.v1',
     review_yeti: {
       repository: `${OWNER}/${REPO}`,
       personas: 'architecture,security,documentation',
       budget: { max_investigation_turns: 20 },
     },
     repository_overrides: {
-      'calltelemetry/ct-meta': { severity_policy: 'review-yeti-severity.v2' },
+      'synthetic-owner/synthetic-repository': { severity_policy: 'review-yeti-severity.v2' },
     },
   });
 }
@@ -120,8 +123,8 @@ function createTestEnv(options: GithubMockOptions = {}) {
     }),
     OPERATOR_PASSTHROUGH_POLICY_SOURCE: JSON.stringify({
       repositoryId: POLICY_REPOSITORY_ID,
-      owner: 'calltelemetry',
-      repo: 'ct-review-actions',
+      owner: POLICY_OWNER,
+      repo: POLICY_REPO,
       ref: 'main',
       path: 'policy/review-yeti.json',
     }),
@@ -190,7 +193,11 @@ function createTestEnv(options: GithubMockOptions = {}) {
     }
 
     if (method === 'GET' && path === `/repos/${target.owner}/${target.repo}/installation`) return jsonResponse({ id: 11 });
-    if (method === 'GET' && path === '/repos/calltelemetry/ct-review-actions/installation') return jsonResponse({ id: 22 });
+    if (method === 'GET' && path === `/repos/${POLICY_OWNER}/${POLICY_REPO}/installation`) {
+      return options.failPolicyInstallationStatus
+        ? jsonResponse({ message: 'fixture policy installation unavailable' }, options.failPolicyInstallationStatus)
+        : jsonResponse({ id: 22 });
+    }
     if (method === 'POST' && (path === '/app/installations/11/access_tokens' || path === '/app/installations/22/access_tokens')) {
       const authorization = new Headers(init.headers).get('Authorization') || '';
       const jwtPayload = authorization.startsWith('Bearer ')
@@ -238,16 +245,16 @@ function createTestEnv(options: GithubMockOptions = {}) {
         },
       });
     }
-    if (method === 'GET' && path === '/repos/calltelemetry/ct-review-actions') {
-      return jsonResponse({ id: POLICY_REPOSITORY_ID, full_name: 'calltelemetry/ct-review-actions', default_branch: 'main' });
+    if (method === 'GET' && path === `/repos/${POLICY_OWNER}/${POLICY_REPO}`) {
+      return jsonResponse({ id: POLICY_REPOSITORY_ID, full_name: `${POLICY_OWNER}/${POLICY_REPO}`, default_branch: 'main' });
     }
-    if (method === 'GET' && path === '/repos/calltelemetry/ct-review-actions/commits/main') {
+    if (method === 'GET' && path === `/repos/${POLICY_OWNER}/${POLICY_REPO}/commits/main`) {
       counts.policyReads += 1;
       policyRead += 1;
       const sha = currentPolicySha || (options.changePolicyOnSecondRead && policyRead > 1 ? POLICY_SHA_B : POLICY_SHA_A);
       return jsonResponse({ sha });
     }
-    if (method === 'GET' && path === '/repos/calltelemetry/ct-review-actions/contents/policy/review-yeti.json') {
+    if (method === 'GET' && path === `/repos/${POLICY_OWNER}/${POLICY_REPO}/contents/policy/review-yeti.json`) {
       const content = Buffer.from(policyDocument(), 'utf8').toString('base64');
       return jsonResponse({ path: 'policy/review-yeti.json', encoding: 'base64', content });
     }
@@ -273,8 +280,7 @@ function createTestEnv(options: GithubMockOptions = {}) {
         conclusion: null,
         started_at: new Date().toISOString(),
         app: {
-          id: options.wrongAppOnCreate ? 999999
-            : target.repositoryId === REPOSITORY_ID && target.owner === OWNER && target.repo === REPO ? 4552718 : 4385771,
+          id: options.wrongAppOnCreate ? 999999 : reviewAppIdForRepository(target),
           slug: 'ct-review-bot',
         },
         output: { ...body.output, annotations_count: 0 },
@@ -418,6 +424,18 @@ describe('Edge operator passthrough publication', () => {
     assert.equal(mock.counts.creates, 0);
   });
 
+  it('returns a generic policy-source failure category without echoing configured identities', async () => {
+    const target = { owner: 'synthetic-target-owner', repo: 'synthetic-target', repositoryId: 987654321 };
+    const mock = createTestEnv({ target, failPolicyInstallationStatus: 403 });
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: target.owner, repo: target.repo, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.equal(receipt.status, 'unavailable');
+    assert.equal(receipt.errorCode, 'policy_source_unavailable');
+    assert.doesNotMatch(JSON.stringify(receipt), /synthetic-policy-owner|synthetic-policy-source/u);
+  });
+
   it('publishes for an exact repository identity supplied by the optional private secret binding', async () => {
     const target = { owner: 'fixture-owner', repo: 'enrolled-private-target', repositoryId: 987654321 };
     const mock = createTestEnv({
@@ -451,6 +469,21 @@ describe('Edge operator passthrough publication', () => {
     assert.equal(receipt.mergeEligible, false);
     assert.equal(mock.requests.length, 0);
     assert.equal(mock.counts.creates, 0);
+  });
+
+  it('fails closed when either existing enrollment binding is absent', async () => {
+    for (const binding of ['OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES', 'OPERATOR_PASSTHROUGH_POLICY_SOURCE']) {
+      const mock = createTestEnv();
+      delete (mock.env as any)[binding];
+      const receipt = await publishOperatorPassthroughForTarget(mock.env,
+        { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+      assert.equal(receipt.status, 'unavailable');
+      assert.equal(receipt.errorCode, 'service_configuration_unavailable');
+      assert.equal(receipt.mergeEligible, false);
+      assert.equal(mock.requests.length, 0);
+      assert.equal(mock.counts.creates, 0);
+    }
   });
 
   it('fails closed on malformed, wildcard, empty, or extra-field private identity manifests', async () => {
@@ -547,20 +580,20 @@ describe('Edge operator passthrough publication', () => {
     assert.equal(mock.requests.length, 0);
   });
 
-  it('uses the protected per-repository effective override for ct-meta', async () => {
+  it('uses the protected per-repository effective override for a synthetic target', async () => {
     const mock = createTestEnv({
-      target: { owner: 'calltelemetry', repo: 'ct-meta', repositoryId: 1232078607, prNumber: 4168 },
+      target: { owner: 'synthetic-owner', repo: 'synthetic-repository', repositoryId: 987654323, prNumber: 4168 },
     });
     await configureAppKeys(mock.env);
     const receipt = await publishOperatorPassthroughForTarget(mock.env, {
-      owner: 'calltelemetry', repo: 'ct-meta', prNumber: 4168,
+      owner: 'synthetic-owner', repo: 'synthetic-repository', prNumber: 4168,
     }, { fetchFn: mock.fetchFn });
     assert.equal(receipt.status, 'succeeded');
-    assert.equal(receipt.repositoryId, 1232078607);
+    assert.equal(receipt.repositoryId, 987654323);
     assert.equal(receipt.appId, 4385771);
     assert.ok(mock.counts.appIssuers.every((appId) => appId === 4385771));
-    assert.equal(receipt.policySource.owner, 'calltelemetry');
-    assert.equal(receipt.policySource.repo, 'ct-review-actions');
+    assert.equal(receipt.policySource.owner, POLICY_OWNER);
+    assert.equal(receipt.policySource.repo, POLICY_REPO);
     assert.equal(receipt.policySource.sha, POLICY_SHA_A);
     assert.ok(receipt.policyDigest);
   });

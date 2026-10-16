@@ -5,35 +5,28 @@ import { resolve } from 'node:path';
 import { AUTHORITATIVE_REVIEW_APP_ID, PUBLIC_REVIEW_APP_ID, PUBLIC_REVIEW_REPOSITORY,
   PUBLIC_REVIEW_REPOSITORY_ID, reviewAppIdForRepository } from '../src/reviewAppAuthority.js';
 
-describe('service-owned paused publication enrollment', () => {
-  it('pins only the enrolled operator-passthrough repositories by numeric identity', async () => {
+describe('paused publication enrollment configuration', () => {
+  it('keeps existing binding names without source manifests or Wrangler-required secrets', async () => {
     const wrangler = await readFile(resolve(process.cwd(), 'wrangler.toml'), { encoding: 'utf8' });
-    const identitiesMatch = wrangler.match(/^OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES\s*=\s*'([^']+)'\s*$/mu);
-    const policyMatch = wrangler.match(/^OPERATOR_PASSTHROUGH_POLICY_SOURCE\s*=\s*'([^']+)'\s*$/mu);
-    assert.ok(identitiesMatch, 'missing explicit paused-publication repository identities');
-    assert.ok(policyMatch, 'missing service-owned current policy source');
+    const edgeTypes = await readFile(resolve(process.cwd(), 'src/types.ts'), { encoding: 'utf8' });
+    const publisher = await readFile(resolve(process.cwd(), 'src/operatorPassthroughPublisher.ts'), { encoding: 'utf8' });
 
-    const identities = JSON.parse(identitiesMatch[1]!) as Array<{ repositoryId: number; owner: string; repo: string }>;
-    const normalized = identities.map(({ repositoryId, owner, repo }) => `${owner}/${repo}:${repositoryId}`).sort();
-    assert.deepEqual(normalized, [
-      'calltelemetry/ai-workspace:1131452104',
-      'calltelemetry/company-news-mcp:1412107639',
-      'calltelemetry/ct-infrastructure:1355159090',
-      'calltelemetry/ct-meta:1232078607',
-      'review-yeti-ai/review-yeti-bot:1326169548',
-    ]);
-
-    const policy = JSON.parse(policyMatch[1]!) as Record<string, unknown>;
-    assert.deepEqual(policy, {
-      repositoryId: 1339040553,
-      owner: 'calltelemetry',
-      repo: 'ct-review-actions',
-      ref: 'main',
-      path: 'policy/review-yeti.json',
-    });
+    assert.equal(/^keep_vars\s*=\s*true\s*$/mu.test(wrangler), true);
+    assert.equal(/^\[secrets\]\s*$/mu.test(wrangler), false);
+    assert.equal(/^OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES\s*=/mu.test(wrangler), false,
+      'repository identity manifests must not be checked into Wrangler source');
+    assert.equal(/^OPERATOR_PASSTHROUGH_POLICY_SOURCE\s*=/mu.test(wrangler), false,
+      'policy source manifests must not be checked into Wrangler source');
+    assert.equal(/OPERATOR_PASSTHROUGH_(?:REPOSITORY_IDENTITIES|POLICY_SOURCE)_CONFIG/u.test(edgeTypes), false);
+    assert.equal(/OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES\?: string/u.test(edgeTypes), true);
+    assert.equal(/OPERATOR_PASSTHROUGH_POLICY_SOURCE\?: string/u.test(edgeTypes), true);
+    assert.equal(/OPERATOR_PASSTHROUGH_PRIVATE_REPOSITORY_IDENTITIES\?: string/u.test(edgeTypes), true);
+    assert.equal(/env\.OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES\b/u.test(publisher), true);
+    assert.equal(/env\.OPERATOR_PASSTHROUGH_POLICY_SOURCE\b/u.test(publisher), true);
+    assert.equal(/OPERATOR_PASSTHROUGH_(?:REPOSITORY_IDENTITIES|POLICY_SOURCE)_CONFIG/u.test(publisher), false);
   });
 
-  it('matches the public self-review App identity and secret bindings used by Node authority', async () => {
+  it('uses synthetic enrollment identities while retaining the public self-review App authority', async () => {
     const wrangler = await readFile(resolve(process.cwd(), 'wrangler.toml'), { encoding: 'utf8' });
     const nodeConstants = await readFile(resolve(process.cwd(), '../src/config/repositoryReviewAuthorityConstants.ts'), { encoding: 'utf8' });
     const nodeService = await readFile(resolve(process.cwd(), '../src/auth/authoritativeServiceIdentity.ts'), { encoding: 'utf8' });
@@ -42,22 +35,18 @@ describe('service-owned paused publication enrollment', () => {
     const nodeRepositoryId = Number(nodeConstants.match(/PUBLIC_REVIEW_REPOSITORY_ID\s*=\s*(\d+)/u)?.[1]);
     const nodeRepository = nodeConstants.match(/PUBLIC_REVIEW_REPOSITORY\s*=\s*'([^']+)'/u)?.[1];
     const nodeAuthoritativeAppId = Number(nodeService.match(/AUTHORITATIVE_REVIEW_APP_ID\s*=\s*(\d+)/u)?.[1]);
+    const [owner, repo] = nodeRepository!.split('/');
 
     assert.equal(PUBLIC_REVIEW_APP_ID, nodeAppId);
     assert.equal(PUBLIC_REVIEW_REPOSITORY_ID, nodeRepositoryId);
     assert.equal(PUBLIC_REVIEW_REPOSITORY, nodeRepository);
     assert.equal(AUTHORITATIVE_REVIEW_APP_ID, nodeAuthoritativeAppId);
-    assert.equal(reviewAppIdForRepository({
-      repositoryId: nodeRepositoryId,
-      owner: nodeRepository!.split('/')[0]!,
-      repo: nodeRepository!.split('/')[1]!,
-    }), nodeAppId);
-    assert.equal(reviewAppIdForRepository({ repositoryId: 1232078607, owner: 'calltelemetry', repo: 'ct-meta' }), nodeAuthoritativeAppId);
-    assert.match(wrangler, new RegExp(`^REVIEW_YETI_PUBLIC_TARGET_APP_ID\\s*=\\s*"${nodeAppId}"`, 'mu'));
+    assert.equal(reviewAppIdForRepository({ repositoryId: nodeRepositoryId, owner: owner!, repo: repo! }), nodeAppId);
+    assert.equal(reviewAppIdForRepository({ repositoryId: 987654321, owner: 'synthetic-owner', repo: 'synthetic-repository' }),
+      nodeAuthoritativeAppId);
+    assert.match(wrangler, new RegExp('^REVIEW_YETI_PUBLIC_TARGET_APP_ID\\s*=\\s*"' + nodeAppId + '"', 'mu'));
     assert.match(nodeActionDispatch, /REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY/u);
-    const edgeTypes = await readFile(resolve(process.cwd(), 'src/types.ts'), { encoding: 'utf8' });
-    assert.match(edgeTypes, /REVIEW_YETI_PUBLIC_TARGET_APP_ID\?: string/u);
-    assert.match(edgeTypes, /REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY\?: string/u);
+    assert.match(await readFile(resolve(process.cwd(), 'src/types.ts'), { encoding: 'utf8' }), /REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY\?: string/u);
   });
 
   it('keeps optional private enrollment as a Worker secret outside checked-in vars', async () => {
