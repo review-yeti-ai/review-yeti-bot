@@ -6,6 +6,9 @@ A serverless, Kubernetes-free orchestration engine for **Review Yeti**, built on
 > **Live Edge Endpoint**: [`https://review-yeti-cf-orchestrator.example.workers.dev`](https://review-yeti-cf-orchestrator.example.workers.dev)  
 > **Production Parity Mode**: Active (`PARALLEL_MODE = "true"`). Legacy DOKS operator remains 100% active and authoritative (posting `"Review Yeti"`). Cloudflare operates concurrently in shadow validation mode (posting `"Review Yeti (Cloudflare Canary)"` and PR reviews with 1-click inline suggestions).
 
+For the Doppler-to-Worker MCP credential projection and authenticated operator connection check,
+see [Cloudflare MCP operator connection](../docs/CLOUDFLARE_MCP_OPERATOR_CONNECTION.md).
+
 ---
 
 ## Architecture Overview

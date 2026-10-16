@@ -93,6 +93,8 @@ export interface Env {
   /** Service-owned central protected policy source used for paused publication. */
   OPERATOR_PASSTHROUGH_POLICY_SOURCE?: string;
   REVIEW_YETI_MCP_AUTH_TOKEN?: string;
+  /** Allows public MCP discovery/read operations; it never authenticates the operator health route. */
+  PUBLIC_READ_MCP?: string;
   REVIEW_YETI_ATTESTATION_SECRET?: string;
   GITHUB_TOKEN?: string;
   OPERATOR_GLOBAL_PASSTHROUGH?: string;
