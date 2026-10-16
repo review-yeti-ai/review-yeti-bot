@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.129.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.129.1...v1.129.2) (2026-10-16)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** expose read-only passthrough diagnostics ([#1499](https://github.com/review-yeti-ai/review-yeti-bot/issues/1499)) ([eab2d2a](https://github.com/review-yeti-ai/review-yeti-bot/commit/eab2d2a584b0eb46aed8170ea8ddd2211c51b5fa))
+* **cf-orchestrator:** publish open pass SHIP verdicts in passthrough mode [no-linear] ([#1490](https://github.com/review-yeti-ai/review-yeti-bot/issues/1490)) ([ef6b4d8](https://github.com/review-yeti-ai/review-yeti-bot/commit/ef6b4d8a255e67ec93396b1067be239adefea15f))
+* **cf-orchestrator:** support private paused-publication enrollment [skip release] ([#1498](https://github.com/review-yeti-ai/review-yeti-bot/issues/1498)) ([27c58dc](https://github.com/review-yeti-ai/review-yeti-bot/commit/27c58dcd55b4b02c2b691d6cac50ac590116efd3))
+* **mcp:** verify operator auth and sync deployment credentials ([#1501](https://github.com/review-yeti-ai/review-yeti-bot/issues/1501)) ([4476088](https://github.com/review-yeti-ai/review-yeti-bot/commit/447608861b1eb2af355d8cbb458e4bf8b745e73d))
+* **REL-1698:** require current authority for paused Edge SHIP ([#1492](https://github.com/review-yeti-ai/review-yeti-bot/issues/1492)) ([3b34f81](https://github.com/review-yeti-ai/review-yeti-bot/commit/3b34f815dace5453adcd7e1e85236c3fb5b36e0d))
+
 ## [1.129.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.129.0...v1.129.1) (2026-10-09)
 
 
