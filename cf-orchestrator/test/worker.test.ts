@@ -146,6 +146,7 @@ function createWorkerTestEnv(overrides: Partial<Record<string, any>> = {}): Mock
     DOKS_FALLBACK_URL: overrides.DOKS_FALLBACK_URL ?? 'https://doks-internal.example.com/api/webhooks/github',
     GITHUB_WEBHOOK_SECRET: overrides.GITHUB_WEBHOOK_SECRET ?? 'webhook-secret-xyz123',
     REVIEW_YETI_MCP_AUTH_TOKEN: overrides.REVIEW_YETI_MCP_AUTH_TOKEN ?? 'mock-mcp-token-xyz',
+    PUBLIC_READ_MCP: overrides.PUBLIC_READ_MCP ?? 'false',
     DEFAULT_WORKER_IMAGE: 'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
   };
 
@@ -1181,5 +1182,80 @@ describe('Webhook Ingress Worker (src/worker.ts)', () => {
       assert.equal(res.status, 400);
       assert.equal(await res.text(), 'Bad Request: Ingress webhook processing failure');
     });
+  });
+});
+
+describe('Authenticated MCP operator connection check', () => {
+  for (const publicRead of ['true', 'false']) {
+    describe(`PUBLIC_READ_MCP=${publicRead}`, () => {
+      for (const scenario of [
+        { name: 'accepts the configured bearer token', authorization: 'Bearer mock-mcp-token-xyz', status: 200 },
+        { name: 'rejects an invalid bearer token', authorization: 'Bearer invalid-token', status: 401 },
+        { name: 'rejects a missing bearer token', authorization: undefined, status: 401 },
+      ]) {
+        it(scenario.name, async () => {
+          const context = createWorkerTestEnv({ PUBLIC_READ_MCP: publicRead });
+          const headers = scenario.authorization ? { Authorization: scenario.authorization } : undefined;
+          const response = await worker.fetch(new Request('https://review-yeti.test/api/mcp/auth', {
+            method: 'GET',
+            headers,
+          }), context.env);
+
+          assert.equal(response.status, scenario.status);
+          if (scenario.status === 200) {
+            assert.deepEqual(await response.json(), {
+              authenticated: true,
+              service: 'review-yeti',
+              transport: 'cloudflare',
+            });
+          } else {
+            const body = await response.text();
+            assert.equal(body.includes('mock-mcp-token-xyz'), false);
+          }
+
+          assert.equal(context.repoGateStore.size, 0);
+          assert.equal(context.reviewRunStore.size, 0);
+          assert.equal(context.dispatchedWorkflows.length, 0);
+          assert.equal(context.queuedDebounceItems.length, 0);
+          assert.equal(context.doksFanoutRequests.length, 0);
+          assert.equal(context.waitUntilPromises.length, 0);
+        });
+      }
+
+      it('keeps the tool catalog public while requiring authentication on the health route', async () => {
+        const { env } = createWorkerTestEnv({ PUBLIC_READ_MCP: publicRead });
+        const catalog = await worker.fetch(new Request('https://review-yeti.test/api/mcp', { method: 'GET' }), env);
+        const authHealth = await worker.fetch(new Request('https://review-yeti.test/mcp/auth', { method: 'GET' }), env);
+        const authenticatedAlias = await worker.fetch(new Request('https://review-yeti.test/mcp/auth', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer mock-mcp-token-xyz' },
+        }), env);
+
+        assert.equal(catalog.status, 200);
+        assert.equal((await catalog.json() as any).toolsCount, 12);
+        assert.equal(authHealth.status, 401);
+        assert.deepEqual(await authenticatedAlias.json(), {
+          authenticated: true,
+          service: 'review-yeti',
+          transport: 'cloudflare',
+        });
+      });
+    });
+  }
+
+  it('rejects non-GET requests and missing server configuration', async () => {
+    const { env } = createWorkerTestEnv();
+    const post = await worker.fetch(new Request('https://review-yeti.test/api/mcp/auth', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer mock-mcp-token-xyz' },
+    }), env);
+    assert.equal(post.status, 405);
+    assert.equal(post.headers.get('Allow'), 'GET');
+
+    env.REVIEW_YETI_MCP_AUTH_TOKEN = '';
+    const unconfigured = await worker.fetch(new Request('https://review-yeti.test/api/mcp/auth', {
+      headers: { Authorization: 'Bearer mock-mcp-token-xyz' },
+    }), env);
+    assert.equal(unconfigured.status, 401);
   });
 });

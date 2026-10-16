@@ -6,6 +6,28 @@ A serverless, Kubernetes-free orchestration engine for **Review Yeti**, built on
 > **Live Edge Endpoint**: [`https://review-yeti-cf-orchestrator.example.workers.dev`](https://review-yeti-cf-orchestrator.example.workers.dev)  
 > **Production Parity Mode**: Active (`PARALLEL_MODE = "true"`). Legacy DOKS operator remains 100% active and authoritative (posting `"Review Yeti"`). Cloudflare operates concurrently in shadow validation mode (posting `"Review Yeti (Cloudflare Canary)"` and PR reviews with 1-click inline suggestions).
 
+For the Doppler-to-Worker MCP credential projection and authenticated operator connection check,
+see [Cloudflare MCP operator connection](../docs/CLOUDFLARE_MCP_OPERATOR_CONNECTION.md).
+
+## Paused publication enrollment configuration
+
+Paused publication reads the existing Worker bindings below. They hold the exact repository enrollment and
+protected policy-source manifests; the values are deployment-owned and intentionally omitted from tracked
+Wrangler source:
+
+- `OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES`
+- `OPERATOR_PASSTHROUGH_POLICY_SOURCE`
+
+For an existing Worker, both bindings must remain provisioned for paused publication to work. Keep `keep_vars = true`
+enabled when deploying this source so remotely managed variables omitted from the tracked `[vars]` block are retained.
+The tracked configuration does not declare these bindings as Wrangler-required secrets. Runtime fails closed if
+either binding is absent or invalid. This source change does not verify live binding readback or manifest contents.
+
+For a fresh Worker or environment without these bindings, provision both names on the intended Worker before
+enabling paused publication. Use the approved deployment source and protected operator input through the Cloudflare
+dashboard or `wrangler secret bulk`; verify the binding setup through the deployment process before use. `keep_vars`
+does not provision values for a new Worker.
+
 ---
 
 ## Architecture Overview

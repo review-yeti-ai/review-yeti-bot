@@ -86,13 +86,15 @@ export interface Env {
   /** Same dedicated public-target App binding used by Node's authoritative review service. */
   REVIEW_YETI_PUBLIC_TARGET_APP_ID?: string;
   REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY?: string;
-  /** Service-owned exact repository identity manifest for paused publication. */
+  /** Existing deployer-provisioned Worker binding containing exact paused-publication repository identities. */
   OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES?: string;
   /** Optional Cloudflare Worker secret-text manifest for additional exact paused-publication identities. */
   OPERATOR_PASSTHROUGH_PRIVATE_REPOSITORY_IDENTITIES?: string;
-  /** Service-owned central protected policy source used for paused publication. */
+  /** Existing deployer-provisioned Worker binding containing the protected policy source identity. */
   OPERATOR_PASSTHROUGH_POLICY_SOURCE?: string;
   REVIEW_YETI_MCP_AUTH_TOKEN?: string;
+  /** Allows public MCP discovery/read operations; it never authenticates the operator health route. */
+  PUBLIC_READ_MCP?: string;
   REVIEW_YETI_ATTESTATION_SECRET?: string;
   GITHUB_TOKEN?: string;
   OPERATOR_GLOBAL_PASSTHROUGH?: string;

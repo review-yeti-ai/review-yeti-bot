@@ -3,6 +3,8 @@ main = "src/worker.ts"
 compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
+# Keep current deployment variables during the enrollment-secret migration.
+keep_vars = true
 
 # The public hostname is deployment configuration, not code: the deploy job attaches the custom domain
 # (`wrangler deploy --domain`) and passes ALLOWED_ORIGINS and DOKS_FALLBACK_URL from repository variables.
@@ -83,9 +85,8 @@ PUBLIC_READ_MCP = "true" # Enables public read access to status, metrics, report
 REVIEW_YETI_PUBLIC_TARGET_APP_ID = "4552718" # Matches Node authoritative self-review authority; private key uses the same-named Worker secret.
 OPERATOR_GLOBAL_PASSTHROUGH = "true" # Fail closed unless the deployment-owned pause variable explicitly disables the pause
 # Paused publication has a separate exact ID/name enrollment; PILOT_REPOSITORIES does not grant it.
-OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES = '[{"repositoryId":1131452104,"owner":"calltelemetry","repo":"ai-workspace"},{"repositoryId":1355159090,"owner":"calltelemetry","repo":"ct-infrastructure"},{"repositoryId":1232078607,"owner":"calltelemetry","repo":"ct-meta"},{"repositoryId":1412107639,"owner":"calltelemetry","repo":"company-news-mcp"},{"repositoryId":1326169548,"owner":"review-yeti-ai","repo":"review-yeti-bot"}]'
-OPERATOR_PASSTHROUGH_POLICY_SOURCE = '{"repositoryId":1339040553,"owner":"calltelemetry","repo":"ct-review-actions","ref":"main","path":"policy/review-yeti.json"}'
 
 # Cron trigger for 1-hour aggressive R2 workspace cache purge
+# The exact enrollment manifests are supplied by the deployer, never checked into source.
 [triggers]
 crons = ["0 * * * *"]

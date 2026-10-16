@@ -219,6 +219,22 @@ export default {
         });
       }
 
+      // Operator connection check is authenticated independently of public MCP discovery.
+      if (url.pathname === '/api/mcp/auth' || url.pathname === '/mcp/auth') {
+        if (request.method !== 'GET') {
+          return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } });
+        }
+
+        const configuredToken = (env.REVIEW_YETI_MCP_AUTH_TOKEN || '').trim();
+        const bearer = /^Bearer\s+([^\s]+)$/iu.exec(request.headers.get('Authorization') || '');
+        const suppliedToken = bearer?.[1] || '';
+        if (!configuredToken || !suppliedToken || !constantTimeEquals(suppliedToken, configuredToken)) {
+          return Response.json({ error: 'Unauthorized' }, { status: 401 });
+        }
+
+        return Response.json({ authenticated: true, service: 'review-yeti', transport: 'cloudflare' });
+      }
+
       // Live Swarm Command Center shortcut / alias: /l redirects directly to /
       if (url.pathname === '/l' || url.pathname === '/live-swarm') {
         return Response.redirect(new URL('/', request.url).toString(), 302);

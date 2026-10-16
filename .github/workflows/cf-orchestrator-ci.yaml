@@ -51,6 +51,10 @@ jobs:
         working-directory: cf-orchestrator
         run: npm test
 
+      - name: Verify authenticated MCP credential sync contract
+        working-directory: cf-orchestrator
+        run: node --test scripts/sync-mcp-auth-secret.test.mjs
+
       - name: Run End-to-End Integration Suite
         working-directory: cf-orchestrator
         run: npm run test:e2e
@@ -90,6 +94,15 @@ jobs:
         run: |
           npm ci
           npm run build
+
+      - name: Project MCP auth token from Doppler
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        working-directory: cf-orchestrator
+        env:
+          REVIEW_YETI_DOPPLER_TOKEN: ${{ secrets.REVIEW_YETI_DOPPLER_TOKEN }}
+          REVIEW_YETI_DOPPLER_PROJECT: ${{ vars.REVIEW_YETI_DOPPLER_PROJECT }}
+          REVIEW_YETI_DOPPLER_CONFIG: ${{ vars.REVIEW_YETI_DOPPLER_CONFIG }}
+        run: node scripts/sync-mcp-auth-secret.mjs
 
       - name: Deploy to Cloudflare Edge
         uses: cloudflare/wrangler-action@v3
