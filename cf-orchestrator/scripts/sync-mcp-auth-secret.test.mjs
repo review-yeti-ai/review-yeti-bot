@@ -226,6 +226,7 @@ describe('Doppler to Worker MCP token projection', () => {
 
   it('bounds hanging requests and refuses redirects carrying provider credentials', async () => {
     let redirectPolicy;
+    let observedAbort = false;
     await assert.rejects(
       syncMcpAuthSecret({
         env: validEnv(),
@@ -234,7 +235,19 @@ describe('Doppler to Worker MCP token projection', () => {
         fetchImpl: async (_url, init) => {
           redirectPolicy = init.redirect;
           return new Promise((_resolve, reject) => {
-            init.signal.addEventListener('abort', () => reject(new Error(`${dopplerToken} ${workerSecret}`)), { once: true });
+            // A real request keeps the event loop alive. AbortSignal.timeout
+            // alone does not, so give the mock a bounded referenced handle.
+            const watchdog = setTimeout(() => {
+              init.signal.removeEventListener('abort', onAbort);
+              reject(new Error('mock request did not receive an abort'));
+            }, 1000);
+            const onAbort = () => {
+              clearTimeout(watchdog);
+              observedAbort = true;
+              reject(new Error(`${dopplerToken} ${workerSecret}`));
+            };
+            if (init.signal.aborted) onAbort();
+            else init.signal.addEventListener('abort', onAbort, { once: true });
           });
         },
       }),
@@ -245,6 +258,7 @@ describe('Doppler to Worker MCP token projection', () => {
         return true;
       },
     );
+    assert.equal(observedAbort, true, 'the request deadline must cancel the in-flight request');
     assert.equal(redirectPolicy, 'error');
   });
 
