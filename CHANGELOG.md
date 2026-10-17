@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.130.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.129.2...v1.130.0) (2026-10-17)
+
+
+### Features
+
+* **action:** neutral edge dispatch contract, remove DOKS fallback ([#1504](https://github.com/review-yeti-ai/review-yeti-bot/issues/1504)) ([837986a](https://github.com/review-yeti-ai/review-yeti-bot/commit/837986a0c62cf0f4bb81a24094cb25948ddd4475))
+
 ## [1.129.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.129.1...v1.129.2) (2026-10-16)
 
 
