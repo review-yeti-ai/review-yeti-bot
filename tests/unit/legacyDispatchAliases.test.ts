@@ -35,7 +35,7 @@ function stepEnvironment(step: any, inputs: Record<string, string>): Record<stri
 
 function runValidate(inputs: Record<string, string>) {
   return spawnSync('bash', ['-c', validateStep.run], {
-    env: { PATH: process.env.PATH ?? '', ...stepEnvironment(validateStep, inputs) },
+    env: { ...process.env, ...stepEnvironment(validateStep, inputs) },
     encoding: 'utf8',
   });
 }
