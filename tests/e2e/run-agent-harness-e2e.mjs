@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * DOKS Runner Agentic Harness Improvements E2E Test Runner (API-3330 & API-3333)
+ * Kubernetes Runner Agentic Harness Improvements E2E Test Runner (API-3330 & API-3333)
  * Location: tests/e2e/run-agent-harness-e2e.mjs
  *
  * Executes the 4-Tier E2E test suite:
@@ -30,7 +30,7 @@ const cyan = (s) => `\x1b[36m${s}\x1b[0m`;
 const gray = (s) => `\x1b[90m${s}\x1b[0m`;
 
 console.log(bold(cyan('\n========================================================================')));
-console.log(bold(cyan('  DOKS Runner Agentic Harness Improvements E2E Test Runner')));
+console.log(bold(cyan('  Kubernetes Runner Agentic Harness Improvements E2E Test Runner')));
 console.log(bold(cyan('  API-3330 (Wire Contracts & Fencing) & API-3333 (Task Observer)')));
 console.log(bold(cyan('========================================================================\n')));
 
@@ -120,7 +120,7 @@ const totalExpected = Object.values(tierResults).reduce((sum, t) => sum + t.tota
 const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(2);
 
 console.log(bold(cyan('\n========================================================================')));
-console.log(bold(cyan('       DOKS Runner Agentic Harness E2E Execution Summary')));
+console.log(bold(cyan('       Kubernetes Runner Agentic Harness E2E Execution Summary')));
 console.log(bold(cyan('========================================================================')));
 
 for (const [name, stats] of Object.entries(tierResults)) {

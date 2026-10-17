@@ -40,7 +40,7 @@ export interface ReviewActiveWorker {
   lease_expires_at: string;
 }
 
-/** Durable DOKS execution identity, additive to the legacy Pod lease shape. */
+/** Durable Kubernetes execution identity, additive to the legacy Pod lease shape. */
 export interface ReviewActiveProjection {
   /** PRReviewJob identity; its Kubernetes status owns the current worker Job name. */
   projection_name: string;
@@ -479,7 +479,6 @@ export type GetBillableRuntimeReportInput = z.infer<typeof GetBillableRuntimeRep
 export const GetRuntimeMetricsInputSchema = z.object({
   repo: z.string().trim().optional(),
   window_hours: z.number().int().positive().max(720).optional(),
-  comparison_mode: z.boolean().optional(),
 }).strict();
 
 export type GetRuntimeMetricsInput = z.infer<typeof GetRuntimeMetricsInputSchema>;

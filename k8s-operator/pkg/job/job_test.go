@@ -127,24 +127,24 @@ func TestPreparedReviewQualificationRuntimeImageDigestBindsWorkerImage(t *testin
 		{
 			name:        "matching digest is admitted",
 			receipt:     preparedEnvelopeWithRuntimeImageDigest(matchingDigest),
-			workerImage: "registry.digitalocean.com/exampleorg/review-yeti-worker@" + matchingDigest,
+			workerImage: "ghcr.io/review-yeti-ai/review-yeti-worker@" + matchingDigest,
 		},
 		{
 			name:        "mismatched digest is rejected",
 			receipt:     preparedEnvelopeWithRuntimeImageDigest(otherDigest),
-			workerImage: "registry.digitalocean.com/exampleorg/review-yeti-worker@" + matchingDigest,
+			workerImage: "ghcr.io/review-yeti-ai/review-yeti-worker@" + matchingDigest,
 			wantErr:     true,
 		},
 		{
 			name:        "digest must be canonical lowercase sha256",
 			receipt:     preparedEnvelopeWithRuntimeImageDigest("sha256:" + strings.Repeat("E", 64)),
-			workerImage: "registry.digitalocean.com/exampleorg/review-yeti-worker@" + matchingDigest,
+			workerImage: "ghcr.io/review-yeti-ai/review-yeti-worker@" + matchingDigest,
 			wantErr:     true,
 		},
 		{
 			name:        "digest must have exactly 64 hexadecimal characters",
 			receipt:     preparedEnvelopeWithRuntimeImageDigest("sha256:abc"),
-			workerImage: "registry.digitalocean.com/exampleorg/review-yeti-worker@" + matchingDigest,
+			workerImage: "ghcr.io/review-yeti-ai/review-yeti-worker@" + matchingDigest,
 			wantErr:     true,
 		},
 		{
@@ -277,7 +277,7 @@ func reviewFixture(now time.Time) *v1alpha2.PRReviewJob {
 			PolicyDigest:     strings.Repeat("c", 64),
 			ConfigDigest:     strings.Repeat("d", 64),
 			PublicationMode:  "disabled",
-			WorkerImage:      "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:" + strings.Repeat("e", 64),
+			WorkerImage:      "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:" + strings.Repeat("e", 64),
 			RunSecretName:    "ct-review-run-11111111111111111111111111111111",
 		},
 	}
@@ -708,7 +708,7 @@ func TestBuildWorkerJobCreatesExplicitFullPanelQualificationPod(t *testing.T) {
 		t.Fatalf("full-panel worker must not be receipt-only: %#v", container.Env)
 	}
 	if envValue(container, "REVIEW_FULL_PANEL_QUALIFICATION_ONLY") != "true" ||
-		envValue(container, "REVIEW_ENGINE_REVISION") != strings.TrimPrefix(review.Spec.WorkerImage, "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:") ||
+		envValue(container, "REVIEW_ENGINE_REVISION") != strings.TrimPrefix(review.Spec.WorkerImage, "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:") ||
 		envValue(container, "REVIEW_QUALIFICATION_MODEL") != review.Spec.QualificationModel ||
 		envValue(container, "REVIEW_PUBLICATION_MODE") != "disabled" ||
 		envValue(container, "REVIEW_RECEIPT_PATH") != job.ReceiptPath {
@@ -784,7 +784,7 @@ func TestBuildWorkerJobCreatesExplicitSameHeadQualificationPod(t *testing.T) {
 	if envValue(container, "REVIEW_SAME_HEAD_QUALIFICATION_ONLY") != "true" ||
 		envValue(container, "REVIEW_FULL_PANEL_QUALIFICATION_ONLY") != "" ||
 		envValue(container, "REVIEW_RECEIPT_ONLY") != "" ||
-		envValue(container, "REVIEW_ENGINE_REVISION") != strings.TrimPrefix(review.Spec.WorkerImage, "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:") ||
+		envValue(container, "REVIEW_ENGINE_REVISION") != strings.TrimPrefix(review.Spec.WorkerImage, "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:") ||
 		envValue(container, "REVIEW_QUALIFICATION_MODEL") != review.Spec.QualificationModel ||
 		envValue(container, "REVIEW_QUALIFICATION_TIMEOUT_MS") != "780000" ||
 		envValue(container, "REVIEW_PUBLICATION_MODE") != "disabled" {
@@ -919,7 +919,7 @@ func TestBuildWorkerJobRejectsUnsafeProjection(t *testing.T) {
 		{name: "wrong namespace", mutate: func(review *v1alpha2.PRReviewJob) { review.Namespace = "default" }},
 		{name: "publication enabled", mutate: func(review *v1alpha2.PRReviewJob) { review.Spec.PublicationMode = "enabled" }},
 		{name: "latest image", mutate: func(review *v1alpha2.PRReviewJob) {
-			review.Spec.WorkerImage = "registry.digitalocean.com/exampleorg/review-yeti-worker:latest"
+			review.Spec.WorkerImage = "ghcr.io/review-yeti-ai/review-yeti-worker:latest"
 		}},
 		// A non-vendor registry is no longer inherently untrusted: the contract
 		// pins DIGEST, not registry, so a self-hoster can pull from their own

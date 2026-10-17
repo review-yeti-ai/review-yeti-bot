@@ -43,7 +43,7 @@ describe('Review Yeti E2E Test Suite', () => {
   // fileParallelism on, where the spawn competes with the other workers. `helm lint` timing out
   // at 5000ms is what reddened main at 67fb09e.
   const HELM_TIMEOUT_MS = 60_000;
-  const hasCloudValues = fs.existsSync(repoPath('examples/k8s/values-doks.yaml'));
+  const hasCloudValues = fs.existsSync(repoPath('examples/k8s/values-eks.yaml'));
   const hasHelmGuide = fs.existsSync(repoPath('docs/HELM_GUIDE.md'));
   const hasTroubleshooting = fs.existsSync(repoPath('docs/TROUBLESHOOTING.md'));
 
@@ -548,18 +548,12 @@ enabled: true
       expect(opSec?.runAsNonRoot).toBe(true);
     }, HELM_TIMEOUT_MS);
 
-    it.skipIf(!canRunHelm || !hasCloudValues)('renders DOKS cloud values with DO Block Storage CSI and DO LoadBalancer Ingress', () => {
-      const output = execSync('helm template review-yeti charts/review-yeti -f examples/k8s/values-doks.yaml', {
+    it.skipIf(!canRunHelm || !hasCloudValues)('renders cloud values with a namespace-scoped operator Role and no ClusterRole', () => {
+      const output = execSync('helm template review-yeti charts/review-yeti -f examples/k8s/values-eks.yaml', {
         cwd: REPO_ROOT,
         encoding: 'utf-8',
       });
       const docs = yaml.loadAll(output).filter((d) => d && typeof d === 'object') as Record<string, any>[];
-
-      // Ingress check
-      const ingress = docs.find((d) => d.kind === 'Ingress');
-      expect(ingress).toBeDefined();
-      expect(ingress?.spec?.ingressClassName).toBe('nginx');
-      expect(JSON.stringify(ingress?.metadata?.annotations)).toContain('service.beta.kubernetes.io/do-loadbalancer');
 
       // Operator Role check (namespace-scoped, no nodes, no Secret mutation).
       // The operator reads only the exact run Secret for authenticated receipt
@@ -679,13 +673,7 @@ enabled: true
       } catch (err: any) {
         result = '';
       }
-      // REL-1097: the chart CRD is a byte-identical copy of the controller-gen
-      // output (pinned by tests/unit/chartCrdGenerated.test.ts), whose
-      // workerImage pattern admits the production worker registry. That one
-      // generated line is the only permitted mention; anything else still fails.
-      const permitted = /^charts\/review-yeti\/files\/review-yeti\.ai_prreviewjobs\.yaml:\d+:\s*pattern: .*registry\\\.digitalocean\\\.com\/exampleorg\/review-yeti-worker\)@sha256/u;
-      const leaks = result.trim().split('\n').filter((line) => line && !permitted.test(line));
-      expect(leaks, 'charts/ must have 0 exampleorg mentions').toEqual([]);
+      expect(result.trim(), 'charts/ must have 0 exampleorg mentions').toBe('');
     });
 
     it.skipIf(!hasHelmGuide || !hasTroubleshooting)('Feature 25: zero "exampleorg" occurrences in newly authored docs', () => {

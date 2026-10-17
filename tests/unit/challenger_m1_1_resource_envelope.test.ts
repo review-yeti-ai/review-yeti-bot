@@ -13,7 +13,7 @@ describe('Milestone 1 Challenger 1: Resource Envelope & Boundary Stress Suite', 
   };
 
   const ctInfraPath = process.env.CT_INFRA_PATH || path.resolve(__dirname, '../../../../example-infra');
-  const appsDir = path.join(ctInfraPath, 'clusters/doks-nyc1/apps/ct-review-system');
+  const appsDir = path.join(ctInfraPath, 'clusters/<cluster>/apps/ct-review-system');
 
   // ==========================================================================
   // Section 1: Default Rightsized Resource Assertions (R1)

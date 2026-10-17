@@ -1169,7 +1169,7 @@ export async function runPanelQualificationWorker(
 /**
  * Execute the complete six-persona panel, moderator, and arbiter path against
  * a representative multi-file fixture. This mode is deliberately opt-in and
- * non-publishing so it can be run by the DOKS dispatcher for timing and
+ * non-publishing so it can be run by the Kubernetes dispatcher for timing and
  * terminal-reliability measurements without changing production reviews.
  */
 export async function runFullPanelQualificationWorker(

@@ -87,7 +87,7 @@ export function parsePreparedReviewExecution(json: string, expectedDigest: strin
 
 /** Input file must be resolved by the service at a trusted immutable revision.
  * Retain only the normalized effective config and source fingerprints, not raw
- * central policy or credentials. The existing DOKS Bifrost provider selection
+ * central policy or credentials. The existing Kubernetes Bifrost provider selection
  * and turn clamp remain owned by the shared worker resolver. */
 export function preparePublishingPolicy(file: ImmutableReviewPolicyFile,
   transport: PreparedPublishingPolicy['transport'],

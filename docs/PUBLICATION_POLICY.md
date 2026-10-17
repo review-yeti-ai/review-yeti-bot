@@ -19,7 +19,7 @@ P0, P1 and P2 findings all block a merge. Which findings still block on a head i
 - a P2 whose review thread the author resolved with a reply stating why it does not apply is satisfied, and the reason is shown in the check summary (this never clears a P0 or P1);
 - a P2 outside the head's diff is advisory.
 
-On the DOKS worker path, findings are published as review threads with a hidden fingerprint marker. The worker reads threads with its read token and asks the dispatch service (`POST /api/dispatch/finding-threads`) to publish new ones; only the service holds a `pull_requests: write` token, minted per call. The service also resolves the bot's own outdated threads whose finding was not reported again. When the canonical verdict is SHIP but a required P2 remains, the check title reads `Review Yeti: FIX_FIRST (N required P2)`.
+On the Kubernetes worker path, findings are published as review threads with a hidden fingerprint marker. The worker reads threads with its read token and asks the dispatch service (`POST /api/dispatch/finding-threads`) to publish new ones; only the service holds a `pull_requests: write` token, minted per call. The service also resolves the bot's own outdated threads whose finding was not reported again. When the canonical verdict is SHIP but a required P2 remains, the check title reads `Review Yeti: FIX_FIRST (N required P2)`.
 
 ## Apply suggestions
 

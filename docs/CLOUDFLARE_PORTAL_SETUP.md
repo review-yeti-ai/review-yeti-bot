@@ -196,9 +196,9 @@ If you prefer keeping the frontend portal deployment decoupled in Cloudflare Pag
 
 ---
 
-## 🔒 Deployment Pattern 3: Cloudflare Tunnel (`cloudflared`) to DOKS / Local Server
+## 🔒 Deployment Pattern 3: Cloudflare Tunnel (`cloudflared`) to a Kubernetes Cluster / Local Server
 
-For hybrid setups or local testing while running alongside the DOKS Kubernetes operator:
+For hybrid setups or local testing while running alongside the Kubernetes operator:
 
 1. **Install and run `cloudflared`**:
    ```bash
@@ -269,5 +269,5 @@ curl -N -H "Accept: text/event-stream" https://review-yeti-cf-orchestrator.examp
 ## 📚 Related Documentation
 - 🚀 **[Onboarding Guide](ONBOARDING_GUIDE.md)** — Setting up GitHub App integration and rules.
 - 📖 **[User Guide](USER_GUIDE.md)** — Operational walkthrough of all dashboard features.
-- ☸️ **[Kubernetes Mode Guide](KUBERNETES_MODE.md)** — DOKS operator and cluster architecture.
+- ☸️ **[Kubernetes Mode Guide](KUBERNETES_MODE.md)** — Kubernetes operator and cluster architecture.
 - 🛠️ **[Troubleshooting Guide](TROUBLESHOOTING.md)** — Diagnosing networking and streaming issues.

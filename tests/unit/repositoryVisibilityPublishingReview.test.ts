@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 
-// example-meta#2884: the DOKS app-gate lane has no GitHub client to look visibility up
+// example-meta#2884: the Kubernetes app-gate lane has no GitHub client to look visibility up
 // with -- its identity is entirely env-driven -- so the dispatching workflow is the
 // only source of the fact here. These tests prove REVIEW_REPOSITORY_VISIBILITY
 // reaches both the panel runner (so the persona prompt carries it) and the

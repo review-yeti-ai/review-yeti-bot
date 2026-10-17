@@ -749,7 +749,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient, options: Ge
             }
           : null;
 
-      // DOKS releases the short dispatcher lease after it has durably created
+      // The Kubernetes lane releases the short dispatcher lease after it has durably created
       // the PRReviewJob. From that point onward, the projection row is the
       // authoritative execution identity and keeps the projected phase live
       // even though the legacy active_worker field honestly becomes null. The

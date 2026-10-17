@@ -297,7 +297,7 @@ When running Review Yeti in cluster mode (via Helm or the Kubernetes Operator):
   ```yaml
   persistence:
     enabled: true
-    storageClass: "do-block-storage" # or gp3, standard
+    storageClass: "gp3" # or standard
     size: 10Gi
     mountPath: /app/.ct-memory
   ```

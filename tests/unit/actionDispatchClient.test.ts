@@ -72,7 +72,7 @@ function actionPassthroughReceipt(request: ActionDispatchRequest, overrides: Rec
 
 afterEach(() => vi.restoreAllMocks());
 
-describe('DOKS Action dispatch client', () => {
+describe('Action dispatch client', () => {
   it('keeps the standalone recovery window aligned with the service contract', async () => {
     const { buildDispatchRequest } = await import(modulePath);
     const recoveryEnvironment = (attempt: number) => environment({

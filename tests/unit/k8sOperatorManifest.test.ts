@@ -19,7 +19,7 @@ function byKind(kind: string): Manifest {
   return result;
 }
 
-describe('isolated DOKS operator manifest', () => {
+describe('isolated Kubernetes operator manifest', () => {
   it('builds a minimal static operator image from a pinned Go base', () => {
     const dockerfile = fs.readFileSync(path.resolve(__dirname, '../../Dockerfile.operator'), 'utf8');
     expect(dockerfile).toMatch(/^ARG GO_BASE_IMAGE=golang:1\.24-bookworm@sha256:[a-f0-9]{64}$/mu);

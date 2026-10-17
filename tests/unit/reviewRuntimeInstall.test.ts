@@ -5,12 +5,12 @@ import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 const root = path.resolve(__dirname, '../..');
-const operatorImage = `registry.digitalocean.com/exampleorg/review-yeti-operator@sha256:${'a'.repeat(64)}`;
-const dispatcherImage = `registry.digitalocean.com/exampleorg/ct-review-bot@sha256:${'b'.repeat(64)}`;
-const workerImage = `registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:${'c'.repeat(64)}`;
+const operatorImage = `ghcr.io/review-yeti-ai/review-yeti-operator@sha256:${'a'.repeat(64)}`;
+const dispatcherImage = `ghcr.io/review-yeti-ai/review-yeti-bot@sha256:${'b'.repeat(64)}`;
+const workerImage = `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'c'.repeat(64)}`;
 
 function runInstaller(overrides: Record<string, string> = {}) {
-  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'doks-review-runtime-test-'));
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-runtime-install-test-'));
   const binaryDirectory = path.join(temporaryDirectory, 'bin');
   const logPath = path.join(temporaryDirectory, 'kubectl.log');
   const statePath = path.join(temporaryDirectory, 'state');
@@ -76,8 +76,8 @@ process.stdin.on('end', () => process.stdout.write(input
       CT_REVIEW_JOB_DISPATCHER_IMAGE: dispatcherImage,
       CT_REVIEW_WORKER_IMAGE: workerImage,
       KUBERNETES_SERVICE_IP: '10.245.0.1',
-      KUBERNETES_API_ENDPOINT_CIDR: '100.65.15.150/32',
-      KUBERNETES_API_CIDR: '104.248.111.134/32',
+      KUBERNETES_API_ENDPOINT_CIDR: '192.0.2.10/32',
+      KUBERNETES_API_CIDR: '198.51.100.20/32',
       ...overrides,
     },
   });
@@ -89,7 +89,7 @@ process.stdin.on('end', () => process.stdout.write(input
   return { ...result, calls, renderedOperator };
 }
 
-describe('guarded DOKS review runtime installer', () => {
+describe('guarded review runtime installer', () => {
   it('installs the CRD and both workloads while leaving qualification at zero replicas', () => {
     const result = runInstaller();
     expect(result.status, result.stderr).toBe(0);
@@ -99,22 +99,9 @@ describe('guarded DOKS review runtime installer', () => {
     expect(result.calls).not.toMatch(/\bscale\b|\bdelete\b/u);
     expect(result.renderedOperator).toContain(`image: ${operatorImage}`);
     expect(result.renderedOperator).toContain('replicas: 0');
-    expect(result.renderedOperator).toContain('cidr: "100.65.15.150/32"');
-    expect(result.renderedOperator).toContain('cidr: "104.248.111.134/32"');
+    expect(result.renderedOperator).toContain('cidr: "192.0.2.10/32"');
+    expect(result.renderedOperator).toContain('cidr: "198.51.100.20/32"');
     expect(result.renderedOperator).not.toContain('${');
-  });
-
-  it('installs the CRD and both workloads with public ghcr.io images', () => {
-    const ghcrOperator = `ghcr.io/review-yeti-ai/review-yeti-operator@sha256:${'d'.repeat(64)}`;
-    const ghcrDispatcher = `ghcr.io/review-yeti-ai/review-yeti-bot@sha256:${'e'.repeat(64)}`;
-    const ghcrWorker = `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'f'.repeat(64)}`;
-    const result = runInstaller({
-      CT_REVIEW_OPERATOR_IMAGE: ghcrOperator,
-      CT_REVIEW_JOB_DISPATCHER_IMAGE: ghcrDispatcher,
-      CT_REVIEW_WORKER_IMAGE: ghcrWorker,
-    });
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.renderedOperator).toContain(`image: ${ghcrOperator}`);
   });
 
   it('installs with generic runner mode and accepts node:24-bookworm-slim', () => {
@@ -135,6 +122,16 @@ describe('guarded DOKS review runtime installer', () => {
 
   it('rejects mutable or untrusted images before any Kubernetes apply', () => {
     const result = runInstaller({ CT_REVIEW_WORKER_IMAGE: 'registry.example/review-yeti-worker:latest' });
+    expect(result.status).toBe(2);
+    expect(result.calls).not.toContain('apply');
+  });
+
+  it.each([
+    ['operator', 'CT_REVIEW_OPERATOR_IMAGE', 'review-yeti-operator'],
+    ['dispatcher', 'CT_REVIEW_JOB_DISPATCHER_IMAGE', 'review-yeti-bot'],
+    ['worker', 'CT_REVIEW_WORKER_IMAGE', 'review-yeti-worker'],
+  ])('rejects a DigitalOcean registry %s image before any Kubernetes apply', (_name, variable, repository) => {
+    const result = runInstaller({ [variable]: `registry.digitalocean.com/example/${repository}@sha256:${'a'.repeat(64)}` });
     expect(result.status).toBe(2);
     expect(result.calls).not.toContain('apply');
   });

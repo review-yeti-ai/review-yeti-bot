@@ -186,7 +186,7 @@ spec:
       ports:
         - protocol: TCP
           port: 443
-    # DOKS service routing may evaluate egress against the control-plane
+    # Managed Kubernetes service routing may evaluate egress against the control-plane
     # endpoint after translating the in-cluster Service IP. Keep that endpoint
     # exact as well; do not replace it with a broad network range.
     - to:

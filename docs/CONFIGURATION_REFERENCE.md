@@ -737,7 +737,7 @@ The following top-level configuration keys can be declared in `.ct-review.yaml`,
 | `event_plane` | `event-plane` | `object` \| `string` | Private NATS JetStream event plane settings, stream names (`CT_REVIEW_EVENTS`, `CT_REVIEW_PROGRESS`), and outbox options. |
 | `storage` | `storage` | `object` \| `string` | Worker pod storage profile (e.g., `type: emptyDir`, `size_limit: 1Gi` for 0 PVC delay). |
 | `retry_analysis` / `retro_analysis` | `retry-analysis` | `object` \| `string` | Error categorization rules, transient vs deterministic failure classification, and retro feedback hooks. |
-| *(N/A)* | `policy-json` | `string` (JSON) | Raw policy overrides passed directly to the DOKS admission dispatcher. |
+| *(N/A)* | `policy-json` | `string` (JSON) | Raw policy overrides passed directly to the Kubernetes admission dispatcher. |
 
 ### Resolution Hierarchy
 

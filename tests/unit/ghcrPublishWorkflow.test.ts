@@ -56,7 +56,7 @@ describe('GHCR publish contract', () => {
     expect(merge).not.toContain('^chore\\(main\\):\\ release');
   });
 
-  it('publishes digest-pinned images to ghcr.io/review-yeti-ai without Docker Hub or DOKS', () => {
+  it('publishes digest-pinned images to ghcr.io/review-yeti-ai without Docker Hub or cluster credentials', () => {
     expect(workflow).toContain('publish-ghcr:');
     expect(workflow).toContain('GHCR_REGISTRY: ghcr.io/review-yeti-ai');
     expect(workflow).toContain('registry: ghcr.io');

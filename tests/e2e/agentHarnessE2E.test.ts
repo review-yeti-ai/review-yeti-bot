@@ -1,5 +1,5 @@
 /**
- * DOKS Runner Agentic Harness Improvements E2E Test Suite (Tiers 1-4)
+ * Kubernetes Runner Agentic Harness Improvements E2E Test Suite (Tiers 1-4)
  * API-3330 & API-3333 Complete Verification
  * Location: tests/e2e/agentHarnessE2E.test.ts
  *
@@ -495,7 +495,7 @@ export function reconcileGoOperator(
 // E2E TEST SUITE IMPLEMENTATION (134 TESTS)
 // ============================================================================
 
-describe('DOKS Runner Agentic Harness Improvements E2E Test Suite (Tiers 1-4)', () => {
+describe('Kubernetes Runner Agentic Harness Improvements E2E Test Suite (Tiers 1-4)', () => {
   let envBackup: NodeJS.ProcessEnv;
 
   beforeEach(() => {

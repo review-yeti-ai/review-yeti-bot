@@ -50,8 +50,8 @@ Consolidate 100% of review admission, orchestration, gatekeeping, and tool servi
 ### Backend Compatibility & Coexistence
 
 Both execution backends remain first-class, valid architectural options supported by Review Yeti:
-1. **Cloudflare-Native Edge & Ephemeral Serverless** (`execution-backend: edge`): Edge ingress, Durable Objects concurrency serialization, Cloudflare Workflows, and on-demand microVM/container runners (DigitalOcean Managed Agents / Cloudflare Sandboxes) with R2 workspace caching. Best for environments prioritizing zero standing infrastructure, zero idle RAM, and minimal operational maintenance.
-2. **Kubernetes / DOKS Operator Mode** (`execution-backend: doks`): In-cluster Go operator, Helm chart (`charts/review-yeti/`), `PRReviewJob` CRDs, and batch worker pods. Best for organizations standardizing on Kubernetes clusters who wish to run review compute entirely within their private VPC/cluster boundaries.
+1. **Cloudflare-Native Edge & Ephemeral Serverless** (`execution-backend: edge`): Edge ingress, Durable Objects concurrency serialization, Cloudflare Workflows, and on-demand container runners (Cloudflare Sandboxes) with R2 workspace caching. Best for environments prioritizing zero standing infrastructure, zero idle RAM, and minimal operational maintenance.
+2. **Kubernetes Operator Mode** (`execution-backend: doks`): In-cluster Go operator, Helm chart (`charts/review-yeti/`), `PRReviewJob` CRDs, and batch worker pods. Best for organizations standardizing on Kubernetes clusters who wish to run review compute entirely within their private VPC/cluster boundaries.
 
 Organizations may deploy and operate either backend based on their infrastructure strategy.
 

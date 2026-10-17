@@ -62,7 +62,7 @@ describe('shared Go/TypeScript prepared execution contract', () => {
       qualificationRuntimeImageDigest?: string };
     const digest = decoded.qualificationRuntimeImageDigest;
     expect(digest).toMatch(/^sha256:[a-f0-9]{64}$/u);
-    expect(fixture!.workerImage).toBe(`registry.digitalocean.com/exampleorg/review-yeti-worker@${digest}`);
+    expect(fixture!.workerImage).toBe(`ghcr.io/review-yeti-ai/review-yeti-worker@${digest}`);
     const configDigest = fingerprintEffectiveReviewConfig({ config: decoded.config, transport: decoded.transport,
       qualificationRuntimeImageDigest: digest });
 

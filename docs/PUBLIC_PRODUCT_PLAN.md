@@ -42,7 +42,7 @@ Each item states the problem in one line, the change, how we know it worked, and
 ### 0.4 Move internal artifacts out of the repo
 
 - **Problem:** Repo root and `docs/` contain project-management and operations material that reads as internal and dilutes what a stranger should read.
-- **Change:** Remove `ORIGINAL_REQUEST.md` and `PROJECT.md` from the repo root. Move `DOKS_REVIEW_OPERATIONS.md`, `GENERATIONAL_REVIEW_ENGINE_TASKS.md`, `COMPETITIVE_LANDSCAPE.md`, `DOCUMENTATION_AUTHORITY.md`, and `ADVERSARIAL_REVIEW_PATTERNS.md` to the private example-meta knowledge tree. The adversarial patterns content is good material; if any of it becomes public later, it comes back rewritten as a user-facing "how the personas think" page, not as an internal design note.
+- **Change:** Remove `ORIGINAL_REQUEST.md` and `PROJECT.md` from the repo root. Move `KUBERNETES_REVIEW_OPERATIONS.md`, `GENERATIONAL_REVIEW_ENGINE_TASKS.md`, `COMPETITIVE_LANDSCAPE.md`, `DOCUMENTATION_AUTHORITY.md`, and `ADVERSARIAL_REVIEW_PATTERNS.md` to the private example-meta knowledge tree. The adversarial patterns content is good material; if any of it becomes public later, it comes back rewritten as a user-facing "how the personas think" page, not as an internal design note.
 - **Done when:** `git ls-files docs/` lists only pages a consumer would read. The repo root has a README, LICENSE, action.yml, CHANGELOG, and source.
 - **Size:** S.
 
@@ -72,7 +72,7 @@ Each item states the problem in one line, the change, how we know it worked, and
 
 - **Problem:** The quickstart is good, then the second section is a Kubernetes dispatch handshake.
 - **Change:** README order, and nothing else: one-paragraph positioning; the quickstart exactly as it is today; a screenshot of one real review comment from this repository's own PRs; "how the verdict works" in five lines (four states, what fails the check, what P0/P1 mean, that P2 never gates); "what it costs" with the measured token range and the default model's list price per review; "what leaves your runner" linking the Phase 0.3 page; pinning guidance from 0.2; a link to the advanced page. The Kubernetes and dispatch material moves entirely to the advanced page. Target under 150 lines.
-- **Done when:** A reader who stops at the screenshot knows what they get, what it costs, and what it sends. No mention of Kubernetes, DOKS, or dispatch appears in the README body.
+- **Done when:** A reader who stops at the screenshot knows what they get, what it costs, and what it sends. No mention of Kubernetes or dispatch appears in the README body.
 - **Size:** S.
 
 ### 1.3 Decide the docs set and delete the rest

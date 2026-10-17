@@ -87,16 +87,12 @@ export function createGetCloudflareStatusTool(options?: { cfOrchestratorUrl?: st
         shadowParity: {
           status: 'MATCHING',
           consecutiveMatches: 100,
-          doksFallbackConfigured: false,
           dataSource: 'baseline_sample_telemetry',
         },
         compute_plane: {
           active_runner: 'cloudflare',
           default_runner: 'cloudflare',
-          supported_runners: ['cloudflare', 'digitalocean'],
-          aliases: {
-            digitalocean: ['mars', 'do'],
-          },
+          supported_runners: ['cloudflare'],
         },
       });
     },

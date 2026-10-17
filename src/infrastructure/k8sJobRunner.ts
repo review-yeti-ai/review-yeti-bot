@@ -763,7 +763,7 @@ export class K8sJobRunner {
   }
 
   /**
-   * Simulates/Executes Kubernetes Job dispatch on DOKS cluster.
+   * Simulates/Executes Kubernetes Job dispatch on the Kubernetes cluster.
    * Returns complete dispatch outcome including constructed WorkRequest and cryptographic Request Digest.
    */
   public async dispatchJob(spec: K8sJobSpec): Promise<K8sJobDispatchResult> {

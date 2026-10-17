@@ -148,7 +148,7 @@ export default function ReposPage() {
     } catch {
       setScanResult({
         repoPath: scanRepoPath,
-        detectedStack: ['TypeScript', 'Next.js 15', 'Node.js', 'DigitalOcean K8s'],
+        detectedStack: ['TypeScript', 'Next.js 15', 'Node.js', 'Kubernetes'],
         suggestedPersonas: ['security', 'architecture', 'performance', 'quality', 'devops'],
         estimatedLatencyMs: 120,
         generatedYaml: `# .ct-review.yaml\nversion: "1.0"\nprofile: balanced\npersonas:\n  - security\n  - architecture\n  - performance\n  - quality\n  - devops\n`,
