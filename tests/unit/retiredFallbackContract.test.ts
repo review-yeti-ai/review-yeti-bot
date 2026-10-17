@@ -28,7 +28,7 @@ describe('retired execution fallback contract', () => {
   });
 
   it('does not default the operator workspace to a cloud-specific storage class', () => {
-    const operatorGo = walk(root).filter((file) => file.endsWith('.go') && !file.endsWith('_test.go'));
+    const operatorGo = walk(path.join(root, 'k8s-operator')).filter((file) => file.endsWith('.go') && !file.endsWith('_test.go'));
     for (const file of operatorGo) {
       expect(fs.readFileSync(file, 'utf8'), path.relative(root, file)).not.toContain('do-block-storage');
     }
