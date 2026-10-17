@@ -1254,7 +1254,7 @@ describe('POST /api/dispatch/action', () => {
     const signed = await new SignJWT(verified)
       .setProtectedHeader({ alg: 'RS256', kid: 'integration-key' })
       .setIssuer('https://token.actions.githubusercontent.com')
-      .setAudience('review-yeti-doks-dispatch')
+      .setAudience('review-yeti-edge-dispatch')
       .setIssuedAt()
       .setExpirationTime('5m')
       .sign(pair.privateKey);
@@ -1281,12 +1281,12 @@ describe('POST /api/dispatch/action', () => {
         .send(JSON.parse(String(init?.body)));
       return new Response(JSON.stringify(serverResponse.body), { status: serverResponse.status });
     });
-    const { dispatchAction } = await import(path.resolve(__dirname, '../../scripts/dispatch-doks-action.mjs'));
+    const { dispatchAction } = await import(path.resolve(__dirname, '../../scripts/dispatch-review-action.mjs'));
 
     const result = await dispatchAction({
-      DOKS_DISPATCH_URL: 'https://review-bot.example.com/api/dispatch/action',
-      DOKS_OIDC_AUDIENCE: 'review-yeti-doks-dispatch',
-      DOKS_PUBLISH_MODE: 'disabled',
+      DISPATCH_URL: 'https://review-bot.example.com/api/dispatch/action',
+      DISPATCH_OIDC_AUDIENCE: 'review-yeti-edge-dispatch',
+      DISPATCH_PUBLISH_MODE: 'disabled',
       ACTION_SHA: body.actionSha,
       REPOSITORY_ID: String(body.repositoryId),
       REPOSITORY: `${body.owner}/${body.repo}`,
@@ -1322,7 +1322,7 @@ describe('POST /api/dispatch/action', () => {
     const signed = await new SignJWT(centralClaims)
       .setProtectedHeader({ alg: 'RS256', kid: 'central-integration-key' })
       .setIssuer('https://token.actions.githubusercontent.com')
-      .setAudience('review-yeti-doks-dispatch')
+      .setAudience('review-yeti-edge-dispatch')
       .setIssuedAt()
       .setExpirationTime('5m')
       .sign(pair.privateKey);
@@ -1346,11 +1346,11 @@ describe('POST /api/dispatch/action', () => {
         .send(JSON.parse(String(init?.body)));
       return new Response(JSON.stringify(serverResponse.body), { status: serverResponse.status });
     });
-    const { dispatchAction } = await import(path.resolve(__dirname, '../../scripts/dispatch-doks-action.mjs'));
+    const { dispatchAction } = await import(path.resolve(__dirname, '../../scripts/dispatch-review-action.mjs'));
 
     const result = await dispatchAction({
-      DOKS_DISPATCH_URL: 'https://review-bot.example.com/api/dispatch/action',
-      DOKS_OIDC_AUDIENCE: 'review-yeti-doks-dispatch', DOKS_PUBLISH_MODE: 'app-gate',
+      DISPATCH_URL: 'https://review-bot.example.com/api/dispatch/action',
+      DISPATCH_OIDC_AUDIENCE: 'review-yeti-edge-dispatch', DISPATCH_PUBLISH_MODE: 'app-gate',
       EXPECTED_GENERATION: '3', ACTION_SHA: body.actionSha,
       REPOSITORY_ID: String(body.repositoryId), REPOSITORY: `${body.owner}/${body.repo}`,
       PR_NUMBER: String(body.prNumber), HEAD_SHA: body.headSha, BASE_SHA: body.baseSha,

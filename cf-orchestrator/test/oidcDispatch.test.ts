@@ -20,7 +20,7 @@ import type { Env, ReviewRunSpec } from '../src/types.js';
 // Import verification functions directly from the GitHub Actions dispatch script
 // to prove 100% strict contract compatibility!
 // @ts-ignore
-import { validateReceipt } from '../../../scripts/dispatch-doks-action.mjs';
+import { validateReceipt, REVIEW_DISPATCH_OIDC_AUDIENCE } from '../../../scripts/dispatch-review-action.mjs';
 
 describe('GitHub Actions OIDC Action Dispatch', () => {
   let privateKey: KeyLike;
@@ -56,7 +56,7 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
     const jwt = new SignJWT(defaultClaims)
       .setProtectedHeader({ alg: 'RS256' })
       .setIssuer(opts.issuer ?? GITHUB_ACTIONS_OIDC_ISSUER)
-      .setAudience(opts.audience ?? 'review-yeti-doks-dispatch')
+      .setAudience(opts.audience ?? 'review-yeti-edge-dispatch')
       .setIssuedAt()
       .setExpirationTime(opts.expiresIn ?? '5m');
 
@@ -159,19 +159,26 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
       assert.strictEqual(claims.run_id, '987654321');
     });
 
-    it('accepts both review-yeti-doks-dispatch and review-yeti-edge-dispatch audiences', async () => {
-      const doksToken = await createMockToken({}, privateKey, {
+    it('accepts the legacy review-yeti-doks-dispatch audience alongside review-yeti-edge-dispatch', async () => {
+      const legacyToken = await createMockToken({}, privateKey, {
         audience: 'review-yeti-doks-dispatch',
       });
       const edgeToken = await createMockToken({}, privateKey, {
         audience: 'review-yeti-edge-dispatch',
       });
 
-      const doksClaims = await verifyGitHubActionsOidc(doksToken, { keySet: mockKeySet });
-      assert.strictEqual(doksClaims.repository, 'exampleorg/sample-repo');
+      const legacyClaims = await verifyGitHubActionsOidc(legacyToken, { keySet: mockKeySet });
+      assert.strictEqual(legacyClaims.repository, 'exampleorg/sample-repo');
 
       const edgeClaims = await verifyGitHubActionsOidc(edgeToken, { keySet: mockKeySet });
       assert.strictEqual(edgeClaims.repository, 'exampleorg/sample-repo');
+    });
+
+    it('accepts the audience the Action requests', async () => {
+      assert.strictEqual(REVIEW_DISPATCH_OIDC_AUDIENCE, 'review-yeti-edge-dispatch');
+      const token = await createMockToken({}, privateKey, { audience: REVIEW_DISPATCH_OIDC_AUDIENCE });
+      const claims = await verifyGitHubActionsOidc(token, { keySet: mockKeySet });
+      assert.strictEqual(claims.repository, 'exampleorg/sample-repo');
     });
 
     it('rejects tokens signed by an unauthorized key', async () => {
@@ -219,7 +226,7 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
       })
         .setProtectedHeader({ alg: 'RS256' })
         .setIssuer(GITHUB_ACTIONS_OIDC_ISSUER)
-        .setAudience('review-yeti-doks-dispatch')
+        .setAudience('review-yeti-edge-dispatch')
         .setIssuedAt()
         .setExpirationTime('5m')
         .sign(privateKey);
@@ -344,7 +351,6 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
 
       baseEnv.PILOT_REPOSITORIES = 'exampleorg/sample-repo,review-yeti-ai/review-yeti-bot';
       baseEnv.ENVIRONMENT = 'test';
-      baseEnv.PARALLEL_MODE = 'false';
       baseEnv.REVIEW_JOB_WORKFLOW = {
         create: async (item: { id: string; params: ReviewRunSpec }) => {
           dispatchedWorkflows.push(item);
@@ -499,7 +505,7 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
 
       const receipt = (await res.json()) as any;
 
-      // Validate against dispatch-doks-action.mjs validator
+      // Validate against dispatch-review-action.mjs validator
       const validated = validateReceipt(receipt);
       assert.strictEqual(validated.version, 'ActionDispatchAccepted.v1');
       assert.strictEqual(validated.status, 'accepted');

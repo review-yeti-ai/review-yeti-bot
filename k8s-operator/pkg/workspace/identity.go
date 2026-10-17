@@ -21,7 +21,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -34,13 +36,21 @@ const (
 	WorkspaceKeyAnnotation = "review-yeti.ai/workspace-key"
 	LastUsedAtAnnotation   = "review-yeti.ai/last-used-at"
 	ProtectionFinalizer    = "review-yeti.ai/workspace-protection"
-	StorageClassName       = "do-block-storage"
+	// StorageClassEnv names the environment variable that selects the workspace PVC StorageClass.
+	StorageClassEnv = "REVIEW_YETI_WORKER_STORAGE_CLASS"
 )
 
 var (
 	ErrWorkspaceIdentity    = errors.New("workspace identity mismatch")
 	ErrWorkspaceTerminating = errors.New("workspace resource is terminating")
 )
+
+// ConfiguredStorageClass returns the explicitly configured workspace StorageClass name.
+// It is empty when unset, in which case the workspace PVC leaves the class unset and the
+// cluster's default StorageClass is used.
+func ConfiguredStorageClass() string {
+	return strings.TrimSpace(os.Getenv(StorageClassEnv))
+}
 
 // Key identifies a reusable workspace by repository and pull request, not by head SHA.
 func Key(repositoryID int64, prNumber int32) string {

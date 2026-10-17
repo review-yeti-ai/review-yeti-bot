@@ -73,8 +73,8 @@ describe('Runner Cost & Runtime Calculation Suite', () => {
       assert.equal(result.formattedCost, '$0.00 USD');
     });
 
-    it('prices a retired runner name at the Cloudflare rate and flags the fallback', () => {
-      const result = calculateRunnerCost({ durationMs: 30000, runnerType: 'digitalocean' });
+    it('prices an unknown runner name at the Cloudflare rate and flags the fallback', () => {
+      const result = calculateRunnerCost({ durationMs: 30000, runnerType: 'unknown-runner' });
 
       assert.equal(result.usedFallbackRate, true);
       assert.equal(result.costUsd, 0.00045);

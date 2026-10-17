@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   verify-orchestrator:
-    name: Build, Test & Parity Verification
+    name: Build & Test
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -58,11 +58,6 @@ jobs:
       - name: Run End-to-End Integration Suite
         working-directory: cf-orchestrator
         run: npm run test:e2e
-
-      - name: Verify Parity Comparison CLI Tool
-        working-directory: cf-orchestrator
-        run: |
-          node scripts/ci/compare-orchestrator-runs.js --help
 
   deploy-orchestrator:
     name: Deploy to Cloudflare Edge
@@ -111,16 +106,14 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           ALLOWED_ORIGINS: ${{ vars.CF_ALLOWED_ORIGINS }}
-          DOKS_FALLBACK_URL: ${{ vars.DOKS_FALLBACK_URL }}
           OPERATOR_GLOBAL_PASSTHROUGH: ${{ vars.REVIEW_YETI_PASSTHROUGH || 'true' }}
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: 'cf-orchestrator'
-          # The public hostname, the browser origins and the DOKS fallback URL are deployment configuration kept in
-          # repository variables (CF_CUSTOM_DOMAIN, CF_ALLOWED_ORIGINS, DOKS_FALLBACK_URL), not in this repository.
+          # The public hostname and the browser origins are deployment configuration kept in
+          # repository variables (CF_CUSTOM_DOMAIN, CF_ALLOWED_ORIGINS), not in this repository.
           vars: |
             ALLOWED_ORIGINS
-            DOKS_FALLBACK_URL
             OPERATOR_GLOBAL_PASSTHROUGH
           command: deploy

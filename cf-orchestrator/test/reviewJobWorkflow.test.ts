@@ -1057,7 +1057,7 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     });
 
     it('fails closed with a clear error for a stale non-cloudflare RUNNER_TYPE', () => {
-      for (const stale of ['digitalocean', 'mars', 'do', 'doks', 'bogus']) {
+      for (const stale of ['mars', 'do', 'legacy', 'bogus']) {
         const workflow = new ReviewJobWorkflow({ ...createMockEnv(), RUNNER_TYPE: stale });
         assert.throws(
           () => workflow.getRunner(),

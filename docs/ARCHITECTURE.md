@@ -59,25 +59,14 @@ flowchart TD
 
 ## ⚙️ Execution Models
 
-Review Yeti supports three first-class, valid execution patterns:
+Review Yeti supports two first-class execution patterns:
 
 ### 1. Cloudflare-Native Edge & Ephemeral Serverless Mode (`execution-backend: edge`)
 - **Runtime**: Ephemeral serverless runners (Cloudflare Container Sandboxes) with repository workspace caching in Cloudflare R2.
 - **Orchestration**: Managed via Cloudflare Edge Worker (`cf-orchestrator`), Cloudflare Workflows (`ReviewJobWorkflow`), and Durable Objects (`RepoGateDO`, `ReviewRunDO`) for concurrency serialization, debouncing, and state tracking.
 - **Ideal For**: Teams seeking zero standing cluster infrastructure, zero idle RAM, sub-second boot, and pay-only-for-active-reviews economics.
 
-### 2. Kubernetes Asynchronous Worker Mode (`execution-backend: doks`)
-- **Runtime**: Ephemeral containerized worker pods (`review-yeti-worker`) running inside a Kubernetes cluster (EKS, GKE, K3s, etc.).
-- **Orchestration**:
-  - GitHub Actions runs an ultra-fast dispatch shim (< 10 seconds).
-  - Shim registers an in-progress Check Run (`review-status: DISPATCHED`, `gate-decision: PENDING`).
-  - Admission service receives dispatch payload and creates a `PRReviewJob` custom resource.
-  - Review Yeti Go Operator schedules a lightweight worker pod (`node dist/cli/runLiveReview.js`).
-  - Worker evaluates personas in parallel, completes the Check Run directly, and posts the consolidated review comment via a minted GitHub App installation token.
-- **Ideal For**: Teams already standardizing on Kubernetes infrastructure who prefer keeping review execution inside their private VPC/cluster boundaries.
-- **Reference**: See [Kubernetes Execution Mode](KUBERNETES_MODE.md).
-
-### 3. Ephemeral In-Runner Mode (Action Mode, `execution-backend: local`)
+### 2. Ephemeral In-Runner Mode (Action Mode, `execution-backend: local`)
 - **Runtime**: Runs directly within the GitHub Actions virtual machine (`ubuntu-latest` or self-hosted runner).
 - **Orchestration**: Managed via `action.yml` and `.github/workflows/pipelines/review-pipeline.js`.
 - **Ideal For**: Quick adoption, public open-source repos, and teams with moderate PR volume.
@@ -268,7 +257,6 @@ Review Yeti's configuration parser is designed for hierarchical extensibility:
 ## 📚 Further Reading
 
 - [GitHub App Setup Guide](GITHUB_APP_SETUP.md)
-- [Kubernetes Execution Mode](KUBERNETES_MODE.md)
 - [Kubernetes Operations](KUBERNETES_REVIEW_OPERATIONS.md)
 - [Friendly Onboarding Guide](ONBOARDING_GUIDE.md)
 - [Configuration Reference](CONFIGURATION_REFERENCE.md)

@@ -23,7 +23,7 @@ The allowlist is a ratchet: it may only shrink, and an entry must be deleted whe
 | 1 | Go module path `github.com/<org>/ct-review-bot/k8s-operator` | `k8s-operator/go.mod`, every Go import, `tests/support/operatorGoFailureReceipt.ts` | None at runtime (compiled in). No external module consumers (no forks, no importers). | Rename to `github.com/review-yeti-ai/review-yeti-bot/k8s-operator` in one mechanical change; run `go build ./... && go test ./...` and the Go-suite wrapper test. Do this first: it removes about a third of the allowlist. |
 | 2 | Legacy CRD group `review.<org>.com` (v1alpha1) and annotation key `ct.review.<org>.com/active-slots` | `k8s-operator/api/v1alpha1`, `config/crd/bases/review.<org>.com_prreviewjobs.yaml`, capacity ledger | The live cluster serves only the `review-yeti.ai` group (checked with `kubectl get crd`); the legacy group is not installed. The annotation key is written on live capacity-ledger objects. | (a) Verify no `review.<org>.com` CRs exist in any cluster, then delete the v1alpha1 package, its CRD file and tests. (b) For the annotation key: read both old and new keys for one release, write the new key, then drop the old read. |
 | 3 | Registry allowlists and the image pull Secret named after the organization | `scripts/*review*.sh`, `scripts/lib/review-runtime-image-provenance.sh`, `k8s/*.tpl` | Deploy-time validation only. Production pulls public GHCR images. | The allowlists accept only `ghcr.io/review-yeti-ai/<image>@sha256:<digest>`; the images are public, so no pull secret is required. |
-| 4 | Default service URLs (`action.yml` `doks-dispatch-url`, `.github/workflows/review-bot.yaml`, `scripts/dispatch-doks-action.mjs`, `scripts/verify-*.sh`, `cf-orchestrator/wrangler.toml`, `reviewJobWorkflow`) | action defaults, scripts, edge worker config | Consumers that omit the input use the default endpoint. | Make the endpoint a required input / explicit environment value with no organization default; announce, warn for one release when the default is used, then remove. Deployers set the value in their own config. |
+| 4 | Default service URLs (`action.yml` `dispatch-url`, `.github/workflows/review-bot.yaml`, `scripts/dispatch-review-action.mjs`, `scripts/verify-*.sh`, `cf-orchestrator/wrangler.toml`, `reviewJobWorkflow`) | action defaults, scripts, edge worker config | Consumers that omit the input use the default endpoint. | Make the endpoint a required input / explicit environment value with no organization default; announce, warn for one release when the default is used, then remove. Deployers set the value in their own config. |
 | 5 | CORS/MCP origin allowlist and default owner/repo in `cf-orchestrator` tool schemas | `cf-orchestrator/src/mcp/**` | MCP clients that omit `owner`/`repo` rely on the defaults; browsers on the deployer's origin rely on the allowlist. | Read origins from configuration (empty default); make `owner`/`repo` required or neutral placeholders; update the coupled tests. |
 | 6 | Dashboard demo defaults and placeholders | `src/app/**`, `src/components/**`, `src/api/**` | Cosmetic (placeholders, sample data); sample repositories shown when no data exists. | Replace with neutral placeholders; regenerate the static export. |
 | 7 | Committed static export `public/**`, `legacy_public/**` | build output tracked in git | Served assets. | Stop tracking generated output (build in CI/image), then delete the entries. |
@@ -60,12 +60,12 @@ rewritten text were re-derived and committed on top.
 
 Nothing is left on the allowlist. The two sets that first looked unmovable were migrated to configuration instead:
 
-- The dispatch endpoint (`action.yml`, `scripts/dispatch-doks-action.mjs`) is supplied by the calling workflow and
+- The dispatch endpoint (`action.yml`, `scripts/dispatch-review-action.mjs`) is supplied by the calling workflow and
   validated structurally (https, DNS hostname, exact path, no credentials). The former exact-host pin guarded against
   a caller pointing the Action elsewhere, but admission is already bound service-side by GitHub Actions OIDC to an
-  allowlisted workflow identity, so a different host grants nothing. `docs/KUBERNETES_MODE.md` states this.
-- The edge worker's public hostname, browser-origin allowlist and fallback URL are deployment configuration: repository
-  variables `CF_CUSTOM_DOMAIN`, `CF_ALLOWED_ORIGINS` and `DOKS_FALLBACK_URL` are passed by the deploy job
+  allowlisted workflow identity, so a different host grants nothing.
+- The edge worker's public hostname and browser-origin allowlist are deployment configuration: repository
+  variables `CF_CUSTOM_DOMAIN` and `CF_ALLOWED_ORIGINS` are passed by the deploy job
   (`wrangler deploy --domain`, `vars`), and the router reads `ALLOWED_ORIGINS` at runtime.
 
 Commit metadata is covered too: `scripts/ci/audit-commit-metadata.mjs` rejects organization identities and names in the

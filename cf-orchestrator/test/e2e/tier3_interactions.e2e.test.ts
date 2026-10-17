@@ -13,53 +13,32 @@ import type { ReviewRunSpec } from '../../src/types.js';
 describe('Tier 3: Cross-Feature Interactions', () => {
   const SECRET = 'test_webhook_secret_key_interactions';
 
-  it('X1: Ingress Dual-Dispatch Fanout + Debounce Queue Ingress interact seamlessly', async () => {
-    let fanoutUrl = '';
-    let fanoutPayload: any = null;
+  it('X1: Debounce Queue Ingress enqueues synchronize events with a 60s delay', async () => {
+    const harness = createE2EEnvironment({
+      githubWebhookSecret: SECRET,
+      pilotRepositories: 'all',
+    });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: any, init?: any) => {
-      fanoutUrl = String(url);
-      fanoutPayload = JSON.parse(init?.body as string);
-      return new Response('ok', { status: 200 });
-    }) as any;
+    const payload = createWebhookPayload('synchronize', {
+      owner: 'review-yeti-ai',
+      repo: 'review-yeti-bot',
+      prNumber: 50,
+      headSha: 'headsha_sync_001',
+    });
 
-    try {
-      const fallbackUrl = 'https://doks-production.internal/webhooks';
-      const harness = createE2EEnvironment({
-        githubWebhookSecret: SECRET,
-        doksFallbackUrl: fallbackUrl,
-        pilotRepositories: 'all',
-      });
+    const rawBody = JSON.stringify(payload);
+    const sig = await signWebhookPayload(SECRET, rawBody);
 
-      const payload = createWebhookPayload('synchronize', {
-        owner: 'review-yeti-ai',
-        repo: 'review-yeti-bot',
-        prNumber: 50,
-        headSha: 'headsha_sync_001',
-      });
+    const res = await harness.dispatchWebhook(payload, { 'X-Hub-Signature-256': sig }, rawBody);
+    assert.equal(res.status, 200);
+    const json = (await res.json()) as any;
+    assert.equal(json.status, 'queued_debounced');
+    assert.equal(json.delaySeconds, 60);
 
-      const rawBody = JSON.stringify(payload);
-      const sig = await signWebhookPayload(SECRET, rawBody);
-
-      const res = await harness.dispatchWebhook(payload, { 'X-Hub-Signature-256': sig }, rawBody);
-      assert.equal(res.status, 200);
-      const json = (await res.json()) as any;
-      assert.equal(json.status, 'queued_debounced');
-      assert.equal(json.delaySeconds, 60);
-
-      // Verify fanout occurred asynchronously with identical payload
-      assert.equal(fanoutUrl, fallbackUrl);
-      assert.equal(fanoutPayload.action, 'synchronize');
-      assert.equal(fanoutPayload.pull_request.head.sha, 'headsha_sync_001');
-
-      // Verify queue received the debounced item
-      assert.equal(harness.queuedDebounceMessages.length, 1);
-      assert.equal(harness.queuedDebounceMessages[0].message.headSha, 'headsha_sync_001');
-      assert.equal(harness.queuedDebounceMessages[0].options?.delaySeconds, 60);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    // Verify queue received the debounced item
+    assert.equal(harness.queuedDebounceMessages.length, 1);
+    assert.equal(harness.queuedDebounceMessages[0].message.headSha, 'headsha_sync_001');
+    assert.equal(harness.queuedDebounceMessages[0].options?.delaySeconds, 60);
   });
 
   it('X2: Debounce Ingress ➔ Queue Consumer ➔ Full Workflow Execution completes pipeline', async () => {

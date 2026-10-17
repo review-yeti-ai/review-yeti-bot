@@ -237,7 +237,7 @@ jobs:
           honcho-recall-peers: ${{ vars.HONCHO_RECALL_PEERS || 'review-yeti,codex' }}
           honcho-recall-distance: '0.35'
           memory-provider: 'composite'
-          doks-publish-mode: 'app-gate'
+          publish-mode: 'app-gate'
 
       - name: Report Verdict
         if: ${{ always() && (((github.event_name == 'repository_dispatch' && needs.start-self-review.outputs.mode == 'dispatch-review') || needs.start-self-review.outputs.mode == 'review') && vars.REVIEW_YETI_PASSTHROUGH != 'true') }}

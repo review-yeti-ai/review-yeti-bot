@@ -4,15 +4,12 @@ import { ReviewJobWorkflow, type WorkflowStep } from '../../src/reviewJobWorkflo
 import worker from '../../src/worker.js';
 import type { DebounceMessagePayload, Env, ReviewRunSpec } from '../../src/types.js';
 import { MockDurableObjectState } from '../mockDurableObject.js';
-import type { ReviewRunReceipt } from '../../src/compareOrchestratorRuns.js';
 import { MockContainerRunner, type ContainerRunner } from '../../src/runners/containerRunner.js';
 
 export interface E2ETestHarnessOptions {
   pilotRepositories?: string;
-  doksFallbackUrl?: string;
   githubWebhookSecret?: string;
   environment?: string;
-  parallelMode?: string;
   parallelCheckName?: string;
   defaultWorkerImage?: string;
   containersBinding?: any;
@@ -103,11 +100,9 @@ export function createE2EEnvironment(options: E2ETestHarnessOptions = {}) {
       },
     },
     ENVIRONMENT: options.environment ?? 'staging',
-    PARALLEL_MODE: options.parallelMode ?? 'true',
     PARALLEL_CHECK_NAME: options.parallelCheckName ?? 'Review Yeti (Cloudflare Canary)',
     OPERATOR_GLOBAL_PASSTHROUGH: 'false',
     PILOT_REPOSITORIES: options.pilotRepositories ?? 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta',
-    DOKS_FALLBACK_URL: options.doksFallbackUrl ?? '',
     GITHUB_WEBHOOK_SECRET: options.githubWebhookSecret ?? 'e2e-default-test-secret',
     DEFAULT_WORKER_IMAGE: options.defaultWorkerImage ?? 'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
   };
@@ -239,31 +234,5 @@ export function createWebhookPayload(
     installation: {
       id: options.installationId ?? 123456,
     },
-  };
-}
-
-/**
- * Creates standard sample receipts for DOKS and Cloudflare comparison
- */
-export function createSampleReceipt(
-  orchestrator: 'doks' | 'cloudflare',
-  overrides: Partial<ReviewRunReceipt> = {}
-): ReviewRunReceipt {
-  return {
-    orchestrator,
-    runId: overrides.runId ?? (orchestrator === 'doks' ? 'doks_run_101' : 'cf_run_101'),
-    repo: overrides.repo ?? 'review-yeti-ai/review-yeti-bot',
-    prNumber: overrides.prNumber ?? 42,
-    headSha: overrides.headSha ?? '0123456789abcdef0123456789abcdef01234567',
-    verdict: overrides.verdict ?? 'success',
-    findingFingerprints: overrides.findingFingerprints ?? ['fp_sec_001', 'fp_perf_002'],
-    durationMs: overrides.durationMs ?? (orchestrator === 'doks' ? 45000 : 38000),
-    tokensUsed: overrides.tokensUsed ?? {
-      promptTokens: 12000,
-      completionTokens: 2500,
-      totalTokens: 14500,
-    },
-    zoektIndexShards: overrides.zoektIndexShards ?? 4,
-    completedAt: overrides.completedAt ?? new Date().toISOString(),
   };
 }

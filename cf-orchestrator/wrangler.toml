@@ -7,7 +7,7 @@ workers_dev = true
 keep_vars = true
 
 # The public hostname is deployment configuration, not code: the deploy job attaches the custom domain
-# (`wrangler deploy --domain`) and passes ALLOWED_ORIGINS and DOKS_FALLBACK_URL from repository variables.
+# (`wrangler deploy --domain`) and passes ALLOWED_ORIGINS from repository variables.
 
 # 🎨 Serve the Next.js Portal directly from Cloudflare Edge
 [assets]
@@ -72,7 +72,6 @@ id = "dbd1e6d53ed2470cb11cec13a7949cff"
 # Environment Variables
 [vars]
 ENVIRONMENT = "production"
-PARALLEL_MODE = "false"
 PARALLEL_CHECK_NAME = "Review Yeti"
 PILOT_REPOSITORIES = "all"
 DEFAULT_WORKER_IMAGE = "ghcr.io/review-yeti-ai/review-yeti-worker:latest"

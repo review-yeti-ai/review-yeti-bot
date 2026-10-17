@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDispatchRequest } from '../../scripts/dispatch-doks-action.mjs';
+import { buildDispatchRequest } from '../../scripts/dispatch-review-action.mjs';
 
 /**
  * The set of publish modes this action accepts is a cross-repository contract.
@@ -21,7 +21,7 @@ import { buildDispatchRequest } from '../../scripts/dispatch-doks-action.mjs';
 function environment(publishMode: string): Record<string, string> {
   return {
     REPOSITORY: 'exampleorg/example-meta',
-    DOKS_PUBLISH_MODE: publishMode,
+    DISPATCH_PUBLISH_MODE: publishMode,
     GITHUB_EVENT_NAME: 'pull_request_target',
     REPOSITORY_ID: '1339040553',
     PR_NUMBER: '2795',
@@ -35,7 +35,7 @@ function environment(publishMode: string): Record<string, string> {
 
 const ACCEPTED = ['disabled', 'app-gate'];
 
-describe('DOKS publish-mode contract (cross-repository, behavioural)', () => {
+describe('Dispatch publish-mode contract (cross-repository, behavioural)', () => {
   it.each(ACCEPTED)('accepts %s', (mode) => {
     expect(buildDispatchRequest(environment(mode)).publishMode).toBe(mode);
   });
@@ -71,7 +71,7 @@ describe('DOKS publish-mode contract (cross-repository, behavioural)', () => {
     // absent variable to a publishing mode while still mapping '' to 'disabled'
     // would pass an empty-string test and leave this safety property unpinned.
     const absent = environment('');
-    delete absent.DOKS_PUBLISH_MODE;
+    delete absent.DISPATCH_PUBLISH_MODE;
     expect(buildDispatchRequest(absent).publishMode).toBe('disabled');
     expect(buildDispatchRequest(environment('')).publishMode).toBe('disabled');
   });

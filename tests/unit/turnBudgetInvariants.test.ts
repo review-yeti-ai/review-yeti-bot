@@ -14,7 +14,7 @@ import {
 
 describe('panel turn ceilings stay in agreement', () => {
   // `MAX_INVESTIGATION_TURNS` (panelEngine.ts) bounds a single persona lane's own turn count.
-  // `PUBLISHING_MAX_TURNS` (publishingWorkerConfig.ts) is the DOKS publishing worker's projection
+  // `PUBLISHING_MAX_TURNS` (publishingWorkerConfig.ts) is the publishing worker's projection
   // of that same ceiling -- its own doc comment says it "matches the central policy's
   // max_investigation_turns so a caller policy cannot be silently clamped below its requested
   // budget." These are two independently declared constants with no shared source; nothing

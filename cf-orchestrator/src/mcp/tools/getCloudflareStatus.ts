@@ -5,7 +5,7 @@ export const getCloudflareStatusTool: McpToolHandler = {
   definition: {
     name: 'review_yeti_get_cloudflare_status',
     description:
-      'Inspect the real-time operational status of Review Yeti Cloudflare edge control plane: RepoGateDO concurrency slots, queue depth, ReviewRunDO fencing, R2 workspace cache, and shadow parity.',
+      'Inspect the real-time operational status of Review Yeti Cloudflare edge control plane: RepoGateDO concurrency slots, queue depth, ReviewRunDO fencing, and R2 workspace cache.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -84,7 +84,6 @@ export const getCloudflareStatusTool: McpToolHandler = {
     const report: CloudflareStatusReport = {
       timestamp: new Date().toISOString(),
       environment: env.ENVIRONMENT || 'production',
-      parallelMode: env.PARALLEL_MODE !== 'false',
       repoGate: {
         activeSlotsUsed: activeSlots,
         concurrencyCap: capacity,
@@ -102,13 +101,6 @@ export const getCloudflareStatusTool: McpToolHandler = {
         totalSizeBytes: cacheSizeBytes,
         retentionPolicy: '1-Hour (3,600s) Aggressive TTL + Hourly Cron Purge',
       },
-      shadowParity: {
-        status: 'MATCHING',
-        consecutiveMatches: 100,
-        doksFallbackConfigured: Boolean(env.DOKS_FALLBACK_URL),
-        // Gate/cache reads do not supply a shadow comparison ledger.
-        dataSource: 'baseline_sample_telemetry',
-      },
       computePlane: {
         activeRunner: (env.RUNNER_TYPE || 'cloudflare').toLowerCase(),
         defaultRunner: 'cloudflare',
@@ -121,7 +113,7 @@ export const getCloudflareStatusTool: McpToolHandler = {
 
     const summaryText =
       `### ⚡ Review Yeti Cloudflare Control Plane Status\n\n` +
-      `- **Environment:** \`${report.environment}\` (Parallel Mode: \`${report.parallelMode}\`)\n` +
+      `- **Environment:** \`${report.environment}\`\n` +
       `- **Active Compute Plane:** \`${report.computePlane?.activeRunner}\` (Cloudflare Edge Containers)\n` +
       `- **RepoGate Concurrency:** **${report.repoGate.activeSlotsUsed} / ${report.repoGate.concurrencyCap}** active slots in use | Queue Depth: **${report.repoGate.queueDepth}**\n` +
       `- **Active Runs:** ${
@@ -130,9 +122,7 @@ export const getCloudflareStatusTool: McpToolHandler = {
           : '_None (Idle)_'
       }\n` +
       `- **R2 Workspace Cache:** Bucket \`${report.r2WorkspaceCache.bucket}\` | **${report.r2WorkspaceCache.totalObjects} objects** (~${cacheMb} MB)\n` +
-      `- **Cache Lifecycle:** ${report.r2WorkspaceCache.retentionPolicy}\n` +
-      `- **Shadow Parity Status:** \`${report.shadowParity.status}\` (${report.shadowParity.consecutiveMatches} consecutive shadow matches in CI - baseline telemetry; live ledger not attached)\n` +
-      `- **DOKS Fallback Stream:** \`${env.DOKS_FALLBACK_URL || 'Not configured'}\`\n`;
+      `- **Cache Lifecycle:** ${report.r2WorkspaceCache.retentionPolicy}\n`;
 
     return {
       content: [

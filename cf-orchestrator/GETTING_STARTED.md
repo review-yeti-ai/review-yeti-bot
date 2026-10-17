@@ -1,13 +1,10 @@
 # Getting Started with the Review Yeti Cloudflare Orchestrator
 
-This guide walks you through setting up, deploying, and operating the Cloudflare-native orchestration engine for Review Yeti—running in parallel with the production DOKS (Kubernetes) operator for zero-risk shadow validation.
+This guide walks you through setting up, deploying, and operating the Cloudflare-native orchestration engine for Review Yeti.
 
 > [!IMPORTANT]
-> **Active Production State: Parallel Shadow Canary Mode**  
-> - **Live Edge Endpoint**: [`https://review-yeti-cf-orchestrator.example.workers.dev`](https://review-yeti-cf-orchestrator.example.workers.dev)  
-> - **Operational Invariant**: The DOKS Kubernetes operator (`ct-review-yeti-operator`) is running and authoritative in production, posting the primary `"Review Yeti"` checks.  
-> - **Cloudflare Canary**: Cloudflare evaluates incoming PRs concurrently, publishing non-blocking `"Review Yeti (Cloudflare Canary)"` checks and PR reviews with 1-click inline suggestions.  
-> - **Do NOT shut down DOKS, delete PVCs, or terminate node pools** until shadow parity is verified across 100+ consecutive real-world PR runs.
+> **Live Edge Endpoint**: [`https://review-yeti-cf-orchestrator.example.workers.dev`](https://review-yeti-cf-orchestrator.example.workers.dev)  
+> The Worker is the authoritative Review Yeti orchestrator: it posts the `"Review Yeti"` check and PR reviews with 1-click inline suggestions.
 
 ---
 
@@ -46,24 +43,7 @@ npm test
 npm run test:e2e
 ```
 
-All **893 tests** pass cleanly across 211 suites (819 unit & contract across 197 suites + 74 E2E across 14 suites):
-
-```
-✔ Webhook Ingress Worker & ChatOps Ingress (src/worker.ts)
-✔ RepoGateDO SQLite Concurrency Gate & FIFO Queue (src/repoGateDO.ts)
-✔ ReviewRunDO SQLite Coordinator & Fencing Epochs (src/reviewRunDO.ts)
-✔ ReviewJobWorkflow Durable Execution (src/reviewJobWorkflow.ts)
-✔ Phase 2: Review Publisher & 1-Click Inline Suggestions (src/reviewPublisher.ts)
-✔ Tool & MCP Tunnel YAML Definition (src/tunnel/toolTunnelDefinition.ts)
-✔ Tunnel Auto-Detection & Resolution (src/tunnel/tunnelConfig.ts)
-✔ DeepSeek-Style Diff Task Harness & Context Compactor (src/diffHarness/)
-✔ Container & DO Agent Runners (src/runners/)
-✔ R2 Workspace Cache Hydration (src/runners/r2WorkspaceCache.ts)
-✔ compareRuns Parity Assertion (src/compareOrchestratorRuns.ts)
-✔ Tier 5 Adversarial Control Plane & Runner Stress Suites
-✔ Tiers 1-4 End-to-End Scenarios & Shadow Parity Verification
-ℹ tests 893 | suites 211 | pass 893 | fail 0
-```
+The suites cover the webhook ingress worker, the `RepoGateDO` and `ReviewRunDO` Durable Objects, `ReviewJobWorkflow`, the review publisher, tool tunnels, the diff task harness, the container runner, the R2 workspace cache, and the Tier 5 adversarial control plane and runner stress suites.
 
 ---
 
@@ -149,19 +129,15 @@ These tiers are mapped directly to upstream model parameters (e.g. OpenAI `reaso
 
 ---
 
-## 6. Setting Up Non-Destructive Parallel Parity with DOKS
+## 6. Deploying the Worker
 
-To validate the Cloudflare engine alongside the existing DOKS production deployment with **zero risk**:
-
-### 6.1 `wrangler.toml` Ingress Configuration
+### 6.1 `wrangler.toml` Configuration
 ```toml
 # wrangler.toml
 [vars]
 ENVIRONMENT = "production"
-PARALLEL_MODE = "true"
-PARALLEL_CHECK_NAME = "Review Yeti (Cloudflare Canary)"
+PARALLEL_CHECK_NAME = "Review Yeti"
 PILOT_REPOSITORIES = "exampleorg/example-workspace,all"
-DOKS_FALLBACK_URL = "https://review-bot.example.com/api/webhooks/github"
 MAX_CONCURRENT_JOBS = "5"
 DEBOUNCE_WINDOW_SECONDS = "10"
 RUNNER_TYPE = "cloudflare"
@@ -193,70 +169,15 @@ In your GitHub App settings, set the Webhook URL to:
 `https://review-yeti-cf-orchestrator.example.workers.dev/api/webhooks/github`
 
 ### 6.5 Operational Execution Flow
-1. **DOKS Remains 100% Primary**: Cloudflare immediately forwards every incoming webhook asynchronously to `DOKS_FALLBACK_URL`. DOKS processes production reviews and posts the authoritative `"Review Yeti"` check.
-2. **Cloudflare Canary Shadow**: Cloudflare concurrently processes the review, applies 10s queue debouncing, acquires `RepoGateDO` concurrency slots, coordinates execution via `ReviewJobWorkflow`, and publishes `"Review Yeti (Cloudflare Canary)"` checks alongside Phase 2 inline suggestions.
+Cloudflare receives each webhook, applies 10s queue debouncing, acquires `RepoGateDO` concurrency slots, coordinates execution via `ReviewJobWorkflow`, and publishes the `"Review Yeti"` check alongside Phase 2 inline suggestions.
+
+### 6.6 Operating Targets
+1. **Cancellation Latency**: Pushing a new commit while a review is in flight cancels the old run within 3 seconds.
+2. **Cache Hydration**: Workspace cache restoration from R2 takes < 1.5 seconds.
 
 ---
 
-## 7. Benchmarking & Shadow Parity Evaluation
-
-Compare DOKS and Cloudflare run receipts side-by-side using the parity CLI tool:
-
-```bash
-node scripts/ci/compare-orchestrator-runs.js \
-  --doks-receipt path/to/doks-receipt.json \
-  --cf-receipt path/to/cf-receipt.json
-```
-
-Sample output:
-```
-============================================================
- ORCHESTRATOR PARITY REPORT: exampleorg/example-workspace @ a1b2c3d
- Status: ✅ MATCH
-============================================================
-• Verdict Agreement:         YES
-• Finding Fingerprint Match: YES (diff: 0)
-• Latency Delta:             -7000ms (0.84x faster on Cloudflare)
-• Token Usage Delta:         -20
-============================================================
-```
-
-### Promotion Gate Criteria
-Before scheduling full DOKS cutover:
-1. **100 Consecutive Matches**: Zero unexplained discrepancies in review verdicts or finding fingerprints.
-2. **Cancellation Latency**: Pushing a new commit while a review is in flight cancels the old run within 3 seconds.
-3. **Cache Hydration**: Workspace cache restoration from R2 takes < 1.5 seconds.
-
----
-
-## 8. Future Production Cutover Runbook (Post-Parity Validation)
-
-Once shadow parity criteria are satisfied across real production workloads:
-
-1. **Promote Check Name & Terminate Dual-Dispatch**:
-   In `wrangler.toml`:
-   ```toml
-   PARALLEL_CHECK_NAME = "Review Yeti"
-   DOKS_FALLBACK_URL = "" # Cease legacy fanout
-   ```
-   Deploy:
-   ```bash
-   npm run deploy
-   ```
-2. **Decommission DOKS Operator**:
-   ```bash
-   kubectl scale deployment ct-review-yeti-operator -n review-yeti --replicas=0
-   kubectl scale deployment ct-review-job-dispatcher -n review-yeti --replicas=0
-   ```
-3. **Reclaim PVCs & Worker Node Pools**:
-   ```bash
-   kubectl delete pvc -l app=ct-review-yeti -n review-yeti
-   ```
-   Downscale or terminate the dedicated DOKS Kubernetes node pool.
-
----
-
-## 9. Live Observability & Useful Commands
+## 7. Live Observability & Useful Commands
 
 ```bash
 # Stream live Cloudflare edge logs

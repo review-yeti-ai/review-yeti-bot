@@ -110,7 +110,6 @@ function createTestEnv(options: GithubMockOptions = {}) {
 
   const env = {
     ENVIRONMENT: 'test',
-    PARALLEL_MODE: 'false',
     PARALLEL_CHECK_NAME: 'Review Yeti',
     PILOT_REPOSITORIES: 'all',
     DEFAULT_WORKER_IMAGE: 'test',
@@ -700,7 +699,6 @@ describe('Edge operator passthrough publication', () => {
     Object.assign(mock.env, {
       GITHUB_WEBHOOK_SECRET: webhookSecret,
       PILOT_REPOSITORIES: `${OWNER}/${REPO}`,
-      PARALLEL_MODE: 'false',
       MAX_CONCURRENT_JOBS: '5',
       OPERATOR_GLOBAL_PASSTHROUGH: 'true',
     });

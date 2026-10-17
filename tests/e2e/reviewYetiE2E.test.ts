@@ -103,9 +103,9 @@ describe('Review Yeti E2E Test Suite', () => {
         expect(actionStep.with?.['github-token']).toMatch(/steps\.(app-token|.+)\.outputs\.token/);
       });
 
-      it('Feature 3: kubernetes-dispatch.yml sets id-token: write and execution-backend: doks', () => {
-        const filePath = repoPath('examples/workflows/kubernetes-dispatch.yml');
-        expect(fs.existsSync(filePath), 'kubernetes-dispatch.yml must exist').toBe(true);
+      it('Feature 3: edge-dispatch.yml sets id-token: write and execution-backend: edge', () => {
+        const filePath = repoPath('examples/workflows/edge-dispatch.yml');
+        expect(fs.existsSync(filePath), 'edge-dispatch.yml must exist').toBe(true);
 
         const content = fs.readFileSync(filePath, 'utf-8');
         const doc = yaml.load(content) as Record<string, any>;
@@ -117,8 +117,8 @@ describe('Review Yeti E2E Test Suite', () => {
         expect(steps).toBeDefined();
         const dispatchStep = steps.find((s) => s.uses && s.uses.includes('review-yeti-bot'));
         expect(dispatchStep).toBeDefined();
-        expect(dispatchStep.with?.['execution-backend']).toBe('doks');
-        expect(dispatchStep.with?.['doks-dispatch-url']).toBeDefined();
+        expect(dispatchStep.with?.['execution-backend']).toBe('edge');
+        expect(dispatchStep.with?.['dispatch-url']).toBeDefined();
       });
 
       it('Feature 4: reusable-hub.yml defines workflow_call and workflow_dispatch interfaces', () => {
@@ -270,7 +270,7 @@ describe('Review Yeti E2E Test Suite', () => {
         const content = fs.readFileSync(filePath, 'utf-8');
         expect(content).toContain('standalone-action.yml');
         expect(content).toContain('github-app-action.yml');
-        expect(content).toContain('kubernetes-dispatch.yml');
+        expect(content).toContain('edge-dispatch.yml');
         expect(content).toContain('reusable-hub.yml');
         expect(content).toContain('consumer-caller.yml');
         expect(content).toContain('incremental-review.yml');
@@ -691,7 +691,7 @@ enabled: true
       const m1Files = [
         'examples/workflows/standalone-action.yml',
         'examples/workflows/github-app-action.yml',
-        'examples/workflows/kubernetes-dispatch.yml',
+        'examples/workflows/edge-dispatch.yml',
         'examples/workflows/reusable-hub.yml',
         'examples/workflows/consumer-caller.yml',
         'examples/workflows/incremental-review.yml',

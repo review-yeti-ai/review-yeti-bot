@@ -47,13 +47,13 @@ Consolidate 100% of review admission, orchestration, gatekeeping, and tool servi
 - **Cluster Headroom**: 3,328 MiB of memory limit and 775m CPU control-plane quota reclaimed, plus 8,704 MiB worker quota eliminated from the cluster.
 - **Unified Surface**: A single endpoint serves API, webhooks, live state, and MCP clients.
 
-### Backend Compatibility & Coexistence
+### Execution Backends
 
-Both execution backends remain first-class, valid architectural options supported by Review Yeti:
-1. **Cloudflare-Native Edge & Ephemeral Serverless** (`execution-backend: edge`): Edge ingress, Durable Objects concurrency serialization, Cloudflare Workflows, and on-demand container runners (Cloudflare Sandboxes) with R2 workspace caching. Best for environments prioritizing zero standing infrastructure, zero idle RAM, and minimal operational maintenance.
-2. **Kubernetes Operator Mode** (`execution-backend: doks`): In-cluster Go operator, Helm chart (`charts/review-yeti/`), `PRReviewJob` CRDs, and batch worker pods. Best for organizations standardizing on Kubernetes clusters who wish to run review compute entirely within their private VPC/cluster boundaries.
+The Action's `execution-backend` input accepts two values:
+1. **Cloudflare-Native Edge & Ephemeral Serverless** (`execution-backend: edge`): Edge ingress, Durable Objects concurrency serialization, Cloudflare Workflows, and on-demand container runners (Cloudflare Sandboxes) with R2 workspace caching. Zero standing infrastructure, zero idle RAM, and minimal operational maintenance.
+2. **In-runner** (`execution-backend: local`): The panel runs on the GitHub Actions runner.
 
-Organizations may deploy and operate either backend based on their infrastructure strategy.
+The in-cluster Go operator, Helm chart (`charts/review-yeti/`), `PRReviewJob` CRDs and batch worker pods remain in this repository as the Kubernetes lane; the Action does not dispatch to it.
 
 ## Outcome
 

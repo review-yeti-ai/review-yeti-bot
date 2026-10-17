@@ -101,7 +101,7 @@ a model in the request handler. Configure all allowlists before enabling it:
   Yeti Gate pilot.
 - `DATABASE_URL` or `POSTGRES_URL`, plus the GitHub App credentials above.
 
-The Action requests audience `review-yeti-doks-dispatch` and posts to
+The Action requests audience `review-yeti-edge-dispatch` and posts to
 `https://review-bot.example.com/api/dispatch/action`. Keep App-gate publication disabled
 until the separate worker receipt/finalizer and required-check plans pass exact-head qualification.
 Even while expected-generation enforcement is off, any supplied value is checked

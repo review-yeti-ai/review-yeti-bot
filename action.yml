@@ -104,27 +104,28 @@ inputs:
     default: 'legacy'
   execution-backend:
     description: >-
-      Review execution location: local runs the existing panel on this runner; doks only admits
-      the immutable request to the Review Yeti Kubernetes queue; edge admits to the Cloudflare Worker Review Yeti queue.
+      Review execution location: local runs the existing panel on this runner; edge admits the
+      immutable request to the Cloudflare Worker Review Yeti queue. The value doks is a DEPRECATED
+      alias of edge, removed once the central caller workflow no longer passes it.
       Remote callers must grant permissions: id-token: write and rely on the later Review Yeti App gate
       for a terminal result.
     required: false
     default: 'local'
-  doks-dispatch-url:
+  dispatch-url:
     description: >-
       Review Yeti admission endpoint, supplied by the calling workflow (required when execution-backend is
-      doks or edge). Ordinary dispatch uses /api/dispatch/action. The isolated qualification endpoint is
+      edge). Ordinary dispatch uses /api/dispatch/action. The isolated qualification endpoint is
       accepted only for the exact qualification repository when its runtime image digest is also supplied.
     required: false
     default: ''
-  dispatch-url:
+  doks-dispatch-url:
     description: >-
-      Alias for doks-dispatch-url / edge-dispatch-url. Review Yeti admission endpoint.
+      DEPRECATED alias, removed once the central caller workflow no longer passes it. Use dispatch-url, which wins when both are set.
     required: false
     default: ''
   edge-dispatch-url:
     description: >-
-      Alias for doks-dispatch-url. Cloudflare edge admission endpoint.
+      DEPRECATED alias, removed once the central caller workflow no longer passes it. Use dispatch-url, which wins when both are set.
     required: false
     default: ''
   qualification-runtime-image-digest:
@@ -139,12 +140,17 @@ inputs:
       Required only for the exact qualification target; it contains no host value and grants no authority.
     required: false
     default: ''
-  doks-publish-mode:
+  publish-mode:
     description: >-
       Publication policy for dispatched reviews: app-gate is the standard gate-checked publication mode for
-      allowlisted workflows; disabled admits a nonpublishing qualification run.
+      allowlisted workflows; disabled admits a nonpublishing qualification run. Empty means app-gate.
     required: false
-    default: 'app-gate'
+    default: ''
+  doks-publish-mode:
+    description: >-
+      DEPRECATED alias, removed once the central caller workflow no longer passes it. Use publish-mode, which wins when both are set.
+    required: false
+    default: ''
   refresh-requested:
     description: >-
       Explicit same-head retry for a completed, recoverable Review Yeti worker failure. Only the
@@ -402,22 +408,22 @@ inputs:
 outputs:
   verdict:
     description: 'SHIP, FIX_FIRST, BLOCK, NO_VERDICT when the review cannot complete safely, or INCOMPLETE when reviewer lanes failed on infrastructure with no finding (not a verdict; re-run).'
-    value: ${{ steps.review.outputs.verdict || steps.doks-dispatch.outputs.verdict }}
+    value: ${{ steps.review.outputs.verdict || steps.dispatch.outputs.verdict }}
   findings-count:
     description: 'Total findings across all personas.'
-    value: ${{ steps.review.outputs.findings-count || steps.doks-dispatch.outputs.findings-count }}
+    value: ${{ steps.review.outputs.findings-count || steps.dispatch.outputs.findings-count }}
   review-status:
     description: 'Overall review outcome: SHIP, FIX_FIRST, BLOCK, INCOMPLETE (infrastructure, not a verdict), or DISPATCHED while the App gate is pending.'
-    value: ${{ steps.review.outputs.review-status || steps.doks-dispatch.outputs.review-status }}
+    value: ${{ steps.review.outputs.review-status || steps.dispatch.outputs.review-status }}
   gate-decision:
     description: 'Exact-head gate result: PASS, BLOCK, INCOMPLETE (infrastructure, not a verdict), or PENDING after remote admission.'
-    value: ${{ steps.review.outputs.gate-decision || steps.doks-dispatch.outputs.gate-decision }}
+    value: ${{ steps.review.outputs.gate-decision || steps.dispatch.outputs.gate-decision }}
   incomplete-reason:
     description: "REL-1113: when verdict is INCOMPLETE, the lanes that failed on infrastructure, e.g. 'Review Yeti: INCOMPLETE — infrastructure (lane testing failed: transport)'. Empty otherwise."
     value: ${{ steps.review.outputs.incomplete-reason }}
   merge-eligible:
     description: 'Whether the exact-head review is eligible for merge.'
-    value: ${{ steps.review.outputs.merge-eligible || steps.doks-dispatch.outputs.merge-eligible }}
+    value: ${{ steps.review.outputs.merge-eligible || steps.dispatch.outputs.merge-eligible }}
   dispatch-reflection-status:
     description: 'Provider dispatch reflection status for the exact-head run.'
     value: ${{ steps.review.outputs.dispatch-reflection-status }}
@@ -447,19 +453,19 @@ outputs:
     value: ${{ steps.review.outputs.publication-receipt-digest }}
   rationale:
     description: 'Executive rationale summarizing why this verdict was chosen.'
-    value: ${{ steps.review.outputs.rationale || steps.doks-dispatch.outputs.rationale }}
+    value: ${{ steps.review.outputs.rationale || steps.dispatch.outputs.rationale }}
   total-findings:
     description: 'Total findings across all evaluated reviewers.'
-    value: ${{ steps.review.outputs.total-findings || steps.doks-dispatch.outputs.total-findings }}
+    value: ${{ steps.review.outputs.total-findings || steps.dispatch.outputs.total-findings }}
   p0-count:
     description: 'Count of P0 (blocking) findings.'
-    value: ${{ steps.review.outputs.p0-count || steps.doks-dispatch.outputs.p0-count }}
+    value: ${{ steps.review.outputs.p0-count || steps.dispatch.outputs.p0-count }}
   p1-count:
     description: 'Count of P1 (high-priority) findings.'
-    value: ${{ steps.review.outputs.p1-count || steps.doks-dispatch.outputs.p1-count }}
+    value: ${{ steps.review.outputs.p1-count || steps.dispatch.outputs.p1-count }}
   p2-count:
     description: 'Count of P2 (nit) findings.'
-    value: ${{ steps.review.outputs.p2-count || steps.doks-dispatch.outputs.p2-count }}
+    value: ${{ steps.review.outputs.p2-count || steps.dispatch.outputs.p2-count }}
   personas-completed:
     description: 'Persona lanes that completed successfully.'
     value: ${{ steps.review.outputs.personas-completed }}
@@ -483,19 +489,30 @@ runs:
       shell: bash
       env:
         EXECUTION_BACKEND: ${{ inputs.execution-backend }}
+        LEGACY_DOKS_DISPATCH_URL: ${{ inputs.doks-dispatch-url }}
+        LEGACY_EDGE_DISPATCH_URL: ${{ inputs.edge-dispatch-url }}
+        LEGACY_DOKS_PUBLISH_MODE: ${{ inputs.doks-publish-mode }}
       run: |
         set -euo pipefail
         case "$EXECUTION_BACKEND" in
-          local|doks|edge) ;;
-          mars)
-            echo "::error::execution-backend 'mars' is not supported; use local, doks, or edge"
-            exit 1
+          local|edge) ;;
+          doks)
+            echo "::warning::execution-backend 'doks' is deprecated and is treated as 'edge'; use execution-backend: edge"
             ;;
           *)
-            echo "::error::execution-backend must be local, doks, or edge"
+            echo "::error::execution-backend must be local or edge"
             exit 1
             ;;
         esac
+        if [ -n "$LEGACY_DOKS_DISPATCH_URL" ]; then
+          echo "::warning::input doks-dispatch-url is deprecated; use dispatch-url"
+        fi
+        if [ -n "$LEGACY_EDGE_DISPATCH_URL" ]; then
+          echo "::warning::input edge-dispatch-url is deprecated; use dispatch-url"
+        fi
+        if [ -n "$LEGACY_DOKS_PUBLISH_MODE" ]; then
+          echo "::warning::input doks-publish-mode is deprecated; use publish-mode"
+        fi
 
     - name: Resolve target pull request
       id: target
@@ -528,13 +545,13 @@ runs:
         echo "Reviewing $REPO#$PR via ${{ inputs.execution-backend }}"
 
     - name: Dispatch review to the Review Yeti queue
-      id: doks-dispatch
+      id: dispatch
       if: ${{ inputs.execution-backend != 'local' }}
       shell: bash
       env:
-        DOKS_DISPATCH_URL: ${{ inputs.dispatch-url || inputs.edge-dispatch-url || inputs.doks-dispatch-url }}
-        DOKS_OIDC_AUDIENCE: review-yeti-doks-dispatch
-        DOKS_PUBLISH_MODE: ${{ inputs.doks-publish-mode }}
+        DISPATCH_URL: ${{ inputs.dispatch-url || inputs.edge-dispatch-url || inputs.doks-dispatch-url }}
+        DISPATCH_OIDC_AUDIENCE: review-yeti-edge-dispatch
+        DISPATCH_PUBLISH_MODE: ${{ inputs.publish-mode || inputs.doks-publish-mode || 'app-gate' }}
         QUALIFICATION_RUNTIME_IMAGE_DIGEST: ${{ inputs.qualification-runtime-image-digest }}
         QUALIFICATION_DISPATCH_ORIGIN_SHA256: ${{ inputs.qualification-dispatch-origin-sha256 }}
         REFRESH_REQUESTED: ${{ inputs.refresh-requested }}
@@ -559,7 +576,7 @@ runs:
         POLICY_JSON: ${{ inputs.policy-json }}
       run: |
         set -euo pipefail
-        node "$GITHUB_ACTION_PATH/scripts/dispatch-doks-action.mjs"
+        node "$GITHUB_ACTION_PATH/scripts/dispatch-review-action.mjs"
 
     # GitHub's diff media type (what `gh pr diff` requests) 406s once a pull
     # request exceeds 300 changed files or 20,000 changed lines. That used to

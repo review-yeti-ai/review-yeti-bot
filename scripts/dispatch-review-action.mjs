@@ -5,9 +5,9 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const DOKS_OIDC_AUDIENCE = 'review-yeti-doks-dispatch';
-export const DOKS_DISPATCH_PATH = '/api/dispatch/action';
-export const QUALIFICATION_DOKS_DISPATCH_PATH = '/api/qualification/dispatch/action';
+export const REVIEW_DISPATCH_OIDC_AUDIENCE = 'review-yeti-edge-dispatch';
+export const REVIEW_DISPATCH_PATH = '/api/dispatch/action';
+export const QUALIFICATION_REVIEW_DISPATCH_PATH = '/api/qualification/dispatch/action';
 const GITHUB_ACTIONS_OIDC_REQUEST_HOST_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.actions\.githubusercontent\.com$/u;
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
@@ -63,7 +63,7 @@ export function validateDispatchEndpoint(raw, requestContext) {
   try {
     url = new URL(String(raw || ''));
   } catch {
-    throw new Error('DOKS dispatch endpoint is not a valid URL');
+    throw new Error('Review dispatch endpoint is not a valid URL');
   }
   const host = url.hostname.toLowerCase();
   const isIpLiteral = /^\d{1,3}(?:\.\d{1,3}){3}$/u.test(host) || host.startsWith('[');
@@ -84,12 +84,12 @@ export function validateDispatchEndpoint(raw, requestContext) {
     && !QUALIFICATION_DISPATCH_ORIGIN_SHA256_PATTERN.test(requestContext?.qualificationDispatchOriginSha256 || '')) {
     throw new Error('Qualification dispatch origin digest is required for the isolated endpoint');
   }
-  const qualificationPath = url.pathname === QUALIFICATION_DOKS_DISPATCH_PATH;
+  const qualificationPath = url.pathname === QUALIFICATION_REVIEW_DISPATCH_PATH;
   if (qualificationClaimed && !qualificationIdentity) {
     throw new Error('Qualification endpoint requires the exact qualification target and image digest');
   }
   if (qualificationIdentity && !qualificationPath) {
-    throw new Error(`Qualification target must use ${QUALIFICATION_DOKS_DISPATCH_PATH}`);
+    throw new Error(`Qualification target must use ${QUALIFICATION_REVIEW_DISPATCH_PATH}`);
   }
   if (qualificationPath && !qualificationIdentity) {
     throw new Error('Qualification endpoint requires the exact qualification target and image digest');
@@ -100,12 +100,12 @@ export function validateDispatchEndpoint(raw, requestContext) {
     && !isIpLiteral
     && host !== 'localhost'
     && !host.endsWith('.localhost')
-    && (qualificationPath || url.pathname === DOKS_DISPATCH_PATH)
+    && (qualificationPath || url.pathname === REVIEW_DISPATCH_PATH)
     && url.username === ''
     && url.password === ''
     && url.search === ''
     && url.hash === '';
-  if (!valid) throw new Error(`DOKS dispatch endpoint must be an https URL with a DNS hostname and the exact path ${DOKS_DISPATCH_PATH}`);
+  if (!valid) throw new Error(`Review dispatch endpoint must be an https URL with a DNS hostname and the exact path ${REVIEW_DISPATCH_PATH}`);
   if (qualificationPath) {
     const originSha256 = createHash('sha256').update(url.origin).digest('hex');
     if (originSha256 !== requestContext.qualificationDispatchOriginSha256) {
@@ -132,7 +132,7 @@ export function buildDispatchRequest(environment) {
   const repository = required(environment, 'REPOSITORY');
   if (!REPOSITORY_PATTERN.test(repository)) throw new Error('REPOSITORY must be owner/name');
   const [owner, repo] = repository.split('/');
-  const publishMode = String(environment.DOKS_PUBLISH_MODE || 'disabled').trim();
+  const publishMode = String(environment.DISPATCH_PUBLISH_MODE || 'disabled').trim();
   const qualificationRuntimeImageDigestRaw = String(environment.QUALIFICATION_RUNTIME_IMAGE_DIGEST ?? '');
   const qualificationRuntimeImageDigest = qualificationRuntimeImageDigestRaw.trim();
   if (qualificationRuntimeImageDigestRaw !== qualificationRuntimeImageDigest
@@ -144,7 +144,7 @@ export function buildDispatchRequest(environment) {
     throw new Error('Qualification runtime image digest is allowed only for the exact qualification target in app-gate mode');
   }
   if (publishMode !== 'disabled' && publishMode !== 'app-gate') {
-    throw new Error('DOKS publish mode must be disabled or app-gate');
+    throw new Error('Review dispatch publish mode must be disabled or app-gate');
   }
   const qualificationDispatchOriginSha256Raw = String(environment.QUALIFICATION_DISPATCH_ORIGIN_SHA256 ?? '');
   const qualificationDispatchOriginSha256 = qualificationDispatchOriginSha256Raw.trim();
@@ -161,7 +161,7 @@ export function buildDispatchRequest(environment) {
   }
   const refreshRequested = refreshRequestedRaw === 'true';
   const eventName = required(environment, 'GITHUB_EVENT_NAME');
-  if (!SUPPORTED_EVENTS.has(eventName)) throw new Error(`GitHub event ${eventName} is not supported for DOKS dispatch`);
+  if (!SUPPORTED_EVENTS.has(eventName)) throw new Error(`GitHub event ${eventName} is not supported for Review dispatch`);
   const refreshExecutionAttemptRaw = String(environment.REFRESH_EXECUTION_ATTEMPT ?? '').trim();
   const refreshExecutionAttempt = refreshExecutionAttemptRaw ? Number(refreshExecutionAttemptRaw) : undefined;
   if (refreshExecutionAttemptRaw && (!Number.isSafeInteger(refreshExecutionAttempt) || refreshExecutionAttempt <= 0)) {
@@ -335,8 +335,8 @@ async function failureDetail(response) {
 }
 
 async function requestOidcToken(environment, fetchImpl, sleepImpl) {
-  const audience = required(environment, 'DOKS_OIDC_AUDIENCE');
-  if (audience !== DOKS_OIDC_AUDIENCE) throw new Error(`DOKS OIDC audience must be ${DOKS_OIDC_AUDIENCE}`);
+  const audience = required(environment, 'DISPATCH_OIDC_AUDIENCE');
+  if (audience !== REVIEW_DISPATCH_OIDC_AUDIENCE) throw new Error(`Review dispatch OIDC audience must be ${REVIEW_DISPATCH_OIDC_AUDIENCE}`);
   const requestToken = required(
     environment,
     'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
@@ -347,7 +347,7 @@ async function requestOidcToken(environment, fetchImpl, sleepImpl) {
     'ACTIONS_ID_TOKEN_REQUEST_URL',
     'grant the caller workflow permissions: id-token: write',
   ));
-  requestUrl.searchParams.set('audience', DOKS_OIDC_AUDIENCE);
+  requestUrl.searchParams.set('audience', REVIEW_DISPATCH_OIDC_AUDIENCE);
   const attempts = DISPATCH_RETRY_DELAYS_MS.length + 1;
   let response;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -384,7 +384,7 @@ export function validateReceipt(body) {
     && (body.status === 'accepted' || body.status === 'duplicate')
     && typeof body.runId === 'string'
     && RUN_ID_PATTERN.test(body.runId);
-  if (!valid) throw new Error('DOKS dispatch returned an invalid acceptance receipt');
+  if (!valid) throw new Error('Review dispatch returned an invalid acceptance receipt');
   return { version: body.version, status: body.status, runId: body.runId };
 }
 
@@ -456,7 +456,7 @@ export function parsePassthroughReceipt(body) {
       && body.publicationReceiptAvailable === null && noReceiptIdentity && checkIdsAbsent
       && body.mergeEligible === false))
     && (publicationReceiptAvailable === true || checkIdsAbsent);
-  if (!valid) throw new Error('DOKS dispatch returned an invalid passthrough receipt');
+  if (!valid) throw new Error('Review dispatch returned an invalid passthrough receipt');
   return {
     version: body.version,
     status: body.status,
@@ -499,14 +499,14 @@ export function validatePassthroughReceipt(body, request) {
     && receipt.prNumber === request.prNumber
     && candidateMatches
     && receipt.eventName === request.caller.eventName;
-  if (!matchesRequest) throw new Error('DOKS dispatch returned a passthrough receipt for a different Action request');
+  if (!matchesRequest) throw new Error('Review dispatch returned a passthrough receipt for a different Action request');
   return receipt;
 }
 
 export function validateDispatchOutputReceipt(body) {
   if (body?.version === 'ActionDispatchAccepted.v1') return validateReceipt(body);
   if (body?.version === 'ActionDispatchPassthrough.v1') return parsePassthroughReceipt(body);
-  throw new Error('DOKS dispatch returned an invalid dispatch receipt');
+  throw new Error('Review dispatch returned an invalid dispatch receipt');
 }
 
 function sleep(milliseconds) {
@@ -524,8 +524,7 @@ function retryWarning(operation, attempt, delayMs, reason) {
 
 export async function dispatchAction(environment = process.env, fetchImpl = fetch, options = {}) {
   const request = buildDispatchRequest(environment);
-  const rawDispatchUrl = environment.DOKS_DISPATCH_URL || environment.DISPATCH_URL || environment.EDGE_DISPATCH_URL;
-  const endpoint = validateDispatchEndpoint(required({ ...environment, DOKS_DISPATCH_URL: rawDispatchUrl }, 'DOKS_DISPATCH_URL'), request);
+  const endpoint = validateDispatchEndpoint(required(environment, 'DISPATCH_URL'), request);
   const sleepImpl = options.sleep || sleep;
   const oidcToken = await requestOidcToken(environment, fetchImpl, sleepImpl);
   const requestBody = JSON.stringify(request);
@@ -549,25 +548,25 @@ export async function dispatchAction(environment = process.env, fetchImpl = fetc
     } catch (error) {
       const reason = compactError(error);
       if (attempt === attempts) {
-        throw new Error(`DOKS dispatch transport failed after ${attempts} attempts: ${reason}`, { cause: error });
+        throw new Error(`Review dispatch transport failed after ${attempts} attempts: ${reason}`, { cause: error });
       }
       const delayMs = DISPATCH_RETRY_DELAYS_MS[attempt - 1];
-      retryWarning('DOKS dispatch', attempt, delayMs, reason);
+      retryWarning('Review dispatch', attempt, delayMs, reason);
       await sleepImpl(delayMs);
       continue;
     }
 
-    if (response.status === 202) return validateReceipt(await json(response, 'DOKS dispatch'));
-    if (response.status === 200) return validatePassthroughReceipt(await json(response, 'DOKS passthrough'), request);
+    if (response.status === 202) return validateReceipt(await json(response, 'Review dispatch'));
+    if (response.status === 200) return validatePassthroughReceipt(await json(response, 'Review dispatch passthrough'), request);
     if (attempt === attempts || !RETRYABLE_DISPATCH_STATUSES.has(response.status)) {
-      throw new Error(`DOKS dispatch failed with HTTP ${response.status}${await failureDetail(response)}`);
+      throw new Error(`Review dispatch failed with HTTP ${response.status}${await failureDetail(response)}`);
     }
     const delayMs = DISPATCH_RETRY_DELAYS_MS[attempt - 1];
-    retryWarning('DOKS dispatch', attempt, delayMs, `HTTP ${response.status}`);
+    retryWarning('Review dispatch', attempt, delayMs, `HTTP ${response.status}`);
     await sleepImpl(delayMs);
   }
 
-  throw new Error('DOKS dispatch retry loop exhausted without a terminal result');
+  throw new Error('Review dispatch retry loop exhausted without a terminal result');
 }
 
 export function writeDispatchOutputs(outputPath, receipt) {
@@ -618,8 +617,8 @@ async function main() {
     const receipt = await dispatchAction(process.env, fetch);
     writeDispatchOutputs(required(process.env, 'GITHUB_OUTPUT'), receipt);
     process.stdout.write(receipt.version === 'ActionDispatchPassthrough.v1'
-      ? `DOKS dispatch ${receipt.status}: no review started (${receipt.reason}).\n`
-      : `DOKS dispatch ${receipt.status}: ${receipt.runId}\n`);
+      ? `Review dispatch ${receipt.status}: no review started (${receipt.reason}).\n`
+      : `Review dispatch ${receipt.status}: ${receipt.runId}\n`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`::error::${message.replaceAll('\n', ' ')}\n`);

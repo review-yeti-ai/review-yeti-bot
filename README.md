@@ -3,7 +3,7 @@
 [![Review Bot](https://github.com/review-yeti-ai/review-yeti-bot/actions/workflows/review-bot.yaml/badge.svg)](https://github.com/review-yeti-ai/review-yeti-bot/actions/workflows/review-bot.yaml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![GitHub Action](https://img.shields.io/badge/GitHub%20Action-v1-green.svg)](https://github.com/marketplace/actions/review-yeti-ai)
-[![Kubernetes](https://img.shields.io/badge/Kubernetes-Ready-326ce5.svg)](docs/KUBERNETES_MODE.md)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-Ready-326ce5.svg)](docs/HELM_GUIDE.md)
 [![Helm Chart](https://img.shields.io/badge/Helm%20Chart-1.0.0-informational.svg)](charts/review-yeti)
 [![Examples Gallery](https://img.shields.io/badge/Examples-Gallery-purple.svg)](examples)
 
@@ -43,7 +43,7 @@ Review Yeti convenes a panel of specialized AI reviewers—each with a dedicated
 - 🚀 **Sub-Minute Modular DAG Reviews**: High-throughput Kubernetes worker execution with ephemeral `emptyDir` storage (0 PVC delay)—13s fast-ship doc reviews and 59s 5-lane parallel DAG reviews ([Benchmarks](docs/KUBERNETES_REVIEW_OPERATIONS.md#qualification-evidence)).
 - ⚡ **Dual Execution Engines**:
   - **Ephemeral Action Mode**: Zero infrastructure, 60-second setup directly in GitHub Actions.
-  - **Kubernetes Worker Mode**: Dispatches reviews to K8s pods in **< 10 seconds**, eliminating 95%+ of billable runner minute waste.
+  - **Cloudflare Edge Mode**: Dispatches reviews to the Cloudflare edge in **< 10 seconds**, eliminating 95%+ of billable runner minute waste.
 - 🔐 **Base-Ref Trust Boundary**: Charters and policies are loaded strictly from the target base branch (`main`), preventing PRs from tampering with their own review rules.
 - 🎯 **Zero Diff Hallucinations**: Automated filter discards any finding referencing code outside the PR's modified hunks.
 - 🌐 **Model & Provider Agnostic**: Works with OpenRouter, Anthropic, OpenAI, DeepSeek, or self-hosted Ollama/vLLM endpoints.
@@ -142,31 +142,30 @@ jobs:
 
 ---
 
-## ☸️ Scale-Out: Kubernetes Execution Mode
+## ☁️ Scale-Out: Cloudflare Edge Execution
 
-For teams with high PR volume, running 5+ personas inside GitHub Actions runners can accumulate costly billable runner minutes. 
+For teams with high PR volume, running 5+ personas inside GitHub Actions runners can accumulate costly billable runner minutes.
 
-Review Yeti's **Kubernetes Mode** uses an asynchronous dispatch handshake:
-1. The GitHub Action acts as a lightweight shim, admits the review to the Kubernetes worker queue, and exits in **< 10 seconds**.
+Review Yeti's **Edge Mode** uses an asynchronous dispatch handshake:
+1. The GitHub Action acts as a lightweight shim, admits the review to the Cloudflare Worker queue, and exits in **< 10 seconds**.
 2. The Action registers an initial check run: `review-status: DISPATCHED`, `gate-decision: PENDING`.
-3. An ephemeral worker pod processes the review, posts the PR review comment, and updates the GitHub Check Run to `success` or `failure` directly using its GitHub App token.
+3. An ephemeral Cloudflare Container runner processes the review, and the Review Yeti App check reports the terminal result on the pull request.
 
 ```yaml
-# .github/workflows/review-yeti-k8s.yml
+# .github/workflows/review-yeti-edge.yml
 jobs:
   review:
     runs-on: ubuntu-latest
     permissions:
+      id-token: write
       contents: read
       pull-requests: read
-      checks: write
     steps:
-      - name: Dispatch to Kubernetes Review Cluster
+      - name: Dispatch to the Review Yeti Edge
         uses: review-yeti-ai/review-yeti-bot@v1
         with:
-          execution-backend: doks  # the Kubernetes execution backend
-          dispatch-url: https://review-bot.example.com/api/admission/dispatch
-          dispatch-token: ${{ secrets.REVIEW_DISPATCH_SECRET }}
+          execution-backend: edge
+          dispatch-url: ${{ vars.REVIEW_YETI_DISPATCH_URL }}
 ```
 
 ### 🚀 Kubernetes Worker Chart
@@ -174,10 +173,10 @@ jobs:
 Review Yeti provides a production-grade Helm 3 chart in [`charts/review-yeti/`](charts/review-yeti/):
 
 > [!NOTE]
-> This chart deploys the components the **hosted** Review Yeti queue runs. The
-> Action's dispatch is admitted only for allowlisted callers of that queue, so installing this
-> chart into your own cluster will not receive reviews yet. See
-> [Kubernetes Mode](docs/KUBERNETES_MODE.md).
+> This chart deploys the Kubernetes operator and review-job dispatcher. The Action's
+> `execution-backend` accepts only `local` and `edge`, so a cluster running this chart does not
+> receive reviews from the Action. See
+> [Kubernetes Review Operations](docs/KUBERNETES_REVIEW_OPERATIONS.md).
 
 ```bash
 # 1. Add and install Review Yeti using production values
@@ -187,11 +186,11 @@ helm install review-yeti charts/review-yeti \
   -f examples/k8s/values-eks.yaml
 ```
 
-Pre-configured cloud values files are available in [`examples/k8s/`](examples/k8s/). They configure the chart for each platform; they do **not** make a cluster you operate reachable by the Action, which is bound to the hosted endpoint:
+Pre-configured cloud values files are available in [`examples/k8s/`](examples/k8s/). They configure the chart for each platform; they do **not** make a cluster you operate reachable by the Action:
 - **AWS EKS**: [`examples/k8s/values-eks.yaml`](examples/k8s/values-eks.yaml) (AWS Load Balancer Controller ALB + gp3)
 - **Local Dev**: [`examples/k8s/values-local.yaml`](examples/k8s/values-local.yaml) (Minikube / Kind / K3s with local Ollama)
 
-👉 **Read the comprehensive [Helm 3 Operations Guide](docs/HELM_GUIDE.md)**, **[Kubernetes Architecture Specification](docs/KUBERNETES_MODE.md)**, and **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)**.
+👉 **Read the comprehensive [Helm 3 Operations Guide](docs/HELM_GUIDE.md)**, **[Kubernetes Review Operations](docs/KUBERNETES_REVIEW_OPERATIONS.md)**, and **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)**.
 
 ---
 
@@ -369,7 +368,6 @@ npx review-yeti install-hook
 - 🛠️ **[Production Troubleshooting Guide](docs/TROUBLESHOOTING.md)** — Diagnosing HTTP 403/401/429 errors, worker timeouts, lease locks, and OOM issues.
 - 📦 **[Examples Gallery](examples/README.md)** — Copy-pasteable GitHub Actions workflows, configuration profiles, and custom persona charters.
 - 🔐 **[GitHub App Setup](docs/GITHUB_APP_SETUP.md)** — Step-by-step GitHub App registration and permissions matrix.
-- ☸️ **[Kubernetes Mode](docs/KUBERNETES_MODE.md)** — Offloading reviews to Kubernetes worker pods.
 - ⚓ **[Kubernetes Operations & Observability](docs/KUBERNETES_REVIEW_OPERATIONS.md)** — Managing Kubernetes clusters, VictoriaMetrics, OpenTelemetry, and worker digests.
 - 🏛️ **[Architecture Specification](docs/ARCHITECTURE.md)** — Pipeline design, arbitration engine, and trust boundaries.
 - ⚙️ **[Configuration Reference](docs/CONFIGURATION_REFERENCE.md)** — Complete schema for `.ct-review.yaml`.
