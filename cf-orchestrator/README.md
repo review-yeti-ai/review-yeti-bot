@@ -64,8 +64,7 @@ flowchart TD
         GROUNDING["On-Demand Tools<br/>(zoektLookup, grepFile)"]
     end
 
-    subgraph RUNNERS["Execution Plane (Dual-Runner Abstraction)"]
-        DO_RUNNER["DigitalOcean MARS Runner<br/>(Firecracker MicroVMs, Agent-Aware Billing)"]
+    subgraph RUNNERS["Execution Plane"]
         CF_RUNNER["Cloudflare Container Runner<br/>(Edge-Colocated OCI Sandboxes)"]
         R2_CACHE[("Cloudflare R2 Workspace Cache<br/>(.tar.zst with 1-Hour Lifecycle Rule)")]
     end
@@ -94,19 +93,18 @@ flowchart TD
     TRIAGE --> ACTIVE_LEDGER
     ACTIVE_LEDGER --> GROUNDING
 
-    WORKFLOW -->|Step 3: Dispatch Worker| DO_RUNNER
-    WORKFLOW -.->|Alternative Runner| CF_RUNNER
-    DO_RUNNER <-->|Sub-300ms Unpack / Pack| R2_CACHE
-    DO_RUNNER --> GROUNDING
+    WORKFLOW -->|Step 3: Dispatch Worker| CF_RUNNER
+    CF_RUNNER <-->|Sub-300ms Unpack / Pack| R2_CACHE
+    CF_RUNNER --> GROUNDING
 
     %% Two-Tier Cancellation Flow
-    REVIEW_RUN -.->|Push Abort Signal| DO_RUNNER
-    DO_RUNNER -.->|Pull Polling /api/dispatch/runs/:id/status| REVIEW_RUN
+    REVIEW_RUN -.->|Push Abort Signal| CF_RUNNER
+    CF_RUNNER -.->|Pull Polling /api/dispatch/runs/:id/status| REVIEW_RUN
 
     %% Output Flow
-    DO_RUNNER -->|Step 4: Post Canary Check| CANARY_CHECK
-    DO_RUNNER -->|Step 5: Publish Inline Reviews| INLINE_REVIEWS
-    DO_RUNNER -->|Step 6: Terminal Receipt| WORKFLOW
+    CF_RUNNER -->|Step 4: Post Canary Check| CANARY_CHECK
+    CF_RUNNER -->|Step 5: Publish Inline Reviews| INLINE_REVIEWS
+    CF_RUNNER -->|Step 6: Terminal Receipt| WORKFLOW
     WORKFLOW -->|Step 7: Record Audit Receipt| HYPERDRIVE
     WORKFLOW -->|Step 8: Saga Release Slot| REPO_GATE
 ```
@@ -246,7 +244,6 @@ packages/cf-orchestrator/
 │   │   └── tunnelConfig.ts        # Multi-transport resolver (Direct, Cloudflare Tunnel, Tailscale)
 │   └── runners/
 │       ├── containerRunner.ts     # Container runner abstraction & Cloudflare Containers runner
-│       ├── digitalOceanAgentRunner.ts # DO Managed Agents runner (Firecracker microVMs)
 │       └── r2WorkspaceCache.ts    # Programmatic R2 .tar.zst cache hydration & verification
 ├── scripts/
 │   ├── restore-r2-cache.sh        # Sub-300ms R2 cache unpack replacing K8s PVCs

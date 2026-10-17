@@ -67,7 +67,7 @@ export interface ActiveJobItem {
   commitSha: string;
   phase: string;
   orchestrator: 'cloudflare' | 'doks';
-  runner: 'digitalocean-agent' | 'cloudflare-container' | 'doks-pod';
+  runner: 'cloudflare-container' | 'doks-pod';
   fencingEpoch?: number;
   workerId?: string;
   leaseAgeMs?: number;

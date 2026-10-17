@@ -62,7 +62,7 @@ flowchart TD
 Review Yeti supports three first-class, valid execution patterns:
 
 ### 1. Cloudflare-Native Edge & Ephemeral Serverless Mode (`execution-backend: edge` or `mars`)
-- **Runtime**: Ephemeral serverless runners (DigitalOcean Managed Agents in Firecracker microVMs or Cloudflare Container Sandboxes) with repository workspace caching in Cloudflare R2.
+- **Runtime**: Ephemeral serverless runners (Cloudflare Container Sandboxes) with repository workspace caching in Cloudflare R2.
 - **Orchestration**: Managed via Cloudflare Edge Worker (`cf-orchestrator`), Cloudflare Workflows (`ReviewJobWorkflow`), and Durable Objects (`RepoGateDO`, `ReviewRunDO`) for concurrency serialization, debouncing, and state tracking.
 - **Ideal For**: Teams seeking zero standing cluster infrastructure, zero idle RAM, sub-second boot, and pay-only-for-active-reviews economics.
 

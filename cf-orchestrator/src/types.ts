@@ -75,10 +75,7 @@ export interface Env {
   MAX_CONCURRENT_JOBS?: string;
   DEBOUNCE_WINDOW_SECONDS?: string;
   PARALLEL_FILE_CONCURRENCY?: string;
-  RUNNER_TYPE?: string; // 'cloudflare' (default) | 'digitalocean' | 'mars' | 'do'
-  DO_API_TOKEN?: string;
-  DO_AGENT_ID?: string;
-  DO_BASE_URL?: string;
+  RUNNER_TYPE?: string; // 'cloudflare' (default and only supported value; anything else fails closed)
   GITHUB_WEBHOOK_SECRET?: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_INSTALLATION_ID?: string;

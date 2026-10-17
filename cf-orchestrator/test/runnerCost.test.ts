@@ -41,47 +41,44 @@ describe('Runner Cost & Runtime Calculation Suite', () => {
     });
   });
 
-  describe('calculateRunnerCost - DigitalOcean Managed Agents', () => {
-    it('calculates cost accurately for typical 24.8s PR review session', () => {
-      // 24.8 seconds * (2 vCPU * 0.000008 + 2GB * 0.000001 = 0.000018/sec)
-      // 24.8 * 0.000018 = 0.0004464 USD
-      const result = calculateRunnerCost({
-        durationMs: 24800,
-        vcpus: 2,
-        memoryMb: 2048,
-        runnerType: 'digitalocean',
-      });
+  describe('calculateRunnerCost - billing semantics', () => {
+    it('defaults to the Cloudflare Containers rate card and calculates a typical 24.8s PR review session', () => {
+      // 24.8 seconds * (2 vCPU * 0.0000065 + 2GB * 0.000001 = 0.000015/sec) = 0.000372 USD
+      const result = calculateRunnerCost({ durationMs: 24800, vcpus: 2, memoryMb: 2048 });
 
-      assert.equal(result.runnerType, 'digitalocean');
-      assert.equal(result.runnerName, 'DigitalOcean Managed Agents (Firecracker microVM)');
+      assert.equal(result.runnerType, 'cloudflare');
+      assert.equal(result.runnerName, 'Cloudflare Containers (Edge OCI Sandbox)');
       assert.equal(result.durationMs, 24800);
       assert.equal(result.vcpus, 2);
       assert.equal(result.memoryMb, 2048);
-      assert.equal(result.costUsd, 0.000446);
-      assert.equal(result.formattedCost, '$0.000446 USD');
+      assert.equal(result.costUsd, 0.000372);
+      assert.equal(result.formattedCost, '$0.000372 USD');
       assert.equal(result.formattedRuntime, '24.8s (24,800 ms)');
-      assert.equal(result.rateHourlyUsd, 0.0648);
+      assert.equal(result.rateHourlyUsd, 0.054);
+      assert.equal(result.usedFallbackRate, false);
     });
 
     it('enforces 1-second minimum billing resolution for sub-second bursts', () => {
-      const result = calculateRunnerCost({
-        durationMs: 350,
-        runnerType: 'digitalocean',
-      });
+      const result = calculateRunnerCost({ durationMs: 350, runnerType: 'cloudflare' });
 
-      // Billed as 1 second minimum = 1 * 0.000018 = 0.000018 USD
-      assert.equal(result.costUsd, 0.000018);
+      // Billed as 1 second minimum = 1 * 0.000015 = 0.000015 USD
+      assert.equal(result.costUsd, 0.000015);
       assert.equal(result.formattedRuntime, '350 ms');
     });
 
     it('returns $0.00 USD for duration 0ms', () => {
-      const result = calculateRunnerCost({
-        durationMs: 0,
-        runnerType: 'digitalocean',
-      });
+      const result = calculateRunnerCost({ durationMs: 0, runnerType: 'cloudflare' });
 
       assert.equal(result.costUsd, 0);
       assert.equal(result.formattedCost, '$0.00 USD');
+    });
+
+    it('prices a retired runner name at the Cloudflare rate and flags the fallback', () => {
+      const result = calculateRunnerCost({ durationMs: 30000, runnerType: 'digitalocean' });
+
+      assert.equal(result.usedFallbackRate, true);
+      assert.equal(result.costUsd, 0.00045);
+      assert.equal(result.rateHourlyUsd, 0.054);
     });
   });
 
@@ -108,14 +105,14 @@ describe('Runner Cost & Runtime Calculation Suite', () => {
         durationMs: 24800,
         vcpus: 2,
         memoryMb: 2048,
-        runnerType: 'digitalocean',
+        runnerType: 'cloudflare',
       });
 
       const md = formatRunnerCostMarkdown(cost);
       assert.ok(md.includes('### 💰 Managed Runner Execution & Cost'));
-      assert.ok(md.includes('**Runner:** DigitalOcean Managed Agents (Firecracker microVM) (2 vCPU / 2048 MB)'));
+      assert.ok(md.includes('**Runner:** Cloudflare Containers (Edge OCI Sandbox) (2 vCPU / 2048 MB)'));
       assert.ok(md.includes('**Total Runtime:** 24.8s (24,800 ms)'));
-      assert.ok(md.includes('**Runner Cost:** **$0.000446 USD** ($0.0648/hr active compute rate)'));
+      assert.ok(md.includes('**Runner Cost:** **$0.000372 USD** ($0.0540/hr active compute rate)'));
     });
   });
 });

@@ -7,7 +7,6 @@ import {
 } from './e2eHarness.js';
 import { ReviewJobWorkflow } from '../../src/reviewJobWorkflow.js';
 import { CloudflareContainerRunner, MockContainerRunner } from '../../src/runners/containerRunner.js';
-import { DigitalOceanAgentRunner } from '../../src/runners/digitalOceanAgentRunner.js';
 import { parseToolingConfigYaml, resolveToolConnection } from '../../src/tunnel/toolTunnelDefinition.js';
 import type { ReviewRunSpec } from '../../src/types.js';
 
@@ -225,7 +224,7 @@ tools:
     assert.equal(t4.tunnelMode, 'cloudflare'); // auto with internal endpoint selects cloudflare mode
   });
 
-  it('X5: Dual-Runner Execution Plane: Workflow executes polymorphically with CF and DO runners', async () => {
+  it('X5: Execution Plane: Workflow dispatches through the Cloudflare container runner', async () => {
     const harness = createE2EEnvironment();
 
     // Runner A: CloudflareContainerRunner with mock edge container binding
@@ -257,40 +256,6 @@ tools:
     assert.equal(resA.status, 'succeeded');
     assert.equal(cfDispatchedSpec.env.PARALLEL_CHECK_NAME, 'Review Yeti (Cloudflare Canary)');
     assert.equal(cfDispatchedSpec.env.RUN_ID, 'run_cf_poly');
-
-    // Runner B: DigitalOceanAgentRunner with mock HTTP fetch
-    let doSessionCreated: any = null;
-    const mockDoFetch: typeof fetch = async (url, init) => {
-      doSessionCreated = JSON.parse(init?.body as string);
-      return new Response(
-        JSON.stringify({
-          session_id: 'job-run_do_poly',
-          status: 'succeeded',
-          exit_code: 0,
-          receipt: { version: 'ReviewYetiReceiptOnly.v1', status: 'succeeded', runId: 'run_do_poly' },
-        }),
-        { status: 200 }
-      );
-    };
-    const doRunner = new DigitalOceanAgentRunner({
-      apiToken: 'do_token_poly',
-      fetchImpl: mockDoFetch,
-    });
-
-    const specB: ReviewRunSpec = {
-      runId: 'run_do_poly',
-      owner: 'review-yeti-ai',
-      repo: 'review-yeti-bot',
-      prNumber: 72,
-      headSha: 'head_poly_do',
-      baseSha: 'base_poly_do',
-      installationId: 102,
-    };
-
-    const { result: resB } = await harness.executeFullWorkflow(specB, doRunner);
-    assert.equal(resB.status, 'succeeded');
-    assert.equal(doSessionCreated.environment.PARALLEL_CHECK_NAME, 'Review Yeti (Cloudflare Canary)');
-    assert.equal(doSessionCreated.environment.RUN_ID, 'run_do_poly');
   });
 
   it('X6: FIFO Concurrency Contention & Compensating Saga Release unblocks queued run', async () => {

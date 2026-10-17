@@ -3,7 +3,6 @@ export type { WorkflowStep, WorkflowEvent };
 import type { Env, ReviewRunSpec } from './types.js';
 import { isPassthroughMode } from './types.js';
 import { type ContainerRunner, CloudflareContainerRunner } from './runners/containerRunner.js';
-import { DigitalOceanAgentRunner } from './runners/digitalOceanAgentRunner.js';
 import type { RunnerCostDetails } from './runners/runnerCost.js';
 import { publishOperatorPassthrough } from './operatorPassthroughPublisher.js';
 import {
@@ -124,35 +123,24 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
       return this.injectedRunner;
     }
 
-    const resolvedType = (targetRunner || this.env?.RUNNER_TYPE || 'cloudflare').toLowerCase().trim();
-    const normalizedKey = resolvedType === 'mars' || resolvedType === 'do' ? 'digitalocean' : resolvedType;
+    const resolvedType = (targetRunner || this.env?.RUNNER_TYPE || 'cloudflare').toLowerCase().trim() || 'cloudflare';
+    if (resolvedType !== 'cloudflare') {
+      // Fail closed: Cloudflare Containers is the only supported runner. A stale value
+      // (for example a retired runner name) must never silently select another path.
+      throw new Error(
+        `Unsupported RUNNER_TYPE "${resolvedType}": only "cloudflare" is supported. Remove or reset the RUNNER_TYPE variable.`
+      );
+    }
+    const normalizedKey = resolvedType;
 
     if (this.runnerCache.has(normalizedKey)) {
       return this.runnerCache.get(normalizedKey)!;
     }
 
-    let runner: ContainerRunner;
-    if (normalizedKey === 'digitalocean') {
-      runner = new DigitalOceanAgentRunner({
-        apiToken: this.env?.DO_API_TOKEN,
-        agentId: this.env?.DO_AGENT_ID,
-        baseUrl: this.env?.DO_BASE_URL,
-      });
-    } else {
-      let doFallback: ContainerRunner | undefined;
-      if (this.env?.DO_API_TOKEN) {
-        doFallback = new DigitalOceanAgentRunner({
-          apiToken: this.env.DO_API_TOKEN,
-          agentId: this.env.DO_AGENT_ID,
-          baseUrl: this.env.DO_BASE_URL,
-        });
-      }
-      runner = new CloudflareContainerRunner({
-        containersBinding: this.env?.CONTAINERS,
-        allowStubFallback: this.env?.ENVIRONMENT !== 'production',
-        fallbackRunner: doFallback,
-      });
-    }
+    const runner: ContainerRunner = new CloudflareContainerRunner({
+      containersBinding: this.env?.CONTAINERS,
+      allowStubFallback: this.env?.ENVIRONMENT !== 'production',
+    });
 
     this.runnerCache.set(normalizedKey, runner);
     return runner;

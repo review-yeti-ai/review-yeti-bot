@@ -130,7 +130,7 @@ export const queryActiveJobsTool: McpToolHandler = {
                 commitSha: 'HEAD',
                 phase,
                 orchestrator: 'cloudflare',
-                runner: 'digitalocean-agent',
+                runner: 'cloudflare-container',
                 fencingEpoch,
                 workerId,
                 leaseAgeMs,
@@ -151,7 +151,7 @@ export const queryActiveJobsTool: McpToolHandler = {
                 commitSha: 'PENDING',
                 phase: 'queued_in_semaphore',
                 orchestrator: 'cloudflare',
-                runner: 'digitalocean-agent',
+                runner: 'cloudflare-container',
               });
             }
           }
