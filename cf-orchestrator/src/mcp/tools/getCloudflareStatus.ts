@@ -112,10 +112,7 @@ export const getCloudflareStatusTool: McpToolHandler = {
       computePlane: {
         activeRunner: (env.RUNNER_TYPE || 'cloudflare').toLowerCase(),
         defaultRunner: 'cloudflare',
-        supportedRunners: ['cloudflare', 'digitalocean'],
-        aliases: {
-          digitalocean: ['mars', 'do'],
-        },
+        supportedRunners: ['cloudflare'],
       },
       dataSource: hasLiveTelemetry ? 'live_edge_telemetry' : 'baseline_sample_telemetry',
     };
@@ -125,7 +122,7 @@ export const getCloudflareStatusTool: McpToolHandler = {
     const summaryText =
       `### ⚡ Review Yeti Cloudflare Control Plane Status\n\n` +
       `- **Environment:** \`${report.environment}\` (Parallel Mode: \`${report.parallelMode}\`)\n` +
-      `- **Active Compute Plane:** \`${report.computePlane?.activeRunner}\` (Default: Cloudflare Edge Containers, Option: DigitalOcean Managed Agents)\n` +
+      `- **Active Compute Plane:** \`${report.computePlane?.activeRunner}\` (Cloudflare Edge Containers)\n` +
       `- **RepoGate Concurrency:** **${report.repoGate.activeSlotsUsed} / ${report.repoGate.concurrencyCap}** active slots in use | Queue Depth: **${report.repoGate.queueDepth}**\n` +
       `- **Active Runs:** ${
         report.repoGate.activeRuns.length > 0

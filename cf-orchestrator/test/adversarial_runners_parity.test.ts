@@ -13,7 +13,6 @@ import {
   type ContainerJobSpec,
   type ContainerJobResult,
 } from '../src/runners/containerRunner.js';
-import { DigitalOceanAgentRunner } from '../src/runners/digitalOceanAgentRunner.js';
 import {
   isAllowedCacheTarget,
   filterCacheTargets,
@@ -96,9 +95,9 @@ describe('Tier 5 Adversarial Hardening: Runners, Caching & Parity Engine', () =>
   });
 
   // =========================================================================
-  // Section 1: Container & DO Managed Agent Runners Adversarial Stress
+  // Section 1: Container Runner Adversarial Stress
   // =========================================================================
-  describe('1. Container & DO Managed Agent Runners Adversarial Stress', () => {
+  describe('1. Container Runner Adversarial Stress', () => {
     describe('1.1 Status Precedence & Conflict Resolution', () => {
       it('CloudflareContainerRunner: exitCode 124 overrides outcome status "succeeded"', async () => {
         const mockBinding = {
@@ -190,63 +189,8 @@ describe('Tier 5 Adversarial Hardening: Runners, Caching & Parity Engine', () =>
         assert.equal(res.status, 'succeeded');
       });
 
-      it('DigitalOceanAgentRunner: exitCode 124 overrides session status "succeeded"', async () => {
-        const mockFetch: typeof fetch = async () =>
-          new Response(
-            JSON.stringify({
-              session_id: sampleSpec.jobId,
-              status: 'succeeded',
-              exit_code: 124,
-            }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
-          );
-        const runner = new DigitalOceanAgentRunner({
-          apiToken: 'dop_v1_mock',
-          fetchImpl: mockFetch,
-        });
-        const res = await runner.dispatchJob(sampleSpec);
-        assert.equal(res.status, 'timed_out');
-        assert.equal(res.exitCode, 124);
-      });
 
-      it('DigitalOceanAgentRunner: exitCode 137 overrides session status "succeeded"', async () => {
-        const mockFetch: typeof fetch = async () =>
-          new Response(
-            JSON.stringify({
-              session_id: sampleSpec.jobId,
-              status: 'succeeded',
-              exit_code: 137,
-            }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
-          );
-        const runner = new DigitalOceanAgentRunner({
-          apiToken: 'dop_v1_mock',
-          fetchImpl: mockFetch,
-        });
-        const res = await runner.dispatchJob(sampleSpec);
-        assert.equal(res.status, 'cancelled');
-        assert.equal(res.exitCode, 137);
-      });
 
-      it('DigitalOceanAgentRunner: unrecognized status string maps to failed even with exitCode 0', async () => {
-        const mockFetch: typeof fetch = async () =>
-          new Response(
-            JSON.stringify({
-              session_id: sampleSpec.jobId,
-              status: 'unrecognized_running_phase',
-              exit_code: 0,
-            }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
-          );
-        const runner = new DigitalOceanAgentRunner({
-          apiToken: 'dop_v1_mock',
-          fetchImpl: mockFetch,
-        });
-        const res = await runner.dispatchJob(sampleSpec);
-        // Note: DigitalOceanAgentRunner strictly requires status === 'succeeded' or falsy for success
-        assert.equal(res.status, 'failed');
-        assert.equal(res.exitCode, 0);
-      });
     });
 
     describe('1.2 Timeout Handling When exitCode is Omitted', () => {
@@ -282,37 +226,7 @@ describe('Tier 5 Adversarial Hardening: Runners, Caching & Parity Engine', () =>
         assert.ok(res.error?.includes('timed out'));
       });
 
-      it('DigitalOceanAgentRunner: timed_out session without exit_code defaults exitCode to 0', async () => {
-        const mockFetch: typeof fetch = async () =>
-          new Response(
-            JSON.stringify({
-              session_id: sampleSpec.jobId,
-              status: 'timed_out',
-              // exit_code is omitted
-            }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
-          );
-        const runner = new DigitalOceanAgentRunner({
-          apiToken: 'dop_v1_mock',
-          fetchImpl: mockFetch,
-        });
-        const res = await runner.dispatchJob(sampleSpec);
-        assert.equal(res.status, 'timed_out');
-        assert.equal(res.exitCode, 0);
-      });
 
-      it('DigitalOceanAgentRunner: fetchImpl rejection with timeout message yields timed_out and exitCode 124', async () => {
-        const mockFetch: typeof fetch = async () => {
-          throw new Error('Connection to DO agent gateway timed out');
-        };
-        const runner = new DigitalOceanAgentRunner({
-          apiToken: 'dop_v1_mock',
-          fetchImpl: mockFetch,
-        });
-        const res = await runner.dispatchJob(sampleSpec);
-        assert.equal(res.status, 'timed_out');
-        assert.equal(res.exitCode, 124);
-      });
     });
 
     describe('1.3 Error Handling During Two-Tier Termination', () => {
@@ -424,100 +338,12 @@ describe('Tier 5 Adversarial Hardening: Runners, Caching & Parity Engine', () =>
         assert.equal(termRes.terminated, false);
       });
 
-      it('DigitalOceanAgentRunner: returns terminated=true on 404 (already terminated) or 200 OK', async () => {
-        const mockFetch404: typeof fetch = async () =>
-          new Response(JSON.stringify({ error: 'Session not found' }), { status: 404 });
-        const runner404 = new DigitalOceanAgentRunner({
-          apiToken: 'dop_v1_mock',
-          fetchImpl: mockFetch404,
-        });
-        const res404 = await runner404.terminateJob('job_nonexistent');
-        assert.equal(res404.terminated, true);
 
-        const mockFetch200: typeof fetch = async () =>
-          new Response(JSON.stringify({ status: 'terminated' }), { status: 200 });
-        const runner200 = new DigitalOceanAgentRunner({
-          apiToken: 'dop_v1_mock',
-          fetchImpl: mockFetch200,
-        });
-        const res200 = await runner200.terminateJob('job_active');
-        assert.equal(res200.terminated, true);
-      });
-
-      it('DigitalOceanAgentRunner: returns terminated=false on HTTP 500 error or network failure', async () => {
-        const mockFetch500: typeof fetch = async () =>
-          new Response('Internal Server Error', { status: 500 });
-        const runner500 = new DigitalOceanAgentRunner({
-          apiToken: 'dop_v1_mock',
-          fetchImpl: mockFetch500,
-        });
-        const res500 = await runner500.terminateJob('job_err');
-        assert.equal(res500.terminated, false);
-
-        const mockFetchThrow: typeof fetch = async () => {
-          throw new Error('fetch failed: ECONNREFUSED');
-        };
-        const runnerThrow = new DigitalOceanAgentRunner({
-          apiToken: 'dop_v1_mock',
-          fetchImpl: mockFetchThrow,
-        });
-        const resThrow = await runnerThrow.terminateJob('job_network_err');
-        assert.equal(resThrow.terminated, false);
-      });
     });
 
     describe('1.4 Network Drops & Socket Truncation During Polling / Dispatch', () => {
-      it('DigitalOceanAgentRunner: handles network ECONNRESET gracefully and returns status failed', async () => {
-        const mockFetch: typeof fetch = async () => {
-          const err = new TypeError('fetch failed');
-          (err as any).cause = { code: 'ECONNRESET', syscall: 'read' };
-          throw err;
-        };
-        const runner = new DigitalOceanAgentRunner({
-          apiToken: 'dop_v1_mock',
-          fetchImpl: mockFetch,
-        });
-        const res = await runner.dispatchJob(sampleSpec);
-        assert.equal(res.status, 'failed');
-        assert.equal(res.exitCode, 1);
-        assert.ok(res.error?.includes('fetch failed'));
-      });
 
-      it('DigitalOceanAgentRunner: handles truncated JSON response stream and returns status failed', async () => {
-        const mockFetch: typeof fetch = async () => ({
-          ok: true,
-          status: 200,
-          statusText: 'OK',
-          json: async () => {
-            throw new SyntaxError('Unexpected end of JSON input');
-          },
-          text: async () => '{"session_id": "truncated_pa',
-        } as unknown as Response);
 
-        const runner = new DigitalOceanAgentRunner({
-          apiToken: 'dop_v1_mock',
-          fetchImpl: mockFetch,
-        });
-        const res = await runner.dispatchJob(sampleSpec);
-        assert.equal(res.status, 'failed');
-        assert.equal(res.exitCode, 1);
-        assert.ok(res.error?.includes('Failed to parse DO Managed Agent response JSON'));
-      });
-
-      it('DigitalOceanAgentRunner: handles AbortError (cancellation during dispatch) and returns status cancelled, exitCode 137', async () => {
-        const mockFetch: typeof fetch = async () => {
-          const err = new Error('The operation was aborted');
-          err.name = 'AbortError';
-          throw err;
-        };
-        const runner = new DigitalOceanAgentRunner({
-          apiToken: 'dop_v1_mock',
-          fetchImpl: mockFetch,
-        });
-        const res = await runner.dispatchJob(sampleSpec);
-        assert.equal(res.status, 'cancelled');
-        assert.equal(res.exitCode, 137);
-      });
     });
   });
 

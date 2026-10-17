@@ -4,7 +4,6 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { ReviewJobWorkflow } from '../src/reviewJobWorkflow.js';
 import { MockContainerRunner, CloudflareContainerRunner } from '../src/runners/containerRunner.js';
-import { DigitalOceanAgentRunner } from '../src/runners/digitalOceanAgentRunner.js';
 import { ReviewRunDO } from '../src/reviewRunDO.js';
 import {
   REVIEW_GATE_CHECK_NAME,
@@ -1046,129 +1045,53 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     assert.equal(status.fencingEpoch, 1);
   });
 
-  describe('DigitalOcean Managed Agents (MARS) Runner Execution', () => {
-    it('instantiates DigitalOceanAgentRunner when RUNNER_TYPE is digitalocean or mars', async () => {
-      let dispatchedSessionBody: any = null;
-      let authHeader = '';
-      let reviewRunIdHeader = '';
-
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = async (input: any, init?: any) => {
-        const urlStr = typeof input === 'string' ? input : input.url;
-        if (urlStr.includes('/v2/genai/agents/custom-swarm-agent/sessions')) {
-          dispatchedSessionBody = JSON.parse(init.body);
-          authHeader = init.headers?.Authorization;
-          reviewRunIdHeader = init.headers?.['X-Review-Run-Id'];
-          return new Response(
-            JSON.stringify({
-              id: 'sess-12345',
-              status: 'succeeded',
-              exit_code: 0,
-            }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
-          );
-        }
-        return originalFetch(input, init);
-      };
-
-      try {
-        const env = {
-          ...createMockEnv(),
-          RUNNER_TYPE: 'digitalocean',
-          DO_API_TOKEN: 'dop_v1_mock_token_12345',
-          DO_AGENT_ID: 'custom-swarm-agent',
-          DO_BASE_URL: 'https://api.digitalocean.com',
-          PARALLEL_CHECK_NAME: 'Review Yeti',
-        };
-
-        const workflow = new ReviewJobWorkflow(env);
-
-        // Pre-initialize ReviewRunDO with valid terminal receipt so verify step succeeds
-        const runDO = env.REVIEW_RUN.get(sampleSpec.runId);
-        await runDO.fetch('http://do/init', {
-          method: 'POST',
-          body: JSON.stringify(sampleSpec),
-        });
-        await runDO.fetch('http://do/lease/acquire', {
-          method: 'POST',
-          body: JSON.stringify({ workerId: `cf-worker-${sampleSpec.runId.slice(0, 8)}`, epoch: 1 }),
-        });
-        await runDO.fetch('http://do/receipt', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            workerId: `cf-worker-${sampleSpec.runId.slice(0, 8)}`,
-            epoch: 1,
-            receipt: {
-              status: 'success',
-              findings: [],
-              verdict: 'approved',
-              summary: 'Clean PR',
-            },
-          }),
-        });
-
-        const mockStep = {
-          async do(name: string, arg2: any, arg3?: any) {
-            const fn = typeof arg2 === 'function' ? arg2 : arg3;
-            return fn();
-          },
-        };
-
-        const result = await workflow.run({ payload: sampleSpec }, mockStep as any);
-
-        assert.equal(result.runId, sampleSpec.runId);
-        assert.equal(authHeader, 'Bearer dop_v1_mock_token_12345');
-        assert.equal(reviewRunIdHeader, sampleSpec.runId);
-        assert.ok(dispatchedSessionBody);
-        assert.equal(dispatchedSessionBody.session_id, `job-${sampleSpec.runId}`);
-        assert.equal(dispatchedSessionBody.environment.PARALLEL_CHECK_NAME, 'Review Yeti');
-        assert.equal(dispatchedSessionBody.environment.RUN_ID, sampleSpec.runId);
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
-
-    it('keys runner cache by normalized runner type and allows subsequent distinct target runners', () => {
+  describe('Runner selection (Cloudflare Containers only)', () => {
+    it('keys runner cache by normalized runner type', () => {
       const env = createMockEnv();
       const workflow = new ReviewJobWorkflow(env);
 
       const cfRunner = workflow.getRunner('cloudflare');
       assert.ok(cfRunner instanceof CloudflareContainerRunner);
-
-      const doRunner = workflow.getRunner('digitalocean');
-      assert.ok(doRunner instanceof DigitalOceanAgentRunner);
-
-      // Verify DO alias 'mars' returns the cached DigitalOcean runner
-      const marsRunner = workflow.getRunner('mars');
-      assert.equal(marsRunner, doRunner);
-
-      // Verify subsequent request for cloudflare runner returns the cached Cloudflare runner
-      const cfRunner2 = workflow.getRunner('cloudflare');
-      assert.equal(cfRunner2, cfRunner);
+      assert.equal(workflow.getRunner(' Cloudflare '), cfRunner);
+      assert.equal(workflow.getRunner(), cfRunner);
     });
 
-    it('falls back to DigitalOcean runner in production if Containers binding is unavailable', async () => {
+    it('fails closed with a clear error for a stale non-cloudflare RUNNER_TYPE', () => {
+      for (const stale of ['digitalocean', 'mars', 'do', 'doks', 'bogus']) {
+        const workflow = new ReviewJobWorkflow({ ...createMockEnv(), RUNNER_TYPE: stale });
+        assert.throws(
+          () => workflow.getRunner(),
+          (err: any) =>
+            err instanceof Error &&
+            err.message.includes(`Unsupported RUNNER_TYPE "${stale}"`) &&
+            err.message.includes('only "cloudflare" is supported')
+        );
+      }
+    });
+
+    it('fails closed for a non-cloudflare per-job runner override', () => {
+      const workflow = new ReviewJobWorkflow(createMockEnv());
+      assert.throws(() => workflow.getRunner('digitalocean'), /Unsupported RUNNER_TYPE "digitalocean"/);
+      assert.throws(() => workflow.getRunner('mars'), /Unsupported RUNNER_TYPE "mars"/);
+    });
+
+    it('does not fall back to any external runner in production when the Containers binding is unavailable', async () => {
       const originalFetch = globalThis.fetch;
-      let doInvoked = false;
+      let fetchCalls = 0;
       try {
-        globalThis.fetch = async (url: any) => {
-          if (String(url).includes('digitalocean.com')) {
-            doInvoked = true;
-            return Response.json({ session_id: 'session-123', status: 'running' });
-          }
+        globalThis.fetch = async () => {
+          fetchCalls++;
           return new Response('Not Found', { status: 404 });
         };
 
+        // A leftover DO_API_TOKEN secret must be inert.
         const env = {
           ...createMockEnv(),
           ENVIRONMENT: 'production',
-          DO_API_TOKEN: 'dop_mock_token_production',
-          DO_AGENT_ID: 'swarm-do-1',
-        };
+          DO_API_TOKEN: 'stale-secret-must-be-ignored',
+        } as any;
         const workflow = new ReviewJobWorkflow(env);
-        const runner = workflow.getRunner('cloudflare') as CloudflareContainerRunner;
-
+        const runner = workflow.getRunner('cloudflare');
         assert.ok(runner instanceof CloudflareContainerRunner);
 
         const result = await runner.dispatchJob({
@@ -1183,8 +1106,10 @@ describe('ReviewJobWorkflow Durable Execution', () => {
           env: {},
         });
 
-        assert.ok(doInvoked, 'Expected fallback to DigitalOcean agent runner');
+        assert.equal(fetchCalls, 0, 'No external runner may be contacted');
         assert.equal(result.jobId, 'job-1');
+        assert.equal(result.status, 'failed');
+        assert.notEqual(result.exitCode, 0);
       } finally {
         globalThis.fetch = originalFetch;
       }

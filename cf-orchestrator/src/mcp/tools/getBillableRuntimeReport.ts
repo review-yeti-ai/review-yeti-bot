@@ -7,7 +7,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
   definition: {
     name: 'review_yeti_get_billable_runtime_report',
     description:
-      'Generate compute cost and billable runtime reports for Review Yeti managed runners (DigitalOcean Managed Agents, Cloudflare Containers, and OpenRouter tokens) including comparative savings versus DOKS Kubernetes baseline.',
+      'Generate compute cost and billable runtime reports for Review Yeti managed runners (Cloudflare Containers and OpenRouter tokens) including comparative savings versus DOKS Kubernetes baseline.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -21,7 +21,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
         },
         runnerType: {
           type: 'string',
-          enum: ['all', 'digitalocean', 'cloudflare', 'doks'],
+          enum: ['all', 'cloudflare', 'doks'],
           default: 'all',
           description: 'Filter by execution runner environment',
         },
@@ -54,7 +54,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
           runId: r.id,
           repo: r.repo,
           prNumber: r.prNumber,
-          runner: r.model?.includes('cloud') ? 'cloudflare' : 'digitalocean',
+          runner: 'cloudflare',
           durationMs: r.durationMs || 0,
           tokenCostUSD: r.spendUsd || 0,
           createdAt: new Date(r.createdAt).toISOString(),
@@ -69,7 +69,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
           runId: 'run_cf_bd36035bf508024da7457527fa0fa4f5',
           repo: SAMPLE_REPO_CDR,
           prNumber: 5290,
-          runner: 'digitalocean',
+          runner: 'cloudflare',
           durationMs: 18450,
           tokenCostUSD: 0.0032,
           createdAt: new Date(now - 1200000).toISOString(),
@@ -78,7 +78,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
           runId: 'run_cf_45ca09576fc84c3f1a9627354e341121',
           repo: SAMPLE_REPO_CDR,
           prNumber: 5262,
-          runner: 'digitalocean',
+          runner: 'cloudflare',
           durationMs: 248100,
           tokenCostUSD: 0.0415,
           createdAt: new Date(now - 86400000).toISOString(),
@@ -96,7 +96,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
           runId: 'run_cf_d94fde4fe8',
           repo: SAMPLE_REPO_CDR,
           prNumber: 5294,
-          runner: 'digitalocean',
+          runner: 'cloudflare',
           durationMs: 28450,
           tokenCostUSD: 0.0051,
           createdAt: new Date(now - 3600000).toISOString(),
@@ -134,7 +134,6 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
         totalCostUSD: number;
       }
     > = {
-      digitalocean: { runs: 0, runtimeSeconds: 0, computeCostUSD: 0, tokenCostUSD: 0, totalCostUSD: 0 },
       cloudflare: { runs: 0, runtimeSeconds: 0, computeCostUSD: 0, tokenCostUSD: 0, totalCostUSD: 0 },
     };
 
@@ -230,7 +229,6 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
       `- **Legacy DOKS Cluster Baseline:** \$${estimatedDoksBaselineCostUSD} USD (\$170/month idle node pools & PVCs)\n` +
       `- **Net Cloudflare Edge Cost Savings:** **\$${netSavingsUSD} USD (${savingsPercent}% reduction)**\n\n` +
       `#### 🏃 Compute Runner Breakdown\n` +
-      `- **DigitalOcean Managed Agents:** ${breakdownByRunner.digitalocean.runs} runs | ${breakdownByRunner.digitalocean.runtimeSeconds}s | ${formatCostUsd(breakdownByRunner.digitalocean.computeCostUSD)} compute\n` +
       `- **Cloudflare Containers:** ${breakdownByRunner.cloudflare.runs} runs | ${breakdownByRunner.cloudflare.runtimeSeconds}s | ${formatCostUsd(breakdownByRunner.cloudflare.computeCostUSD)} compute\n`;
 
     return {

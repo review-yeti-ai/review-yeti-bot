@@ -8,7 +8,6 @@ import {
 } from './e2eHarness.js';
 import { parseToolingConfigYaml } from '../../src/tunnel/toolTunnelDefinition.js';
 import { isInternalEndpoint, resolveEndpointTunnel } from '../../src/tunnel/tunnelConfig.js';
-import { DigitalOceanAgentRunner } from '../../src/runners/digitalOceanAgentRunner.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -411,47 +410,8 @@ tools:
     });
   });
 
-  describe('DigitalOcean Runner & Parity Comparison Boundaries', () => {
-    it('B26: DO Agent Runner handles non-200 API response gracefully', async () => {
-      const mockFetch: typeof fetch = async () => {
-        return new Response('Quota exceeded', { status: 429 });
-      };
+  describe('Parity Comparison Boundaries', () => {
 
-      const runner = new DigitalOceanAgentRunner({
-        apiToken: 'token',
-        fetchImpl: mockFetch,
-      });
-
-      const res = await runner.dispatchJob({
-        jobId: 'job_b26',
-        runId: 'run_b26',
-        owner: 'o',
-        repo: 'r',
-        prNumber: 1,
-        headSha: 'h',
-        baseSha: 'b',
-        workerImage: 'img',
-        env: {},
-      });
-
-      assert.equal(res.status, 'failed');
-      assert.equal(res.exitCode, 1);
-      assert.ok(res.error?.includes('429'));
-    });
-
-    it('B27: DO Agent Runner treats HTTP 404 on session delete as successful termination', async () => {
-      const mockFetch: typeof fetch = async () => {
-        return new Response('Session not found', { status: 404 });
-      };
-
-      const runner = new DigitalOceanAgentRunner({
-        apiToken: 'token',
-        fetchImpl: mockFetch,
-      });
-
-      const outcome = await runner.terminateJob('job_finished_already');
-      assert.equal(outcome.terminated, true);
-    });
 
     it('B28: compareRuns with doks.durationMs = 0 sets latencyRatio: 1.0 without NaN', () => {
       const doks = createSampleReceipt('doks', { durationMs: 0 });

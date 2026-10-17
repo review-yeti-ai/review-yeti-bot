@@ -9,7 +9,6 @@ import {
 import { parseToolingConfigYaml, resolveToolConnection } from '../../src/tunnel/toolTunnelDefinition.js';
 import { isInternalEndpoint, resolveEndpointTunnel } from '../../src/tunnel/tunnelConfig.js';
 import { CloudflareContainerRunner, MockContainerRunner } from '../../src/runners/containerRunner.js';
-import { DigitalOceanAgentRunner } from '../../src/runners/digitalOceanAgentRunner.js';
 import { compareRuns, formatComparisonReport } from '../../src/compareOrchestratorRuns.js';
 import type { ReviewRunSpec } from '../../src/types.js';
 
@@ -542,70 +541,7 @@ tools:
       assert.equal(result.receipt?.version, 'ReviewYetiReceiptOnly.v1');
     });
 
-    it('F23: DigitalOceanAgentRunner dispatches review session to Firecracker microVM', async () => {
-      let requestHeaders: Record<string, string> = {};
-      let requestBody: any = null;
 
-      const mockFetch: typeof fetch = async (url, init) => {
-        requestHeaders = init?.headers as any;
-        requestBody = JSON.parse(init?.body as string);
-        return new Response(
-          JSON.stringify({
-            session_id: 'job_do_01',
-            status: 'succeeded',
-            exit_code: 0,
-            receipt: { version: 'ReviewYetiReceiptOnly.v1' },
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      };
-
-      const runner = new DigitalOceanAgentRunner({
-        apiToken: 'do_secret_token_123',
-        agentId: 'review-yeti-agent',
-        fetchImpl: mockFetch,
-      });
-
-      const result = await runner.dispatchJob({
-        jobId: 'job_do_01',
-        runId: 'run_do_01',
-        owner: 'review-yeti-ai',
-        repo: 'review-yeti-bot',
-        prNumber: 42,
-        headSha: 'headsha',
-        baseSha: 'basesha',
-        workerImage: 'ghcr.io/review-yeti-worker:latest',
-        env: { KEY: 'val' },
-      });
-
-      assert.equal(result.status, 'succeeded');
-      assert.equal(result.exitCode, 0);
-      assert.equal(requestHeaders['Authorization'], 'Bearer do_secret_token_123');
-      assert.equal(requestHeaders['X-Review-Run-Id'], 'run_do_01');
-      assert.equal(requestBody.session_id, 'job_do_01');
-    });
-
-    it('F24: DO Managed Agent Session Cancellation terminates microVM session via DELETE', async () => {
-      let deleteMethod = '';
-      let cancelReasonHeader = '';
-
-      const mockFetch: typeof fetch = async (url, init) => {
-        deleteMethod = init?.method ?? '';
-        cancelReasonHeader = (init?.headers as any)?.['X-Cancel-Reason'] ?? '';
-        return new Response(null, { status: 200 });
-      };
-
-      const runner = new DigitalOceanAgentRunner({
-        apiToken: 'do_secret_token_123',
-        agentId: 'review-yeti-agent',
-        fetchImpl: mockFetch,
-      });
-
-      const outcome = await runner.terminateJob('job_do_01', 'commit_superseded');
-      assert.equal(outcome.terminated, true);
-      assert.equal(deleteMethod, 'DELETE');
-      assert.equal(cancelReasonHeader, 'commit_superseded');
-    });
 
     it('F25: R2 Workspace Cache Hydration Shim validates cache key format and restore protocol', () => {
       const owner = 'review-yeti-ai';

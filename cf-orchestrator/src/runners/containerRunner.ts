@@ -37,7 +37,6 @@ export interface CloudflareContainerRunnerOptions {
   containersBinding?: any;
   allowStubFallback?: boolean;
   defaultTimeoutSeconds?: number;
-  fallbackRunner?: ContainerRunner;
 }
 
 /**
@@ -48,7 +47,6 @@ export class CloudflareContainerRunner implements ContainerRunner {
   private containersBinding?: any;
   private allowStubFallback: boolean;
   private defaultTimeoutSeconds: number;
-  private fallbackRunner?: ContainerRunner;
   private activeJobs = new Map<string, any>();
 
   constructor(bindingOrOptions?: any) {
@@ -56,13 +54,11 @@ export class CloudflareContainerRunner implements ContainerRunner {
       bindingOrOptions &&
       typeof bindingOrOptions === 'object' &&
       ('containersBinding' in bindingOrOptions ||
-        'allowStubFallback' in bindingOrOptions ||
-        'fallbackRunner' in bindingOrOptions)
+        'allowStubFallback' in bindingOrOptions)
     ) {
       this.containersBinding = bindingOrOptions.containersBinding;
       this.allowStubFallback = bindingOrOptions.allowStubFallback ?? false;
       this.defaultTimeoutSeconds = bindingOrOptions.defaultTimeoutSeconds ?? 1500;
-      this.fallbackRunner = bindingOrOptions.fallbackRunner;
     } else {
       this.containersBinding = bindingOrOptions;
       this.allowStubFallback = false;
@@ -75,9 +71,6 @@ export class CloudflareContainerRunner implements ContainerRunner {
 
     // Validate container binding
     if (!this.containersBinding || typeof this.containersBinding.create !== 'function') {
-      if (this.fallbackRunner) {
-        return this.fallbackRunner.dispatchJob(spec);
-      }
       if (this.allowStubFallback) {
         const durationMs = Date.now() - startedAt;
         return {
@@ -206,12 +199,6 @@ export class CloudflareContainerRunner implements ContainerRunner {
   }
 
   async terminateJob(jobId: string, reason?: string): Promise<{ terminated: boolean }> {
-    if (!this.containersBinding || typeof this.containersBinding.create !== 'function') {
-      if (this.fallbackRunner) {
-        return this.fallbackRunner.terminateJob(jobId, reason);
-      }
-    }
-
     const cancelReason = reason || 'superseded_or_closed';
     let instanceTerminated = false;
     let bindingTerminated = false;

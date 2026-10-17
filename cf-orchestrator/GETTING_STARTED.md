@@ -22,7 +22,7 @@ Before getting started, make sure you have:
   - GitHub App ID
   - GitHub App Private Key (`.pem`)
   - Webhook Secret
-- **DigitalOcean MARS API Token** (for Firecracker microVM execution) or Cloudflare Containers access
+- **Cloudflare Containers access** (the only supported runner)
 - **PostgreSQL Database** (connected via Cloudflare Hyperdrive)
 
 ---
@@ -164,7 +164,7 @@ PILOT_REPOSITORIES = "exampleorg/example-workspace,all"
 DOKS_FALLBACK_URL = "https://review-bot.example.com/api/webhooks/github"
 MAX_CONCURRENT_JOBS = "5"
 DEBOUNCE_WINDOW_SECONDS = "10"
-RUNNER_TYPE = "digitalocean"
+RUNNER_TYPE = "cloudflare"
 ```
 
 ### 6.2 Populate Production Secrets
@@ -177,9 +177,6 @@ npx wrangler secret put GITHUB_APP_PRIVATE_KEY
 
 # Optional exact private identities for paused publication
 npx wrangler secret put OPERATOR_PASSTHROUGH_PRIVATE_REPOSITORY_IDENTITIES
-
-# DigitalOcean MARS Token (Firecracker microVM provisioning)
-npx wrangler secret put DO_API_TOKEN
 
 # Cloudflare Zero Trust (for private LLM/Honcho tunnels)
 npx wrangler secret put CF_ACCESS_CLIENT_ID

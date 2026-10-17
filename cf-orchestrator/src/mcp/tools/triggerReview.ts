@@ -18,7 +18,7 @@ export const triggerReviewTool: McpToolHandler = {
   definition: {
     name: 'review_yeti_trigger_review',
     description:
-      'Trigger an on-demand review job for a Pull Request or commit SHA across Cloudflare Edge or DigitalOcean runners.',
+      'Trigger an on-demand review job for a Pull Request or commit SHA on the Cloudflare Edge runner.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -41,9 +41,9 @@ export const triggerReviewTool: McpToolHandler = {
         },
         runner: {
           type: 'string',
-          enum: ['cloudflare', 'digitalocean'],
+          enum: ['cloudflare'],
           default: 'cloudflare',
-          description: 'Target compute runner (default: "cloudflare", option: "digitalocean")',
+          description: 'Target compute runner (only "cloudflare" is supported)',
         },
         mode: {
           type: 'string',
@@ -62,24 +62,22 @@ export const triggerReviewTool: McpToolHandler = {
     const prNumber = Number(args.prNumber);
     const commitSha = (args.commitSha || 'latest-head').trim();
 
-    const ALLOWED_RUNNERS = ['cloudflare', 'digitalocean', 'mars', 'do'];
-    let runner: string;
-    if (args.runner !== undefined && args.runner !== null && String(args.runner).trim() !== '') {
-      const normalized = String(args.runner).trim().toLowerCase();
-      if (!ALLOWED_RUNNERS.includes(normalized)) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: 'text',
-              text: `Error: Invalid runner "${args.runner}". Allowed values are: "cloudflare", "digitalocean".`,
-            },
-          ],
-        };
-      }
-      runner = normalized === 'mars' || normalized === 'do' ? 'digitalocean' : normalized;
-    } else {
-      runner = (context.env?.RUNNER_TYPE || 'cloudflare').trim().toLowerCase();
+    const ALLOWED_RUNNERS = ['cloudflare'];
+    const requestedRunner =
+      args.runner !== undefined && args.runner !== null && String(args.runner).trim() !== ''
+        ? String(args.runner)
+        : context.env?.RUNNER_TYPE || 'cloudflare';
+    const runner = requestedRunner.trim().toLowerCase() || 'cloudflare';
+    if (!ALLOWED_RUNNERS.includes(runner)) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: `Error: Invalid runner "${requestedRunner}". Allowed values are: "cloudflare".`,
+          },
+        ],
+      };
     }
     const mode = args.mode || 'shadow';
 
@@ -346,7 +344,7 @@ export const triggerReviewTool: McpToolHandler = {
       `- **Run ID:** \`${runId}\`\n` +
       `- **Repository:** \`${repoKey}\` | **PR:** **#${prNumber}**\n` +
       `- **Commit SHA:** \`${commitSha}\`\n` +
-      `- **Runner Plane:** \`${runner}\` (${runner === 'digitalocean' ? 'Firecracker microVM' : 'Edge Container'})\n` +
+      `- **Runner Plane:** \`${runner}\` (Edge Container)\n` +
       `- **Execution Mode:** \`${mode}\` (${mode === 'shadow' ? 'Shadow Canary' : 'Authoritative Check'})\n` +
       `- **Workflow Engine:** ${
         workflowCreated

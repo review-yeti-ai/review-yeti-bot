@@ -109,8 +109,8 @@ describe('Review Yeti MCP Tools Implementation', () => {
     assert.equal(parsed.dataSource, 'live_edge_telemetry');
     assert.equal(parsed.computePlane.activeRunner, 'cloudflare');
     assert.equal(parsed.computePlane.defaultRunner, 'cloudflare');
-    assert.deepEqual(parsed.computePlane.supportedRunners, ['cloudflare', 'digitalocean']);
-    assert.deepEqual(parsed.computePlane.aliases, { digitalocean: ['mars', 'do'] });
+    assert.deepEqual(parsed.computePlane.supportedRunners, ['cloudflare']);
+    assert.equal(parsed.computePlane.aliases, undefined);
   });
 
   it('review_yeti_get_billable_runtime_report calculates compute costs and savings vs DOKS', async () => {
@@ -123,7 +123,8 @@ describe('Review Yeti MCP Tools Implementation', () => {
     assert.ok(parsed.summary.netSavingsUSD > 0);
     assert.ok(parsed.summary.savingsPercent > 50);
 
-    assert.ok(res.content[0].text?.includes('DigitalOcean Managed Agents'));
+    assert.ok(res.content[0].text?.includes('Cloudflare Containers'));
+    assert.ok(!res.content[0].text?.includes('DigitalOcean'));
     assert.ok(res.content[0].text?.includes('Cost Efficiency vs DOKS Kubernetes Baseline'));
     assert.ok(res.content[0].text?.includes('Net Cloudflare Edge Cost Savings'));
   });
@@ -199,28 +200,19 @@ describe('Review Yeti MCP Tools Implementation', () => {
     assert.ok(validRes.content[0].text?.includes('Review Yeti Job Dispatched'));
     assert.ok(validRes.content[0].text?.includes('Unallocated'));
 
-    // Env-driven runner selection when args.runner is omitted
-    const envDoRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296 }, { env: { RUNNER_TYPE: 'digitalocean' } });
-    const envDoParsed = JSON.parse(envDoRes.content[1].text!);
-    assert.equal(envDoParsed.ok, true);
-    assert.equal(envDoParsed.runner, 'digitalocean');
+    // Retired runner names (and a stale env RUNNER_TYPE) are rejected fail-closed
+    for (const retired of ['digitalocean', 'mars', 'do']) {
+      const retiredRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296, runner: retired }, {});
+      assert.equal(retiredRes.isError, true);
+      assert.ok(retiredRes.content[0].text?.includes(`Invalid runner "${retired}"`));
+    }
+    const staleEnvRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296 }, { env: { RUNNER_TYPE: 'digitalocean' } });
+    assert.equal(staleEnvRes.isError, true);
+    assert.ok(staleEnvRes.content[0].text?.includes('Invalid runner "digitalocean"'));
 
-    // Explicit runner selection: DigitalOcean Managed Agents option
-    const doRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296, runner: 'digitalocean' }, {});
-    const doParsed = JSON.parse(doRes.content[1].text!);
-    assert.equal(doParsed.ok, true);
-    assert.equal(doParsed.runner, 'digitalocean');
-
-    // Alias runner selection: 'mars' and 'do' normalize to 'digitalocean'
-    const marsRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296, runner: 'mars' }, {});
-    const marsParsed = JSON.parse(marsRes.content[1].text!);
-    assert.equal(marsParsed.ok, true);
-    assert.equal(marsParsed.runner, 'digitalocean');
-
-    const aliasDoRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296, runner: 'do' }, {});
-    const aliasDoParsed = JSON.parse(aliasDoRes.content[1].text!);
-    assert.equal(aliasDoParsed.ok, true);
-    assert.equal(aliasDoParsed.runner, 'digitalocean');
+    // Env-driven cloudflare selection when args.runner is omitted
+    const envCfRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296 }, { env: { RUNNER_TYPE: 'cloudflare' } });
+    assert.equal(JSON.parse(envCfRes.content[1].text!).runner, 'cloudflare');
 
     // Invalid runner value is rejected fail-closed
     const invalidRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296, runner: 'invalid_compute_engine' }, {});
