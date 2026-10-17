@@ -142,7 +142,7 @@ describe('Review Yeti Cloudflare Orchestrator - Operator Passthrough Mode ("Full
       })
         .setProtectedHeader({ alg: 'RS256' })
         .setIssuer('https://token.actions.githubusercontent.com')
-        .setAudience('review-yeti-doks-dispatch')
+        .setAudience('review-yeti-edge-dispatch')
         .setIssuedAt()
         .setExpirationTime('5m')
         .sign(privateKey);
@@ -165,7 +165,6 @@ describe('Review Yeti Cloudflare Orchestrator - Operator Passthrough Mode ("Full
         const env = {
           ...createMockEnv(),
           ENVIRONMENT: 'test',
-          PARALLEL_MODE: 'false',
           PARALLEL_CHECK_NAME: 'Review Yeti',
           PILOT_REPOSITORIES: 'all',
           DEFAULT_WORKER_IMAGE: 'test-image',

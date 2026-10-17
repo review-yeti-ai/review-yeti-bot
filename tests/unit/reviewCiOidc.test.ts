@@ -54,8 +54,8 @@ describe('strict CI provenance and opt-in configuration', () => {
     await expect(verifier().verify(await token(), 'relay')).resolves.toMatchObject({ role: 'relay', runId: 987, runAttempt: 1 });
     await expect(verifier().verify(await token({}, 'validation'), 'validation')).resolves.toMatchObject({ role: 'validation' });
   });
-  it('rejects legacy audience, role swaps, ref/SHA cross-product, callee substitution, and candidate event', async () => {
-    await expect(verifier().verify(await token({}, 'relay', 'review-yeti-doks-dispatch'), 'relay')).rejects.toThrow('not authorized');
+  it('rejects the dispatch audience, role swaps, ref/SHA cross-product, callee substitution, and candidate event', async () => {
+    await expect(verifier().verify(await token({}, 'relay', 'review-yeti-edge-dispatch'), 'relay')).rejects.toThrow('not authorized');
     await expect(verifier().verify(await token(), 'validation')).rejects.toThrow('not authorized');
     for (const override of [{ workflow_sha: repository.validation.workflowSha },
       { job_workflow_ref: `example/pilot/${repository.relay.workflowPath}@refs/heads/main`, job_workflow_sha: repository.relay.workflowSha },

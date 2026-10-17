@@ -602,5 +602,5 @@ kubectl delete namespace review-yeti-system
 ## 📚 Related Documentation
 
 - [Production Troubleshooting Guide](TROUBLESHOOTING.md) — Remediation for HTTP 403, 401, 429, and worker timeouts.
-- [Kubernetes Mode Reference](KUBERNETES_MODE.md) — Architecture and security specifications.
+- [Kubernetes Review Operations](KUBERNETES_REVIEW_OPERATIONS.md) — Operator, worker, and observability runbook.
 - [Examples Gallery](../examples/README.md) — Copy-pasteable workflows and multi-persona charters.

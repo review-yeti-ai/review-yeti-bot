@@ -25,7 +25,7 @@ beforeAll(async () => {
   keySet = createLocalJWKSet({ keys: [{ ...jwk, kid: 'test-key', alg: 'RS256', use: 'sig' }] });
 });
 
-async function token(overrides: Record<string, unknown> = {}, audience = 'review-yeti-doks-dispatch') {
+async function token(overrides: Record<string, unknown> = {}, audience = 'review-yeti-edge-dispatch') {
   return new SignJWT({ ...claims, ...overrides })
     .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
     .setIssuer('https://token.actions.githubusercontent.com')
@@ -67,7 +67,7 @@ describe('GitHub Actions OIDC verification', () => {
     const expired = await new SignJWT(claims)
       .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
       .setIssuer('https://token.actions.githubusercontent.com')
-      .setAudience('review-yeti-doks-dispatch')
+      .setAudience('review-yeti-edge-dispatch')
       .setIssuedAt(Math.floor(Date.now() / 1000) - 1_000)
       .setExpirationTime(Math.floor(Date.now() / 1000) - 500)
       .sign(privateKey);

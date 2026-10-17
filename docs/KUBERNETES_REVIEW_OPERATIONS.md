@@ -2,34 +2,30 @@
 
 This guide covers operational management and cluster verification for running Review Yeti on any conformant **Kubernetes** cluster.
 
-For the general architecture, async dispatch handshake, and cost analysis across any Kubernetes cluster, see the [Kubernetes Execution Mode Guide](KUBERNETES_MODE.md).
+For chart installation and values tuning, see the [Helm 3 Operations Guide](HELM_GUIDE.md).
 
 ---
 
 ## 🛠️ Installing the Runtime
 
-From your Review Yeti repository checkout with `kubectl` configured for your target Kubernetes cluster:
+From your Review Yeti repository checkout with `kubectl` and `helm` configured for your target Kubernetes cluster:
 
 ```bash
-# Set your container image registries and cluster network endpoints
-REVIEW_OPERATOR_IMAGE='registry.example.com/review-yeti/operator@sha256:<digest>' \
-REVIEW_DISPATCHER_IMAGE='registry.example.com/review-yeti/dispatcher@sha256:<digest>' \
-REVIEW_WORKER_IMAGE='registry.example.com/review-yeti/worker@sha256:<digest>' \
-KUBERNETES_SERVICE_IP='<service-ip>' \
-KUBERNETES_API_ENDPOINT_CIDR='<control-plane-cidr>' \
-scripts/install-doks-review-runtime.sh
+helm install review-yeti charts/review-yeti \
+  --namespace review-yeti-system \
+  --create-namespace \
+  -f <your-values-file>
 ```
 
-The installer verifies:
-- Immutable container digests (`sha256:...`).
+The chart applies:
 - Least-privilege RBAC definitions in an isolated namespace.
-- Application of the `review-yeti.ai/v1alpha2` Custom Resource Definition (CRD).
+- The `review-yeti.ai/v1alpha2` Custom Resource Definition (CRD).
+- The operator and review-job dispatcher deployments.
 
-Both the installer and `scripts/deploy-review-job-dispatcher.sh` are
-deliberately install/upgrade boundaries: they apply at `replicas: 0` and
-refuse to activate a deployment. Neither script has -- nor is meant to have
--- a path to move the worker image forward once a dispatcher is already
-serving production traffic.
+`scripts/deploy-review-job-dispatcher.sh` is a deliberate install/upgrade
+boundary: it applies at `replicas: 0` and refuses to activate a deployment. It
+has -- and is not meant to have -- a path to move the worker image forward
+once a dispatcher is already serving production traffic.
 
 ### Dispatcher health and reaper metrics
 
@@ -383,7 +379,7 @@ To verify your cluster deployment before rolling out to production repositories:
 3. **Run Single Deterministic Review**:
    Execute a manual review against a known sample PR diff fixture and verify that persona evaluations complete and output valid JSON.
 4. **End-to-End Validation**:
-   Dispatch a test review from a GitHub Actions workflow using `execution-backend: doks` and verify:
+   Dispatch a test review to the dispatcher and verify:
    - Central `repository_dispatch` app-gate execution supplies the App-admitted
      one-based `expected-generation`; an invalid, stale, or future value is
      always rejected before worker allocation, and a missing value is rejected

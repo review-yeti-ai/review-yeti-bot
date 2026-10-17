@@ -45,10 +45,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('review-engine');
     expect(inputs).toContain('action-sha');
     expect(inputs).toContain('execution-backend');
-    expect(inputs).toContain('doks-dispatch-url');
     expect(inputs).toContain('dispatch-url');
-    expect(inputs).toContain('edge-dispatch-url');
-    expect(inputs).toContain('doks-publish-mode');
+    expect(inputs).toContain('publish-mode');
     expect(inputs).toContain('refresh-requested');
     expect(inputs).toContain('refresh-execution-attempt');
     expect(inputs).toContain('expected-generation');
@@ -81,22 +79,21 @@ describe('action.yml — installable GitHub Action contract', () => {
 
   it('keeps local execution as the default and defaults dispatch publication to app-gate', () => {
     expect(action.inputs['execution-backend'].default).toBe('local');
-    expect(action.inputs['doks-publish-mode'].default).toBe('app-gate');
+    // Empty publish-mode resolves to app-gate in the dispatch step environment.
+    expect(action.inputs['publish-mode'].default).toBe('');
     // The endpoint is supplied by the caller; the Action carries no hostname default.
-    expect(action.inputs['doks-dispatch-url'].default).toBe('');
     expect(action.inputs['dispatch-url'].default).toBe('');
-    expect(action.inputs['edge-dispatch-url'].default).toBe('');
 
     const raw = fs.readFileSync(actionPath, 'utf8');
-    const dispatcher = fs.readFileSync(path.join(rootRepoDir, 'scripts/dispatch-doks-action.mjs'), 'utf8');
-    expect(raw).toContain('dispatch-doks-action.mjs');
+    const dispatcher = fs.readFileSync(path.join(rootRepoDir, 'scripts/dispatch-review-action.mjs'), 'utf8');
+    expect(raw).toContain('dispatch-review-action.mjs');
     expect(dispatcher).toContain('ACTIONS_ID_TOKEN_REQUEST_URL');
     expect(dispatcher).toContain('ACTIONS_ID_TOKEN_REQUEST_TOKEN');
     expect(raw).toContain("inputs.execution-backend != 'local'");
     expect(raw).toContain("inputs.execution-backend == 'local'");
-    expect(raw).toContain('local|doks|edge');
-    expect(raw).toContain("execution-backend 'mars' is not supported");
-    expect(raw).toContain('inputs.dispatch-url || inputs.edge-dispatch-url || inputs.doks-dispatch-url');
+    expect(raw).toContain('local|edge');
+    expect(raw).toContain('execution-backend must be local or edge');
+    expect(raw).toContain("DISPATCH_PUBLISH_MODE: ${{ inputs.publish-mode || inputs.doks-publish-mode || 'app-gate' }}");
     expect(raw).toContain('EXPECTED_GENERATION: ${{ inputs.expected-generation }}');
   });
 
@@ -105,15 +102,16 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(step).toBeTruthy();
     expect(JSON.stringify(step.env)).not.toMatch(/OPENROUTER|FIREWORKS|OLLAMA|ANTHROPIC|GEMINI|OPENAI_API_KEY/u);
     expect(step.env).not.toHaveProperty('GH_TOKEN');
-    expect(step.env.DOKS_OIDC_AUDIENCE).toBe('review-yeti-doks-dispatch');
+    expect(step.env.DISPATCH_OIDC_AUDIENCE).toBe('review-yeti-edge-dispatch');
+    expect(step.env.DISPATCH_PUBLISH_MODE).toContain('inputs.publish-mode');
     expect(step.env.REFRESH_REQUESTED).toContain('inputs.refresh-requested');
     expect(step.env.REFRESH_EXECUTION_ATTEMPT).toContain('inputs.refresh-execution-attempt');
   });
 
   it('reports remote admission as pending rather than a green review', () => {
-    expect(action.outputs['review-status'].value).toContain('steps.doks-dispatch.outputs.review-status');
-    expect(action.outputs['gate-decision'].value).toContain('steps.doks-dispatch.outputs.gate-decision');
-    expect(action.outputs['merge-eligible'].value).toContain('steps.doks-dispatch.outputs.merge-eligible');
+    expect(action.outputs['review-status'].value).toContain('steps.dispatch.outputs.review-status');
+    expect(action.outputs['gate-decision'].value).toContain('steps.dispatch.outputs.gate-decision');
+    expect(action.outputs['merge-eligible'].value).toContain('steps.dispatch.outputs.merge-eligible');
   });
 
   it('defaults github-token to the caller workflow token so no PAT is required', () => {

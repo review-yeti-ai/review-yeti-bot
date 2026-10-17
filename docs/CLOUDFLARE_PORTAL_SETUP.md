@@ -269,5 +269,5 @@ curl -N -H "Accept: text/event-stream" https://review-yeti-cf-orchestrator.examp
 ## 📚 Related Documentation
 - 🚀 **[Onboarding Guide](ONBOARDING_GUIDE.md)** — Setting up GitHub App integration and rules.
 - 📖 **[User Guide](USER_GUIDE.md)** — Operational walkthrough of all dashboard features.
-- ☸️ **[Kubernetes Mode Guide](KUBERNETES_MODE.md)** — Kubernetes operator and cluster architecture.
+- ☸️ **[Helm 3 Operations Guide](HELM_GUIDE.md)** — Kubernetes operator and chart installation.
 - 🛠️ **[Troubleshooting Guide](TROUBLESHOOTING.md)** — Diagnosing networking and streaming issues.

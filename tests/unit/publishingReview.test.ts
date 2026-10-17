@@ -2744,7 +2744,7 @@ describe('worker dispatch ordering (safety critical)', () => {
   it('routes an app-gate dispatch to the publishing lane, never the legacy runner', async () => {
     // runLiveReviewMain resolves repo/PR from argv with a hardcoded fallback and
     // defaults its base URL to openrouter.ai. If app-gate ever fell through to it,
-    // a DOKS dispatch would review the wrong repository against the wrong provider.
+    // a remote dispatch would review the wrong repository against the wrong provider.
     const { runWorker } = await import('../../src/cli/runLiveReview');
     const live = vi.fn(async () => {});
     const publishing = vi.fn(async () => {});

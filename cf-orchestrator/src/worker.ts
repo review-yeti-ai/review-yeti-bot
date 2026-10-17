@@ -215,7 +215,6 @@ export default {
         return Response.json({
           status: 'ok',
           environment: env.ENVIRONMENT,
-          parallelMode: env.PARALLEL_MODE,
         });
       }
 
@@ -331,23 +330,6 @@ export default {
         const valid = await verifyGitHubSignature(env.GITHUB_WEBHOOK_SECRET, signature, rawBody);
         if (!valid) {
           return new Response('Unauthorized: Invalid HMAC signature', { status: 401 });
-        }
-
-        // 2. Parallel Mode Non-Blocking Fanout to DOKS Ingress
-        // Only active when PARALLEL_MODE is enabled ('true') and DOKS_FALLBACK_URL is configured.
-        // When PARALLEL_MODE is 'false' or DOKS_FALLBACK_URL is unset, dual-dispatch is completely disabled.
-        if (env.PARALLEL_MODE !== 'false' && env.DOKS_FALLBACK_URL) {
-          const fanoutPromise = fetch(env.DOKS_FALLBACK_URL, {
-            method: 'POST',
-            headers: request.headers,
-            body: rawBody,
-          }).catch((err) => {
-            console.error('DOKS fanout error:', err);
-          });
-
-          if (ctx && typeof ctx.waitUntil === 'function') {
-            ctx.waitUntil(fanoutPromise);
-          }
         }
 
         let payload: any;

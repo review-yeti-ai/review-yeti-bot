@@ -80,7 +80,6 @@ describe('Review Yeti MCP Tools Implementation', () => {
   it('review_yeti_get_cloudflare_status returns edge DO concurrency and R2 cache report', async () => {
     const mockEnv = {
       ENVIRONMENT: 'production',
-      PARALLEL_MODE: 'true',
       REPO_GATE: {
         idFromName: () => 'gate_1',
         get: () => ({
@@ -100,12 +99,10 @@ describe('Review Yeti MCP Tools Implementation', () => {
     assert.ok(res.content[0].text?.includes('RepoGate Concurrency'));
     assert.ok(res.content[0].text?.includes('**2 / 5**'));
     assert.ok(res.content[0].text?.includes('1-Hour (3,600s) Aggressive TTL'));
-    assert.ok(res.content[0].text?.includes('MATCHING'));
 
     const parsed = JSON.parse(res.content[1].text!);
     assert.equal(parsed.repoGate.activeSlotsUsed, 2);
-    assert.equal(parsed.shadowParity.status, 'MATCHING');
-    assert.equal(parsed.shadowParity.dataSource, 'baseline_sample_telemetry');
+    assert.equal(parsed.shadowParity, undefined);
     assert.equal(parsed.dataSource, 'live_edge_telemetry');
     assert.equal(parsed.computePlane.activeRunner, 'cloudflare');
     assert.equal(parsed.computePlane.defaultRunner, 'cloudflare');
@@ -113,36 +110,31 @@ describe('Review Yeti MCP Tools Implementation', () => {
     assert.equal(parsed.computePlane.aliases, undefined);
   });
 
-  it('review_yeti_get_billable_runtime_report calculates compute costs and savings vs DOKS', async () => {
+  it('review_yeti_get_billable_runtime_report calculates compute costs', async () => {
     const res = await getBillableRuntimeReportTool.execute({ timeframeDays: 30 }, {});
     const parsed = JSON.parse(res.content[1].text!);
 
     assert.ok(parsed.summary.totalRuns > 0);
     assert.ok(parsed.summary.totalBillableSeconds > 0);
     assert.ok(parsed.summary.totalComputeCostUSD > 0);
-    assert.ok(parsed.summary.netSavingsUSD > 0);
-    assert.ok(parsed.summary.savingsPercent > 50);
+    assert.equal(parsed.summary.netSavingsUSD, undefined);
+    assert.equal(parsed.summary.savingsPercent, undefined);
 
     assert.ok(res.content[0].text?.includes('Cloudflare Containers'));
     assert.ok(!res.content[0].text?.includes('DigitalOcean'));
-    assert.ok(res.content[0].text?.includes('Cost Efficiency vs DOKS Kubernetes Baseline'));
-    assert.ok(res.content[0].text?.includes('Net Cloudflare Edge Cost Savings'));
   });
 
-  it('review_yeti_get_billable_runtime_report handles zero matching runs without false savings', async () => {
-    const res = await getBillableRuntimeReportTool.execute({ runnerType: 'doks' }, {});
+  it('review_yeti_get_billable_runtime_report handles zero matching runs', async () => {
+    const res = await getBillableRuntimeReportTool.execute({ repo: 'no-such-repo' }, {});
     const parsed = JSON.parse(res.content[1].text!);
 
     assert.equal(parsed.summary.totalRuns, 0);
     assert.equal(parsed.summary.totalBillableSeconds, 0);
     assert.equal(parsed.summary.totalComputeCostUSD, 0);
-    assert.equal(parsed.summary.estimatedDoksBaselineCostUSD, 0);
-    assert.equal(parsed.summary.netSavingsUSD, 0);
-    assert.equal(parsed.summary.savingsPercent, 0);
   });
 
   it('review_yeti_get_runtime_metrics computes p50, p75, p90, p95, p99 and scales with windowHours', async () => {
-    const res24 = await getRuntimeMetricsTool.execute({ windowHours: 24, comparisonMode: true }, {});
+    const res24 = await getRuntimeMetricsTool.execute({ windowHours: 24 }, {});
     const parsed24 = JSON.parse(res24.content[1].text!);
 
     const p24 = parsed24.percentilesWallLatencyMs;
@@ -154,7 +146,6 @@ describe('Review Yeti MCP Tools Implementation', () => {
     assert.ok(p24.max >= p24.p99);
 
     assert.ok(parsed24.stageBreakdownMs.r2CacheHydration < 1500, 'R2 cache hydration must be sub-1.5s');
-    assert.ok(parsed24.comparisonVsDoks.speedupRatio > 1.0, 'Cloudflare must be faster than DOKS baseline');
     assert.ok(res24.content[0].text?.includes('p50 (Median)'));
 
     // Dynamic window scaling verification

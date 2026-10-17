@@ -59,15 +59,6 @@ describe('operator completion URL source contract', () => {
     expect(source).not.toMatch(/\$\{[^}]*COMPLETION[^}]*\}/u);
   });
 
-  it('keeps callback activation outside the installer interpolation and active-workload guards', () => {
-    const installer = readFileSync(path.join(root, 'scripts/install-doks-review-runtime.sh'), 'utf8');
-    const substitution = installer.match(/^envsubst '([^']+)'/mu);
-    expect(substitution?.[1]).toBe('${CT_REVIEW_OPERATOR_IMAGE} ${KUBERNETES_SERVICE_IP} ${KUBERNETES_API_ENDPOINT_CIDR} ${KUBERNETES_API_CIDR}');
-    expect(installer).toContain('refuse_active_deployment ct-review-yeti-operator');
-    expect(installer).toContain('refuse_active_deployment ct-review-job-dispatcher');
-    expect(installer).toContain('"$operator_replicas" != "0" || "$dispatcher_replicas" != "0"');
-  });
-
   it('ships no default callback destination in Helm values', () => {
     const values = yaml.load(readFileSync(path.join(root, 'charts/review-yeti/values.yaml'), 'utf8')) as {
       publishing: { completionUrl?: string };

@@ -5,7 +5,7 @@ export const queryActiveJobsTool: McpToolHandler = {
   definition: {
     name: 'review_yeti_query_active_jobs',
     description:
-      'Query currently active and queued review jobs across Cloudflare Durable Objects, Firecracker microVMs, and DOKS workers.',
+      'Query currently active and queued review jobs across Cloudflare Durable Objects and Cloudflare Containers.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -27,7 +27,7 @@ export const queryActiveJobsTool: McpToolHandler = {
         },
         orchestrator: {
           type: 'string',
-          enum: ['all', 'cloudflare', 'doks'],
+          enum: ['all', 'cloudflare'],
           default: 'all',
           description: 'Filter jobs by orchestrator plane',
         },

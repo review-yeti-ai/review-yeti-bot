@@ -31,7 +31,6 @@ interface MockTestContext {
   reviewRunStore: Map<string, any>;
   dispatchedWorkflows: Array<{ id: string; params: ReviewRunSpec }>;
   queuedDebounceItems: Array<{ message: DebounceMessagePayload; delaySeconds?: number }>;
-  doksFanoutRequests: Array<{ url: string; headers: Headers; body: string }>;
   waitUntilPromises: Array<Promise<any>>;
   mockCtx: { waitUntil: (p: Promise<any>) => void };
   evictedPrs: number[];
@@ -42,7 +41,6 @@ function createWorkerTestEnv(overrides: Partial<Record<string, any>> = {}): Mock
   const reviewRunStore = new Map<string, any>();
   const dispatchedWorkflows: Array<{ id: string; params: ReviewRunSpec }> = [];
   const queuedDebounceItems: Array<{ message: DebounceMessagePayload; delaySeconds?: number }> = [];
-  const doksFanoutRequests: Array<{ url: string; headers: Headers; body: string }> = [];
   const waitUntilPromises: Array<Promise<any>> = [];
   const evictedPrs: number[] = [];
 
@@ -140,10 +138,8 @@ function createWorkerTestEnv(overrides: Partial<Record<string, any>> = {}): Mock
     },
 
     ENVIRONMENT: overrides.ENVIRONMENT ?? 'staging',
-    PARALLEL_MODE: overrides.PARALLEL_MODE ?? 'true',
     PARALLEL_CHECK_NAME: overrides.PARALLEL_CHECK_NAME ?? 'Review Yeti (Cloudflare Canary)',
     PILOT_REPOSITORIES: overrides.PILOT_REPOSITORIES ?? 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta',
-    DOKS_FALLBACK_URL: overrides.DOKS_FALLBACK_URL ?? 'https://doks-internal.example.com/api/webhooks/github',
     GITHUB_WEBHOOK_SECRET: overrides.GITHUB_WEBHOOK_SECRET ?? 'webhook-secret-xyz123',
     REVIEW_YETI_MCP_AUTH_TOKEN: overrides.REVIEW_YETI_MCP_AUTH_TOKEN ?? 'mock-mcp-token-xyz',
     PUBLIC_READ_MCP: overrides.PUBLIC_READ_MCP ?? 'false',
@@ -156,7 +152,6 @@ function createWorkerTestEnv(overrides: Partial<Record<string, any>> = {}): Mock
     reviewRunStore,
     dispatchedWorkflows,
     queuedDebounceItems,
-    doksFanoutRequests,
     waitUntilPromises,
     mockCtx,
     evictedPrs,
@@ -263,7 +258,6 @@ describe('Webhook Ingress Worker (src/worker.ts)', () => {
       const data = (await res.json()) as any;
       assert.equal(data.status, 'ok');
       assert.equal(data.environment, 'staging');
-      assert.equal(data.parallelMode, 'true');
     });
 
     it('GET /ready returns 200 with environment metadata', async () => {
@@ -500,138 +494,6 @@ describe('Webhook Ingress Worker (src/worker.ts)', () => {
       assert.equal(dispatchedWorkflows.length, 0);
     });
   });
-
-  describe('DOKS Fallback Fanout', () => {
-    it('forwards raw webhook asynchronously to DOKS_FALLBACK_URL with ctx.waitUntil', async () => {
-      let forwardedUrl = '';
-      let forwardedBody = '';
-      let forwardedSignature = '';
-
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = async (input: any, init?: any) => {
-        const urlStr = typeof input === 'string' ? input : input.url;
-        if (urlStr === 'https://doks.custom.domain/api/webhooks/github') {
-          forwardedUrl = urlStr;
-          forwardedBody = init.body;
-          forwardedSignature = init.headers?.get?.('X-Hub-Signature-256') || init.headers?.['X-Hub-Signature-256'];
-          return new Response('OK', { status: 200 });
-        }
-        return originalFetch(input, init);
-      };
-
-      try {
-        const { env, mockCtx, waitUntilPromises } = createWorkerTestEnv({
-          DOKS_FALLBACK_URL: 'https://doks.custom.domain/api/webhooks/github',
-        });
-        const payload = createWebhookPayload('opened');
-        const rawBody = JSON.stringify(payload);
-        const sig = await signPayload(env.GITHUB_WEBHOOK_SECRET!, rawBody);
-
-        const req = new Request('https://operator.internal/api/webhooks/github', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-GitHub-Event': 'pull_request',
-            'X-Hub-Signature-256': sig,
-          },
-          body: rawBody,
-        });
-
-        const res = await worker.fetch(req, env, mockCtx as any);
-        assert.equal(res.status, 200);
-
-        // Await background fanout promises registered with ctx.waitUntil
-        await Promise.all(waitUntilPromises);
-
-        assert.equal(forwardedUrl, 'https://doks.custom.domain/api/webhooks/github');
-        assert.equal(forwardedBody, rawBody);
-        assert.equal(forwardedSignature, sig);
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
-
-    it('tolerates network errors in DOKS fanout without failing Cloudflare response', async () => {
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = async (input: any, init?: any) => {
-        const urlStr = typeof input === 'string' ? input : input.url;
-        if (urlStr === 'https://doks.failing.endpoint/api/webhooks/github') {
-          throw new Error('Connection refused / ECONNREFUSED');
-        }
-        return originalFetch(input, init);
-      };
-
-      try {
-        const { env, mockCtx, waitUntilPromises } = createWorkerTestEnv({
-          DOKS_FALLBACK_URL: 'https://doks.failing.endpoint/api/webhooks/github',
-        });
-        const payload = createWebhookPayload('opened');
-        const rawBody = JSON.stringify(payload);
-        const sig = await signPayload(env.GITHUB_WEBHOOK_SECRET!, rawBody);
-
-        const req = new Request('https://operator.internal/api/webhooks/github', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-GitHub-Event': 'pull_request',
-            'X-Hub-Signature-256': sig,
-          },
-          body: rawBody,
-        });
-
-        const res = await worker.fetch(req, env, mockCtx as any);
-        assert.equal(res.status, 200);
-
-        // Even with network error in fanout, promise settles gracefully
-        await Promise.all(waitUntilPromises);
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
-
-    it('completely suppresses DOKS fanout when PARALLEL_MODE is "false"', async () => {
-      let fanoutAttempted = false;
-
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = async (input: any, init?: any) => {
-        const urlStr = typeof input === 'string' ? input : input.url;
-        if (urlStr === 'https://doks.custom.domain/api/webhooks/github') {
-          fanoutAttempted = true;
-          return new Response('OK', { status: 200 });
-        }
-        return originalFetch(input, init);
-      };
-
-      try {
-        const { env, mockCtx, waitUntilPromises } = createWorkerTestEnv({
-          PARALLEL_MODE: 'false',
-          DOKS_FALLBACK_URL: 'https://doks.custom.domain/api/webhooks/github',
-        });
-        const payload = createWebhookPayload('opened');
-        const rawBody = JSON.stringify(payload);
-        const sig = await signPayload(env.GITHUB_WEBHOOK_SECRET!, rawBody);
-
-        const req = new Request('https://operator.internal/api/webhooks/github', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-GitHub-Event': 'pull_request',
-            'X-Hub-Signature-256': sig,
-          },
-          body: rawBody,
-        });
-
-        const res = await worker.fetch(req, env, mockCtx as any);
-        assert.equal(res.status, 200);
-
-        await Promise.all(waitUntilPromises);
-        assert.equal(fanoutAttempted, false, 'DOKS fanout must be completely skipped when PARALLEL_MODE is false');
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
-  });
-
 
   describe('Pull Request Immediate Triggers (opened, ready_for_review)', () => {
     it('ignores draft pull request on opened action', async () => {
@@ -1217,7 +1079,6 @@ describe('Authenticated MCP operator connection check', () => {
           assert.equal(context.reviewRunStore.size, 0);
           assert.equal(context.dispatchedWorkflows.length, 0);
           assert.equal(context.queuedDebounceItems.length, 0);
-          assert.equal(context.doksFanoutRequests.length, 0);
           assert.equal(context.waitUntilPromises.length, 0);
         });
       }

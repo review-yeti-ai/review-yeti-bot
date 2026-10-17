@@ -359,21 +359,6 @@ export async function handleActionDispatch(
     });
   }
 
-  // 9. Parallel Mode Fanout to DOKS Ingress (if active)
-  if (env.PARALLEL_MODE !== 'false' && env.DOKS_FALLBACK_URL) {
-    const fanoutPromise = fetch(`${env.DOKS_FALLBACK_URL}/api/dispatch/action`, {
-      method: 'POST',
-      headers: request.headers,
-      body: rawBody,
-    }).catch((err) => {
-      console.error('DOKS action dispatch fanout error:', err);
-    });
-
-    if (ctx && typeof ctx.waitUntil === 'function') {
-      ctx.waitUntil(fanoutPromise);
-    }
-  }
-
   // Return canonical ActionDispatchAccepted.v1 receipt
   return Response.json(
     {

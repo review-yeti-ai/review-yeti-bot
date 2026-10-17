@@ -3,16 +3,14 @@ import assert from 'node:assert/strict';
 import {
   createE2EEnvironment,
   createWebhookPayload,
-  createSampleReceipt,
   signWebhookPayload,
 } from './e2eHarness.js';
 import { parseToolingConfigYaml, resolveToolConnection } from '../../src/tunnel/toolTunnelDefinition.js';
 import { isInternalEndpoint, resolveEndpointTunnel } from '../../src/tunnel/tunnelConfig.js';
 import { CloudflareContainerRunner, MockContainerRunner } from '../../src/runners/containerRunner.js';
-import { compareRuns, formatComparisonReport } from '../../src/compareOrchestratorRuns.js';
 import type { ReviewRunSpec } from '../../src/types.js';
 
-describe('Tier 1: Comprehensive Feature Coverage (Features 1-30)', () => {
+describe('Tier 1: Comprehensive Feature Coverage', () => {
   const SECRET = 'test_webhook_secret_key_123456';
 
   describe('R1: Edge Control Plane & Security (Features 1-9)', () => {
@@ -48,38 +46,6 @@ describe('Tier 1: Comprehensive Feature Coverage (Features 1-30)', () => {
       const json = (await res.json()) as any;
       assert.equal(json.status, 'dispatched_immediate');
       assert.ok(json.runId);
-    });
-
-    it('F3: Ingress DOKS Dual-Dispatch Fanout forwards raw payload asynchronously', async () => {
-      let forwardedUrl = '';
-      let forwardedMethod = '';
-      let forwardedBody = '';
-
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = (async (url: any, init?: any) => {
-        forwardedUrl = String(url);
-        forwardedMethod = init?.method ?? 'GET';
-        forwardedBody = init?.body ?? '';
-        return new Response('ok', { status: 200 });
-      }) as any;
-
-      try {
-        const fallbackUrl = 'https://doks-fallback.internal/api/webhooks/github';
-        const harness = createE2EEnvironment({
-          doksFallbackUrl: fallbackUrl,
-          pilotRepositories: 'all',
-        });
-
-        const payload = createWebhookPayload('opened', { prNumber: 12 });
-        const res = await harness.dispatchWebhook(payload);
-        assert.equal(res.status, 200);
-
-        assert.equal(forwardedUrl, fallbackUrl);
-        assert.equal(forwardedMethod, 'POST');
-        assert.deepEqual(JSON.parse(forwardedBody), payload);
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
     });
 
     it('F4: Ingress Immediate Event Triggering launches ReviewJobWorkflow for opened and ready_for_review', async () => {
@@ -182,10 +148,9 @@ describe('Tier 1: Comprehensive Feature Coverage (Features 1-30)', () => {
       assert.equal(statusJson.headSha, 'head1234567890abcdef');
     });
 
-    it('F9: Health & Readiness Probes return environment and parallelMode metadata', async () => {
+    it('F9: Health & Readiness Probes return environment metadata', async () => {
       const harness = createE2EEnvironment({
         environment: 'staging',
-        parallelMode: 'true',
       });
 
       const worker = (await import('../../src/worker.js')).default;
@@ -197,7 +162,6 @@ describe('Tier 1: Comprehensive Feature Coverage (Features 1-30)', () => {
       const healthJson = (await healthRes.json()) as any;
       assert.equal(healthJson.status, 'ok');
       assert.equal(healthJson.environment, 'staging');
-      assert.equal(healthJson.parallelMode, 'true');
 
       // Ready probe
       const readyReq = new Request('https://operator.example.internal/ready');
@@ -561,59 +525,6 @@ tools:
       const filtered = candidateFiles.filter((f) => allowedTargets.includes(f));
 
       assert.deepEqual(filtered, ['.git', '.zoekt'], 'Staging archive must strictly exclude build artifacts');
-    });
-  });
-
-  describe('R4: Parallel Parity Verification & CI Ledger (Features 27-30)', () => {
-    it('F27: Parity Comparison Assertion evaluates exact equivalence', () => {
-      const doksReceipt = createSampleReceipt('doks', { verdict: 'success' });
-      const cfReceipt = createSampleReceipt('cloudflare', { verdict: 'success' });
-
-      const result = compareRuns(doksReceipt, cfReceipt);
-      assert.equal(result.match, true);
-      assert.equal(result.verdictMatch, true);
-      assert.equal(result.findingFingerprintsMatch, true);
-    });
-
-    it('F28: Finding Fingerprint Set Comparison performs symmetric difference check', () => {
-      const doksReceipt = createSampleReceipt('doks', {
-        findingFingerprints: ['fp_01', 'fp_02'],
-      });
-      const cfReceipt = createSampleReceipt('cloudflare', {
-        findingFingerprints: ['fp_02', 'fp_01'], // Order-independent set match
-      });
-
-      const result = compareRuns(doksReceipt, cfReceipt);
-      assert.equal(result.findingFingerprintsMatch, true);
-      assert.equal(result.findingCountDiff, 0);
-    });
-
-    it('F29: Latency & Token Delta Tracking calculates ratios and tracks variances', () => {
-      const doksReceipt = createSampleReceipt('doks', {
-        durationMs: 40000,
-        tokensUsed: { promptTokens: 10000, completionTokens: 2000, totalTokens: 12000 },
-      });
-      const cfReceipt = createSampleReceipt('cloudflare', {
-        durationMs: 32000,
-        tokensUsed: { promptTokens: 9900, completionTokens: 2050, totalTokens: 11950 },
-      });
-
-      const result = compareRuns(doksReceipt, cfReceipt);
-      assert.equal(result.latencyDeltaMs, -8000);
-      assert.equal(result.latencyRatio, 0.8);
-      assert.equal(result.tokenDelta, -50);
-    });
-
-    it('F30: Parity Ledger Formatter generates formatted summary block', () => {
-      const doksReceipt = createSampleReceipt('doks');
-      const cfReceipt = createSampleReceipt('cloudflare');
-      const result = compareRuns(doksReceipt, cfReceipt);
-
-      const report = formatComparisonReport(result);
-      assert.ok(report.includes('ORCHESTRATOR PARITY REPORT'));
-      assert.ok(report.includes('Status: ✅ MATCH'));
-      assert.ok(report.includes('Verdict Agreement:         YES'));
-      assert.ok(report.includes('Finding Fingerprint Match: YES'));
     });
   });
 });

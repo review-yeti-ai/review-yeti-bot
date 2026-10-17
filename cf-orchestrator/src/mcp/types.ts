@@ -66,8 +66,8 @@ export interface ActiveJobItem {
   prNumber: number;
   commitSha: string;
   phase: string;
-  orchestrator: 'cloudflare' | 'doks';
-  runner: 'cloudflare-container' | 'doks-pod';
+  orchestrator: 'cloudflare';
+  runner: 'cloudflare-container';
   fencingEpoch?: number;
   workerId?: string;
   leaseAgeMs?: number;
@@ -95,7 +95,6 @@ export interface ReviewFindingItem {
 export interface CloudflareStatusReport {
   timestamp: string;
   environment: string;
-  parallelMode: boolean;
   repoGate: {
     activeSlotsUsed: number;
     concurrencyCap: number;
@@ -112,12 +111,6 @@ export interface CloudflareStatusReport {
     totalObjects: number;
     totalSizeBytes: number;
     retentionPolicy: string;
-  };
-  shadowParity: {
-    status: 'MATCHING' | 'DIVERGENT' | 'STANDALONE';
-    consecutiveMatches: number;
-    doksFallbackConfigured: boolean;
-    dataSource?: string;
   };
   computePlane?: {
     activeRunner: string;
@@ -144,9 +137,6 @@ export interface BillableRuntimeReport {
     totalComputeCostUSD: number;
     totalTokenCostUSD: number;
     totalSpendUSD: number;
-    estimatedDoksBaselineCostUSD: number;
-    netSavingsUSD: number;
-    savingsPercent: number;
   };
   breakdownByRunner: Record<
     string,
@@ -194,12 +184,6 @@ export interface RuntimeMetricsReport {
     r2CacheHydration: number;
     runnerExecution: number;
     githubPublishing: number;
-  };
-  comparisonVsDoks?: {
-    doksAvgMs: number;
-    cfAvgMs: number;
-    speedupRatio: number;
-    latencyReductionPercent: number;
   };
 }
 

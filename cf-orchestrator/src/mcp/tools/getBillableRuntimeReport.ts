@@ -7,7 +7,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
   definition: {
     name: 'review_yeti_get_billable_runtime_report',
     description:
-      'Generate compute cost and billable runtime reports for Review Yeti managed runners (Cloudflare Containers and OpenRouter tokens) including comparative savings versus DOKS Kubernetes baseline.',
+      'Generate compute cost and billable runtime reports for Review Yeti managed runners (Cloudflare Containers and OpenRouter tokens)',
     inputSchema: {
       type: 'object',
       properties: {
@@ -21,7 +21,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
         },
         runnerType: {
           type: 'string',
-          enum: ['all', 'cloudflare', 'doks'],
+          enum: ['all', 'cloudflare'],
           default: 'all',
           description: 'Filter by execution runner environment',
         },
@@ -181,15 +181,6 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
     });
 
     const totalSpendUSD = totalComputeCostUSD + totalTokenCostUSD;
-    // DOKS baseline: fixed cluster cost ~$170/mo pro-rated for timeframeDays (only applicable when runs exist)
-    const estimatedDoksBaselineCostUSD =
-      items.length > 0 ? Number(((170 / 30) * days).toFixed(2)) : 0;
-    const netSavingsUSD =
-      items.length > 0 ? Number((estimatedDoksBaselineCostUSD - totalSpendUSD).toFixed(2)) : 0;
-    const savingsPercent =
-      estimatedDoksBaselineCostUSD > 0
-        ? Number(((netSavingsUSD / estimatedDoksBaselineCostUSD) * 100).toFixed(1))
-        : 0;
 
     const report: BillableRuntimeReport = {
       timeframe: {
@@ -207,9 +198,6 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
         totalComputeCostUSD: Number(totalComputeCostUSD.toFixed(6)),
         totalTokenCostUSD: Number(totalTokenCostUSD.toFixed(4)),
         totalSpendUSD: Number(totalSpendUSD.toFixed(4)),
-        estimatedDoksBaselineCostUSD,
-        netSavingsUSD,
-        savingsPercent,
       },
       breakdownByRunner,
       items,
@@ -225,9 +213,6 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
       `- **Managed Runner Compute Cost:** **${formatCostUsd(report.summary.totalComputeCostUSD)} USD**\n` +
       `- **LLM Token Ingress/Egress Cost:** **${formatCostUsd(report.summary.totalTokenCostUSD)} USD**\n` +
       `- **Total Review Yeti Spend:** **${formatCostUsd(report.summary.totalSpendUSD)} USD**\n\n` +
-      `#### 📊 Cost Efficiency vs DOKS Kubernetes Baseline\n` +
-      `- **Legacy DOKS Cluster Baseline:** \$${estimatedDoksBaselineCostUSD} USD (\$170/month idle node pools & PVCs)\n` +
-      `- **Net Cloudflare Edge Cost Savings:** **\$${netSavingsUSD} USD (${savingsPercent}% reduction)**\n\n` +
       `#### 🏃 Compute Runner Breakdown\n` +
       `- **Cloudflare Containers:** ${breakdownByRunner.cloudflare.runs} runs | ${breakdownByRunner.cloudflare.runtimeSeconds}s | ${formatCostUsd(breakdownByRunner.cloudflare.computeCostUSD)} compute\n`;
 

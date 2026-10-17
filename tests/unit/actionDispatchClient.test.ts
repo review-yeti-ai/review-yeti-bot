@@ -3,15 +3,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT } from '../../src/review/incompleteP2RecoveryLimits';
+import { REVIEW_DISPATCH_AUDIENCE } from '../../src/auth/githubActionsOidc';
 
-const modulePath = path.resolve(__dirname, '../../scripts/dispatch-doks-action.mjs');
+const modulePath = path.resolve(__dirname, '../../scripts/dispatch-review-action.mjs');
 const QUALIFICATION_ORIGIN_SHA256 = 'adb20508cacbfb8b288d51036d97e0571e165120098dbacbf5e1eb971331080c';
 
 function environment(overrides: Record<string, string> = {}) {
   return {
-    DOKS_DISPATCH_URL: 'https://review-bot.example.com/api/dispatch/action',
-    DOKS_OIDC_AUDIENCE: 'review-yeti-doks-dispatch',
-    DOKS_PUBLISH_MODE: 'disabled',
+    DISPATCH_URL: 'https://review-bot.example.com/api/dispatch/action',
+    DISPATCH_OIDC_AUDIENCE: 'review-yeti-edge-dispatch',
+    DISPATCH_PUBLISH_MODE: 'disabled',
     ACTION_SHA: 'a'.repeat(40),
     REPOSITORY_ID: '12345',
     REPOSITORY: 'exampleorg/example-api',
@@ -76,7 +77,7 @@ describe('Action dispatch client', () => {
   it('keeps the standalone recovery window aligned with the service contract', async () => {
     const { buildDispatchRequest } = await import(modulePath);
     const recoveryEnvironment = (attempt: number) => environment({
-      GITHUB_EVENT_NAME: 'repository_dispatch', DOKS_PUBLISH_MODE: 'app-gate',
+      GITHUB_EVENT_NAME: 'repository_dispatch', DISPATCH_PUBLISH_MODE: 'app-gate',
       EXPECTED_GENERATION: String(attempt), REFRESH_REQUESTED: 'true',
       REFRESH_EXECUTION_ATTEMPT: String(attempt - 1), INCOMPLETE_P2_RECOVERY: 'true',
     });
@@ -88,7 +89,7 @@ describe('Action dispatch client', () => {
   it('emits the new candidate flag only for an explicit bounded central refresh', async () => {
     const { buildDispatchRequest } = await import(modulePath);
     const request = buildDispatchRequest(environment({ GITHUB_EVENT_NAME: 'repository_dispatch',
-      DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '2', REFRESH_REQUESTED: 'true',
+      DISPATCH_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '2', REFRESH_REQUESTED: 'true',
       REFRESH_EXECUTION_ATTEMPT: '1', INCOMPLETE_P2_RECOVERY: 'true' }));
     expect(request.incompleteP2Recovery).toBe(true);
     expect(buildDispatchRequest(environment({ INCOMPLETE_P2_RECOVERY: 'false' }))).not.toHaveProperty('incompleteP2Recovery');
@@ -99,7 +100,7 @@ describe('Action dispatch client', () => {
     const digest = `sha256:${'a'.repeat(64)}`;
     const request = buildDispatchRequest(environment({
       REPOSITORY_ID: '1409547157', REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
-      GITHUB_EVENT_NAME: 'repository_dispatch', DOKS_PUBLISH_MODE: 'app-gate',
+      GITHUB_EVENT_NAME: 'repository_dispatch', DISPATCH_PUBLISH_MODE: 'app-gate',
       QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest,
       QUALIFICATION_DISPATCH_ORIGIN_SHA256: QUALIFICATION_ORIGIN_SHA256,
     }));
@@ -115,16 +116,16 @@ describe('Action dispatch client', () => {
       .toThrow(/exact qualification target/u);
     expect(() => buildDispatchRequest(environment({
       REPOSITORY_ID: '1409547157', REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
-      DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
+      DISPATCH_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
     }))).toThrow(/requires a qualification runtime image digest/u);
     expect(() => buildDispatchRequest(environment({
       REPOSITORY_ID: '1409547158', REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
-      DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
+      DISPATCH_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
       QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest,
     }))).toThrow(/exact qualification target/u);
     expect(() => buildDispatchRequest(environment({
       REPOSITORY_ID: '1409547157', REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
-      DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
+      DISPATCH_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
       QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest,
     }))).toThrow(/qualification target requires a central dispatch origin digest/u);
     expect(() => buildDispatchRequest(environment({ QUALIFICATION_DISPATCH_ORIGIN_SHA256: QUALIFICATION_ORIGIN_SHA256 })))
@@ -170,9 +171,9 @@ describe('Action dispatch client', () => {
     const digest = `sha256:${'a'.repeat(64)}`;
     const endpoint = 'https://qualification.example.invalid/api/qualification/dispatch/action';
     const dispatchEnvironment = environment({
-      DOKS_DISPATCH_URL: endpoint, REPOSITORY_ID: '1409547157',
+      DISPATCH_URL: endpoint, REPOSITORY_ID: '1409547157',
       REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
-      DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
+      DISPATCH_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
       QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest,
       QUALIFICATION_DISPATCH_ORIGIN_SHA256: QUALIFICATION_ORIGIN_SHA256,
     });
@@ -196,9 +197,9 @@ describe('Action dispatch client', () => {
     const endpoint = 'https://qualification.example.invalid/api/qualification/dispatch/action';
     const originHash = 'adb20508cacbfb8b288d51036d97e0571e165120098dbacbf5e1eb971331080c';
     const dispatchEnvironment = environment({
-      DOKS_DISPATCH_URL: endpoint, REPOSITORY_ID: '1409547157',
+      DISPATCH_URL: endpoint, REPOSITORY_ID: '1409547157',
       REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
-      DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
+      DISPATCH_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
       QUALIFICATION_RUNTIME_IMAGE_DIGEST: digest,
       QUALIFICATION_DISPATCH_ORIGIN_SHA256: originHash,
     });
@@ -228,9 +229,9 @@ describe('Action dispatch client', () => {
     const { dispatchAction } = await import(modulePath);
     const fetchMock = vi.fn();
     const env = environment({
-      DOKS_DISPATCH_URL: url, REPOSITORY_ID: '1409547157',
+      DISPATCH_URL: url, REPOSITORY_ID: '1409547157',
       REPOSITORY: 'review-yeti-ai/review-yeti-qualification',
-      DOKS_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
+      DISPATCH_PUBLISH_MODE: 'app-gate', GITHUB_EVENT_NAME: 'repository_dispatch',
       QUALIFICATION_RUNTIME_IMAGE_DIGEST: `sha256:${'a'.repeat(64)}`,
       QUALIFICATION_DISPATCH_ORIGIN_SHA256: QUALIFICATION_ORIGIN_SHA256,
     });
@@ -241,7 +242,7 @@ describe('Action dispatch client', () => {
 
   it('accepts candidate-unavailable SHIP only with null current coordinates and no durable receipt claims', async () => {
     const { buildDispatchRequest, dispatchAction, writeDispatchOutputs } = await import(modulePath);
-    const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+    const dispatchEnvironment = environment({ DISPATCH_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
     const request = buildDispatchRequest(dispatchEnvironment);
     const unavailable = actionPassthroughReceipt(request, {
       candidateState: 'unavailable', headSha: null, baseSha: null,
@@ -258,7 +259,7 @@ describe('Action dispatch client', () => {
       verdict: 'SHIP', expectedLanes: 0, completedLanes: 0, publicationState: 'unavailable',
       publicationReceiptAvailable: null, publicationId: null, auditDigest: null,
       reviewCheckId: null, gateCheckId: null, mergeEligible: false });
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-doks-authority-unavailable-'));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-dispatch-authority-unavailable-'));
     const outputPath = path.join(directory, 'output');
     writeDispatchOutputs(outputPath, result);
     const output = fs.readFileSync(outputPath, 'utf8');
@@ -281,7 +282,7 @@ describe('Action dispatch client', () => {
     { mergeEligible: true },
   ])('rejects candidate-unavailable receipt with authority/receipt claims %j', async (override) => {
     const { buildDispatchRequest, dispatchAction } = await import(modulePath);
-    const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+    const dispatchEnvironment = environment({ DISPATCH_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
     const request = buildDispatchRequest(dispatchEnvironment);
     const unavailable = actionPassthroughReceipt(request, {
       candidateState: 'unavailable', headSha: null, baseSha: null,
@@ -298,11 +299,11 @@ describe('Action dispatch client', () => {
   it.each([
     { REFRESH_REQUESTED: 'false' }, { EXPECTED_GENERATION: '4', REFRESH_EXECUTION_ATTEMPT: '3' },
     { EXPECTED_GENERATION: '1' }, { REFRESH_EXECUTION_ATTEMPT: '2' },
-    { DOKS_PUBLISH_MODE: 'disabled' }, { GITHUB_EVENT_NAME: 'pull_request' },
+    { DISPATCH_PUBLISH_MODE: 'disabled' }, { GITHUB_EVENT_NAME: 'pull_request' },
   ])('rejects an unbound P2 candidate before dispatch: %j', async (overrides) => {
     const { buildDispatchRequest } = await import(modulePath);
     expect(() => buildDispatchRequest(environment({ GITHUB_EVENT_NAME: 'repository_dispatch',
-      DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '2', REFRESH_REQUESTED: 'true',
+      DISPATCH_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '2', REFRESH_REQUESTED: 'true',
       REFRESH_EXECUTION_ATTEMPT: '1', INCOMPLETE_P2_RECOVERY: 'true', ...overrides }))).toThrow(/bounded exact-generation/);
   });
 
@@ -336,7 +337,7 @@ describe('Action dispatch client', () => {
     const { buildDispatchRequest } = await import(modulePath);
     const request = buildDispatchRequest(environment({
       GITHUB_EVENT_NAME: 'repository_dispatch',
-      DOKS_PUBLISH_MODE: 'app-gate',
+      DISPATCH_PUBLISH_MODE: 'app-gate',
       EXPECTED_GENERATION: '3',
     }));
     expect(request.caller.eventName).toBe('repository_dispatch');
@@ -349,7 +350,7 @@ describe('Action dispatch client', () => {
       const { buildDispatchRequest } = await import(modulePath);
       expect(() => buildDispatchRequest(environment({
         GITHUB_EVENT_NAME: 'repository_dispatch',
-        DOKS_PUBLISH_MODE: 'app-gate',
+        DISPATCH_PUBLISH_MODE: 'app-gate',
         EXPECTED_GENERATION: expectedGeneration,
       }))).toThrow(/expected generation/i);
     },
@@ -359,7 +360,7 @@ describe('Action dispatch client', () => {
     const { buildDispatchRequest } = await import(modulePath);
     expect(buildDispatchRequest(environment({
       GITHUB_EVENT_NAME: 'repository_dispatch',
-      DOKS_PUBLISH_MODE: 'app-gate',
+      DISPATCH_PUBLISH_MODE: 'app-gate',
       EXPECTED_GENERATION: '',
     })).expectedGeneration).toBeUndefined();
   });
@@ -369,7 +370,7 @@ describe('Action dispatch client', () => {
     expect(buildDispatchRequest(environment()).expectedGeneration).toBeUndefined();
     expect(buildDispatchRequest(environment({
       GITHUB_EVENT_NAME: 'repository_dispatch',
-      DOKS_PUBLISH_MODE: 'disabled',
+      DISPATCH_PUBLISH_MODE: 'disabled',
     })).expectedGeneration).toBeUndefined();
   });
 
@@ -447,45 +448,30 @@ describe('Action dispatch client', () => {
   it('fails with a clear error when the caller supplies no dispatch endpoint', async () => {
     const { dispatchAction } = await import(modulePath);
     const fetchMock = vi.fn();
-    await expect(dispatchAction(environment({ DOKS_DISPATCH_URL: '' }), fetchMock)).rejects.toThrow(/DOKS_DISPATCH_URL is required/u);
+    await expect(dispatchAction(environment({ DISPATCH_URL: '' }), fetchMock)).rejects.toThrow(/DISPATCH_URL is required/u);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('accepts DISPATCH_URL or EDGE_DISPATCH_URL when DOKS_DISPATCH_URL is empty', async () => {
+  it('takes the endpoint only from DISPATCH_URL', async () => {
     const { dispatchAction } = await import(modulePath);
-    const createFetchMock = () => vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({
-        version: 'ActionDispatchAccepted.v1',
-        status: 'accepted',
-        runId: `run_${'1'.repeat(32)}`,
-      }), {
-        status: 202,
-        headers: { 'content-type': 'application/json' },
-      }));
-
-    const mock1 = createFetchMock();
-    await dispatchAction(environment({
-      DOKS_DISPATCH_URL: '',
-      DISPATCH_URL: 'https://review-bot.example.com/api/dispatch/action',
-    }), mock1);
-    expect(mock1).toHaveBeenNthCalledWith(2, 'https://review-bot.example.com/api/dispatch/action', expect.anything());
-
-    const mock2 = createFetchMock();
-    await dispatchAction(environment({
-      DOKS_DISPATCH_URL: '',
+    const fetchMock = vi.fn();
+    await expect(dispatchAction(environment({
+      DISPATCH_URL: '',
       EDGE_DISPATCH_URL: 'https://review-yeti.example.com/api/dispatch/action',
-    }), mock2);
-    expect(mock2).toHaveBeenNthCalledWith(2, 'https://review-yeti.example.com/api/dispatch/action', expect.anything());
+    }), fetchMock)).rejects.toThrow(/DISPATCH_URL is required/u);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('requests the edge dispatch audience that the verifier expects', async () => {
+    const { REVIEW_DISPATCH_OIDC_AUDIENCE } = await import(modulePath);
+    expect(REVIEW_DISPATCH_OIDC_AUDIENCE).toBe('review-yeti-edge-dispatch');
+    expect(REVIEW_DISPATCH_OIDC_AUDIENCE).toBe(REVIEW_DISPATCH_AUDIENCE);
   });
 
   it('rejects mutable action refs and unsupported publication modes', async () => {
     const { buildDispatchRequest } = await import(modulePath);
     expect(() => buildDispatchRequest(environment({ ACTION_SHA: 'v1' }))).toThrow(/action sha/i);
-    expect(() => buildDispatchRequest(environment({ DOKS_PUBLISH_MODE: 'publish-everything' }))).toThrow(/publish mode/i);
+    expect(() => buildDispatchRequest(environment({ DISPATCH_PUBLISH_MODE: 'publish-everything' }))).toThrow(/publish mode/i);
   });
 
   it.each([
@@ -516,7 +502,7 @@ describe('Action dispatch client', () => {
     expect(result).toEqual({ version: 'ActionDispatchAccepted.v1', status: 'accepted', runId: `run_${'1'.repeat(32)}` });
     const oidcUrl = new URL(String(fetchMock.mock.calls[0][0]));
     expect(oidcUrl.origin).toBe(`https://${oidcHost}`);
-    expect(oidcUrl.searchParams.get('audience')).toBe('review-yeti-doks-dispatch');
+    expect(oidcUrl.searchParams.get('audience')).toBe('review-yeti-edge-dispatch');
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer actions-runtime-token');
     expect(fetchMock.mock.calls[1][0]).toBe('https://review-bot.example.com/api/dispatch/action');
     expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe(`Bearer signed-github-oidc-${'x'.repeat(32)}`);
@@ -524,7 +510,7 @@ describe('Action dispatch client', () => {
 
   it('accepts an HTTP 200 paused-SHIP receipt only when identity matches and writes truthful SHIP outputs', async () => {
     const { buildDispatchRequest, dispatchAction, writeDispatchOutputs } = await import(modulePath);
-    const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+    const dispatchEnvironment = environment({ DISPATCH_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
     const request = buildDispatchRequest(dispatchEnvironment);
     const passthrough = actionPassthroughReceipt(request);
     const fetchMock = vi.fn()
@@ -540,7 +526,7 @@ describe('Action dispatch client', () => {
     expect(posted.deliveryId).toBe(passthrough.deliveryId);
     expect(posted.caller.eventName).toBe(passthrough.eventName);
 
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-doks-passthrough-'));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-dispatch-passthrough-'));
     const outputPath = path.join(directory, 'output');
     writeDispatchOutputs(outputPath, result);
     const output = fs.readFileSync(outputPath, 'utf8');
@@ -555,11 +541,11 @@ describe('Action dispatch client', () => {
 
   it('writes pending operator publication as SHIP intent without merge eligibility', async () => {
     const { buildDispatchRequest, writeDispatchOutputs } = await import(modulePath);
-    const request = buildDispatchRequest(environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' }));
+    const request = buildDispatchRequest(environment({ DISPATCH_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' }));
     const pending = actionPassthroughReceipt(request, {
       publicationState: 'pending', reviewCheckId: null, gateCheckId: null, mergeEligible: false,
     });
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-doks-pending-passthrough-'));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-dispatch-pending-passthrough-'));
     const outputPath = path.join(directory, 'output');
 
     writeDispatchOutputs(outputPath, pending);
@@ -580,7 +566,7 @@ describe('Action dispatch client', () => {
   ] as Array<[string, Record<string, unknown>]>)('accepts a legacy %s receipt only with durable bindings', async (publicationState,
     stateBindings) => {
       const { buildDispatchRequest, dispatchAction } = await import(modulePath);
-      const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+      const dispatchEnvironment = environment({ DISPATCH_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
       const request = buildDispatchRequest(dispatchEnvironment);
       const legacyReceipt = actionPassthroughReceipt(request, { publicationState, ...stateBindings }) as Record<string, unknown>;
       delete legacyReceipt.publicationReceiptAvailable;
@@ -604,7 +590,7 @@ describe('Action dispatch client', () => {
     ['legacy', false],
   ] as const)('accepts a raw-review-only partial binding for a %s pending receipt', async (_receiptKind, currentReceipt) => {
     const { buildDispatchRequest, dispatchAction } = await import(modulePath);
-    const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+    const dispatchEnvironment = environment({ DISPATCH_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
     const request = buildDispatchRequest(dispatchEnvironment);
     const receipt = actionPassthroughReceipt(request, {
       publicationState: 'pending', reviewCheckId: 5001, gateCheckId: null, mergeEligible: false,
@@ -628,7 +614,7 @@ describe('Action dispatch client', () => {
   ] as const)('accepts unavailable publication with %s receipt availability as logical SHIP', async (_label,
     publicationReceiptAvailable, publicationId, auditDigest) => {
       const { buildDispatchRequest, dispatchAction, writeDispatchOutputs } = await import(modulePath);
-      const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+      const dispatchEnvironment = environment({ DISPATCH_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
       const request = buildDispatchRequest(dispatchEnvironment);
       const unavailable = actionPassthroughReceipt(request, {
         publicationState: 'unavailable',
@@ -657,7 +643,7 @@ describe('Action dispatch client', () => {
         gateCheckId: null,
         mergeEligible: false,
       });
-      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-doks-unavailable-'));
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-dispatch-unavailable-'));
       const outputPath = path.join(directory, 'output');
       writeDispatchOutputs(outputPath, result);
       const output = fs.readFileSync(outputPath, 'utf8');
@@ -696,7 +682,7 @@ describe('Action dispatch client', () => {
     ['unrecognized receipt availability', { publicationReceiptAvailable: 'unknown' }],
   ] as Array<[string, Record<string, unknown>]>)('rejects invalid publication binding: %s', async (_case, override) => {
     const { buildDispatchRequest, dispatchAction } = await import(modulePath);
-    const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+    const dispatchEnvironment = environment({ DISPATCH_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
     const request = buildDispatchRequest(dispatchEnvironment);
     const receipt = actionPassthroughReceipt(request, override);
     const fetchMock = vi.fn()
@@ -725,7 +711,7 @@ describe('Action dispatch client', () => {
     ['merge eligibility without published state', { publicationState: 'pending', mergeEligible: true }],
   ] as Array<[string, Record<string, unknown>]>)('rejects passthrough receipts with mismatched %s', async (_field, override) => {
     const { buildDispatchRequest, dispatchAction } = await import(modulePath);
-    const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+    const dispatchEnvironment = environment({ DISPATCH_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
     const request = buildDispatchRequest(dispatchEnvironment);
     const receipt = actionPassthroughReceipt(request, override);
     const fetchMock = vi.fn()
@@ -741,7 +727,7 @@ describe('Action dispatch client', () => {
 
   it('accepts passthrough only at HTTP 200 and never treats it as admission', async () => {
     const { buildDispatchRequest, dispatchAction } = await import(modulePath);
-    const dispatchEnvironment = environment({ DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
+    const dispatchEnvironment = environment({ DISPATCH_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '3' });
     const request = buildDispatchRequest(dispatchEnvironment);
     const passthrough = actionPassthroughReceipt(request);
     const accepted = {
@@ -936,7 +922,7 @@ describe('Action dispatch client', () => {
       .mockResolvedValueOnce(new Response('{\n  "error": "unknown repository_id 42",\n  "hint": "check org settings"\n}', { status: 400 }));
     const multilineError = await dispatchAction(environment(), multiline).catch((error: Error) => error);
     expect((multilineError as Error).message).toBe(
-      'DOKS dispatch failed with HTTP 400: { "error": "unknown repository_id 42", "hint": "check org settings" }',
+      'Review dispatch failed with HTTP 400: { "error": "unknown repository_id 42", "hint": "check org settings" }',
     );
     expect((multilineError as Error).message).not.toContain('\n');
 
@@ -945,7 +931,7 @@ describe('Action dispatch client', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ value: `signed-github-oidc-${'x'.repeat(32)}` }), { status: 200 }))
       .mockResolvedValueOnce(new Response('   \n  ', { status: 400 }));
     const silentError = await dispatchAction(environment(), silent).catch((error: Error) => error);
-    expect((silentError as Error).message).toBe('DOKS dispatch failed with HTTP 400');
+    expect((silentError as Error).message).toBe('Review dispatch failed with HTTP 400');
 
     // An unreadable body must not replace the failure it is describing.
     const unreadable = vi.fn()
@@ -964,7 +950,7 @@ describe('Action dispatch client', () => {
 
   it('writes nonterminal Action outputs after acceptance', async () => {
     const { writeDispatchOutputs } = await import(modulePath);
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-doks-output-'));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-dispatch-output-'));
     const outputPath = path.join(directory, 'output');
     const runId = `run_${'4'.repeat(32)}`;
     writeDispatchOutputs(outputPath, { version: 'ActionDispatchAccepted.v1', status: 'duplicate', runId });

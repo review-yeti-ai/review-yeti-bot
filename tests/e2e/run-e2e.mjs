@@ -86,7 +86,7 @@ console.log(bold('\n--- Tier 1: Feature Coverage & Structural Integrity ---'));
 const workflows = [
   { file: 'standalone-action.yml', check: (doc) => doc.on?.pull_request && doc.permissions?.contents === 'read' && doc.permissions?.['pull-requests'] === 'write' },
   { file: 'github-app-action.yml', check: (doc) => doc.permissions?.checks === 'write' && JSON.stringify(doc).includes('create-github-app-token') },
-  { file: 'kubernetes-dispatch.yml', check: (doc) => doc.permissions?.['id-token'] === 'write' && JSON.stringify(doc).includes('doks') },
+  { file: 'edge-dispatch.yml', check: (doc) => doc.permissions?.['id-token'] === 'write' && JSON.stringify(doc).includes('edge') },
   { file: 'reusable-hub.yml', check: (doc) => doc.on?.workflow_call && doc.on?.workflow_dispatch },
   { file: 'consumer-caller.yml', check: (doc) => doc.jobs?.review?.uses?.includes('reusable-hub.yml') && doc.jobs?.review?.secrets === 'inherit' },
   { file: 'incremental-review.yml', check: (doc) => doc.permissions?.actions === 'read' && JSON.stringify(doc).includes('incremental-review') },

@@ -102,11 +102,9 @@ function createStressTestEnv(overrides: Partial<Record<string, any>> = {}): Stre
     },
 
     ENVIRONMENT: overrides.ENVIRONMENT ?? 'staging',
-    PARALLEL_MODE: overrides.PARALLEL_MODE ?? 'true',
     PARALLEL_CHECK_NAME: overrides.PARALLEL_CHECK_NAME ?? 'Review Yeti (Cloudflare Canary)',
     OPERATOR_GLOBAL_PASSTHROUGH: overrides.OPERATOR_GLOBAL_PASSTHROUGH ?? 'false',
     PILOT_REPOSITORIES: overrides.PILOT_REPOSITORIES ?? 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta',
-    DOKS_FALLBACK_URL: overrides.DOKS_FALLBACK_URL ?? 'https://doks-internal.example.com/api/webhooks/github',
     GITHUB_WEBHOOK_SECRET: overrides.GITHUB_WEBHOOK_SECRET ?? 'challenge-secret-super-key-99',
     DEFAULT_WORKER_IMAGE: 'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
   };
@@ -569,125 +567,7 @@ describe('M1 Challenger Stress Test Suite', () => {
     });
   });
 
-  describe('Category 4: DOKS Fallback Fanout Error Handling & Fault Tolerance', () => {
-    it('never fails Cloudflare edge response when DOKS endpoint is completely unreachable (ECONNREFUSED)', async () => {
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = async (input: any, init?: any) => {
-        const urlStr = typeof input === 'string' ? input : input.url;
-        if (urlStr === 'https://doks.offline.internal/api/webhooks/github') {
-          throw new Error('connect ECONNREFUSED 10.0.0.1:443');
-        }
-        return originalFetch(input, init);
-      };
-
-      try {
-        const { env, mockCtx, waitUntilPromises, dispatchedWorkflows } = createStressTestEnv({
-          DOKS_FALLBACK_URL: 'https://doks.offline.internal/api/webhooks/github',
-        });
-
-        const payload = createPrPayload('opened');
-        const body = JSON.stringify(payload);
-        const sig = await signPayload(env.GITHUB_WEBHOOK_SECRET!, body);
-        const req = new Request('https://operator.internal/api/webhooks/github', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-GitHub-Event': 'pull_request',
-            'X-Hub-Signature-256': sig,
-          },
-          body,
-        });
-
-        const res = await worker.fetch(req, env, mockCtx as any);
-        assert.equal(res.status, 200, 'Cloudflare worker must succeed with 200 despite DOKS network down');
-        const data = (await res.json()) as any;
-        assert.equal(data.status, 'dispatched_immediate');
-        assert.equal(dispatchedWorkflows.length, 1);
-
-        // Await background fanout promises
-        await Promise.all(waitUntilPromises);
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
-
-    it('never fails Cloudflare edge response when DOKS endpoint returns HTTP 500, 502, or 504', async () => {
-      const originalFetch = globalThis.fetch;
-      const errorStatuses = [500, 502, 503, 504];
-
-      for (const status of errorStatuses) {
-        globalThis.fetch = async (input: any, init?: any) => {
-          const urlStr = typeof input === 'string' ? input : input.url;
-          if (urlStr === 'https://doks.error.internal/api/webhooks/github') {
-            return new Response(`DOKS Error ${status}`, { status });
-          }
-          return originalFetch(input, init);
-        };
-
-        try {
-          const { env, mockCtx, waitUntilPromises, dispatchedWorkflows } = createStressTestEnv({
-            DOKS_FALLBACK_URL: 'https://doks.error.internal/api/webhooks/github',
-          });
-
-          const payload = createPrPayload('opened');
-          const body = JSON.stringify(payload);
-          const sig = await signPayload(env.GITHUB_WEBHOOK_SECRET!, body);
-          const req = new Request('https://operator.internal/api/webhooks/github', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-GitHub-Event': 'pull_request',
-              'X-Hub-Signature-256': sig,
-            },
-            body,
-          });
-
-          const res = await worker.fetch(req, env, mockCtx as any);
-          assert.equal(res.status, 200, `Cloudflare worker must return 200 even when DOKS returns ${status}`);
-          const data = (await res.json()) as any;
-          assert.equal(data.status, 'dispatched_immediate');
-
-          await Promise.all(waitUntilPromises);
-        } finally {
-          globalThis.fetch = originalFetch;
-        }
-      }
-    });
-
-    it('does not crash when ctx is undefined or ctx.waitUntil is not a function', async () => {
-      const originalFetch = globalThis.fetch;
-      globalThis.fetch = async (input: any, init?: any) => {
-        return new Response('OK', { status: 200 });
-      };
-
-      try {
-        const { env } = createStressTestEnv({
-          DOKS_FALLBACK_URL: 'https://doks.custom.internal/api/webhooks/github',
-        });
-
-        const payload = createPrPayload('opened');
-        const body = JSON.stringify(payload);
-        const sig = await signPayload(env.GITHUB_WEBHOOK_SECRET!, body);
-        const req = new Request('https://operator.internal/api/webhooks/github', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-GitHub-Event': 'pull_request',
-            'X-Hub-Signature-256': sig,
-          },
-          body,
-        });
-
-        // Call worker.fetch WITHOUT ctx
-        const res = await worker.fetch(req, env, undefined);
-        assert.equal(res.status, 200, 'Must succeed when ctx is undefined');
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
-  });
-
-  describe('Category 5: Workflow Slot Recovery & Concurrency Gate Invariants', () => {
+  describe('Category 4: Workflow Slot Recovery & Concurrency Gate Invariants', () => {
     it('always releases RepoGateDO slot when container dispatch throws synchronous exception (Saga finally release)', async () => {
       const state = new MockDurableObjectState();
       const runState = new MockDurableObjectState();
@@ -937,7 +817,7 @@ describe('M1 Challenger Stress Test Suite', () => {
     });
   });
 
-  describe('Category 6: Fencing Epoch & Commit Supersession (<3s SLA)', () => {
+  describe('Category 5: Fencing Epoch & Commit Supersession (<3s SLA)', () => {
     it('requestCancellation immediately increments fencingEpoch and marks isCurrentHead = false (<3ms)', async () => {
       const state = new MockDurableObjectState();
       const env: any = {};

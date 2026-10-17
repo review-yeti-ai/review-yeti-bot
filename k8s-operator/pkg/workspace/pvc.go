@@ -34,7 +34,10 @@ func BuildPVC(namespace string, repositoryID int64, prNumber int32, now time.Tim
 	}
 	labels, annotations := Metadata(repositoryID, prNumber)
 	annotations[LastUsedAtAnnotation] = now.UTC().Format(time.RFC3339Nano)
-	storageClass := StorageClassName
+	var storageClass *string
+	if name := ConfiguredStorageClass(); name != "" {
+		storageClass = &name
+	}
 	return &corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        PVCName(repositoryID, prNumber),
@@ -45,7 +48,7 @@ func BuildPVC(namespace string, repositoryID int64, prNumber int32, now time.Tim
 		},
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			StorageClassName: &storageClass,
+			StorageClassName: storageClass,
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
 			},
@@ -63,7 +66,12 @@ func ValidatePVC(pvc *corev1.PersistentVolumeClaim, namespace string, repository
 	if err := ValidateMetadata(pvc.ObjectMeta, namespace, PVCName(repositoryID, prNumber), repositoryID, prNumber); err != nil {
 		return err
 	}
-	if len(pvc.OwnerReferences) != 0 || pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != StorageClassName {
+	if len(pvc.OwnerReferences) != 0 {
+		return ErrWorkspaceConfiguration
+	}
+	// An explicitly configured StorageClass is enforced exactly. When none is configured the API
+	// server assigns the cluster default at admission, so any assigned class is accepted.
+	if name := ConfiguredStorageClass(); name != "" && (pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != name) {
 		return ErrWorkspaceConfiguration
 	}
 	if len(pvc.Spec.AccessModes) != 1 || pvc.Spec.AccessModes[0] != corev1.ReadWriteOnce {

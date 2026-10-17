@@ -197,7 +197,7 @@ Partial lane signals from worker logs (7 days):
 | policy-lane | 35 | 3 | 0 | 33 | 0 |
 | dep-lane | 10 | 1 | 1 | 8 | 0 |
 
-A proxy with lane attribution: the separate GitHub Actions review pipeline ("Execute AI Review Pipeline") posts inline threads that end with `**Reported by:** <persona>`. It ran on 12 review-yeti-bot PRs in the window and produced 144 threads. Its roster differs from the DOKS app lanes, so treat this table as an indication, not a baseline.
+A proxy with lane attribution: the separate GitHub Actions review pipeline ("Execute AI Review Pipeline") posts inline threads that end with `**Reported by:** <persona>`. It ran on 12 review-yeti-bot PRs in the window and produced 144 threads. Its roster differs from the app lanes, so treat this table as an indication, not a baseline.
 
 | Persona (Actions pipeline) | Findings | source | test | other categories | P0 | P1 | P2 |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -255,7 +255,7 @@ Queries used: section 6.1 Q3 (406 and truncation strings in logs) and the local 
 
 The document's own banner already says it is non-authoritative. Each claim below was checked against the source on `main` and the live worker pod environment. The live pod sets no compaction or budget environment variables, and live prepared configs have no `turn_window_compaction`.
 
-| Design item (section of the document) | In code? | Reached by the DOKS worker? | Evidence |
+| Design item (section of the document) | In code? | Reached by the worker? | Evidence |
 | --- | --- | --- | --- |
 | 2. Dynamic model context discovery (`resolveModelMetadata`, OpenRouter `/models`, 1 h cache) | Yes, `src/gateway/openRouterClient.ts` | **No.** No caller outside its own module. | `grep resolveModelMetadata src` |
 | 2. Static model context matrix (`getStaticModelMetadata`) | Yes | Only for cost estimates (`estimateTokenCost`) | same file |
@@ -414,7 +414,7 @@ These are measurement categories only. They are not the production classifier. T
 ## 8. Unavailable data, stated plainly
 
 - **Per-lane tokens in and out**: unavailable. Totals per run exist; per-lane exists only in Postgres (section 3.3), which was not reachable within scope.
-- **Findings per lane per file category** for the DOKS app: unavailable for the same reason. Section 3.2 shows only a proxy from the Actions pipeline.
+- **Findings per lane per file category** for the app: unavailable for the same reason. Section 3.2 shows only a proxy from the Actions pipeline.
 - **Per-run dollar cost**: only the blended gateway rate is available, and it excludes unmetered GPU pools.
 - **14-day window**: VictoriaLogs retention for this namespace starts 2026-09-17.
 - **PRReviewJob timing for 7 days**: CRs are garbage-collected, so only the last ~17 hours are present. The worker log span and the operator histogram substitute.

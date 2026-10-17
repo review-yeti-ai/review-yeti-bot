@@ -66,7 +66,6 @@ export function createGetCloudflareStatusTool(options?: { cfOrchestratorUrl?: st
       return buildToolResultJson({
         timestamp: new Date().toISOString(),
         environment: 'production',
-        parallelMode: false,
         repoGate: {
           activeSlotsUsed: 0,
           concurrencyCap: 5,
@@ -83,11 +82,6 @@ export function createGetCloudflareStatusTool(options?: { cfOrchestratorUrl?: st
           totalObjects: 12,
           totalSizeBytes: 345000000,
           retentionPolicy: 'aggressive_1_hour_pr_ttl',
-        },
-        shadowParity: {
-          status: 'MATCHING',
-          consecutiveMatches: 100,
-          dataSource: 'baseline_sample_telemetry',
         },
         compute_plane: {
           active_runner: 'cloudflare',

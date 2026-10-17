@@ -156,11 +156,11 @@ jobs:
     secrets: inherit
 ```
 
-### Pattern 3: Kubernetes Scaled Cluster (High Volume / Cost Optimized)
+### Pattern 3: Cloudflare Edge Dispatch (High Volume / Cost Optimized)
 - **Best for**: Organizations with high PR volume seeking to eliminate billable CI runner minutes.
-- **Setup**: Deploy the Review Yeti Operator & Dispatcher in your Kubernetes cluster (EKS, GKE, K3s, etc.).
-- **Benefit**: GHA runner dispatches review in **< 10 seconds** and terminates; Kubernetes worker pods handle the LLM evaluations.
-- **Guide**: See [Kubernetes Execution Mode](KUBERNETES_MODE.md).
+- **Setup**: Call the Action with `execution-backend: edge` and the `dispatch-url` of your Review Yeti edge deployment.
+- **Benefit**: GHA runner dispatches review in **< 10 seconds** and terminates; Cloudflare Container runners handle the LLM evaluations.
+- **Guide**: See [`examples/workflows/edge-dispatch.yml`](../examples/workflows/edge-dispatch.yml) and the [Cloudflare Orchestrator](../cf-orchestrator/README.md).
 
 ---
 
@@ -317,6 +317,6 @@ A GitHub App provides native Check Runs API access, independent API rate limits 
 - [Team Memory & Nit Suppression Guide](TEAM_MEMORY.md) — Persistent SQLite WAL reflection and community persona charters.
 - [GitHub App Setup Guide](GITHUB_APP_SETUP.md) — Manual GitHub App registration and permissions matrix.
 - [Helm 3 Operations Guide](HELM_GUIDE.md) — Production Kubernetes cluster deployment.
-- [Kubernetes Execution Mode](KUBERNETES_MODE.md) — Offload review workloads to your cluster and eliminate runner waste.
+- [Kubernetes Review Operations](KUBERNETES_REVIEW_OPERATIONS.md) — Operator, worker, and observability runbook.
 - [Configuration Reference](CONFIGURATION_REFERENCE.md) — Complete `.ct-review.yaml` schema and options.
 - [Architecture Deep Dive](ARCHITECTURE.md) — How Review Yeti's consensus and arbitration engine works.

@@ -160,7 +160,7 @@ describe('deterministic category order', () => {
     ['package.json', 'security-sensitive'],
     // REL-1135: the shared predicate is the union of every sensitive list, so the CI/IaC paths
     // this module used to list on its own are now security-sensitive (still rank 0, full depth).
-    ['clusters/doks/app/values.yaml', 'security-sensitive'],
+    ['clusters/prod/app/values.yaml', 'security-sensitive'],
     ['Chart.yaml', 'security-sensitive'],
     ['package-lock.json', 'security-sensitive'],
     ['bun.lock', 'security-sensitive'],

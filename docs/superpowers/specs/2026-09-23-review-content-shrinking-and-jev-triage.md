@@ -3,7 +3,7 @@
 Date: 2026-09-23
 Status: plan, accepted by the operator for implementation behind flags.
 Builds on: `docs/superpowers/specs/2026-09-18-review-lifecycle-and-token-design.md` (token telemetry) and `docs/features/context_management.md` (context-window and compaction design).
-Execution substrate: plain Kubernetes Jobs on DOKS (example-meta ADR 0668). Nothing here changes that.
+Execution substrate: plain Kubernetes Jobs (example-meta ADR 0668). Nothing here changes that.
 
 ## 1. Why
 
