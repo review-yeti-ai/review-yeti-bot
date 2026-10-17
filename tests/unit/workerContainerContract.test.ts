@@ -174,7 +174,6 @@ describe('worker container contract', () => {
     expect(workflow).toContain('verify-worker-image-size.mjs');
     expect(workflow).toContain('attest-published-indexes:');
     expect(workflow).not.toContain('digitalocean/action-doctl');
-    expect(workflow).not.toContain('scripts/deploy-doks.sh');
   });
 
   it('enforces compressed size and service-relative size gates from OCI manifests', () => {

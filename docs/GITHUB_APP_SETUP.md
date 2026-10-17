@@ -131,7 +131,7 @@ Use the official `tibdex/github-app-token` action or Review Yeti's built-in toke
 
 ---
 
-### Option B: In Kubernetes Secrets (Kubernetes / DOKS Worker Mode)
+### Option B: In Kubernetes Secrets (Kubernetes Worker Mode)
 
 When running Review Yeti in Kubernetes mode, store the credentials in a Kubernetes Secret inside your review namespace (e.g. `review-yeti-system`):
 

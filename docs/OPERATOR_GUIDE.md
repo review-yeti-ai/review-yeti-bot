@@ -1,13 +1,13 @@
 # ct-review-bot — Enterprise Operator & Deployment Guide
 
 > [!IMPORTANT]
-> **Optional service document.** This DOKS/App runbook does not operate the public GitHub Action or
+> **Optional service document.** This Kubernetes/App runbook does not operate the public GitHub Action or
 > the internal production fleet. Its deployment, secret, provider, and authentication claims
 > require verification against current service source before use. See
 > [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
 ## Overview
-This document describes production deployment procedures for `ct-review-bot` on DigitalOcean Kubernetes (DOKS), secret management via Doppler & Kubernetes Secrets, and default provider allocations.
+This document describes production deployment procedures for `ct-review-bot` on Kubernetes, secret management via Doppler & Kubernetes Secrets, and default provider allocations.
 
 ## Default LLM Provider Allocation
 As of **v1.5.1**, the default provider for review synthesis and arbiter quorum is **Synthetic API** with model **`glm-5.2`** (high reasoning effort).
@@ -34,8 +34,8 @@ Store `SYNTHETIC_API_KEY` securely in Doppler:
 doppler secrets set SYNTHETIC_API_KEY=${SYNTHETIC_API_KEY} --project ct-review-bot --config dev
 ```
 
-### 2. Kubernetes Secret Deployment (DOKS Cluster)
-Deploy the secret to your DigitalOcean Kubernetes cluster (`ct-review-bot` namespace):
+### 2. Kubernetes Secret Deployment
+Deploy the secret to your Kubernetes cluster (`ct-review-bot` namespace):
 ```bash
 kubectl create secret generic ct-review-bot-secrets \
   --from-literal=SYNTHETIC_API_KEY=${SYNTHETIC_API_KEY} \
@@ -78,7 +78,7 @@ In your GitHub App / Organization Settings (`https://github.com/organizations/my
 ### 3. Automated Token Exchange (`ghs_...`)
 When incoming webhooks trigger `src/app.ts`, the bot automatically exchanges `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` + `installation.id` for a short-lived **Installation Access Token** (`ghs_...`). All posted comments are strictly authored by **`ct-review-bot[bot]`**.
 
-## Optional GitHub Action to DOKS Admission
+## Optional GitHub Action to Kubernetes Admission
 
 This endpoint is off by default. It only admits work to PostgreSQL; it does not call Kubernetes or
 a model in the request handler. Configure all allowlists before enabling it:

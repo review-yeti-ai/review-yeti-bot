@@ -158,9 +158,9 @@ jobs:
 
 ### Pattern 3: Kubernetes Scaled Cluster (High Volume / Cost Optimized)
 - **Best for**: Organizations with high PR volume seeking to eliminate billable CI runner minutes.
-- **Setup**: Deploy the Review Yeti Operator & Dispatcher in your Kubernetes cluster (DOKS, EKS, GKE, etc.).
+- **Setup**: Deploy the Review Yeti Operator & Dispatcher in your Kubernetes cluster (EKS, GKE, K3s, etc.).
 - **Benefit**: GHA runner dispatches review in **< 10 seconds** and terminates; Kubernetes worker pods handle the LLM evaluations.
-- **Guide**: See [Kubernetes & DOKS Execution Mode](KUBERNETES_MODE.md).
+- **Guide**: See [Kubernetes Execution Mode](KUBERNETES_MODE.md).
 
 ---
 
@@ -277,7 +277,7 @@ Review Yeti features an interactive web management and analytics portal with liv
 Because Review Yeti's control plane (Durable Objects, Workflows, Queues, R2) and execution plane already run on Cloudflare Workers (`review-yeti-cf-orchestrator`), the portal is designed to run directly on Cloudflare:
 1. **Unified Cloudflare Worker with Static Assets** (Recommended): Bind Next.js static assets (`out/`) into `wrangler.toml` using `[assets]`. Served directly from Cloudflare's edge with 0ms cold starts.
 2. **Cloudflare Pages**: Export the Next.js static build (`npm run build:frontend`) to `out/` and deploy to Cloudflare Pages edge CDN.
-3. **Cloudflare Tunnel (`cloudflared`)**: For local testing or hybrid validation alongside the DOKS operator.
+3. **Cloudflare Tunnel (`cloudflared`)**: For local testing or hybrid validation alongside the Kubernetes operator.
 
 👉 **Follow the complete [Cloudflare Portal Setup Guide](CLOUDFLARE_PORTAL_SETUP.md)**.
 
@@ -317,6 +317,6 @@ A GitHub App provides native Check Runs API access, independent API rate limits 
 - [Team Memory & Nit Suppression Guide](TEAM_MEMORY.md) — Persistent SQLite WAL reflection and community persona charters.
 - [GitHub App Setup Guide](GITHUB_APP_SETUP.md) — Manual GitHub App registration and permissions matrix.
 - [Helm 3 Operations Guide](HELM_GUIDE.md) — Production Kubernetes cluster deployment.
-- [Kubernetes & DOKS Execution Mode](KUBERNETES_MODE.md) — Offload review workloads to your cluster and eliminate runner waste.
+- [Kubernetes Execution Mode](KUBERNETES_MODE.md) — Offload review workloads to your cluster and eliminate runner waste.
 - [Configuration Reference](CONFIGURATION_REFERENCE.md) — Complete `.ct-review.yaml` schema and options.
 - [Architecture Deep Dive](ARCHITECTURE.md) — How Review Yeti's consensus and arbitration engine works.

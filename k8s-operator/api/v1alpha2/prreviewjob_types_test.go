@@ -36,7 +36,7 @@ func contractFixture() *v1alpha2.PRReviewJob {
 			PolicyDigest:     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 			ConfigDigest:     "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 			PublicationMode:  "disabled",
-			WorkerImage:      "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			WorkerImage:      "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 			RunSecretName:    "ct-review-run-11111111111111111111111111111111",
 		},
 		Status: v1alpha2.PRReviewJobStatus{

@@ -233,6 +233,21 @@ assert_no_receipt "$invalid_receipt"
 pass "rejects an untrusted target before any Kubernetes write"
 
 prepare_dispatcher
+do_receipt="$test_root/do-host.json"
+if run_helper --component dispatcher \
+  --expected-current-image "$dispatcher_old" \
+  --expected-uid deployment-uid-1 \
+  --expected-resource-version 17 \
+  --target-image "registry.digitalocean.com/example/review-yeti-bot@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" \
+  --source-sha "$source_sha" \
+  --apply --receipt "$do_receipt" >/dev/null 2>&1; then
+  fail "DigitalOcean registry target was accepted"
+fi
+assert_no_patch
+assert_no_receipt "$do_receipt"
+pass "rejects a DigitalOcean registry target before any Kubernetes write"
+
+prepare_dispatcher
 stale_receipt="$test_root/stale.json"
 if run_helper --component dispatcher \
   --expected-current-image "$dispatcher_old" \

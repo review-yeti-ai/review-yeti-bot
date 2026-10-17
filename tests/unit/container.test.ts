@@ -111,22 +111,4 @@ describe('Container Configuration Unit Tests', () => {
     expect(deployment).toContain('cpu: 500m');
     expect(deployment).toContain('memory: 512Mi');
   });
-
-  it('validates deploy-doks.sh and verify-doks.sh for sha256 enforcement, pod readiness, and endpoint checks', () => {
-    const deployScript = fs.readFileSync(path.join(rootDir, 'scripts/deploy-doks.sh'), 'utf-8');
-    const verifyScript = fs.readFileSync(path.join(rootDir, 'scripts/verify-doks.sh'), 'utf-8');
-
-    // SHA256 64-hex digest pinning enforcement
-    expect(deployScript).toMatch(/@sha256:\[0-9a-fA-F\]\{64\}/);
-    expect(verifyScript).toMatch(/@sha256:\[0-9a-fA-F\]\{64\}/);
-
-    // Pod readiness checks
-    expect(deployScript).toContain('wait --for=condition=ready pod');
-    expect(verifyScript).toContain('wait --for=condition=ready pod');
-
-    // Endpoints verified in verify-doks.sh
-    expect(verifyScript).toContain('/health');
-    expect(verifyScript).toContain('/ready');
-    expect(verifyScript).toContain('/api/version');
-  });
 });

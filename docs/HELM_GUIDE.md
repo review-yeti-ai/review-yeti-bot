@@ -17,7 +17,6 @@ Welcome to the official production Helm 3 deployment guide for **Review Yeti**. 
    - [Secrets Management](#5-secrets-management-secrets)
    - [CRD Lifecycle](#6-crd-lifecycle-crd)
 5. [Cloud Deployment Walk-Throughs](#-cloud-deployment-walk-throughs)
-   - [DigitalOcean Kubernetes (DOKS)](#digitalocean-kubernetes-doks)
    - [AWS Elastic Kubernetes Service (EKS)](#aws-elastic-kubernetes-service-eks)
    - [Local Development (Minikube / Kind / K3s)](#local-development-minikube--kind--k3s)
 6. [Secrets Management Best Practices](#-secrets-management-best-practices)
@@ -80,7 +79,7 @@ Before deploying Review Yeti with Helm 3, ensure your environment meets the foll
 
 - **Kubernetes Version**: `v1.28+` (supports CEL validation rules in CRD schemas).
 - **Helm Version**: `v3.12+` (`helm version` to verify).
-- **Storage**: A dynamic PersistentVolume provisioner supporting `ReadWriteOnce` claims (e.g., DigitalOcean Block Storage `do-block-storage`, AWS EBS CSI `gp3`, or Minikube `standard`).
+- **Storage**: A dynamic PersistentVolume provisioner supporting `ReadWriteOnce` claims (e.g., AWS EBS CSI `gp3` or Minikube `standard`).
 - **Ingress Controller**: Ingress controller exposing the dispatcher (e.g., ingress-nginx, AWS Load Balancer Controller, Traefik).
 - **GitHub App**:
   - Registered GitHub App with Private Key (`.pem`), App ID, and Installation ID.
@@ -287,67 +286,6 @@ crd:
 ## ☁️ Cloud Deployment Walk-Throughs
 
 Review Yeti provides pre-tested, cloud-optimized values files in `examples/k8s/`.
-
-### DigitalOcean Kubernetes (DOKS)
-
-DigitalOcean Kubernetes provides high-performance NVMe block storage and native Load Balancer integration.
-
-#### 1. Configuration (`examples/k8s/values-doks.yaml`)
-Review Yeti uses `do-block-storage` for worker PVCs and configures the DO Load Balancer with HTTPS redirect and Let's Encrypt TLS:
-
-```yaml
-# examples/k8s/values-doks.yaml
-ingress:
-  enabled: true
-  className: "nginx"
-  annotations:
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
-    service.beta.kubernetes.io/do-loadbalancer-name: "review-yeti-lb"
-    service.beta.kubernetes.io/do-loadbalancer-protocol: "https"
-    service.beta.kubernetes.io/do-loadbalancer-tls-ports: "443"
-    service.beta.kubernetes.io/do-loadbalancer-redirect-http-to-https: "true"
-  host: "review.doks.example.com"
-  path: "/api/admission/dispatch"
-  pathType: "Prefix"
-  tls:
-    enabled: true
-    secretName: "review-yeti-doks-tls"
-
-worker:
-  storage:
-    storageClassName: "do-block-storage"
-    size: "2Gi"
-
-dispatcher:
-  replicaCount: 2
-
-operator:
-  replicaCount: 1
-
-secrets:
-  create: false
-  existingSecretName: "review-yeti-secrets"
-```
-
-#### 2. Create the Secret & Deploy to DOKS
-```bash
-# Create the secret out-of-band
-kubectl create secret generic review-yeti-secrets \
-  --namespace review-yeti-system \
-  --from-literal=APP_ID="123456" \
-  --from-literal=INSTALLATION_ID="98765432" \
-  --from-file=PRIVATE_KEY=./github-app.pem \
-  --from-literal=DISPATCH_TOKEN="$(openssl rand -hex 32)" \
-  --from-literal=OPENROUTER_API_KEY="sk-or-v1-..."
-
-# Deploy with DOKS values
-helm install review-yeti charts/review-yeti \
-  --namespace review-yeti-system \
-  --create-namespace \
-  -f examples/k8s/values-doks.yaml
-```
-
----
 
 ### AWS Elastic Kubernetes Service (EKS)
 

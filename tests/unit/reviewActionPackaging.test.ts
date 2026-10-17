@@ -79,7 +79,7 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(raw).toContain('REVIEW_YETI_INCREMENTAL_TRUSTED_EVENTS: ${{ inputs.incremental-trusted-events }}');
   });
 
-  it('keeps local execution as the default and defaults DOKS publication to app-gate', () => {
+  it('keeps local execution as the default and defaults dispatch publication to app-gate', () => {
     expect(action.inputs['execution-backend'].default).toBe('local');
     expect(action.inputs['doks-publish-mode'].default).toBe('app-gate');
     // The endpoint is supplied by the caller; the Action carries no hostname default.
@@ -94,13 +94,14 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(dispatcher).toContain('ACTIONS_ID_TOKEN_REQUEST_TOKEN');
     expect(raw).toContain("inputs.execution-backend != 'local'");
     expect(raw).toContain("inputs.execution-backend == 'local'");
-    expect(raw).toContain('local|doks|mars|edge');
+    expect(raw).toContain('local|doks|edge');
+    expect(raw).toContain("execution-backend 'mars' is not supported");
     expect(raw).toContain('inputs.dispatch-url || inputs.edge-dispatch-url || inputs.doks-dispatch-url');
     expect(raw).toContain('EXPECTED_GENERATION: ${{ inputs.expected-generation }}');
   });
 
-  it('does not expose provider credentials to the DOKS dispatch step', () => {
-    const step = action.runs.steps.find((candidate: any) => candidate.name === 'Dispatch review to DOKS');
+  it('does not expose provider credentials to the dispatch step', () => {
+    const step = action.runs.steps.find((candidate: any) => candidate.name === 'Dispatch review to the Review Yeti queue');
     expect(step).toBeTruthy();
     expect(JSON.stringify(step.env)).not.toMatch(/OPENROUTER|FIREWORKS|OLLAMA|ANTHROPIC|GEMINI|OPENAI_API_KEY/u);
     expect(step.env).not.toHaveProperty('GH_TOKEN');

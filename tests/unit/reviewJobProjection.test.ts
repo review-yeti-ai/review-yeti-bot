@@ -22,7 +22,7 @@ const input = {
   policyDigest: 'c'.repeat(64),
   configDigest: 'd'.repeat(64),
   publicationMode: 'disabled' as const,
-  workerImage: `registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:${'e'.repeat(64)}`,
+  workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`,
   namespace: 'ct-review-qualification',
 };
 
@@ -109,12 +109,12 @@ describe('prepared review projection transport', () => {
     const preparedReview = JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config,
       transport: prepared.transport, qualificationRuntimeImageDigest: digest });
     const boundInput = { ...input, publicationMode: 'app-gate' as const,
-      workerImage: `registry.digitalocean.com/exampleorg/review-yeti-worker@${digest}`,
+      workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@${digest}`,
       configDigest: prepared.policy.effectiveConfigDigest, preparedReview };
 
     expect(buildReviewJobProjection(boundInput, receivedAt + 60_000).spec.workerImage).toBe(boundInput.workerImage);
     expect(() => buildReviewJobProjection({ ...boundInput,
-      workerImage: `registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:${'f'.repeat(64)}` }, receivedAt + 60_000))
+      workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'f'.repeat(64)}` }, receivedAt + 60_000))
       .toThrow('Prepared review execution does not match its admitted identity');
   });
 
@@ -252,9 +252,9 @@ describe('buildReviewJobProjection', () => {
   });
 
   it.each([
-    'registry.digitalocean.com/exampleorg/review-yeti-worker:latest',
-    `registry.digitalocean.com/exampleorg/review-yeti-worker:v1@sha256:${'e'.repeat(64)}`,
-    `registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:${'E'.repeat(64)}`,
+    'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
+    `ghcr.io/review-yeti-ai/review-yeti-worker:v1@sha256:${'e'.repeat(64)}`,
+    `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'E'.repeat(64)}`,
     `review-yeti-worker@sha256:${'e'.repeat(63)}`,
   ])('rejects a worker image that is not a strict digest-only reference: %s', (workerImage) => {
     expect(() => buildReviewJobProjection({ ...input, workerImage }, receivedAt + 60_000))

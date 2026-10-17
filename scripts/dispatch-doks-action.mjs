@@ -175,7 +175,7 @@ export function buildDispatchRequest(environment) {
   if (!['', 'false', 'true'].includes(incompleteP2Raw)) throw new Error('INCOMPLETE_P2_RECOVERY must be true or false');
   const incompleteP2Recovery = incompleteP2Raw === 'true';
   // Standalone Action script: keep this 2..3 window aligned with
-  // src/review/incompleteP2RecoveryLimits.ts; actionDoksDispatch tests verify parity.
+  // src/review/incompleteP2RecoveryLimits.ts; actionDispatchClient tests verify parity.
   if (incompleteP2Recovery && (!refreshRequested || publishMode !== 'app-gate'
     || !['repository_dispatch', 'workflow_dispatch'].includes(eventName)
     || expectedGeneration === undefined || expectedGeneration < 2 || expectedGeneration > 3

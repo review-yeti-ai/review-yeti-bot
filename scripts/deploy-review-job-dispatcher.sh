@@ -41,20 +41,20 @@ export CT_REVIEW_RUNNER_MODE="$runner_mode"
 
 : "${CT_REVIEW_JOB_DISPATCHER_IMAGE:?set CT_REVIEW_JOB_DISPATCHER_IMAGE to a trusted bot image@sha256:digest}"
 
-if [[ ! "$CT_REVIEW_JOB_DISPATCHER_IMAGE" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-bot|registry\.digitalocean\.com/exampleorg/ct-review-bot)@sha256:[0-9a-f]{64}$ ]]; then
+if [[ ! "$CT_REVIEW_JOB_DISPATCHER_IMAGE" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-bot)@sha256:[0-9a-f]{64}$ ]]; then
   echo "deploy-review-job-dispatcher: CT_REVIEW_JOB_DISPATCHER_IMAGE must use a trusted repository and an immutable lowercase sha256 digest" >&2
   exit 2
 fi
 
 if [[ "$runner_mode" == "generic" ]]; then
   CT_REVIEW_WORKER_IMAGE="${CT_REVIEW_WORKER_IMAGE:-node:24-bookworm-slim}"
-  if [[ ! "$CT_REVIEW_WORKER_IMAGE" =~ ^(node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+|(ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/exampleorg/review-yeti-worker)@sha256:[0-9a-f]{64})$ ]]; then
+  if [[ ! "$CT_REVIEW_WORKER_IMAGE" =~ ^(node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+|(ghcr\.io/review-yeti-ai/review-yeti-worker)@sha256:[0-9a-f]{64})$ ]]; then
     echo "deploy-review-job-dispatcher: in generic runner mode, CT_REVIEW_WORKER_IMAGE must be a valid node/runner image (e.g. node:24-bookworm-slim)" >&2
     exit 2
   fi
 else
   : "${CT_REVIEW_WORKER_IMAGE:?set CT_REVIEW_WORKER_IMAGE to a trusted worker image@sha256:digest}"
-  if [[ ! "$CT_REVIEW_WORKER_IMAGE" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/exampleorg/review-yeti-worker)@sha256:[0-9a-f]{64}$ ]]; then
+  if [[ ! "$CT_REVIEW_WORKER_IMAGE" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-worker)@sha256:[0-9a-f]{64}$ ]]; then
     echo "deploy-review-job-dispatcher: CT_REVIEW_WORKER_IMAGE must use a trusted repository and an immutable lowercase sha256 digest" >&2
     exit 2
   fi

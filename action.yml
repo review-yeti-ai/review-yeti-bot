@@ -105,16 +105,15 @@ inputs:
   execution-backend:
     description: >-
       Review execution location: local runs the existing panel on this runner; doks only admits
-      the immutable request to the Review Yeti DOKS queue; mars admits to the DO Managed Agents queue;
-      edge admits to the Cloudflare Worker Review Yeti queue.
+      the immutable request to the Review Yeti Kubernetes queue; edge admits to the Cloudflare Worker Review Yeti queue.
       Remote callers must grant permissions: id-token: write and rely on the later Review Yeti App gate
       for a terminal result.
     required: false
     default: 'local'
   doks-dispatch-url:
     description: >-
-      Review Yeti DOKS admission endpoint, supplied by the calling workflow (required when execution-backend is
-      doks, mars, or edge). Ordinary dispatch uses /api/dispatch/action. The isolated qualification endpoint is
+      Review Yeti admission endpoint, supplied by the calling workflow (required when execution-backend is
+      doks or edge). Ordinary dispatch uses /api/dispatch/action. The isolated qualification endpoint is
       accepted only for the exact qualification repository when its runtime image digest is also supplied.
     required: false
     default: ''
@@ -142,7 +141,7 @@ inputs:
     default: ''
   doks-publish-mode:
     description: >-
-      DOKS publication policy: app-gate is the standard gate-checked publication mode for
+      Publication policy for dispatched reviews: app-gate is the standard gate-checked publication mode for
       allowlisted workflows; disabled admits a nonpublishing qualification run.
     required: false
     default: 'app-gate'
@@ -344,7 +343,7 @@ inputs:
     required: false
     default: ''
   policy-json:
-    description: 'Optional raw JSON string of policy overrides passed to DOKS dispatch (allowed keys: personas, maxInvestigationTurns, laneCallBudget, skills, knowledge, metrics, telemetry, retryAnalysis, retroAnalysis).'
+    description: 'Optional raw JSON string of policy overrides passed to the dispatch (allowed keys: personas, maxInvestigationTurns, laneCallBudget, skills, knowledge, metrics, telemetry, retryAnalysis, retroAnalysis).'
     required: false
     default: ''
   # Deprecated compatibility inputs retained for callers on the pre-v1 contract. The central
@@ -487,9 +486,13 @@ runs:
       run: |
         set -euo pipefail
         case "$EXECUTION_BACKEND" in
-          local|doks|mars|edge) ;;
+          local|doks|edge) ;;
+          mars)
+            echo "::error::execution-backend 'mars' is not supported; use local, doks, or edge"
+            exit 1
+            ;;
           *)
-            echo "::error::execution-backend must be local, doks, mars, or edge"
+            echo "::error::execution-backend must be local, doks, or edge"
             exit 1
             ;;
         esac
@@ -524,7 +527,7 @@ runs:
           --jq '"title<<CT_REVIEW_PR_TITLE\n\(.title)\nCT_REVIEW_PR_TITLE"' >> "$GITHUB_OUTPUT"
         echo "Reviewing $REPO#$PR via ${{ inputs.execution-backend }}"
 
-    - name: Dispatch review to DOKS
+    - name: Dispatch review to the Review Yeti queue
       id: doks-dispatch
       if: ${{ inputs.execution-backend != 'local' }}
       shell: bash

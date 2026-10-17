@@ -17,7 +17,7 @@ export const REVIEW_PROGRESS_SUBJECT_MAX_LENGTH = MAX_REVIEW_EVENT_SUBJECT_SUFFI
 
 /**
  * Minimal transport seam for this lane. The NATS client adapter is injected by
- * the DOKS wiring task, so the sanitizer/sink contract stays independently
+ * the Kubernetes wiring task, so the sanitizer/sink contract stays independently
  * compilable and testable without a transport dependency.
  */
 export interface ProgressPublisher {

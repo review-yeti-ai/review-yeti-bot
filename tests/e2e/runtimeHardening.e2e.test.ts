@@ -189,7 +189,7 @@ function mockClientWithRows(rows: any[][]) {
 }
 
 const TRUSTED_IMAGE_REGEX =
-  /^(ghcr\.io\/review-yeti-ai\/review-yeti-worker|registry\.digitalocean\.com\/exampleorg\/review-yeti-worker)@sha256:[0-9a-f]{64}$/;
+  /^ghcr\.io\/review-yeti-ai\/review-yeti-worker@sha256:[0-9a-f]{64}$/;
 const TARGET_WORKER_DIGEST = 'sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635';
 const TARGET_WORKER_IMAGE = `ghcr.io/review-yeti-ai/review-yeti-worker@${TARGET_WORKER_DIGEST}`;
 const EXPECTED_SOURCE_COMMIT = 'fa53713729c575063208004956268972b42b4c92';
@@ -735,9 +735,9 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
     });
 
     // ------------------------------------------------------------------------
-    // R5: DOKS Infrastructure: Worker Deployment & Terminal Run Re-queueing (5 tests)
+    // R5: Kubernetes Infrastructure: Worker Deployment & Terminal Run Re-queueing (5 tests)
     // ------------------------------------------------------------------------
-    describe('R5: DOKS Infrastructure & Terminal Run Re-queueing', () => {
+    describe('R5: Kubernetes Infrastructure & Terminal Run Re-queueing', () => {
       it('1.5.1: Worker image validator enforces an immutable sha256 digest, from any registry, via production dispatcher config', () => {
         const trustedGhcr = `${TRUSTED_WORKER_IMAGE_REPOSITORIES[0]}@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635`;
         const legacyRegistry = 'registry.example.invalid/legacy/review-yeti-worker@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635';

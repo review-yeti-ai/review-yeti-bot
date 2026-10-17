@@ -14,7 +14,7 @@ export interface BillableReportDbClient {
 
 export const getBillableRuntimeReportDefinition: ToolDefinition = {
   name: 'get_billable_runtime_report',
-  description: 'Generate audited compute runtime and cost reports for Review Yeti executions with runner tier breakdown and savings.',
+  description: 'Generate audited compute runtime and cost reports for Review Yeti executions on the Cloudflare runner.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -22,11 +22,13 @@ export const getBillableRuntimeReportDefinition: ToolDefinition = {
       repo: { type: 'string', description: 'Repository name filter' },
       pull_number: { type: 'number', description: 'PR number filter' },
       days: { type: 'number', description: 'Lookback window in days (default: 30)' },
-      runner_tier: { type: 'string', description: 'Filter by runner tier (e.g. digitalocean, cloudflare, doks)' },
+      runner_tier: { type: 'string', description: 'Filter by runner tier (only "cloudflare" is supported)' },
     },
     additionalProperties: false,
   },
 };
+
+const SUPPORTED_RUNNER_TIER = 'cloudflare';
 
 export function createGetBillableRuntimeReportTool(db?: BillableReportDbClient) {
   return {
@@ -38,12 +40,15 @@ export function createGetBillableRuntimeReportTool(db?: BillableReportDbClient) 
         throw new Error(`Invalid arguments: ${parsed.error.issues.map((i) => i.message).join(', ')}`);
       }
       const { owner, repo, pull_number, days = 30, runner_tier } = parsed.data;
+      if (runner_tier !== undefined && runner_tier !== SUPPORTED_RUNNER_TIER) {
+        throw new Error(`Unsupported runner_tier "${runner_tier}": only "${SUPPORTED_RUNNER_TIER}" is available`);
+      }
 
       const endDate = new Date().toISOString();
       const startDate = new Date(Date.now() - days * 86400000).toISOString();
 
-      // Per-second rate for DigitalOcean Managed Agents (Firecracker microVM: 2 vCPU + 2GB) = $0.000018 / sec ($0.0648 / hr)
-      const perSecRate = 0.000018;
+      // Per-second rate for a Cloudflare Containers sandbox (2 vCPU + 2048 MB) = $0.000015 / sec ($0.054 / hr)
+      const perSecRate = 0.000015;
 
       let items: any[] = [];
 
@@ -82,7 +87,7 @@ export function createGetBillableRuntimeReportTool(db?: BillableReportDbClient) 
               run_id: row.run_id,
               repo: `${row.owner}/${row.repo}`,
               pull_number: row.pr_number,
-              runner: runner_tier || 'digitalocean',
+              runner: SUPPORTED_RUNNER_TIER,
               duration_ms: durationMs,
               compute_cost_usd: computeCostUSD,
               token_cost_usd: tokenCostUSD,
@@ -102,7 +107,7 @@ export function createGetBillableRuntimeReportTool(db?: BillableReportDbClient) 
             run_id: 'run_cf_bd36035bf508024da7457527fa0fa4f5',
             repo: repo ? `${owner || 'exampleorg'}/${repo}` : 'exampleorg/example-api',
             pull_number: pull_number || 5290,
-            runner: 'digitalocean',
+            runner: SUPPORTED_RUNNER_TIER,
             duration_ms: 24800,
             compute_cost_usd: 0.000446,
             token_cost_usd: 0.0125,
@@ -113,7 +118,7 @@ export function createGetBillableRuntimeReportTool(db?: BillableReportDbClient) 
             run_id: 'run_cf_45ca09576fc84c3f1a9627354e341121',
             repo: repo ? `${owner || 'exampleorg'}/${repo}` : 'exampleorg/example-api',
             pull_number: pull_number || 5262,
-            runner: 'digitalocean',
+            runner: SUPPORTED_RUNNER_TIER,
             duration_ms: 31200,
             compute_cost_usd: 0.000562,
             token_cost_usd: 0.0182,
@@ -129,13 +134,6 @@ export function createGetBillableRuntimeReportTool(db?: BillableReportDbClient) 
       const totalTokenCostUSD = Number(items.reduce((acc, it) => acc + it.token_cost_usd, 0).toFixed(4));
       const totalSpendUSD = Number((totalComputeCostUSD + totalTokenCostUSD).toFixed(4));
 
-      // DOKS baseline amortization: $170/month pro-rated (only applicable when runs exist)
-      const estimatedDoksBaselineCostUSD = totalRuns > 0 ? Number(((170 / 30) * days).toFixed(2)) : 0;
-      const netSavingsUSD = totalRuns > 0 ? Number(Math.max(0, estimatedDoksBaselineCostUSD - totalSpendUSD).toFixed(2)) : 0;
-      const savingsPercent = estimatedDoksBaselineCostUSD > 0
-        ? Number(((netSavingsUSD / estimatedDoksBaselineCostUSD) * 100).toFixed(1))
-        : 0;
-
       return buildToolResultJson({
         timeframe: { startDate, endDate },
         filter: { owner, repo, pull_number, runner_tier },
@@ -145,9 +143,6 @@ export function createGetBillableRuntimeReportTool(db?: BillableReportDbClient) 
           total_compute_cost_usd: totalComputeCostUSD,
           total_token_cost_usd: totalTokenCostUSD,
           total_spend_usd: totalSpendUSD,
-          estimated_doks_baseline_cost_usd: estimatedDoksBaselineCostUSD,
-          net_savings_usd: netSavingsUSD,
-          savings_percent: savingsPercent,
         },
         items,
         data_source: db ? 'live_telemetry' : 'baseline_sample_telemetry',

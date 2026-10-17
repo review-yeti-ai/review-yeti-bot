@@ -80,11 +80,11 @@ trusted_image() {
   is_digest "$digest" || return 1
   case "$component" in
     api|dispatcher)
-      [[ "$image" == "ghcr.io/review-yeti-ai/review-yeti-bot@$digest" || "$image" == "registry.digitalocean.com/exampleorg/ct-review-bot@$digest" ]]
+      [[ "$image" == "ghcr.io/review-yeti-ai/review-yeti-bot@$digest" ]]
       return $?
       ;;
     operator)
-      [[ "$image" == "ghcr.io/review-yeti-ai/review-yeti-operator@$digest" || "$image" == "registry.digitalocean.com/exampleorg/review-yeti-operator@$digest" ]]
+      [[ "$image" == "ghcr.io/review-yeti-ai/review-yeti-operator@$digest" ]]
       return $?
       ;;
   esac

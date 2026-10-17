@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Install the reviewed DOKS review resources without activating review traffic.
+# Install the reviewed Kubernetes review resources without activating review traffic.
 #
 # This is deliberately an installation boundary, not an activation command:
 # the operator and durable dispatcher manifests both declare replicas: 0 and
@@ -57,24 +57,24 @@ require_value KUBERNETES_SERVICE_IP "$service_ip"
 require_value KUBERNETES_API_ENDPOINT_CIDR "$api_endpoint_cidr"
 require_value KUBERNETES_API_CIDR "$api_cidr"
 
-if [[ ! "$operator_image" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-operator|registry\.digitalocean\.com/exampleorg/review-yeti-operator)@sha256:[0-9a-f]{64}$ ]]; then
+if [[ ! "$operator_image" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-operator)@sha256:[0-9a-f]{64}$ ]]; then
   echo "install-doks-review-runtime: CT_REVIEW_OPERATOR_IMAGE must be a lowercase digest in a trusted operator repository" >&2
   exit 2
 fi
-if [[ ! "$dispatcher_image" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-bot|registry\.digitalocean\.com/exampleorg/ct-review-bot)@sha256:[0-9a-f]{64}$ ]]; then
+if [[ ! "$dispatcher_image" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-bot)@sha256:[0-9a-f]{64}$ ]]; then
   echo "install-doks-review-runtime: CT_REVIEW_JOB_DISPATCHER_IMAGE must be a lowercase digest in a trusted bot repository" >&2
   exit 2
 fi
 
 if [[ "$runner_mode" == "generic" ]]; then
   worker_image="${worker_image:-node:24-bookworm-slim}"
-  if [[ ! "$worker_image" =~ ^(node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+|(ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/exampleorg/review-yeti-worker)@sha256:[0-9a-f]{64})$ ]]; then
+  if [[ ! "$worker_image" =~ ^(node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+|(ghcr\.io/review-yeti-ai/review-yeti-worker)@sha256:[0-9a-f]{64})$ ]]; then
     echo "install-doks-review-runtime: in generic runner mode, CT_REVIEW_WORKER_IMAGE must be a valid node/runner image (e.g. node:24-bookworm-slim)" >&2
     exit 2
   fi
 else
   require_value CT_REVIEW_WORKER_IMAGE "$worker_image"
-  if [[ ! "$worker_image" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/exampleorg/review-yeti-worker)@sha256:[0-9a-f]{64}$ ]]; then
+  if [[ ! "$worker_image" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-worker)@sha256:[0-9a-f]{64}$ ]]; then
     echo "install-doks-review-runtime: CT_REVIEW_WORKER_IMAGE must be a lowercase digest in a trusted worker repository" >&2
     exit 2
   fi
@@ -128,7 +128,7 @@ trap cleanup EXIT
 kubectl apply --server-side -f k8s/namespace.yaml
 kubectl apply --server-side -f k8s-operator/config/crd/bases/review-yeti.ai_prreviewjobs.yaml
 
-# Restrict envsubst to the immutable image and exact DOKS API values used by
+# Restrict envsubst to the immutable image and exact Kubernetes API values used by
 # the operator network policy. No ambient environment variable is rendered.
 # shellcheck disable=SC2016
 envsubst '${CT_REVIEW_OPERATOR_IMAGE} ${KUBERNETES_SERVICE_IP} ${KUBERNETES_API_ENDPOINT_CIDR} ${KUBERNETES_API_CIDR}' \
@@ -145,4 +145,4 @@ if [[ "$operator_replicas" != "0" || "$dispatcher_replicas" != "0" ]]; then
   exit 1
 fi
 
-echo "DOKS review runtime installed at zero replicas; no queue consumption or review publication was activated."
+echo "Review runtime installed at zero replicas; no queue consumption or review publication was activated."

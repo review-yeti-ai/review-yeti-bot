@@ -686,7 +686,7 @@ export class GitHubInstallationClient {
       method: 'POST',
       body: JSON.stringify({
         // REL-586: must match the check name the central lane (example-review-actions
-        // review-yeti.yml) publishes as `in_progress` when it dispatches to DOKS.
+        // review-yeti.yml) publishes as `in_progress` when it dispatches to the Kubernetes lane.
         // GitHub supersedes check runs by name+app, so a mismatched name (formerly
         // `Review Yeti / Gate`) left the central check stuck in_progress forever
         // because this App's own check never completed the one the central lane

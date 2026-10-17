@@ -39,8 +39,8 @@ Review Yeti convenes a panel of specialized AI reviewers—each with a dedicated
 - 🧠 **Persistent Team Memory**: SQLite WAL database (`.ct-memory/team_memory.db`) that suppresses repetitive false-positive nits while enforcing non-bypassable P0/P1 security gates ([Guide](docs/TEAM_MEMORY.md)).
 - ⚖️ **Binding Arbitration Engine**: Automated moderator and arbiter that deduplicate findings and deliver clear verdicts: `SHIP`, `FIX_FIRST`, or `BLOCK`.
 - 🛰️ **Private JetStream Event Plane & Outbox**: Decoupled, auditable lifecycle event stream (`review-yeti-event.v1`) with transactional PostgreSQL outbox, monotonic ULIDs, and 18-field recursive sanitizer ([Architecture](docs/ARCHITECTURE.md#private-jetstream-event-plane--transactional-outbox-api-3230--adr-0564)).
-- 📊 **Enterprise Observability & Monotonic Metrics**: Full VictoriaMetrics integration (20 active targets UP), monotonic cumulative Prometheus counters (REL-817), 5 Alertmanager SLO rules, and a dedicated 16-panel Grafana operations dashboard (`review-yeti-ops.json`) ([Guide](docs/DOKS_REVIEW_OPERATIONS.md#observability-opentelemetry--victoriametrics)).
-- 🚀 **Sub-Minute Modular DAG Reviews**: High-throughput DOKS worker execution with ephemeral `emptyDir` storage (0 PVC delay)—13s fast-ship doc reviews and 59s 5-lane parallel DAG reviews ([Benchmarks](docs/DOKS_REVIEW_OPERATIONS.md#live-doks-qualification-evidence)).
+- 📊 **Enterprise Observability & Monotonic Metrics**: Full VictoriaMetrics integration (20 active targets UP), monotonic cumulative Prometheus counters (REL-817), 5 Alertmanager SLO rules, and a dedicated 16-panel Grafana operations dashboard (`review-yeti-ops.json`) ([Guide](docs/KUBERNETES_REVIEW_OPERATIONS.md#observability-opentelemetry--victoriametrics)).
+- 🚀 **Sub-Minute Modular DAG Reviews**: High-throughput Kubernetes worker execution with ephemeral `emptyDir` storage (0 PVC delay)—13s fast-ship doc reviews and 59s 5-lane parallel DAG reviews ([Benchmarks](docs/KUBERNETES_REVIEW_OPERATIONS.md#qualification-evidence)).
 - ⚡ **Dual Execution Engines**:
   - **Ephemeral Action Mode**: Zero infrastructure, 60-second setup directly in GitHub Actions.
   - **Kubernetes Worker Mode**: Dispatches reviews to K8s pods in **< 10 seconds**, eliminating 95%+ of billable runner minute waste.
@@ -105,7 +105,7 @@ Review Yeti includes an interactive web portal for engineering teams, security l
 Because Review Yeti's control plane (Durable Objects, Workflows, Queues, R2) and execution plane already run on Cloudflare Workers (`review-yeti-cf-orchestrator`), the portal is designed to run directly on Cloudflare:
 1. **Unified Cloudflare Worker with Static Assets** (Recommended): Serve the Next.js static export (`out/`) directly from Cloudflare's edge using `[assets]` in `wrangler.toml`. Zero origin servers required.
 2. **Cloudflare Pages**: Deploy the frontend export standalone to Cloudflare Pages edge CDN, with an API proxy to the Worker.
-3. **Cloudflare Tunnel (`cloudflared`)**: For local development or hybrid validation alongside the DOKS Kubernetes operator.
+3. **Cloudflare Tunnel (`cloudflared`)**: For local development or hybrid validation alongside the Kubernetes operator.
 
 👉 **Read the complete [Cloudflare Portal Setup & Deployment Guide](docs/CLOUDFLARE_PORTAL_SETUP.md)**.
 
@@ -142,7 +142,7 @@ jobs:
 
 ---
 
-## ☸️ Scale-Out: Kubernetes & DOKS Execution Mode
+## ☸️ Scale-Out: Kubernetes Execution Mode
 
 For teams with high PR volume, running 5+ personas inside GitHub Actions runners can accumulate costly billable runner minutes. 
 
@@ -164,7 +164,7 @@ jobs:
       - name: Dispatch to Kubernetes Review Cluster
         uses: review-yeti-ai/review-yeti-bot@v1
         with:
-          execution-backend: doks  # or generic kubernetes
+          execution-backend: doks  # the Kubernetes execution backend
           dispatch-url: https://review-bot.example.com/api/admission/dispatch
           dispatch-token: ${{ secrets.REVIEW_DISPATCH_SECRET }}
 ```
@@ -184,11 +184,10 @@ Review Yeti provides a production-grade Helm 3 chart in [`charts/review-yeti/`](
 helm install review-yeti charts/review-yeti \
   --namespace review-yeti-system \
   --create-namespace \
-  -f examples/k8s/values-doks.yaml
+  -f examples/k8s/values-eks.yaml
 ```
 
 Pre-configured cloud values files are available in [`examples/k8s/`](examples/k8s/). They configure the chart for each platform; they do **not** make a cluster you operate reachable by the Action, which is bound to the hosted endpoint:
-- **DigitalOcean (DOKS)**: [`examples/k8s/values-doks.yaml`](examples/k8s/values-doks.yaml) (DO LoadBalancer + Block Storage)
 - **AWS EKS**: [`examples/k8s/values-eks.yaml`](examples/k8s/values-eks.yaml) (AWS Load Balancer Controller ALB + gp3)
 - **Local Dev**: [`examples/k8s/values-local.yaml`](examples/k8s/values-local.yaml) (Minikube / Kind / K3s with local Ollama)
 
@@ -366,12 +365,12 @@ npx review-yeti install-hook
 - 💬 **[Interactive PR Chat Guide](docs/INTERACTIVE_CHAT.md)** — Mentoring commands (`@review-yeti explain`, `fix`, `ignore`), webhook routing, and ephemeral tokens.
 - 💻 **[CLI Reference & Git Hooks](docs/CLI_REFERENCE.md)** — Local pre-commit checks, 30-second GitHub App wizard, and hook installers.
 - 🧠 **[Team Memory & Nit Suppression](docs/TEAM_MEMORY.md)** — SQLite WAL reflection, community personas (`uses:`), and non-bypassable security gates.
-- ☸️ **[Helm 3 Operations Guide](docs/HELM_GUIDE.md)** — Comprehensive step-by-step Helm chart installation, values tuning, cloud guides (DOKS/EKS), upgrades, and rollbacks.
+- ☸️ **[Helm 3 Operations Guide](docs/HELM_GUIDE.md)** — Comprehensive step-by-step Helm chart installation, values tuning, cloud guides (EKS/local), upgrades, and rollbacks.
 - 🛠️ **[Production Troubleshooting Guide](docs/TROUBLESHOOTING.md)** — Diagnosing HTTP 403/401/429 errors, worker timeouts, lease locks, and OOM issues.
 - 📦 **[Examples Gallery](examples/README.md)** — Copy-pasteable GitHub Actions workflows, configuration profiles, and custom persona charters.
 - 🔐 **[GitHub App Setup](docs/GITHUB_APP_SETUP.md)** — Step-by-step GitHub App registration and permissions matrix.
-- ☸️ **[Kubernetes & DOKS Mode](docs/KUBERNETES_MODE.md)** — Offloading reviews to Kubernetes worker pods.
-- ⚓ **[DOKS Operations & Observability](docs/DOKS_REVIEW_OPERATIONS.md)** — Managing DOKS clusters, VictoriaMetrics, OpenTelemetry, and worker digests.
+- ☸️ **[Kubernetes Mode](docs/KUBERNETES_MODE.md)** — Offloading reviews to Kubernetes worker pods.
+- ⚓ **[Kubernetes Operations & Observability](docs/KUBERNETES_REVIEW_OPERATIONS.md)** — Managing Kubernetes clusters, VictoriaMetrics, OpenTelemetry, and worker digests.
 - 🏛️ **[Architecture Specification](docs/ARCHITECTURE.md)** — Pipeline design, arbitration engine, and trust boundaries.
 - ⚙️ **[Configuration Reference](docs/CONFIGURATION_REFERENCE.md)** — Complete schema for `.ct-review.yaml`.
 - 💻 **[Running Locally via CLI](docs/RUNNING_LOCALLY.md)** — Testing reviews and benchmarks in your terminal.

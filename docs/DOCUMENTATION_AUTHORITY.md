@@ -23,7 +23,7 @@ When documentation and executable behavior disagree, use this order of precedenc
 - [`HELM_GUIDE.md`](HELM_GUIDE.md) — Production Helm chart installation, upgrades, and cloud values.
 - [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — Production triage, permission errors, rate limits, and incident playbooks.
 - [`GITHUB_APP_SETUP.md`](GITHUB_APP_SETUP.md) — GitHub App registration, permissions matrix, and RS256 token exchange.
-- [`KUBERNETES_MODE.md`](KUBERNETES_MODE.md) — Kubernetes and DOKS async execution mode, worker pods, and zero-waste dispatch handshake.
+- [`KUBERNETES_MODE.md`](KUBERNETES_MODE.md) — Kubernetes async execution mode, worker pods, and zero-waste dispatch handshake.
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — Core pipeline design, arbitration consensus, and trust boundaries.
 - [`CONFIGURATION_REFERENCE.md`](CONFIGURATION_REFERENCE.md) — Full `.ct-review.yaml` schema and persona configurations.
 - [`RUNNING_LOCALLY.md`](RUNNING_LOCALLY.md) — Terminal CLI usage and local diff review instructions.

@@ -1,7 +1,7 @@
 /**
- * DOKS publishing review lane (REL-586, ADR 0527).
+ * Kubernetes publishing review lane (REL-586, ADR 0527).
  *
- * The DOKS worker had no production path: the operator forced every real dispatch
+ * The Kubernetes worker had no production path: the operator forced every real dispatch
  * down the receipt-only branch, and the only two non-receipt profiles are manual
  * qualification lanes that *assert* `REVIEW_PUBLICATION_MODE === 'disabled'` and
  * hardcode `githubWrites: 0`. This module is the missing lane -- it reads the real
@@ -12,7 +12,7 @@
  *
  * 1. **Bifrost only.** The legacy `runLiveReviewMain` defaults its base URL to
  *    `openrouter.ai` and its repository to a hardcoded fallback. Reaching it from a
- *    DOKS dispatch would review the wrong repository against the wrong provider.
+ *    Kubernetes dispatch would review the wrong repository against the wrong provider.
  *    Here the gateway base URL and key are *required*; there is no default and no
  *    second transport. That includes rate limiting: a provider 429 is ridden out on the same
  *    gateway (cross-review concurrency leases, then the engines' rate-limit ladder), never by
@@ -3007,7 +3007,7 @@ export async function runPublishingReviewWorker(
       // and never a SHIP. A single non-ignored path keeps the normal review.
       // The resolved worker config does not carry `auto_review` through, so read
       // the policy from the config when present and fall back to the app-gate
-      // policy JSON (the path DOKS/app-gate runs use). Malformed policy is left
+      // policy JSON (the path Kubernetes/app-gate runs use). Malformed policy is left
       // to resolveWorkerConfig, which already fails closed on it.
       const ignorePatterns = ((): string[] => {
         const fromConfig = (workerConfig as any)?.auto_review?.ignore_patterns;

@@ -261,7 +261,7 @@ personas:
 
   describe('Challenge 4: Terminal Failed Run Re-dispatch & Outbox Re-arming Defect', () => {
     it('re-dispatch of a failed run whose outbox was "projected" re-arms the outbox to pending', async () => {
-      // In real DOKS operation:
+      // In real Kubernetes operation:
       // 1. A run is admitted -> review_dispatch_outbox is 'pending'
       // 2. reviewJobDispatchEngine claims it -> 'claimed'
       // 3. reviewJobDispatchEngine creates K8s job -> 'projected'

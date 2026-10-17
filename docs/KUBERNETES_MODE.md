@@ -1,4 +1,4 @@
-# ☸️ Kubernetes & DOKS Execution Mode
+# ☸️ Kubernetes Execution Mode
 
 This guide explains **Kubernetes Mode**, in which the Action admits a review to a
 Kubernetes worker queue instead of running the panel on your GitHub Actions runner.
@@ -20,7 +20,7 @@ dispatches and exits in seconds, and worker pods do the model work.
 > side can trust a caller you control, which is a change to the service, not a setting.
 
 > [!NOTE]
-> **Supported Remote Execution Backends**: Review Yeti supports both **Kubernetes / DOKS Mode** (`execution-backend: doks`) and **Cloudflare-Native Edge Mode** (`execution-backend: edge`). Both are first-class, valid options. Teams running on Kubernetes can deploy the in-cluster operator (`charts/review-yeti/`) and worker pods, while teams seeking zero standing cluster footprint can utilize Cloudflare Edge orchestration with ephemeral serverless runners.
+> **Supported Remote Execution Backends**: Review Yeti supports both **Kubernetes Mode** (`execution-backend: doks`) and **Cloudflare-Native Edge Mode** (`execution-backend: edge`). Both are first-class, valid options. Teams running on Kubernetes can deploy the in-cluster operator (`charts/review-yeti/`) and worker pods, while teams seeking zero standing cluster footprint can utilize Cloudflare Edge orchestration with ephemeral serverless runners.
 
 ---
 
@@ -181,7 +181,7 @@ jobs:
       - name: Dispatch Review to Kubernetes Cluster
         uses: review-yeti-ai/review-yeti-bot@v1
         with:
-          execution-backend: doks   # or generic kubernetes
+          execution-backend: doks   # the Kubernetes execution backend
           dispatch-url: https://review-bot.example.com/api/admission/dispatch
           dispatch-token: ${{ secrets.REVIEW_DISPATCH_SECRET }}
 ```
@@ -209,7 +209,7 @@ resources:
 
 Because of this small footprint:
 - A modest 2-node K8s cluster (e.g., 2 x 4 vCPU nodes) can comfortably run **10–15 concurrent PR reviews** in parallel without queueing.
-- Cost on DOKS or managed K8s: ~$40–$80/month fixed, regardless of whether you run 100 or 10,000 reviews!
+- Cost on managed K8s: ~$40–$80/month fixed, regardless of whether you run 100 or 10,000 reviews!
 
 ### Monthly Savings Comparison
 

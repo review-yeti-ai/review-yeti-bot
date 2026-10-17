@@ -32,7 +32,7 @@ export function getSystemVersionInfo(): VersionInfo {
     fullCommitHash: commitHash,
     buildTimestamp: process.env.BUILD_TIMESTAMP || '2026-07-26T08:51:00Z',
     environment: process.env.NODE_ENV || 'production',
-    cluster: 'DigitalOcean Kubernetes (DOKS ny1)',
+    cluster: 'Cloudflare Edge (Workers & Workflows)',
     runner: 'GitHub Actions Runners',
     memoryEngine: 'Tree-sitter SQLite AST Graph v2',
   };

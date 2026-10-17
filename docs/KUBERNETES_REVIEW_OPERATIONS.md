@@ -1,14 +1,14 @@
-# DigitalOcean Kubernetes (DOKS) Review Operations
+# Kubernetes Review Operations
 
-This guide covers operational management and cluster verification for running Review Yeti on **DigitalOcean Kubernetes (DOKS)**.
+This guide covers operational management and cluster verification for running Review Yeti on any conformant **Kubernetes** cluster.
 
-For the general architecture, async dispatch handshake, and cost analysis across any Kubernetes cluster, see the [Kubernetes & DOKS Execution Mode Guide](KUBERNETES_MODE.md).
+For the general architecture, async dispatch handshake, and cost analysis across any Kubernetes cluster, see the [Kubernetes Execution Mode Guide](KUBERNETES_MODE.md).
 
 ---
 
 ## 🛠️ Installing the Runtime
 
-From your Review Yeti repository checkout with `kubectl` configured for your target DOKS cluster:
+From your Review Yeti repository checkout with `kubectl` configured for your target Kubernetes cluster:
 
 ```bash
 # Set your container image registries and cluster network endpoints
@@ -101,11 +101,8 @@ digest, stored in the `ct-review-job-dispatcher` ConfigMap's
 `REVIEW_JOB_WORKER_IMAGE` key. A merge to `main` does not, by itself, reach
 production: it only makes a new commit's image available to pull. Advancing
 the live dispatcher to that commit is a separate, explicit operational step.
-In the Exampleorg production cluster, Flux owns this key from
-`exampleorg/example-infra` on `main`, at
-`clusters/doks-nyc1/apps/ct-review-system/cm-ct-review-job-dispatcher.yaml`.
-The runtime helper discovers that ownership; it does not compete with the
-controller.
+When a GitOps controller such as Flux owns this key, the runtime helper
+discovers that ownership; it does not compete with the controller.
 
 First produce the read-only plan against the already-active dispatcher:
 
@@ -159,7 +156,7 @@ image already includes Node, used for the fixed non-secret running attestation.
 
 The existing source-tag resolver verifies the exact full-SHA tag against the
 caller-supplied digest, then reads that immutable index and requires Linux
-amd64 and arm64 entries. The worker GHCR and Exampleorg DOCR repositories
+amd64 and arm64 entries. Only the `ghcr.io/review-yeti-ai/review-yeti-{bot,operator,worker}` repositories
 are allowlisted; moving tags, platform digests and registry fallbacks are not.
 This proves registry source-tag matching, not a cryptographic build attestation.
 The caller supplies independently reviewed source.
@@ -393,7 +390,7 @@ To verify your cluster deployment before rolling out to production repositories:
      once service enforcement is enabled.
    - Initial check run appears as `review-status: DISPATCHED`, `gate-decision: PENDING`.
    - GitHub Actions runner exits in under 10 seconds.
-   - Worker pod schedules on the DOKS cluster and processes the diff.
+   - Worker pod schedules on the cluster and processes the diff.
    - Worker updates the check run to `success` or `failure` and posts the consolidated review comment.
 
 Roll out the exact-generation contract without an availability gap:
@@ -416,7 +413,7 @@ transactionally with HTTP 409.
 
 ## 📊 Observability, OpenTelemetry & VictoriaMetrics
 
-Review Yeti incorporates end-to-end metrics collection and distributed tracing across the DOKS cluster:
+Review Yeti incorporates end-to-end metrics collection and distributed tracing across the cluster:
 
 ```
  Workloads & Worker Pods
@@ -512,7 +509,7 @@ sum by (error) (rate(review_yeti_provider_errors_total[5m]))
 
 ## 🛰️ Private JetStream Lifecycle and Replay Event Plane (API-3230 / ADR 0564)
 
-Under ADR 0564 and API-3230, Review Yeti incorporates a private NATS JetStream event plane on DOKS for deterministic lifecycle tracing, audit trails, and offline replay:
+Under ADR 0564 and API-3230, Review Yeti incorporates a private NATS JetStream event plane on Kubernetes for deterministic lifecycle tracing, audit trails, and offline replay:
 
 1. **Transactional PostgreSQL Outbox**:
    - State transitions (`QUEUED`, `DISPATCHED`, `COMPLETED`, `FAILED`, `SUPERSEDED`) atomically insert into table `review_yeti_events_outbox` within the authoritative review run transaction.
@@ -531,9 +528,9 @@ Under ADR 0564 and API-3230, Review Yeti incorporates a private NATS JetStream e
 
 ---
 
-## 🏆 Live DOKS Qualification Evidence
+## 🏆 Qualification Evidence
 
-On 2026-09-12, production qualification on `doks-nyc1` (`example-infra` PR #271) validated the full runtime:
+On 2026-09-12, a production Kubernetes qualification run validated the full runtime:
 - **Fast-Ship Path**: Completed in **13 seconds** (`check_run` ID `103601331582`) on doc-only diffs.
 - **Full Modular DAG Path**: Completed in **59 seconds** (`check_run` ID `103601457039`) across 5 parallel persona lanes, processing 23,043 tokens and publishing terminal `SHIP`.
 - **Storage Profile**: Verified ephemeral `emptyDir` 1Gi volume mount with instant pod startup and 0 PVC provisioning delays.

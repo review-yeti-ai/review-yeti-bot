@@ -27,7 +27,7 @@ lower() {
 }
 usage() {
   echo 'usage: advance-review-worker.sh --context CONTEXT --source-sha SHA --target-image REPO@sha256:DIGEST [--rollback RECORD] [--expected-state PLAN --receipt NEW_PATH --apply]'
-  echo 'Default: read-only JSON plan. Apply binds both objects to PLAN.before. See docs/DOKS_REVIEW_OPERATIONS.md.'
+  echo 'Default: read-only JSON plan. Apply binds both objects to PLAN.before. See docs/KUBERNETES_REVIEW_OPERATIONS.md.'
 }
 k() { kubectl --context "$context" --namespace "$namespace" --request-timeout=30s "$@" 2>/dev/null; }
 json() { jq -cse 'if length==1 and (.[0]|type)=="object" then .[0] else error("expected one object") end'; }
@@ -35,7 +35,7 @@ hash() {
   if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi | awk '{print $1}'
 }
 trusted_worker() {
-  [[ "$1" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/exampleorg/review-yeti-worker)@sha256:[0-9a-f]{64}$ ]]
+  [[ "$1" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-worker)@sha256:[0-9a-f]{64}$ ]]
 }
 context="" source_sha="" target="" expected="" receipt="" rollback="" apply=0 dry_run=0
 while [[ $# -gt 0 ]]; do
@@ -131,7 +131,7 @@ read_state() {
   cm="$(summarize ConfigMap "$cm_raw" 2>/dev/null)" || return 1
   dep="$(summarize Deployment "$dep_raw" 2>/dev/null)" || return 1
   trusted_worker "$(jq -r '.workerImage' <<<"$cm")" || return 1
-  [[ "$(jq -r '.image' <<<"$dep")" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-bot|registry\.digitalocean\.com/exampleorg/ct-review-bot)@sha256:[0-9a-f]{64}$ ]] || return 1
+  [[ "$(jq -r '.image' <<<"$dep")" =~ ^(ghcr\.io/review-yeti-ai/review-yeti-bot)@sha256:[0-9a-f]{64}$ ]] || return 1
   snapshot="$(jq -cSn --argjson cm "$cm" --argjson dep "$dep" '{configmap:$cm,deployment:$dep}')"
 }
 same() { jq -en --argjson a "$1" --argjson b "$2" '$a==$b' >/dev/null; }
