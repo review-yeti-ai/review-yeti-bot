@@ -105,8 +105,7 @@ inputs:
   execution-backend:
     description: >-
       Review execution location: local runs the existing panel on this runner; edge admits the
-      immutable request to the Cloudflare Worker Review Yeti queue. The value doks is a DEPRECATED
-      alias of edge, removed once the central caller workflow no longer passes it.
+      immutable request to the Cloudflare Worker Review Yeti queue.
       Remote callers must grant permissions: id-token: write and rely on the later Review Yeti App gate
       for a terminal result.
     required: false
@@ -116,11 +115,6 @@ inputs:
       Review Yeti admission endpoint, supplied by the calling workflow (required when execution-backend is
       edge). Ordinary dispatch uses /api/dispatch/action. The isolated qualification endpoint is
       accepted only for the exact qualification repository when its runtime image digest is also supplied.
-    required: false
-    default: ''
-  doks-dispatch-url:
-    description: >-
-      DEPRECATED alias, removed once the central caller workflow no longer passes it. Use dispatch-url, which wins when both are set.
     required: false
     default: ''
   edge-dispatch-url:
@@ -144,11 +138,6 @@ inputs:
     description: >-
       Publication policy for dispatched reviews: app-gate is the standard gate-checked publication mode for
       allowlisted workflows; disabled admits a nonpublishing qualification run. Empty means app-gate.
-    required: false
-    default: ''
-  doks-publish-mode:
-    description: >-
-      DEPRECATED alias, removed once the central caller workflow no longer passes it. Use publish-mode, which wins when both are set.
     required: false
     default: ''
   refresh-requested:
@@ -489,29 +478,18 @@ runs:
       shell: bash
       env:
         EXECUTION_BACKEND: ${{ inputs.execution-backend }}
-        LEGACY_DOKS_DISPATCH_URL: ${{ inputs.doks-dispatch-url }}
         LEGACY_EDGE_DISPATCH_URL: ${{ inputs.edge-dispatch-url }}
-        LEGACY_DOKS_PUBLISH_MODE: ${{ inputs.doks-publish-mode }}
       run: |
         set -euo pipefail
         case "$EXECUTION_BACKEND" in
           local|edge) ;;
-          doks)
-            echo "::warning::execution-backend 'doks' is deprecated and is treated as 'edge'; use execution-backend: edge"
-            ;;
           *)
             echo "::error::execution-backend must be local or edge"
             exit 1
             ;;
         esac
-        if [ -n "$LEGACY_DOKS_DISPATCH_URL" ]; then
-          echo "::warning::input doks-dispatch-url is deprecated; use dispatch-url"
-        fi
         if [ -n "$LEGACY_EDGE_DISPATCH_URL" ]; then
           echo "::warning::input edge-dispatch-url is deprecated; use dispatch-url"
-        fi
-        if [ -n "$LEGACY_DOKS_PUBLISH_MODE" ]; then
-          echo "::warning::input doks-publish-mode is deprecated; use publish-mode"
         fi
 
     - name: Resolve target pull request
@@ -549,9 +527,9 @@ runs:
       if: ${{ inputs.execution-backend != 'local' }}
       shell: bash
       env:
-        DISPATCH_URL: ${{ inputs.dispatch-url || inputs.edge-dispatch-url || inputs.doks-dispatch-url }}
+        DISPATCH_URL: ${{ inputs.dispatch-url || inputs.edge-dispatch-url }}
         DISPATCH_OIDC_AUDIENCE: review-yeti-edge-dispatch
-        DISPATCH_PUBLISH_MODE: ${{ inputs.publish-mode || inputs.doks-publish-mode || 'app-gate' }}
+        DISPATCH_PUBLISH_MODE: ${{ inputs.publish-mode || 'app-gate' }}
         QUALIFICATION_RUNTIME_IMAGE_DIGEST: ${{ inputs.qualification-runtime-image-digest }}
         QUALIFICATION_DISPATCH_ORIGIN_SHA256: ${{ inputs.qualification-dispatch-origin-sha256 }}
         REFRESH_REQUESTED: ${{ inputs.refresh-requested }}
