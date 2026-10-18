@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.130.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.130.0...v1.130.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* retire DOKS dispatch compatibility ([#1507](https://github.com/review-yeti-ai/review-yeti-bot/issues/1507)) ([1ae6932](https://github.com/review-yeti-ai/review-yeti-bot/commit/1ae6932bf9caccf40115808d9b738c29fe2fcc8c))
+
 ## [1.130.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.129.2...v1.130.0) (2026-10-17)
 
 
