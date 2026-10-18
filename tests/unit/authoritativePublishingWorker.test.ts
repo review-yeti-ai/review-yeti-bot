@@ -56,7 +56,7 @@ const ENDPOINT = 'https://dispatch.example.invalid/api/dispatch/completion';
 const PRIVATE_DETAIL = 'private_provider_transcript';
 const TOKEN = 'ghs_fake_authoritative_worker';
 const DIFF = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-const value = 'old';\n+const value = 'new';\n`;
-const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+const transport = { baseUrl: 'https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1', model: 'prepared-review-model' };
 
 function trustedGroundedVerifierContract(f: ReturnType<typeof fixture>) {
   const config = f.prepared.config;
@@ -126,7 +126,7 @@ function fixture(options: { reviewEngine?: 'panel' | 'composed' | 'shadow'; seve
     REVIEW_PR_NUMBER: '42', REVIEW_HEAD_SHA: HEAD, REVIEW_BASE_SHA: BASE, REVIEW_EXECUTION_ATTEMPT: '2',
     REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest, REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
     REVIEW_PREPARED_CONFIG_JSON: JSON.stringify(envelope), REVIEW_COMPLETION_URL: ENDPOINT,
-    REVIEW_MODEL: transport.model, OPENAI_BASE_URL: transport.baseUrl, OPENAI_API_KEY: 'vk_fake',
+    REVIEW_MODEL: transport.model, CLOUDFLARE_AIG_BASE_URL: transport.baseUrl, CLOUDFLARE_AIG_RUN_TOKEN: 'test-run-token',
     GH_TOKEN: TOKEN, GITHUB_PUBLISH_TOKEN: TOKEN, REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
   };
   const usage = { prompt: 10, completion: 5, total: 15 };
@@ -1746,7 +1746,7 @@ describe('authoritative prepared publishing worker', () => {
     // REL-1103: plus the deadline-bounded GitHub retry policy (empty: no terminal deadline forwarded).
     { gitDiffSource: expect.any(Function), onLargeDiffSource: expect.any(Function), retry: {} });
     expectReportedCompletion(f, cleanResult());
-    expect(receipt).toMatchObject({ conclusion: 'success', verdict: 'SHIP', transport: 'bifrost', model: transport.model });
+    expect(receipt).toMatchObject({ conclusion: 'success', verdict: 'SHIP', transport: 'cloudflare-ai-gateway', model: transport.model });
     expect(f.fetch).not.toHaveBeenCalled();
     // REL-1132: the metered client delegates to the admitted client. The publishing boundary adds
     // its mandatory output ceiling without mutating the engine-owned request object.
@@ -2312,7 +2312,7 @@ describe('authoritative prepared publishing worker', () => {
         config: { ...f.prepared.config, default_max_turns: 3 } });
       if (variant === 'wrong config digest') f.env.REVIEW_CONFIG_DIGEST = 'f'.repeat(64);
       if (variant === 'wrong model') f.env.REVIEW_MODEL = 'different-model';
-      if (variant === 'wrong URL') f.env.OPENAI_BASE_URL = 'https://other.example.invalid/v1';
+      if (variant === 'wrong URL') f.env.CLOUDFLARE_AIG_BASE_URL = 'https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/other/custom-example/v1';
       await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toThrow('Prepared review execution does not match its admitted identity');
       expectNoReview(f);
       expect(f.reportReviewResult).toHaveBeenCalledTimes(1);
@@ -2356,7 +2356,7 @@ describe('authoritative prepared publishing worker', () => {
     }));
   });
 
-  it.each(['OPENAI_BASE_URL', 'OPENAI_API_KEY', 'REVIEW_MODEL'])('reports a missing %s as a fail-closed pre-execution contract failure', async (name) => {
+  it.each(['CLOUDFLARE_AIG_BASE_URL', 'CLOUDFLARE_AIG_RUN_TOKEN', 'REVIEW_MODEL'])('reports a missing %s as a fail-closed pre-execution contract failure', async (name) => {
     const f = fixture();
     delete f.env[name];
     await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toThrow('publishing review worker contract is invalid');

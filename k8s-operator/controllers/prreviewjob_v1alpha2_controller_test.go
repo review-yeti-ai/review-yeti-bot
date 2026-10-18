@@ -1415,10 +1415,10 @@ func TestPRReviewJobV1Alpha2ReconcilerKeepsItsOwnAppGateWorker(t *testing.T) {
 		Scheme: scheme,
 		Now:    func() time.Time { return now },
 		Publishing: job.PublishingConfig{
-			GatewayBaseURL:    "https://gateway.example.invalid/v1",
+			GatewayBaseURL:    "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1",
 			Model:             "ollama/glm-5.3-flash",
 			GatewaySecretName: "review-yeti-gateway-credentials",
-			GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+			GatewaySecretKey:  "CLOUDFLARE_AIG_RUN_TOKEN",
 			CompletionURL:     "https://dispatch.example.invalid/api/dispatch/completion",
 		},
 	}
@@ -1495,10 +1495,10 @@ func TestPRReviewJobV1Alpha2ReconcilerStopsTamperedAppGateWorkers(t *testing.T) 
 			reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
 				Client: kube, Scheme: scheme, Now: func() time.Time { return now },
 				Publishing: job.PublishingConfig{
-					GatewayBaseURL:    "https://gateway.example.invalid/v1",
+					GatewayBaseURL:    "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1",
 					Model:             "ollama/glm-5.3-flash",
 					GatewaySecretName: "review-yeti-gateway-credentials",
-					GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+					GatewaySecretKey:  "CLOUDFLARE_AIG_RUN_TOKEN",
 					CompletionURL:     "https://dispatch.example.invalid/api/dispatch/completion",
 				},
 			}
@@ -2102,10 +2102,10 @@ func TestPRReviewJobV1Alpha2_AlreadyExistsWorkerJobReconcilesAuthoritativeOutcom
 	}
 
 	publishingConfig := job.PublishingConfig{
-		GatewayBaseURL:    "https://gateway.example.invalid/v1",
+		GatewayBaseURL:    "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1",
 		Model:             "ollama/glm-5.3-flash",
 		GatewaySecretName: "review-yeti-gateway-credentials",
-		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		GatewaySecretKey:  "CLOUDFLARE_AIG_RUN_TOKEN",
 		CompletionURL:     server.URL + "/api/dispatch/completion",
 	}
 
@@ -2260,10 +2260,10 @@ func TestPRReviewJobV1Alpha2_StalledReceiptEndpointDoesNotBlockUnrelatedReconcil
 	}()
 
 	publishingConfig := job.PublishingConfig{
-		GatewayBaseURL:    "https://gateway.example.invalid/v1",
+		GatewayBaseURL:    "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1",
 		Model:             "ollama/glm-5.3-flash",
 		GatewaySecretName: "review-yeti-gateway-credentials",
-		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		GatewaySecretKey:  "CLOUDFLARE_AIG_RUN_TOKEN",
 		CompletionURL:     server.URL + "/api/dispatch/completion",
 	}
 
@@ -2447,10 +2447,10 @@ func TestPRReviewJobV1Alpha2_ReceiptEndpoint500And503FailSoftWithoutBlocking(t *
 	defer server.Close()
 
 	publishingConfig := job.PublishingConfig{
-		GatewayBaseURL:    "https://gateway.example.invalid/v1",
+		GatewayBaseURL:    "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1",
 		Model:             "ollama/glm-5.3-flash",
 		GatewaySecretName: "review-yeti-gateway-credentials",
-		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		GatewaySecretKey:  "CLOUDFLARE_AIG_RUN_TOKEN",
 		CompletionURL:     server.URL + "/api/dispatch/completion",
 	}
 

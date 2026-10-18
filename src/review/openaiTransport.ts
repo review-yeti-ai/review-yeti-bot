@@ -9,6 +9,13 @@ export interface OpenAITransportConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  authorizationHeaderName: 'authorization' | 'cf-aig-authorization';
+}
+
+export interface GatewaySettings {
+  baseUrl: string;
+  apiKey: string;
+  authorizationHeaderName: 'authorization' | 'cf-aig-authorization';
 }
 
 function value(env: NodeJS.ProcessEnv, name: string): string {
@@ -20,19 +27,10 @@ export function invalidPublishingReviewContract(): Error {
 }
 
 /**
- * The OpenAI-compatible gateway is the admitted transport for every review lane.
- *
- * OPENAI_API_KEY + OPENAI_BASE_URL is the STANDARD. The key is a Bifrost virtual
- * key (`sk-b...`) and the base URL is the gateway, so a lane never talks to a
- * model vendor directly.
- *
- * The OPENROUTER_* names are LEGACY. They predate the Bifrost migration and are
- * accepted only as a fallback so an older deployment keeps booting during
- * rollout; nothing should be provisioned under them any more, and the review
- * lane is not OpenRouter-backed. New gates must read this resolver rather than
- * naming a vendor, because a hardcoded vendor name is what made the full-app
- * readiness probe report 503 on a correctly-configured Bifrost deployment
- * (REL-1069) while every other review workload was healthy.
+ * Review publishing uses the dedicated Cloudflare AI Gateway Run credential
+ * and an explicit custom-provider route. Generic OpenAI-compatible credentials
+ * remain available to non-publishing callers; retired Bifrost credential names
+ * are deliberately not accepted here.
  */
 /****INTERNAL****
  * Unpaired read. NOT exported: calling this alone is how two incidents in this
@@ -64,9 +62,10 @@ function firstValue(env: NodeJS.ProcessEnv, names: readonly string[]): string {
  * `openRouterClient()` threw on every request (REL-1069 review).
  */
 export const GATEWAY_SETTING_NAMES = {
-  baseUrl: ['OPENAI_BASE_URL', 'REVIEW_YETI_GATEWAY_BASE_URL', 'BIFROST_BASE_URL', 'OPENROUTER_BASE_URL'],
-  apiKey: ['OPENAI_API_KEY', 'REVIEW_YETI_BIFROST_API_KEY', 'BIFROST_VIRTUAL_KEY',
-    'OPENROUTER_REVIEW_FLEET_KEY', 'OPENROUTER_PR_REVIEW_API_KEY', 'OPENROUTER_API_KEY'],
+  cloudflareBaseUrl: 'CLOUDFLARE_AIG_BASE_URL',
+  cloudflareRunToken: 'CLOUDFLARE_AIG_RUN_TOKEN',
+  baseUrl: ['OPENAI_BASE_URL', 'REVIEW_YETI_GATEWAY_BASE_URL', 'OPENROUTER_BASE_URL'],
+  apiKey: ['OPENAI_API_KEY', 'OPENROUTER_REVIEW_FLEET_KEY', 'OPENROUTER_PR_REVIEW_API_KEY', 'OPENROUTER_API_KEY'],
 } as const;
 
 /**
@@ -86,7 +85,11 @@ export function missingGatewaySettings(env: NodeJS.ProcessEnv): string[] {
   // A refused pair reports as missing so a probe cannot advertise a lane whose
   // credential would be leaked. Callers needing the distinction use
   // resolveGatewaySettings directly.
-  return [GATEWAY_SETTING_NAMES.baseUrl[0], GATEWAY_SETTING_NAMES.apiKey[0]];
+  const cloudflareConfigured = Boolean(value(env, GATEWAY_SETTING_NAMES.cloudflareBaseUrl)
+    || value(env, GATEWAY_SETTING_NAMES.cloudflareRunToken));
+  return cloudflareConfigured
+    ? [GATEWAY_SETTING_NAMES.cloudflareBaseUrl, GATEWAY_SETTING_NAMES.cloudflareRunToken]
+    : [GATEWAY_SETTING_NAMES.baseUrl[0], GATEWAY_SETTING_NAMES.apiKey[0]];
 }
 
 /** Unpaired read; see the note on resolveGatewayApiKey. NOT exported. */
@@ -106,6 +109,28 @@ function isVendorHost(baseUrl: string): boolean {
     // resolver, and normalising only one was itself a bypass of this guard.
     const host = new URL(baseUrl).hostname.toLowerCase().replace(/\.+$/, '');
     return host === 'openrouter.ai' || host.endsWith('.openrouter.ai');
+  } catch {
+    return false;
+  }
+}
+
+function isCloudflareGatewayHost(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase().replace(/\.+$/u, '');
+    return host === 'gateway.ai.cloudflare.com';
+  } catch {
+    return false;
+  }
+}
+
+/** Cloudflare provider-native custom routes use /v1/{account}/{gateway}/custom-{provider}/v1. */
+function isCloudflareCustomProviderBaseUrl(candidate: string): boolean {
+  if (/[\u0000-\u0020\u007f\\?#]/u.test(candidate) || /%(?![0-9a-f]{2})/iu.test(candidate)) return false;
+  try {
+    const url = new URL(candidate);
+    return url.protocol === 'https:' && url.hostname.toLowerCase().replace(/\.+$/u, '') === 'gateway.ai.cloudflare.com'
+      && !url.username && !url.password && !url.search && !url.hash
+      && /^\/v1\/[a-f0-9]{32}\/[a-z0-9-]+\/custom-[a-z0-9-]+\/v1$/iu.test(url.pathname);
   } catch {
     return false;
   }
@@ -132,14 +157,14 @@ function isAbsoluteHttpsUrl(candidate: string): boolean {
  * Resolve the gateway key and base URL TOGETHER, so they cannot come from
  * different generations of configuration.
  *
- * A standard Bifrost key (`OPENAI_API_KEY`) paired with the legacy
+ * A generic key (`OPENAI_API_KEY`) paired with the legacy
  * `OPENROUTER_BASE_URL` would ship the CT credential to a third-party vendor.
  * That mixed pairing is refused rather than merely documented: if the key and
  * the URL resolve from different generations, the value is discarded, so the
  * lane fails closed and names what is missing instead of leaking.
  */
 export type GatewayResolution =
-  | { status: 'ok'; baseUrl: string; apiKey: string }
+  | GatewaySettings & { status: 'ok' }
   | { status: 'missing'; missing: string[] }
   /** REFUSED: a non-vendor credential aimed at the vendor host.
    *
@@ -150,33 +175,60 @@ export type GatewayResolution =
   | { status: 'refused'; reason: string };
 
 export function resolveGatewaySettings(env: NodeJS.ProcessEnv): GatewayResolution {
+  const cloudflareBaseUrl = value(env, GATEWAY_SETTING_NAMES.cloudflareBaseUrl);
+  const cloudflareRunToken = value(env, GATEWAY_SETTING_NAMES.cloudflareRunToken);
+  // Once either dedicated Cloudflare setting is present, never fall back to a
+  // generic or legacy credential. This keeps a missing Run token from silently
+  // selecting another service's key.
+  if (cloudflareBaseUrl || cloudflareRunToken) {
+    if (!cloudflareBaseUrl || !cloudflareRunToken) {
+      return {
+        status: 'missing',
+        missing: [
+          ...(!cloudflareBaseUrl ? [GATEWAY_SETTING_NAMES.cloudflareBaseUrl] : []),
+          ...(!cloudflareRunToken ? [GATEWAY_SETTING_NAMES.cloudflareRunToken] : []),
+        ],
+      };
+    }
+    if (!isCloudflareCustomProviderBaseUrl(cloudflareBaseUrl)) {
+      return { status: 'refused', reason: 'Cloudflare AI Gateway base URL is not a valid custom-provider v1 route' };
+    }
+    return { status: 'ok', baseUrl: cloudflareBaseUrl, apiKey: cloudflareRunToken,
+      authorizationHeaderName: 'cf-aig-authorization' };
+  }
   const baseUrl = resolveGatewayBaseUrl(env);
   const apiKey = resolveGatewayApiKey(env);
   if (!baseUrl || !apiKey) return { status: 'missing', missing: missingNames(env) };
   if (!isAbsoluteHttpsUrl(baseUrl)) {
     return {
       status: 'refused',
-      reason: `gateway base URL is not an absolute https URL: ${baseUrl}`,
+      reason: 'gateway base URL is not an absolute https URL',
     };
   }
-  // Refuse ONLY the credential-leak case: a key that did NOT come from an
-  // OpenRouter variable, aimed at the OpenRouter vendor host. Sending a CT
-  // (Bifrost) credential to a third-party vendor is the harm; a legacy key
-  // pointed at our own gateway is not, and refusing it would break a rollout.
-  // Deliberately NOT a generation-equality rule: that rejects benign
-  // combinations and the mixed-but-safe case of a legacy key on a Bifrost URL.
+  // Refuse credentials aimed at a vendor host unless they came from that
+  // vendor's explicitly named key. A Cloudflare URL also requires the dedicated
+  // Run-token pair above; generic keys cannot be sent to it.
   const keyName = winningName(env, GATEWAY_SETTING_NAMES.apiKey);
-  if (isVendorHost(baseUrl) && (keyName === undefined || !keyName.startsWith('OPENROUTER_'))) {
+  if ((isVendorHost(baseUrl) && (keyName === undefined || !keyName.startsWith('OPENROUTER_')))
+      || isCloudflareGatewayHost(baseUrl)) {
     return {
       status: 'refused',
-      reason: 'gateway base URL points at the OpenRouter vendor host but the credential is not an OpenRouter key',
+      reason: 'gateway destination requires its dedicated credential',
     };
   }
-  return { status: 'ok', baseUrl, apiKey };
+  return { status: 'ok', baseUrl, apiKey, authorizationHeaderName: 'authorization' };
 }
 
 /** Name-only check, used before the pairing rule can apply. */
 function missingNames(env: NodeJS.ProcessEnv): string[] {
+  const cloudflareConfigured = Boolean(value(env, GATEWAY_SETTING_NAMES.cloudflareBaseUrl)
+    || value(env, GATEWAY_SETTING_NAMES.cloudflareRunToken));
+  if (cloudflareConfigured) {
+    return [
+      ...(!value(env, GATEWAY_SETTING_NAMES.cloudflareBaseUrl) ? [GATEWAY_SETTING_NAMES.cloudflareBaseUrl] : []),
+      ...(!value(env, GATEWAY_SETTING_NAMES.cloudflareRunToken) ? [GATEWAY_SETTING_NAMES.cloudflareRunToken] : []),
+    ];
+  }
   const missing: string[] = [];
   if (!resolveGatewayBaseUrl(env)) missing.push(GATEWAY_SETTING_NAMES.baseUrl[0]);
   if (!resolveGatewayApiKey(env)) missing.push(GATEWAY_SETTING_NAMES.apiKey[0]);
@@ -188,9 +240,13 @@ function missingNames(env: NodeJS.ProcessEnv): string[] {
  * Never re-reads the raw environment, so a refused pairing cannot be reinstated
  * by a fallback -- the regression this replaces.
  */
-export function requireGatewaySettings(env: NodeJS.ProcessEnv): { baseUrl: string; apiKey: string } {
+export function requireGatewaySettings(env: NodeJS.ProcessEnv): GatewaySettings {
   const resolution = resolveGatewaySettings(env);
-  if (resolution.status === 'ok') return { baseUrl: resolution.baseUrl, apiKey: resolution.apiKey };
+  if (resolution.status === 'ok') return {
+    baseUrl: resolution.baseUrl,
+    apiKey: resolution.apiKey,
+    authorizationHeaderName: resolution.authorizationHeaderName,
+  };
   if (resolution.status === 'refused') throw new Error(`gateway configuration refused: ${resolution.reason}`);
   throw new Error(`required environment variable ${resolution.missing.join('/')} is missing`);
 }
@@ -205,13 +261,21 @@ export function openaiTransport(env: NodeJS.ProcessEnv): OpenAITransportConfig {
   // `requireGatewaySettings`) because THIS contract reports every failure as its
   // own `invalidPublishingReviewContract()` -- callers match on that message, so
   // a generic "required environment variable" error would break the contract.
-  // The refusal is still honored: both values are discarded, which trips the
-  // check below.
+  // The publishing lane additionally requires the dedicated Cloudflare route;
+  // generic OpenAI-compatible settings remain available only to other callers.
   const resolution = resolveGatewaySettings(env);
-  const baseUrl = resolution.status === 'ok' ? resolution.baseUrl : '';
-  const apiKey = resolution.status === 'ok' ? resolution.apiKey : '';
+  if (resolution.status !== 'ok' || resolution.authorizationHeaderName !== 'cf-aig-authorization') {
+    throw invalidPublishingReviewContract();
+  }
+  const baseUrl = resolution.baseUrl;
+  const apiKey = resolution.apiKey;
   const model = value(env, 'REVIEW_MODEL');
   if (!baseUrl || !apiKey || !model) throw invalidPublishingReviewContract();
+  if (['pr-reviewer', 'bifrost/pr-reviewer'].includes(model.toLowerCase())) {
+    // The historical alias has no meaning on a provider-native custom route.
+    // Require a separately approved upstream model id before any request can run.
+    throw invalidPublishingReviewContract();
+  }
   let parsed: URL;
   try {
     parsed = new URL(baseUrl);
@@ -220,10 +284,12 @@ export function openaiTransport(env: NodeJS.ProcessEnv): OpenAITransportConfig {
   }
   // A plaintext or non-gateway base URL would ship diffs off the intended path.
   if (parsed.protocol !== 'https:') throw invalidPublishingReviewContract();
-  return { baseUrl, apiKey, model };
+  return { baseUrl, apiKey, model, authorizationHeaderName: resolution.authorizationHeaderName };
 }
 
 export function createOpenAIPublishingConfig(model: string): ReturnType<typeof createDefaultV3Config> {
+  // Provider identity remains bound to the central prepared policy until its
+  // model selection and route migration are authorized together.
   const providerId = 'bifrost';
   const config = createDefaultV3Config();
   return {

@@ -40,7 +40,7 @@ const jobNamespace = "ct-review-system"
 
 // Go checks the envelope only; complete config/digest verification belongs to
 // the shared TypeScript parser. Formatting must survive the CR and env roundtrip.
-const preparedEnvelope = " {\n \"version\":\"PreparedReviewExecution.v1\",\n \"config\":{\"version\":3},\n \"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"ollama/glm-5.3-flash\"}\n} "
+const preparedEnvelope = " {\n \"version\":\"PreparedReviewExecution.v1\",\n \"config\":{\"version\":3},\n \"transport\":{\"baseUrl\":\"https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1\",\"model\":\"ollama/glm-5.3-flash\"}\n} "
 
 func TestPreparedReviewAddsOnlyExplicitAuthoritativeEnvironment(t *testing.T) {
 	for _, completionURL := range []string{"", "https://dispatch.example.invalid/api/dispatch/completion"} {
@@ -99,15 +99,15 @@ func TestPreparedReviewTransportOverridesDriftedOperatorGateway(t *testing.T) {
 	review.Spec.PreparedReview = &raw
 	input := buildInput(review, now)
 	input.Publishing = publishingFixture()
-	input.Publishing.GatewayBaseURL = "https://other.example.invalid/v1"
+	input.Publishing.GatewayBaseURL = "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/other/custom-example/v1"
 	input.Publishing.Model = "other-model"
 	built, err := job.BuildWorkerJob(input)
 	if err != nil {
 		t.Fatal(err)
 	}
 	container := built.Spec.Template.Spec.Containers[0]
-	if envValue(container, "OPENAI_BASE_URL") != "https://gateway.example.invalid/v1" {
-		t.Fatalf("base url = %q", envValue(container, "OPENAI_BASE_URL"))
+	if envValue(container, "CLOUDFLARE_AIG_BASE_URL") != "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1" {
+		t.Fatalf("base url = %q", envValue(container, "CLOUDFLARE_AIG_BASE_URL"))
 	}
 	if envValue(container, "REVIEW_MODEL") != "ollama/glm-5.3-flash" {
 		t.Fatalf("model = %q", envValue(container, "REVIEW_MODEL"))
@@ -199,7 +199,7 @@ func TestPreparedReviewRejectsMalformedOrUnsafeEnvelope(t *testing.T) {
 		"wrong version":       strings.Replace(preparedEnvelope, "PreparedReviewExecution.v1", "PreparedReviewExecution.v2", 1),
 		"null config":         strings.Replace(preparedEnvelope, `{"version":3}`, "null", 1),
 		"array config":        strings.Replace(preparedEnvelope, `{"version":3}`, "[]", 1),
-		"missing config":      `{"version":"PreparedReviewExecution.v1","transport":{"baseUrl":"https://gateway.example.invalid/v1","model":"model"}}`,
+		"missing config":      `{"version":"PreparedReviewExecution.v1","transport":{"baseUrl":"https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1","model":"model"}}`,
 		"extra check":         strings.Replace(preparedEnvelope, `"config":`, `"checkId":4242,"config":`, 1),
 		"extra secret":        strings.Replace(preparedEnvelope, `"config":`, `"token":"synthetic-private-marker","config":`, 1),
 		"transport secret":    strings.Replace(preparedEnvelope, `"model":`, `"apiKey":"synthetic-private-marker","model":`, 1),
@@ -716,18 +716,18 @@ func TestBuildWorkerJobCreatesExplicitFullPanelQualificationPod(t *testing.T) {
 	}
 	var apiKey *corev1.EnvVar
 	// REL-1069: the admitted transport is the OpenAI-compatible gateway, so the
-	// qualification worker receives the standard OPENAI_API_KEY name. It is
+	// qualification worker receives the dedicated Cloudflare Run-token name. It is
 	// OPTIONAL: no per-run secret carries a gateway key, and a non-optional
 	// secretRef would fail the pod at admission instead of letting the worker
 	// name the missing variable itself.
 	for index := range container.Env {
-		if container.Env[index].Name == "OPENAI_API_KEY" {
+		if container.Env[index].Name == "CLOUDFLARE_AIG_RUN_TOKEN" {
 			apiKey = &container.Env[index]
 			break
 		}
 	}
 	if apiKey == nil || apiKey.ValueFrom == nil || apiKey.ValueFrom.SecretKeyRef == nil ||
-		apiKey.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || apiKey.ValueFrom.SecretKeyRef.Key != "OPENAI_API_KEY" ||
+		apiKey.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || apiKey.ValueFrom.SecretKeyRef.Key != "CLOUDFLARE_AIG_RUN_TOKEN" ||
 		apiKey.ValueFrom.SecretKeyRef.Optional == nil || !*apiKey.ValueFrom.SecretKeyRef.Optional {
 		t.Fatalf("full-panel qualification secret reference = %#v", apiKey)
 	}
@@ -793,8 +793,8 @@ func TestBuildWorkerJobCreatesExplicitSameHeadQualificationPod(t *testing.T) {
 	// REL-1069: standard names only; the legacy OPENROUTER_* spelling is gone
 	// from this path because nothing provisions it.
 	wantSecretKeys := map[string]string{
-		"OPENAI_API_KEY": "OPENAI_API_KEY",
-		"GH_TOKEN":       "GITHUB_READ_TOKEN",
+		"CLOUDFLARE_AIG_RUN_TOKEN": "CLOUDFLARE_AIG_RUN_TOKEN",
+		"GH_TOKEN":                 "GITHUB_READ_TOKEN",
 	}
 	for envName, secretKey := range wantSecretKeys {
 		var found *corev1.EnvVar
@@ -1002,10 +1002,10 @@ var _ = batchv1.Job{}
 
 func publishingFixture() job.PublishingConfig {
 	return job.PublishingConfig{
-		GatewayBaseURL:    "https://gateway.example.invalid/v1",
+		GatewayBaseURL:    "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1",
 		Model:             "ollama/glm-5.3-flash",
 		GatewaySecretName: "review-yeti-gateway-credentials",
-		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		GatewaySecretKey:  "CLOUDFLARE_AIG_RUN_TOKEN",
 		CompletionURL:     "https://dispatch.example.invalid/api/dispatch/completion",
 	}
 }
@@ -1026,13 +1026,13 @@ func TestBuildWorkerJobAppGateIsNotReceiptOnly(t *testing.T) {
 	if envValue(container, "REVIEW_RECEIPT_ONLY") != "" {
 		t.Fatalf("app-gate job must not be receipt-only")
 	}
-	if envValue(container, "OPENAI_BASE_URL") != "https://gateway.example.invalid/v1" {
-		t.Fatalf("gateway base url = %q", envValue(container, "OPENAI_BASE_URL"))
+	if envValue(container, "CLOUDFLARE_AIG_BASE_URL") != "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1" {
+		t.Fatalf("gateway base url = %q", envValue(container, "CLOUDFLARE_AIG_BASE_URL"))
 	}
 	if envValue(container, "REVIEW_MODEL") != "ollama/glm-5.3-flash" {
 		t.Fatalf("review model = %q", envValue(container, "REVIEW_MODEL"))
 	}
-	if !hasEnv(container, "OPENAI_API_KEY") || !hasEnv(container, "GITHUB_PUBLISH_TOKEN") {
+	if !hasEnv(container, "CLOUDFLARE_AIG_RUN_TOKEN") || !hasEnv(container, "GITHUB_PUBLISH_TOKEN") {
 		t.Fatalf("app-gate job is missing its gateway key or publish token")
 	}
 }
@@ -1050,7 +1050,7 @@ func TestBuildWorkerJobDisabledStaysReceiptOnly(t *testing.T) {
 	if envValue(container, "REVIEW_RECEIPT_ONLY") != "true" {
 		t.Fatalf("disabled job must stay receipt-only")
 	}
-	if hasEnv(container, "OPENAI_API_KEY") || hasEnv(container, "GITHUB_PUBLISH_TOKEN") {
+	if hasEnv(container, "CLOUDFLARE_AIG_RUN_TOKEN") || hasEnv(container, "GITHUB_PUBLISH_TOKEN") {
 		t.Fatalf("receipt-only job must not receive publishing credentials")
 	}
 }
@@ -1065,15 +1065,20 @@ func TestBuildWorkerJobRefusesIncompletePublishingConfig(t *testing.T) {
 		"no model":       func(c *job.PublishingConfig) { c.Model = "" },
 		"no secret name": func(c *job.PublishingConfig) { c.GatewaySecretName = "" },
 		"no secret key":  func(c *job.PublishingConfig) { c.GatewaySecretKey = "" },
-		"plaintext http": func(c *job.PublishingConfig) { c.GatewayBaseURL = "http://gateway.example.invalid/v1" },
+		"plaintext http": func(c *job.PublishingConfig) {
+			c.GatewayBaseURL = "http://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1"
+		},
+		"non Cloudflare host": func(c *job.PublishingConfig) { c.GatewayBaseURL = "https://gateway.example.invalid/v1" },
+		"historical alias":    func(c *job.PublishingConfig) { c.Model = "pr-reviewer" },
 		"completion userinfo": func(c *job.PublishingConfig) {
 			c.CompletionURL = "https://user:password@dispatch.example.invalid/completion"
 		},
 		"completion fragment": func(c *job.PublishingConfig) {
 			c.CompletionURL = "https://dispatch.example.invalid/completion#redirect"
 		},
-		"whitespace":      func(c *job.PublishingConfig) { c.Model = "ollama/glm 5.3" },
-		"bad secret name": func(c *job.PublishingConfig) { c.GatewaySecretName = "Not_A_Subdomain" },
+		"whitespace":             func(c *job.PublishingConfig) { c.Model = "ollama/glm 5.3" },
+		"bad secret name":        func(c *job.PublishingConfig) { c.GatewaySecretName = "Not_A_Subdomain" },
+		"wrong gateway key name": func(c *job.PublishingConfig) { c.GatewaySecretKey = "OPENAI_API_KEY" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			review := reviewFixture(now)

@@ -16,6 +16,10 @@ import {
 
 expect.extend(matchers);
 
+// MCP fleet tests use only a synthetic route/key; no production endpoint or secret is read.
+process.env.CT_MCP_URL = 'https://mcp.example.invalid/router/mcp';
+process.env.CT_MCP_KEY = 'test-mcp-key';
+
 import supertest from 'supertest';
 import https from 'node:https';
 

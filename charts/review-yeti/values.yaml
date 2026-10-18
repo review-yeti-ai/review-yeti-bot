@@ -305,8 +305,8 @@ secrets:
 # Both gatewayBaseUrl and model are EMPTY by default and are deliberately not
 # defaulted: an unset transport leaves the operator's publishing config incomplete,
 # so BuildWorkerJob refuses every app-gate review rather than dispatching one
-# against a gateway nobody chose. Bifrost is the only admitted transport -- there is
-# no second provider and no failover (see ADR 0527), so this lane fails closed.
+# against a gateway nobody chose. Cloudflare AI Gateway is the only admitted transport;
+# no model or route is selected by this public chart, so the lane fails closed.
 #
 # The secret reference may default, because a Secret *name* is not a transport
 # choice; it points at the Doppler-projected credential below.
@@ -317,7 +317,7 @@ publishing:
   # Enable only after the CRD, API/ingress, dispatcher and worker rollout.
   completionUrl: ""
   gatewaySecretName: "review-yeti-gateway-credentials"
-  gatewaySecretKey: "REVIEW_YETI_BIFROST_API_KEY"
+  gatewaySecretKey: "CLOUDFLARE_AIG_RUN_TOKEN"
   # REL-677 / ADR 0329: index-at-review-time Zoekt grounding, on by default for the app-gate
   # lane. The operator (k8s-operator/pkg/job/job.go, k8s-operator/main.go) forwards this value
   # verbatim to the worker -- and *only* when it is set to something -- so leaving it empty here
@@ -408,9 +408,9 @@ publishing:
 # Off by default: enabling it requires the Doppler Kubernetes Operator to be
 # installed in the cluster and a service-token Secret (doppler.tokenSecretName)
 # present in this namespace. When enabled, the operator continuously syncs the
-# named Doppler config into a managed Secret, so rotating the Bifrost virtual
-# key upstream repairs the cluster on the next resync instead of requiring a
-# redeploy -- a chart-pinned literal would go stale silently.
+# named Doppler config into a managed Secret, so rotating the Cloudflare AI
+# Gateway Run credential repairs the cluster on the next resync instead of
+# requiring a redeploy -- a chart-pinned literal would go stale silently.
 doppler:
   enabled: false
   # Doppler project and config holding the gateway credential. Empty by default:

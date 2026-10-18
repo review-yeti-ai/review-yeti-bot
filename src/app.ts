@@ -241,14 +241,14 @@ export function assertSupportedReviewExecution(env: NodeJS.ProcessEnv = process.
 function openRouterClient(): OpenRouterClient {
   // The class name is historical; the transport it speaks is the admitted
   // OpenAI-compatible gateway. Values come from the shared resolver so a
-  // Bifrost deployment in OPENAI_* is used without an OpenRouter variable,
+  // configured gateway in OPENAI_* is used without an OpenRouter variable,
   // and the vendor default URL is gone: an unconfigured base URL must fail
   // closed rather than silently pointing at a vendor.
   // The PAIR, so a standard key is never paired with the legacy vendor URL.
   // `requireGatewaySettings` throws, naming what to fix, and never re-reads the
   // raw env -- so a refused pairing cannot be reinstated by a fallback.
-  const { baseUrl, apiKey } = requireGatewaySettings(process.env);
-  return new OpenRouterClient({ baseUrl, apiKey });
+  const gateway = requireGatewaySettings(process.env);
+  return new OpenRouterClient(gateway);
 }
 
 export function usage(value: { prompt: number; completion: number; total: number; cached?: number; cached_tokens?: number } | null): string {
@@ -978,10 +978,10 @@ export function createApp(): Express {
       ));
     }
     // REL-1069: the webhook name and the model key were both wrong here, which
-    // made the full app report not-ready on a correctly-configured Bifrost
+    // made the full app report not-ready on a correctly-configured gateway
     // deployment: no environment sets `WEBHOOK_SECRET` (the app, the wizard and
     // every synced env use `GITHUB_WEBHOOK_SECRET`), and the review lane has no
-    // OpenRouter credential because it is Bifrost-backed.
+    // OpenRouter credential because it is gateway-backed.
     //
     // Read the SHARED contract rather than re-listing fields. An earlier
     // revision of this gate listed only the key, while `openRouterClient()`
