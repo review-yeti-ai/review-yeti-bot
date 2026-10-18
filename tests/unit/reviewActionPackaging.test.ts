@@ -93,7 +93,7 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(raw).toContain("inputs.execution-backend == 'local'");
     expect(raw).toContain('local|edge');
     expect(raw).toContain('execution-backend must be local or edge');
-    expect(raw).toContain("DISPATCH_PUBLISH_MODE: ${{ inputs.publish-mode || inputs.doks-publish-mode || 'app-gate' }}");
+    expect(raw).toContain("DISPATCH_PUBLISH_MODE: ${{ inputs.publish-mode || 'app-gate' }}");
     expect(raw).toContain('EXPECTED_GENERATION: ${{ inputs.expected-generation }}');
   });
 

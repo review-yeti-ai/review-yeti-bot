@@ -2,8 +2,7 @@ import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 
 export const GITHUB_ACTIONS_OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
 export const GITHUB_ACTIONS_JWKS_URL = new URL('https://token.actions.githubusercontent.com/.well-known/jwks');
-// Temporary legacy acceptance: in-flight callers on v1 <= 1.129.2 still mint the legacy audience.
-export const DEFAULT_ACCEPTED_AUDIENCES = ['review-yeti-doks-dispatch', 'review-yeti-edge-dispatch'];
+export const DEFAULT_ACCEPTED_AUDIENCES = ['review-yeti-edge-dispatch'];
 
 export const CENTRAL_REVIEW_OWNER = 'review-yeti-ai';
 export const CENTRAL_REVIEW_REPOSITORIES = new Set([

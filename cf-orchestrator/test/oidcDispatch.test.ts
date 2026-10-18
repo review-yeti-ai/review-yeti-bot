@@ -159,7 +159,7 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
       assert.strictEqual(claims.run_id, '987654321');
     });
 
-    it('accepts the legacy review-yeti-doks-dispatch audience alongside review-yeti-edge-dispatch', async () => {
+    it('rejects the retired DOKS audience while accepting review-yeti-edge-dispatch', async () => {
       const legacyToken = await createMockToken({}, privateKey, {
         audience: 'review-yeti-doks-dispatch',
       });
@@ -167,8 +167,10 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
         audience: 'review-yeti-edge-dispatch',
       });
 
-      const legacyClaims = await verifyGitHubActionsOidc(legacyToken, { keySet: mockKeySet });
-      assert.strictEqual(legacyClaims.repository, 'exampleorg/sample-repo');
+      await assert.rejects(
+        () => verifyGitHubActionsOidc(legacyToken, { keySet: mockKeySet }),
+        /unexpected "aud" claim value/i
+      );
 
       const edgeClaims = await verifyGitHubActionsOidc(edgeToken, { keySet: mockKeySet });
       assert.strictEqual(edgeClaims.repository, 'exampleorg/sample-repo');
