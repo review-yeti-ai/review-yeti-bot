@@ -20,6 +20,7 @@ import { groundedFixtureClient, groundedFixtureProvider } from '../support/groun
 import { preparedCheckpointHistory } from '../support/preparedCheckpointHistory';
 import type { ReviewTask } from '../../src/panel/reviewTask';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
+import { TEST_CLOUDFLARE_AIG_BASE_URL, TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 function enableLifecycleHistory(input: {
   policyDigest: string;
@@ -571,7 +572,7 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
       schema: 'exampleorg.review-policy.v1',
       review_yeti: { personas: 'security,testing', review_engine: 'composed', budget: { max_investigation_turns: 1 } },
     });
-    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+    const transport = { baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL, model: 'prepared-review-model' };
     const prepared = preparePublishingPolicy(
       { content, source: { repositoryId: 987, repository: 'exampleorg/repo', sha: 'e'.repeat(40), path: 'policy/review.json',
         contentDigest: sha256(content) } },
@@ -592,8 +593,8 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
       REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
       REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
       REVIEW_MODEL: transport.model,
-      OPENAI_BASE_URL: transport.baseUrl,
-      OPENAI_API_KEY: 'vk-test',
+      ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
       GH_TOKEN: 'ghs_test',
       GITHUB_PUBLISH_TOKEN: 'ghs_fake',
       REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
@@ -814,7 +815,7 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
       schema: 'exampleorg.review-policy.v1',
       review_yeti: { personas: 'security', review_engine: 'composed', budget: { max_investigation_turns: 1 } },
     });
-    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+    const transport = { baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL, model: 'prepared-review-model' };
     const prepared = preparePublishingPolicy(
       { content, source: { repositoryId: 987, repository: 'exampleorg/repo', sha: 'e'.repeat(40), path: 'policy/review.json',
         contentDigest: sha256(content) } },
@@ -853,8 +854,8 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
       REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
       REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
       REVIEW_MODEL: transport.model,
-      OPENAI_BASE_URL: transport.baseUrl,
-      OPENAI_API_KEY: 'vk-test',
+      ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
       GH_TOKEN: 'ghs_test',
       GITHUB_PUBLISH_TOKEN: 'ghs_fake',
       REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
@@ -901,7 +902,7 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
       schema: 'exampleorg.review-policy.v1',
       review_yeti: { personas: 'security', review_engine: 'composed', budget: { max_investigation_turns: 1 } },
     });
-    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+    const transport = { baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL, model: 'prepared-review-model' };
     const prepared = preparePublishingPolicy(
       { content, source: { repositoryId: 987, repository: 'exampleorg/repo', sha: 'e'.repeat(40), path: 'policy/review.json',
         contentDigest: sha256(content) } },
@@ -940,8 +941,8 @@ describe('Challenger M3 Stress Test: Content-Addressed Checkpoints', () => {
       REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
       REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
       REVIEW_MODEL: transport.model,
-      OPENAI_BASE_URL: transport.baseUrl,
-      OPENAI_API_KEY: 'vk-test',
+      ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
       GH_TOKEN: 'ghs_test',
       GITHUB_PUBLISH_TOKEN: 'ghs_fake',
       REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',

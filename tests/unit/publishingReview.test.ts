@@ -59,6 +59,7 @@ vi.mock('../../src/review/reviewCore', async (importOriginal) => {
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
+const CLOUDFLARE_TEST_ROUTE = 'https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1';
 
 function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
   // This repo's ProcessEnv is augmented with a required NODE_ENV.
@@ -75,8 +76,8 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-    OPENAI_API_KEY: 'vk-test',
+    CLOUDFLARE_AIG_BASE_URL: CLOUDFLARE_TEST_ROUTE,
+    CLOUDFLARE_AIG_RUN_TOKEN: 'test-run-token',
     GH_TOKEN: 'ghs_test',
     ...overrides,
   };
@@ -626,7 +627,7 @@ describe('grounded evidence call order', () => {
       personas: 'security,testing', review_engine: 'composed', severity_policy: 'review-yeti-severity.v2',
       disputed_blocker_adjudicator: selector, budget: { max_investigation_turns: 1 },
     } });
-    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'primary-review-alias' };
+    const transport = { baseUrl: CLOUDFLARE_TEST_ROUTE, model: 'primary-review-alias' };
     const prepared = preparePublishingPolicy({ content: policyContent, source: { repositoryId: 987,
       repository: 'exampleorg/example-meta', sha: 'e'.repeat(40), path: 'policy/review.json',
       contentDigest: createHash('sha256').update(policyContent).digest('hex') } }, transport,
@@ -634,7 +635,7 @@ describe('grounded evidence call order', () => {
     const input = env({ REVIEW_AUTHORITATIVE_GATE: 'true', REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest,
       REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
       REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
-      REVIEW_MODEL: transport.model, OPENAI_BASE_URL: transport.baseUrl,
+      REVIEW_MODEL: transport.model, CLOUDFLARE_AIG_BASE_URL: transport.baseUrl,
       REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion', GITHUB_PUBLISH_TOKEN: 'ghs_test',
       REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE' });
     const changedFiles = [
@@ -855,21 +856,21 @@ describe('publishing review lane admission', () => {
   });
 });
 
-describe('OpenAI gateway is the admitted transport', () => {
+describe('Cloudflare AI Gateway is the configured publishing transport', () => {
   it('accepts the gateway', () => {
-    expect(openaiTransport(env()).baseUrl).toBe('https://gateway.example.invalid/v1');
+    expect(openaiTransport(env()).baseUrl).toBe(CLOUDFLARE_TEST_ROUTE);
   });
 
-  it('accepts standard OPENAI_BASE_URL and OPENAI_API_KEY', () => {
-    const res = openaiTransport(env({
+  it('does not admit generic OPENAI settings for publishing', () => {
+    expect(() => openaiTransport(env({
+      CLOUDFLARE_AIG_BASE_URL: '',
+      CLOUDFLARE_AIG_RUN_TOKEN: '',
       OPENAI_BASE_URL: 'https://standard-gateway.example.invalid/v1',
       OPENAI_API_KEY: 'sk-standard-key',
-    }));
-    expect(res.baseUrl).toBe('https://standard-gateway.example.invalid/v1');
-    expect(res.apiKey).toBe('sk-standard-key');
+    }))).toThrow(/contract is invalid/u);
   });
 
-  it.each(['OPENAI_BASE_URL', 'OPENAI_API_KEY', 'REVIEW_MODEL'])(
+  it.each(['CLOUDFLARE_AIG_BASE_URL', 'CLOUDFLARE_AIG_RUN_TOKEN', 'REVIEW_MODEL'])(
     'refuses to run when %s is absent rather than defaulting',
     (name) => {
       // Defaulting here would silently review against the wrong provider.
@@ -878,7 +879,7 @@ describe('OpenAI gateway is the admitted transport', () => {
   );
 
   it('refuses a non-https gateway', () => {
-    expect(() => openaiTransport(env({ OPENAI_BASE_URL: 'http://gateway.example.invalid/v1' })))
+    expect(() => openaiTransport(env({ CLOUDFLARE_AIG_BASE_URL: 'http://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1' })))
       .toThrow(/contract is invalid/u);
   });
 
@@ -972,7 +973,7 @@ describe('runPublishingReviewWorker', () => {
     const d = deps();
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('success');
-    expect(receipt.transport).toBe('bifrost');
+    expect(receipt.transport).toBe('cloudflare-ai-gateway');
     expect(receipt.coverage).toEqual({
       mode: 'panel', expectedLaneCount: 1, completedLaneCount: 1, failedLaneCount: 0,
       rosterValid: true, quorumSatisfied: true, fullPanelComplete: true,
@@ -1254,7 +1255,7 @@ describe('runPublishingReviewWorker', () => {
     // Item 4: the requested (possibly aliased) model and the completed lane's resolved model both
     // appear -- and it is the COMPLETED lane's model that wins, not the failed lane's, even though
     // the failed lane also carried a (different) last-known model.
-    expect(summary).toContain('Transport: bifrost `ollama/glm-5.3-flash` (resolved `ollama/glm-5.3-flash-2026-08-01`).');
+    expect(summary).toContain('Transport: cloudflare-ai-gateway `ollama/glm-5.3-flash` (resolved `ollama/glm-5.3-flash-2026-08-01`).');
     expect(summary).not.toContain('resolved `ollama/glm-5.3-flash-2026-07-15`');
     // Item 1: aggregate telemetry survives onto the failure path, not just the success path.
     expect(summary).toContain('Telemetry: 2 turns, 1 tool calls, 15 tokens across 1 lanes (100ms).');
@@ -1294,7 +1295,7 @@ describe('runPublishingReviewWorker', () => {
     await runPublishingReviewWorker(env(), d as never);
 
     const summary = String(((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
-    expect(summary).toContain('Transport: bifrost `ollama/glm-5.3-flash` (resolved `ollama/glm-5.3-flash-2026-07-15`).');
+    expect(summary).toContain('Transport: cloudflare-ai-gateway `ollama/glm-5.3-flash` (resolved `ollama/glm-5.3-flash-2026-07-15`).');
   });
 
   it('omits the resolved-model clause when the resolved model equals the requested one (REL-892)', async () => {
@@ -1320,7 +1321,7 @@ describe('runPublishingReviewWorker', () => {
     await runPublishingReviewWorker(env(), d as never);
 
     const summary = String(((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
-    expect(summary).toContain('Transport: bifrost `ollama/glm-5.3-flash`.');
+    expect(summary).toContain('Transport: cloudflare-ai-gateway `ollama/glm-5.3-flash`.');
     expect(summary).not.toContain('(resolved');
   });
 
@@ -1345,7 +1346,7 @@ describe('runPublishingReviewWorker', () => {
     await runPublishingReviewWorker(env(), d as never);
 
     const summary = String(((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
-    expect(summary).toContain('Transport: bifrost `ollama/glm-5.3-flash`.');
+    expect(summary).toContain('Transport: cloudflare-ai-gateway `ollama/glm-5.3-flash`.');
     expect(summary).not.toContain('(resolved');
   });
 
@@ -2264,7 +2265,7 @@ describe('runPublishingReviewWorker', () => {
   it('reports a durable contract failure after check creation instead of skipping the callback', async () => {
     const completion = { reportTerminalFailure: vi.fn(async () => {}) };
     const d = deps({ completion });
-    await expect(runPublishingReviewWorker(env({ OPENAI_BASE_URL: '' }), d as never))
+    await expect(runPublishingReviewWorker(env({ CLOUDFLARE_AIG_BASE_URL: '' }), d as never))
       .rejects.toThrow(/contract is invalid/u);
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({
       checkId: 4242,
@@ -2500,7 +2501,7 @@ describe('real composed plan rejection reaches fail-closed publication', () => {
       const reportTerminalFailure = vi.fn(async () => undefined);
       const reportReviewResult = vi.fn(async () => undefined);
       if (authoritative) {
-        const transport = { baseUrl: input.OPENAI_BASE_URL!, model: input.REVIEW_MODEL! };
+        const transport = { baseUrl: input.CLOUDFLARE_AIG_BASE_URL!, model: input.REVIEW_MODEL! };
         const prepared = preparePublishingPolicy({ content: policy, source: {
           repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
           contentDigest: createHash('sha256').update(policy).digest('hex'),
@@ -2578,7 +2579,7 @@ describe('real composed findings-stop reaches canonical fail-closed publication'
         composed: { max_findings_total: 25 },
       } });
       const input = env({ REVIEW_YETI_POLICY_JSON: policy });
-      const transport = { baseUrl: input.OPENAI_BASE_URL!, model: input.REVIEW_MODEL! };
+      const transport = { baseUrl: input.CLOUDFLARE_AIG_BASE_URL!, model: input.REVIEW_MODEL! };
       const prepared = preparePublishingPolicy({ content: policy, source: {
         repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
         contentDigest: createHash('sha256').update(policy).digest('hex'),
@@ -2801,7 +2802,7 @@ describe('the worker never holds the App private key', () => {
 });
 
 describe('resolveWorkerConfig policy projection & telemetry persistence', () => {
-  const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'vk-test', model: 'ollama/glm-5.3-flash' };
+  const transport = { baseUrl: CLOUDFLARE_TEST_ROUTE, apiKey: 'test-run-token', model: 'ollama/glm-5.3-flash' };
 
   it('defaults to 6 central personas and max 15 turns under default env', () => {
     const config = resolveWorkerConfig(env(), transport);
@@ -3672,13 +3673,13 @@ describe('REL-1211 absolute publishing budget', () => {
 
   it('preserves a typed terminal timeout in authoritative exact-attempt evidence and leaves the receipt interval usable', async () => {
     const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: { personas: 'security,testing', budget: { max_investigation_turns: 1 } } });
-    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+    const transport = { baseUrl: CLOUDFLARE_TEST_ROUTE, model: 'prepared-review-model' };
     const prepared = preparePublishingPolicy({ content, source: { repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
       contentDigest: createHash('sha256').update(content).digest('hex') } }, transport);
     const input = env({ ...deadlineEnv(50), REVIEW_AUTHORITATIVE_GATE: 'true', REVIEW_EXECUTION_ATTEMPT: '3',
       REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest, REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
       REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
-      REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion', REVIEW_MODEL: transport.model, OPENAI_BASE_URL: transport.baseUrl,
+      REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion', REVIEW_MODEL: transport.model, CLOUDFLARE_AIG_BASE_URL: transport.baseUrl,
       GITHUB_PUBLISH_TOKEN: 'ghs_fake', REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE' });
     let deliveredAt = 0; let delivered!: Record<string, any>;
     const fetch = vi.fn(async (_url: unknown, init: RequestInit) => {
@@ -3818,11 +3819,11 @@ it('keeps configured-deadline panel failure telemetry before any provider call a
 
 it('keeps content-free answered-call observations in the native thrown-infrastructure receipt',async()=>{
   const content=JSON.stringify({schema:'exampleorg.review-policy.v1',review_yeti:{personas:'security,testing',budget:{max_investigation_turns:1}}});
-  const transport={baseUrl:'https://gateway.example.invalid/v1',model:'prepared-review-model'};
+  const transport={baseUrl:CLOUDFLARE_TEST_ROUTE,model:'prepared-review-model'};
   const prepared=preparePublishingPolicy({content,source:{repositoryId:987,repository:'example/policy',sha:'e'.repeat(40),path:'policy/review.json',contentDigest:createHash('sha256').update(content).digest('hex')}},transport);
   const input=env({REVIEW_AUTHORITATIVE_GATE:'true',REVIEW_EXECUTION_ATTEMPT:'3',REVIEW_POLICY_DIGEST:prepared.policy.effectivePolicyDigest,
     REVIEW_CONFIG_DIGEST:prepared.policy.effectiveConfigDigest,REVIEW_PREPARED_CONFIG_JSON:JSON.stringify({version:'PreparedReviewExecution.v1',config:prepared.config,transport}),
-    REVIEW_COMPLETION_URL:'https://dispatch.example.invalid/api/dispatch/completion',REVIEW_MODEL:transport.model,OPENAI_BASE_URL:transport.baseUrl,
+    REVIEW_COMPLETION_URL:'https://dispatch.example.invalid/api/dispatch/completion',REVIEW_MODEL:transport.model,CLOUDFLARE_AIG_BASE_URL:transport.baseUrl,
     GITHUB_PUBLISH_TOKEN:'ghs_fake',REVIEW_REPOSITORY_VISIBILITY:'PRIVATE',REVIEW_YETI_SKIP_EMPTY_MODERATION:'true',REVIEW_TERMINAL_DEADLINE:new Date(Date.now()+900_000).toISOString()});
   const reportReviewResult=vi.fn(async(_event: Parameters<HttpWorkerReviewCompletionAdapter['reportReviewResult']>[0])=>{});
   const client={complete:vi.fn(async()=>({model:transport.model,content:'SECRET response',usage:{prompt:11,completion:7,total:18},costUSD:null,raw:{}}))};
@@ -3847,14 +3848,14 @@ describe('telemetry integration with protected composed closeout', () => {
     const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
       personas: 'security,testing', review_engine: 'composed', budget: { max_investigation_turns: 1 },
     } });
-    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+    const transport = { baseUrl: CLOUDFLARE_TEST_ROUTE, model: 'prepared-review-model' };
     const prepared = preparePublishingPolicy({ content, source: { repositoryId: 987, repository: 'example/policy',
       sha: 'e'.repeat(40), path: 'policy/review.json', contentDigest: createHash('sha256').update(content).digest('hex') } }, transport);
     const input = env({ REVIEW_AUTHORITATIVE_GATE: 'true', REVIEW_EXECUTION_ATTEMPT: '3',
       REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest, REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
       REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
       REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion', REVIEW_MODEL: transport.model,
-      OPENAI_BASE_URL: transport.baseUrl, GITHUB_PUBLISH_TOKEN: 'ghs_fake', REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
+      CLOUDFLARE_AIG_BASE_URL: transport.baseUrl, GITHUB_PUBLISH_TOKEN: 'ghs_fake', REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
       REVIEW_TERMINAL_DEADLINE: new Date(Date.now() + WORKER_PANEL_RESERVE_MS + 50).toISOString() });
     const reportReviewResult = vi.fn(async (_event: Parameters<HttpWorkerReviewCompletionAdapter['reportReviewResult']>[0]) => {});
     const plan = [{ id: 'security-auth', dimension: 'security', paths: ['src/a.ts'], question: 'Safe?', rationale: 'Risk.' },
@@ -4028,7 +4029,7 @@ describe('telemetry integration with protected composed closeout', () => {
       schema: 'exampleorg.review-policy.v1',
       review_yeti: { personas: 'security,testing', review_engine: 'composed', budget: { max_investigation_turns: 1 } },
     });
-    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+    const transport = { baseUrl: CLOUDFLARE_TEST_ROUTE, model: 'prepared-review-model' };
     const prepared = preparePublishingPolicy(
       { content, source: { repositoryId: 987, repository: 'exampleorg/repo', sha: 'e'.repeat(40), path: 'policy/review.json',
         contentDigest: createHash('sha256').update(content).digest('hex') } },
@@ -4045,7 +4046,7 @@ describe('telemetry integration with protected composed closeout', () => {
       REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
       REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
       REVIEW_MODEL: transport.model,
-      OPENAI_BASE_URL: transport.baseUrl,
+      CLOUDFLARE_AIG_BASE_URL: transport.baseUrl,
       GITHUB_PUBLISH_TOKEN: 'ghs_fake',
       REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
       REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',

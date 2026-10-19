@@ -41,6 +41,7 @@ import {
   workerReviewCompletionDigest,
   workerReviewEvidenceDigest,
 } from '../../src/review/workerReviewCompletion';
+import { TEST_CLOUDFLARE_AIG_BASE_URL, TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * REL-1084 (plan 2026-09-23 section 4 W7): incremental re-review on synchronize
@@ -564,7 +565,7 @@ describe('incremental decision', () => {
     const plan = await planIncrementalReview({ env: { REVIEW_YETI_INCREMENTAL: 'true' }, repository: 'example/project',
       current, currentPaths, base: { read: async () => ({ prior: previous, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS }) },
       reader: comparisonReader });
-    const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'test', model: 'test-model' };
+    const transport = { baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL, apiKey: 'test', model: 'test-model' };
     const roster = resolveWorkerConfig({ REVIEW_PERSONAS: 'security,architecture,testing' }, transport)
       .personas.filter((persona) => persona.enabled);
     const fullFiles = resolveScopedReviewApplicability(roster, files(reviewDiff), {
@@ -722,7 +723,7 @@ describe('applying the scope', () => {
   });
 
   describe('one applicability decision (worker, engines, trusted completion)', () => {
-    const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'k', model: 'review-model' };
+    const transport = { baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL, apiKey: 'k', model: 'review-model' };
     const roster = resolveWorkerConfig({ REVIEW_PERSONAS: 'security,architecture,testing' }, transport)
       .personas.filter((persona) => persona.enabled);
 
@@ -958,8 +959,8 @@ describe('publishing worker wiring', () => {
       REVIEW_HEAD_SHA: HEAD,
       REVIEW_BASE_SHA: BASE,
       REVIEW_MODEL: 'ollama/glm-5.3-flash',
-      OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-      OPENAI_API_KEY: 'vk-test',
+      ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
       GH_TOKEN: 'ghs_test',
       ...overrides,
     };

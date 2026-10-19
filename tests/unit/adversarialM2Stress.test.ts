@@ -15,6 +15,7 @@ import { PRMemoryStore } from '../../src/memory/prMemoryStore';
 import { SQLiteMemoryAdapter } from '../../src/memory/adapters/sqliteAdapter';
 import { findingFingerprint } from '../../src/review/findingConvergence';
 import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 // This suite keeps the default process policy intact: P2 can leave the raw
 // arbiter at SHIP while the publisher's independent strict conclusion fails.
@@ -33,8 +34,8 @@ function testEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-    OPENAI_API_KEY: 'vk-test',
+    ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
     GH_TOKEN: 'ghs_validtoken12345',
     ...overrides,
   };

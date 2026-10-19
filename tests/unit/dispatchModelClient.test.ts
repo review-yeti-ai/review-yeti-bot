@@ -2,74 +2,48 @@ import { describe, it, expect } from 'vitest';
 import { resolveModelClientFromEnv } from '../../src/dispatchModelClient';
 import { OpenRouterClient } from '../../src/gateway/openRouterClient';
 
+const route = 'https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1';
+
 describe('resolveModelClientFromEnv', () => {
-  it('returns undefined when no model API key is set in environment', () => {
-    const client = resolveModelClientFromEnv({});
+  it('returns undefined when no model credential is configured', () => {
+    expect(resolveModelClientFromEnv({})).toBeUndefined();
+  });
+
+  it('keeps the separate direct OpenRouter credential path', () => {
+    const client = resolveModelClientFromEnv({ OPENROUTER_API_KEY: 'openrouter-key', OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1' });
+    expect(client).toBeInstanceOf(OpenRouterClient);
+    expect((client as any).apiKey).toBe('openrouter-key');
+    expect((client as any).authorizationHeaderName).toBe('authorization');
+  });
+
+  it('ignores retired Bifrost credentials when no current transport is configured', () => {
+    const client = resolveModelClientFromEnv({
+      REVIEW_YETI_BIFROST_API_KEY: 'retired-key',
+      BIFROST_VIRTUAL_KEY: 'retired-key',
+      BIFROST_BASE_URL: 'https://gateway.example.invalid/v1',
+    });
     expect(client).toBeUndefined();
   });
 
-  it('initializes OpenRouterClient with OPENROUTER_API_KEY as highest priority', () => {
-    const client = resolveModelClientFromEnv({
-      OPENROUTER_API_KEY: 'sk-or-primary',
-      REVIEW_YETI_BIFROST_API_KEY: 'sk-bifrost',
-      BIFROST_VIRTUAL_KEY: 'sk-virtual',
-      OPENROUTER_PR_REVIEW_API_KEY: 'sk-fallback',
-    });
+  it('uses the dedicated Cloudflare Run token and its explicit route', () => {
+    const client = resolveModelClientFromEnv({ CLOUDFLARE_AIG_RUN_TOKEN: 'run-token', CLOUDFLARE_AIG_BASE_URL: route });
     expect(client).toBeInstanceOf(OpenRouterClient);
-    expect((client as any).apiKey).toBe('sk-or-primary');
+    expect((client as any).apiKey).toBe('run-token');
+    expect((client as any).baseUrl).toBe(route);
+    expect((client as any).authorizationHeaderName).toBe('cf-aig-authorization');
   });
 
-  it('falls back to REVIEW_YETI_BIFROST_API_KEY when OPENROUTER_API_KEY is unset', () => {
+  it('does not borrow OpenRouter or generic keys for a partial Cloudflare configuration', () => {
     const client = resolveModelClientFromEnv({
-      REVIEW_YETI_BIFROST_API_KEY: 'sk-bifrost-2',
-      BIFROST_VIRTUAL_KEY: 'sk-virtual-2',
-      OPENROUTER_PR_REVIEW_API_KEY: 'sk-fallback-2',
+      CLOUDFLARE_AIG_BASE_URL: route,
+      OPENROUTER_API_KEY: 'openrouter-key',
+      OPENAI_API_KEY: 'generic-key',
     });
-    expect(client).toBeInstanceOf(OpenRouterClient);
-    expect((client as any).apiKey).toBe('sk-bifrost-2');
+    expect(client).toBeUndefined();
   });
 
-  it('falls back to BIFROST_VIRTUAL_KEY when higher priority keys are unset', () => {
-    const client = resolveModelClientFromEnv({
-      BIFROST_VIRTUAL_KEY: 'sk-virtual-3',
-      OPENROUTER_PR_REVIEW_API_KEY: 'sk-fallback-3',
-    });
-    expect(client).toBeInstanceOf(OpenRouterClient);
-    expect((client as any).apiKey).toBe('sk-virtual-3');
-  });
-
-  it('falls back to OPENROUTER_PR_REVIEW_API_KEY as last resort', () => {
-    const client = resolveModelClientFromEnv({
-      OPENROUTER_PR_REVIEW_API_KEY: 'sk-fallback-4',
-    });
-    expect(client).toBeInstanceOf(OpenRouterClient);
-    expect((client as any).apiKey).toBe('sk-fallback-4');
-  });
-
-  it('prefers OPENROUTER_BASE_URL over BIFROST_BASE_URL', () => {
-    const client = resolveModelClientFromEnv({
-      OPENROUTER_API_KEY: 'sk-test',
-      OPENROUTER_BASE_URL: 'https://custom-or.ai/v1',
-      BIFROST_BASE_URL: 'http://bifrost.internal:8080/v1',
-    });
-    expect(client).toBeInstanceOf(OpenRouterClient);
-    expect((client as any).baseUrl).toBe('https://custom-or.ai/v1');
-  });
-
-  it('falls back to BIFROST_BASE_URL when OPENROUTER_BASE_URL is unset', () => {
-    const client = resolveModelClientFromEnv({
-      OPENROUTER_API_KEY: 'sk-test',
-      BIFROST_BASE_URL: 'http://bifrost.internal:8080/v1',
-    });
-    expect(client).toBeInstanceOf(OpenRouterClient);
-    expect((client as any).baseUrl).toBe('http://bifrost.internal:8080/v1');
-  });
-
-  it('defaults baseUrl to https://openrouter.ai/api/v1 when neither baseUrl is specified', () => {
-    const client = resolveModelClientFromEnv({
-      OPENROUTER_API_KEY: 'sk-test',
-    });
-    expect(client).toBeInstanceOf(OpenRouterClient);
-    expect((client as any).baseUrl).toBe('https://openrouter.ai/api/v1');
+  it('does not treat CLOUDFLARE_AIG_API_TOKEN as the dedicated Run token', () => {
+    const client = resolveModelClientFromEnv({ CLOUDFLARE_AIG_BASE_URL: route, CLOUDFLARE_AIG_API_TOKEN: 'ambiguous' });
+    expect(client).toBeUndefined();
   });
 });

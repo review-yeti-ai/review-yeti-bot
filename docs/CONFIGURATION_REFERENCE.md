@@ -208,13 +208,19 @@ remaining persona/panel/terminal budget (and a 15-minute safety window) rather t
 count. When no further wait fits, the lane fails with failure class `rate_limit`. A free-form
 "rate limited" message with no observed 429 keeps its existing fast-failover behaviour.
 
-**No fallback transport.** The publishing worker is Bifrost-only by invariant: the gateway owns model
-routing and any fallback targets. Rate limiting is never answered by switching to another transport
-or provider; the provider pool in the policy schema does not change that for this lane.
+**No worker-side fallback transport.** The app-gate worker uses one Cloudflare AI Gateway route and
+does not fail over to another provider or transport. For the standard Neuralwatt route, the selected
+model is `dynamic/nw-flash` on the gateway `/compat` base URL; the Cloudflare dynamic route owns its
+primary and fallback nodes when that route is configured and deployed. A provider-native `custom-*`
+URL sends a concrete model directly and does not invoke that dynamic route or its fallback graph.
+Keep the worker provider pool single-entry
+and fallback disabled so only the gateway controls fallback. The standard route requires
+`reasoning_effort: low`; the worker refuses a central effort override that is not low. Rate-limit
+retry stays on the same route.
 
 | Variable | Where | Default | Meaning |
 |---|---|---|---|
-| `REVIEW_YETI_PROVIDER_CONCURRENCY` | dispatch service | unset (route not mounted) | Comma-separated `key=slots` pairs, keys lower-cased (for example `pr-reviewer=12`). `*=N` sets the capacity for any other key; without it, unlisted keys are unmanaged (workers use only their local cap). A malformed value is logged and leaves the route unmounted; it never stops the service. |
+| `REVIEW_YETI_PROVIDER_CONCURRENCY` | dispatch service | unset (route not mounted) | Comma-separated `key=slots` pairs, keys lower-cased (for example `dynamic/nw-flash=12`). `*=N` sets the capacity for any other key; without it, unlisted keys are unmanaged (workers use only their local cap). A malformed value is logged and leaves the route unmounted; it never stops the service. |
 | `REVIEW_YETI_PROVIDER_LEASE_TTL_MS` | dispatch service | `60000` | Lease time-to-live, 5000 to 600000. A holder that stops renewing frees its slot after this long. |
 | `REVIEW_YETI_PROVIDER_LEASES` | worker | unset (off) | `true` to lease a slot from the service before each provider call. |
 | `REVIEW_YETI_PROVIDER_LEASE_KEY` | worker | the request model, lower-cased | Fixed capacity key for every call. Set it when every model the worker uses routes to the same upstream account. |

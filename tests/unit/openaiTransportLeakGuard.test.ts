@@ -1,111 +1,98 @@
 import { describe, expect, it } from 'vitest';
 import { openaiTransport, invalidPublishingReviewContract } from '../../src/review/openaiTransport';
 
-/**
- * REL-1069 review (P1). `openaiTransport` is the publishing lane's transport
- * builder -- the path that actually TRANSMITS the credential. It previously
- * resolved its two settings with the UNPAIRED helpers, so the mixed-generation
- * leak guard never applied here even though `/ready` enforced it.
- *
- * Guarded at this boundary rather than only through the resolver, because the
- * bug was precisely that this call site used a different function.
- */
-describe('publishing transport refuses a leaked credential pairing', () => {
-  const base = { REVIEW_MODEL: 'pr-reviewer' };
+const route = 'https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/compat';
+const providerRoute = 'https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-neuralwatt/v1';
 
-  it('refuses a CT/Bifrost key aimed at the OpenRouter vendor host', () => {
+describe('publishing transport admits only the dedicated Cloudflare Run route', () => {
+  const base = { REVIEW_MODEL: 'dynamic/nw-flash' };
+
+  it('pairs the Cloudflare compatibility route only with its dedicated Run token', () => {
     const env = {
       ...base,
-      OPENAI_API_KEY: 'sk-bf-ct-virtual-key',
-      OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+      CLOUDFLARE_AIG_BASE_URL: route,
+      CLOUDFLARE_AIG_RUN_TOKEN: 'test-run-token',
+      OPENAI_API_KEY: 'unrelated-generic-key',
+      OPENAI_BASE_URL: 'https://generic.example.invalid/v1',
     } as unknown as NodeJS.ProcessEnv;
-    // Asserts the CONTRACT message, not merely that something threw: callers
-    // match on invalidPublishingReviewContract's text, so a refactor that let
-    // a generic error propagate would break them while passing toThrow().
-    expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
-  });
-
-  it('accepts the same key against the CT gateway', () => {
-    const env = {
-      ...base,
-      OPENAI_API_KEY: 'sk-bf-ct-virtual-key',
-      OPENAI_BASE_URL: 'https://gateway-internal.example/v1',
-    } as unknown as NodeJS.ProcessEnv;
-    expect(openaiTransport(env)).toMatchObject({
-      baseUrl: 'https://gateway-internal.example/v1', apiKey: 'sk-bf-ct-virtual-key',
+    expect(openaiTransport(env)).toEqual({
+      baseUrl: route,
+      apiKey: 'test-run-token',
+      model: 'dynamic/nw-flash',
+      authorizationHeaderName: 'cf-aig-authorization',
     });
   });
 
-  it('accepts a self-consistent legacy pair so an older deployment still boots', () => {
+  it('refuses a provider-native custom URL for the dynamic model because it bypasses the dynamic fallback route', () => {
     const env = {
       ...base,
-      OPENROUTER_API_KEY: 'legacy',
-      OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
-    } as unknown as NodeJS.ProcessEnv;
-    expect(openaiTransport(env)).toMatchObject({ baseUrl: 'https://openrouter.ai/api/v1' });
-  });
-
-  // The trailing dot is a valid FQDN root and reaches the same endpoint, so the
-  // un-normalised form was a silent bypass of the leak guard.
-  it('refuses the trailing-dot vendor host', () => {
-    const env = {
-      ...base,
-      OPENAI_API_KEY: 'sk-bf-ct-virtual-key',
-      OPENROUTER_BASE_URL: 'https://openrouter.ai./api/v1',
+      CLOUDFLARE_AIG_BASE_URL: providerRoute,
+      CLOUDFLARE_AIG_RUN_TOKEN: 'test-run-token',
     } as unknown as NodeJS.ProcessEnv;
     expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
   });
 
-  it('refuses a vendor SUBDOMAIN too', () => {
+  it('rejects a malformed dynamic route name on /compat', () => {
+    const env = {
+      CLOUDFLARE_AIG_BASE_URL: route,
+      CLOUDFLARE_AIG_RUN_TOKEN: 'test-run-token',
+      REVIEW_MODEL: 'dynamic/',
+    } as unknown as NodeJS.ProcessEnv;
+    expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
+  });
+
+  it('keeps a provider-native custom URL paired with a concrete upstream model', () => {
+    const env = {
+      CLOUDFLARE_AIG_BASE_URL: providerRoute,
+      CLOUDFLARE_AIG_RUN_TOKEN: 'test-run-token',
+      REVIEW_MODEL: 'deepseek-ai/DeepSeek-V4.1-Flash',
+    } as unknown as NodeJS.ProcessEnv;
+    expect(openaiTransport(env)).toMatchObject({
+      baseUrl: providerRoute,
+      model: 'deepseek-ai/DeepSeek-V4.1-Flash',
+      authorizationHeaderName: 'cf-aig-authorization',
+    });
+  });
+
+  it.each(['pr-reviewer', 'bifrost/pr-reviewer'])('refuses unresolved historical alias %s', (model) => {
+    const env = { CLOUDFLARE_AIG_BASE_URL: route, CLOUDFLARE_AIG_RUN_TOKEN: 'test-run-token', REVIEW_MODEL: model } as unknown as NodeJS.ProcessEnv;
+    expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
+  });
+
+  it('does not fall back to a generic key when the dedicated token is absent', () => {
     const env = {
       ...base,
-      OPENAI_API_KEY: 'sk-bf-ct-virtual-key',
-      OPENROUTER_BASE_URL: 'https://api.openrouter.ai/v1',
+      CLOUDFLARE_AIG_BASE_URL: route,
+      OPENAI_API_KEY: 'generic-key',
+      OPENAI_BASE_URL: route,
     } as unknown as NodeJS.ProcessEnv;
     expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
   });
 
-  it('does not over-refuse a lookalike host', () => {
-    // `notopenrouter.ai` must NOT match, or the guard breaks a legitimate lane.
+  it('does not use the ambiguous CLOUDFLARE_AIG_API_TOKEN name', () => {
     const env = {
       ...base,
-      OPENAI_API_KEY: 'sk-bf-ct-virtual-key',
-      OPENROUTER_BASE_URL: 'https://notopenrouter.ai/v1',
-    } as unknown as NodeJS.ProcessEnv;
-    expect(() => openaiTransport(env)).not.toThrow();
-  });
-
-  // A one-keystroke typo must not read as ready: `isVendorHost`'s catch returned
-  // false, so resolution reported ok and /ready answered 200 while the client
-  // threw at request time.
-  it('refuses a scheme-less base URL', () => {
-    const env = {
-      ...base, OPENAI_API_KEY: 'sk-bf-ct-virtual-key', OPENAI_BASE_URL: 'gateway.internal/v1',
+      CLOUDFLARE_AIG_BASE_URL: route,
+      CLOUDFLARE_AIG_API_TOKEN: 'ambiguous-token',
     } as unknown as NodeJS.ProcessEnv;
     expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
   });
 
-  it('refuses a plaintext base URL', () => {
-    const env = {
-      ...base, OPENAI_API_KEY: 'sk-bf-ct-virtual-key', OPENAI_BASE_URL: 'http://gateway.internal/v1',
-    } as unknown as NodeJS.ProcessEnv;
-    expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
-  });
-
-  it('refuses the multi-dot vendor host', () => {
-    // Normalising exactly one trailing dot was itself a bypass.
+  it('rejects a generic OpenAI-compatible publishing route', () => {
     const env = {
       ...base,
-      OPENAI_API_KEY: 'sk-bf-ct-virtual-key',
-      OPENROUTER_BASE_URL: 'https://openrouter.ai../api/v1',
+      OPENAI_API_KEY: 'generic-key',
+      OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
     } as unknown as NodeJS.ProcessEnv;
     expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
   });
 
-  it('still accepts a legitimate https gateway', () => {
+  it('rejects a malformed Cloudflare route before transport construction', () => {
     const env = {
-      ...base, OPENAI_API_KEY: 'sk-bf-ct-virtual-key', OPENAI_BASE_URL: 'https://gateway-internal.example/v1',
+      ...base,
+      CLOUDFLARE_AIG_BASE_URL: 'https://gateway.ai.cloudflare.com/v1/account/gateway/custom-provider/v1',
+      CLOUDFLARE_AIG_RUN_TOKEN: 'test-run-token',
     } as unknown as NodeJS.ProcessEnv;
-    expect(() => openaiTransport(env)).not.toThrow();
+    expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
   });
 });

@@ -693,10 +693,10 @@ func TestM4_Integration_DecoupledReceipt_ZeroWorkerContention(t *testing.T) {
 			slowReview.Status.JobName = slowReview.Name + "-worker"
 
 			publishingConfig := job.PublishingConfig{
-				GatewayBaseURL:    "https://gateway.example.invalid/v1",
+				GatewayBaseURL:    "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1",
 				Model:             "ollama/glm-5.3-flash",
 				GatewaySecretName: "review-yeti-gateway-credentials",
-				GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+				GatewaySecretKey:  "CLOUDFLARE_AIG_RUN_TOKEN",
 				CompletionURL:     slowServer.URL + "/api/dispatch/completion",
 			}
 
@@ -1004,7 +1004,7 @@ type fixtureLogSink struct {
 }
 
 func (s *fixtureLogSink) Init(logr.RuntimeInfo) {}
-func (s *fixtureLogSink) Enabled(int) bool     { return true }
+func (s *fixtureLogSink) Enabled(int) bool      { return true }
 func (s *fixtureLogSink) WithName(string) logr.LogSink {
 	return &fixtureLogSink{state: s.state, values: append([]any(nil), s.values...)}
 }

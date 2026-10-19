@@ -48,8 +48,8 @@ func missingJobFixture(t *testing.T, mode string, hooks interceptor.Funcs) (*con
 	r := &controllers.PRReviewJobV1Alpha2Reconciler{
 		Client: kube, SecretReader: kube, Scheme: scheme, Now: func() time.Time { return now },
 		Publishing: job.PublishingConfig{
-			GatewayBaseURL: "https://gateway.example.invalid/v1", Model: "ollama/glm-5.3-flash",
-			GatewaySecretName: "review-yeti-gateway-credentials", GatewaySecretKey: "REVIEW_YETI_BIFROST_API_KEY",
+			GatewayBaseURL: "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1", Model: "ollama/glm-5.3-flash",
+			GatewaySecretName: "review-yeti-gateway-credentials", GatewaySecretKey: "CLOUDFLARE_AIG_RUN_TOKEN",
 			CompletionURL: "https://dispatch.example.invalid/api/dispatch/completion",
 		},
 	}
@@ -204,8 +204,8 @@ func TestLiveRefreshA2ShipIsDurableBeforeTTLDeletesWorker(t *testing.T) {
 	r := &controllers.PRReviewJobV1Alpha2Reconciler{
 		Client: kube, Scheme: scheme, Now: func() time.Time { return now },
 		Publishing: job.PublishingConfig{
-			GatewayBaseURL: "https://gateway.example.invalid/v1", Model: "ollama/glm-5.3-flash",
-			GatewaySecretName: "review-yeti-gateway-credentials", GatewaySecretKey: "REVIEW_YETI_BIFROST_API_KEY",
+			GatewayBaseURL: "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1", Model: "ollama/glm-5.3-flash",
+			GatewaySecretName: "review-yeti-gateway-credentials", GatewaySecretKey: "CLOUDFLARE_AIG_RUN_TOKEN",
 			CompletionURL: "https://dispatch.example.invalid/api/dispatch/completion",
 		},
 	}

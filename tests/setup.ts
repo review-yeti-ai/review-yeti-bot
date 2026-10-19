@@ -16,6 +16,10 @@ import {
 
 expect.extend(matchers);
 
+// MCP fleet tests use only a synthetic route/key; no production endpoint or secret is read.
+process.env.CT_MCP_URL = 'https://mcp.example.invalid/router/mcp';
+process.env.CT_MCP_KEY = 'test-mcp-key';
+
 import supertest from 'supertest';
 import https from 'node:https';
 
@@ -104,11 +108,9 @@ process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
 // variable absent, trusted publishing boundaries use their strict default while
 // the lower-level arbitration kernel retains its documented opt-in behavior.
 delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-// REL-1069: the gateway standard is OPENAI_API_KEY + OPENAI_BASE_URL, and the
-// app's client now fails closed rather than defaulting to a vendor URL. This
-// harness simulates a CONFIGURED environment, so it must supply both, exactly
-// as a real deployment does. Previously it set only the key and relied on the
-// removed vendor default -- the gap the full-suite run exposed.
+// REL-1069: generic OpenAI-compatible callers need an explicit URL because the
+// client no longer defaults to a vendor endpoint. Publishing worker tests use
+// their own fixtures for the dedicated Cloudflare route and Run token.
 process.env.OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://gateway.test/v1';
 process.env.GITHUB_APP_ID = process.env.GITHUB_APP_ID || '123456';
 process.env.GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY || '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Z3\n-----END RSA PRIVATE KEY-----';

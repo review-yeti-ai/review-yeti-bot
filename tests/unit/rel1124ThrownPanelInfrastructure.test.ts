@@ -38,6 +38,7 @@ import { logger } from '../../src/utils/logger';
 import { getMetrics } from '../../src/telemetry';
 import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
 import { preparedCheckpointHistory } from '../support/preparedCheckpointHistory';
+import { TEST_CLOUDFLARE_AIG_BASE_URL, TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /*
  * REL-1124 (REL-1113 follow-up): a panel that THROWS on the path to the model -- a required
@@ -56,7 +57,7 @@ const ENDPOINT = 'https://dispatch.example.invalid/api/dispatch/completion';
 const PRIVATE_DETAIL = 'private_provider_transcript';
 const TOKEN = 'ghs_fake_authoritative_worker';
 const DIFF = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
-const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+const transport = { baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL, model: 'prepared-review-model' };
 const VERDICT_WORDS = /BLOCK|FIX_FIRST|SHIP|did not complete/u;
 
 afterEach(() => {
@@ -78,7 +79,7 @@ function fixture(executionAttempt = '1', reviewEngine: 'panel' | 'composed' = 'p
     REVIEW_PR_NUMBER: '42', REVIEW_HEAD_SHA: HEAD, REVIEW_BASE_SHA: BASE, REVIEW_EXECUTION_ATTEMPT: executionAttempt,
     REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest, REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
     REVIEW_PREPARED_CONFIG_JSON: JSON.stringify(envelope), REVIEW_COMPLETION_URL: ENDPOINT,
-    REVIEW_MODEL: transport.model, OPENAI_BASE_URL: transport.baseUrl, OPENAI_API_KEY: 'vk_fake',
+    REVIEW_MODEL: transport.model, ...TEST_CLOUDFLARE_AIG_SETTINGS,
     GH_TOKEN: TOKEN, GITHUB_PUBLISH_TOKEN: TOKEN, REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
   };
   const source = { baseSha: BASE, headSha: HEAD, diff: DIFF,

@@ -6,6 +6,7 @@ import { jevCostUsd, JEV_INPUT_TOKEN_USD_PER_MILLION } from '../../src/types/jev
 import { getMetrics } from '../../src/telemetry';
 import { logger } from '../../src/utils/logger';
 import type { ChangedFile } from '../../src/review/changedFiles';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * REL-1138 (calibration 2026-09-25 §6 #13): for the same window the Jev decision lines said
@@ -155,8 +156,8 @@ describe('REL-1138: decision lines, the summary line and the cost metric agree',
       REVIEW_HEAD_SHA: 'a'.repeat(40),
       REVIEW_BASE_SHA: 'b'.repeat(40),
       REVIEW_MODEL: 'ollama/glm-5.3-flash',
-      OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-      OPENAI_API_KEY: 'vk-test',
+      ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
       GH_TOKEN: 'ghs_test',
       REVIEW_YETI_JEV_SHADOW: 'true',
       ...TYPESAFE_ENV,

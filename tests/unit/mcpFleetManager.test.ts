@@ -153,19 +153,32 @@ describe('McpFleetManager Unit Tests', () => {
     expect(result.error).toContain('not found in registered MCP fleet');
   });
 
-  describe('Bifrost Gateway HTTP Federation & JSON-RPC 2.0 Transport', () => {
-    it('registers bifrost-gateway server by default and resolves ct-mcp alias', () => {
-      const servers = mcpFleetManager.getServers();
-      const bifrost = servers.find((s) => s.id === 'bifrost-gateway');
-      expect(bifrost).toBeDefined();
-      expect(bifrost?.transport).toBe('http');
-      expect(bifrost?.status).toBe('online');
-      expect(bifrost?.url).toContain('/mcp');
+  describe('Configured MCP Router HTTP Federation & JSON-RPC 2.0 Transport', () => {
+    it('rejects a retired Bifrost server registration', async () => {
+      await expect(mcpFleetManager.registerServer({
+        id: 'bifrost-gateway',
+        name: 'Retired Bifrost MCP Gateway',
+        transport: 'http',
+        url: 'https://bifrost.example.invalid/mcp',
+        enabled: true,
+        status: 'online',
+        toolsCount: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      })).rejects.toThrow('retired Bifrost MCP servers are unsupported');
+      expect(mcpFleetManager.getServer('bifrost-gateway')).toBeUndefined();
+    });
 
-      // Test alias resolution
-      const viaAlias = mcpFleetManager.getServer('ct-mcp');
-      expect(viaAlias).toBeDefined();
-      expect(viaAlias?.id).toBe('bifrost-gateway');
+    it('registers the configured ct-mcp router', () => {
+      const servers = mcpFleetManager.getServers();
+      const ctMcp = servers.find((s) => s.id === 'ct-mcp');
+      expect(ctMcp).toBeDefined();
+      expect(ctMcp?.transport).toBe('http');
+      expect(ctMcp?.name).toBe('Configured MCP Router');
+      expect(ctMcp?.status).toBe('online');
+      expect(ctMcp?.url).toBe('https://mcp.example.invalid/router/mcp');
+
+      expect(mcpFleetManager.getServer('bifrost-gateway')).toBeUndefined();
 
       // Verify canonical fleet tools are pre-registered
       const registeredTools = mcpFleetManager.getRegisteredTools();
@@ -176,6 +189,40 @@ describe('McpFleetManager Unit Tests', () => {
       expect(registeredTools).toContain('knowledge_get');
       expect(registeredTools).toContain('advise_blocker');
       expect(registeredTools).toContain('health');
+    });
+
+    it('does not send the dedicated MCP key to a custom server that reuses the router name', async () => {
+      const originalKey = process.env.CT_MCP_KEY;
+      const serverId = `custom_router_name_${Date.now()}`;
+      let capturedHeaders: Record<string, string> = {};
+      process.env.CT_MCP_KEY = 'dedicated-mcp-key-test';
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+        capturedHeaders = (init?.headers || {}) as Record<string, string>;
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools: [] } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      try {
+        await mcpFleetManager.registerServer({
+          id: serverId,
+          name: 'Configured MCP Router',
+          transport: 'http',
+          url: 'https://custom.example.invalid/mcp',
+          enabled: true,
+          status: 'online',
+          toolsCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        expect(capturedHeaders).not.toHaveProperty('Authorization');
+        expect(capturedHeaders).not.toHaveProperty('x-api-key');
+      } finally {
+        await mcpFleetManager.unregisterServer(serverId);
+        if (originalKey === undefined) delete process.env.CT_MCP_KEY;
+        else process.env.CT_MCP_KEY = originalKey;
+      }
     });
 
     it('discovers tools from HTTP server via JSON-RPC tools/list with auth headers', async () => {
@@ -207,7 +254,7 @@ describe('McpFleetManager Unit Tests', () => {
       });
 
       try {
-        const discovered = await mcpFleetManager.discoverTools('bifrost-gateway');
+        const discovered = await mcpFleetManager.discoverTools('ct-mcp');
         expect(discovered).toContain('ct_impact_dynamic');
         expect(mcpFleetManager.hasTool('ct_impact_dynamic')).toBe(true);
       } finally {
@@ -453,18 +500,12 @@ describe('McpFleetManager Unit Tests', () => {
       // environment: mock, cache or remove that lookup and the test silently stops
       // discriminating (REL-1116 review). Here the slow setup is SUPPLIED, not hoped for.
       //
-      // `resolveBifrostApiKey()` is skipped whenever an env key is present, and otherwise awaits
+      // `resolveCtMcpApiKey()` is skipped whenever an env key is present, and otherwise awaits
       // `dopplerManager.getSecret()`. With no env key set, stubbing that method to a 300ms
       // resolve makes setup deterministic: with the timer armed before it (pre-fix placement)
       // the budget expires during setup and the request is never dispatched; with the timer
       // armed at the request boundary it is.
-      const savedKey = process.env.REVIEW_YETI_BIFROST_API_KEY;
-      const savedGateway = process.env.CT_LLM_GATEWAY_API_KEY;
-      const savedBifrost = process.env.BIFROST_API_KEY;
       const savedMcp = process.env.CT_MCP_KEY;
-      delete process.env.REVIEW_YETI_BIFROST_API_KEY;
-      delete process.env.CT_LLM_GATEWAY_API_KEY;
-      delete process.env.BIFROST_API_KEY;
       delete process.env.CT_MCP_KEY;
 
       const manager = mcpFleetManager as unknown as {
@@ -501,9 +542,6 @@ describe('McpFleetManager Unit Tests', () => {
       } finally {
         fetchSpy.mockRestore();
         manager.dopplerManager.getSecret = originalGetSecret;
-        if (savedKey !== undefined) process.env.REVIEW_YETI_BIFROST_API_KEY = savedKey;
-        if (savedGateway !== undefined) process.env.CT_LLM_GATEWAY_API_KEY = savedGateway;
-        if (savedBifrost !== undefined) process.env.BIFROST_API_KEY = savedBifrost;
         if (savedMcp !== undefined) process.env.CT_MCP_KEY = savedMcp;
       }
     });

@@ -744,7 +744,7 @@ export class NormalEngineQualificationReceiptPersistError extends Error {
   }
 }
 
-const PROVIDER_FAILURE_INVALID_KEY = 'qualification-invalid-bifrost-inference-key';
+const PROVIDER_FAILURE_INVALID_KEY = 'qualification-invalid-gateway-run-token';
 const COMPOSED_ENGINE_AMBIENT_OVERRIDE_KEYS = [
   'COMPOSED_ENGINE_MAX_TURNS',
   'COMPOSED_ENGINE_MAX_FINDINGS',
@@ -752,7 +752,7 @@ const COMPOSED_ENGINE_AMBIENT_OVERRIDE_KEYS = [
   'REVIEW_YETI_MAX_CONCURRENT_LANES',
 ] as const;
 const QUALIFICATION_CHILD_ENVIRONMENT_KEYS = [
-  'OPENAI_BASE_URL', 'OPENAI_API_KEY', 'REVIEW_MODEL',
+  'CLOUDFLARE_AIG_BASE_URL', 'CLOUDFLARE_AIG_RUN_TOKEN', 'REVIEW_MODEL',
   'REVIEW_NORMAL_ENGINE_QUALIFICATION_ONLY', 'REVIEW_NORMAL_ENGINE_QUALIFICATION_RUN_ID',
   'REVIEW_NORMAL_ENGINE_QUALIFICATION_CASE_ID', 'REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM',
   'REVIEW_NORMAL_ENGINE_QUALIFICATION_HISTORY_RUN_ID', 'REVIEW_NORMAL_ENGINE_QUALIFICATION_SOURCE_REVISION',
@@ -779,11 +779,11 @@ function assertNoAmbientComposedEngineOverrides(): void {
 function qualificationChildEnvironment(env: NodeJS.ProcessEnv, arm: NormalEngineQualificationArm): NodeJS.ProcessEnv {
   const child: Record<string, string | undefined> = {};
   for (const key of QUALIFICATION_CHILD_ENVIRONMENT_KEYS) {
-    if (key === 'OPENAI_API_KEY' && arm === 'provider-failure') continue;
+    if (arm === 'provider-failure' && key === 'CLOUDFLARE_AIG_RUN_TOKEN') continue;
     const value = env[key];
     if (typeof value === 'string') child[key] = value;
   }
-  if (arm === 'provider-failure') child.OPENAI_API_KEY = PROVIDER_FAILURE_INVALID_KEY;
+  if (arm === 'provider-failure') child.CLOUDFLARE_AIG_RUN_TOKEN = PROVIDER_FAILURE_INVALID_KEY;
   child.REVIEW_REPOSITORY_VISIBILITY = 'PUBLIC';
   return child as NodeJS.ProcessEnv;
 }
@@ -995,7 +995,8 @@ export async function runNormalEngineQualificationCase(
   attestor.bindCaptureContext(providerCaptureBinding);
   const client = dependencies.clientFactory?.(request, attestor)
     || (() => {
-      const provider = new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey, fetchImplementation: attestor.fetch,
+      const provider = new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey,
+        authorizationHeaderName: transport.authorizationHeaderName, fetchImplementation: attestor.fetch,
         ...(request.arm === 'provider-failure' || request.arm === 'resource-exhaustion' ? { maxRetries: 0 } : {}) });
       return { complete: (modelRequest: OpenRouterRequest, context?: GroundedVerifierRequestContextV1) =>
         attestor.run(modelRequest, () => provider.complete(modelRequest), {

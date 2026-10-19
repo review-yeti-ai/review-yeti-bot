@@ -60,6 +60,7 @@ import {
 } from '../../../src/mcp/server/tools/schemas';
 import { createRemoteMcpRouter } from '../../../src/mcp/server/remoteMcpRouter';
 import { JSONRPC_ERRORS, MCP_ERRORS } from '../../../src/mcp/server/mcpTypes';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../../support/cloudflareGateway';
 
 describe('Tier 5: Adversarial Coverage Hardening (tests/e2e/mcp/tier5InboundAdversarial.test.ts)', () => {
   let env: E2eTestEnvironment;
@@ -1281,8 +1282,8 @@ index 1111111..2222222 100644
         REVIEW_HEAD_SHA: 'a'.repeat(40),
         REVIEW_BASE_SHA: 'b'.repeat(40),
         REVIEW_MODEL: 'deepseek/deepseek-v4-flash-0731',
-        OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-        OPENAI_API_KEY: 'vk-test',
+        ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
         GH_TOKEN: 'ghs_test',
         REVIEW_CHECK_ID: '9999',
       };

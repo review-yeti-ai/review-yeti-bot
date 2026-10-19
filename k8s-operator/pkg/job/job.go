@@ -150,8 +150,8 @@ const (
 	// created, and that coupling is what the review flagged as unpinned. Naming
 	// them once makes a rename a compile-visible change instead of a silent
 	// literal drift across two files.
-	QualificationGatewayKeyEnv = "OPENAI_API_KEY"
-	QualificationGatewayURLEnv = "OPENAI_BASE_URL"
+	QualificationGatewayKeyEnv = "CLOUDFLARE_AIG_RUN_TOKEN"
+	QualificationGatewayURLEnv = "CLOUDFLARE_AIG_BASE_URL"
 	// WorkerContainerName is the single worker container's name. The
 	// controller reads that container's termination state by this name.
 	WorkerContainerName = "reviewer-worker"
@@ -236,10 +236,12 @@ type Input struct {
 	Phase string
 }
 
-// PublishingConfig configures the app-gate publishing lane. Bifrost is the only
-// admitted transport (ADR 0527): there is no second provider and no default, so a
-// missing or malformed field refuses the Job rather than silently reviewing
-// against something else.
+// PublishingConfig configures the app-gate publishing lane. Cloudflare AI
+// Gateway dynamic routes use /compat with a dynamic/<route> model; direct
+// custom-provider routes use a concrete upstream model and do not execute the
+// dynamic route's fallback graph. Neither route nor model has a default, so
+// malformed or incomplete values refuse the Job before a worker can issue a
+// request.
 type PublishingConfig struct {
 	GatewayBaseURL    string
 	Model             string
@@ -668,10 +670,10 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		}
 		env = append(env,
 			corev1.EnvVar{Name: TerminalDeadlineEnv, Value: spec.TerminalDeadline.UTC().Format(time.RFC3339Nano)},
-			corev1.EnvVar{Name: "OPENAI_BASE_URL", Value: gatewayURL},
+			corev1.EnvVar{Name: "CLOUDFLARE_AIG_BASE_URL", Value: gatewayURL},
 			corev1.EnvVar{Name: "REVIEW_MODEL", Value: reviewModel},
 			corev1.EnvVar{
-				Name: "OPENAI_API_KEY",
+				Name: "CLOUDFLARE_AIG_RUN_TOKEN",
 				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: input.Publishing.GatewaySecretName},
 					Key:                  input.Publishing.GatewaySecretKey,
@@ -1143,6 +1145,22 @@ func validatePublishing(config PublishingConfig) error {
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return configErr("publishing gateway URL must be an absolute https URL")
 	}
+	if config.GatewaySecretKey != "CLOUDFLARE_AIG_RUN_TOKEN" {
+		return configErr("publishing gateway secret key must be CLOUDFLARE_AIG_RUN_TOKEN")
+	}
+	lowerModel := strings.ToLower(config.Model)
+	compatRoute := isCloudflareCompatURL(parsed)
+	customProviderRoute := isCloudflareCustomProviderURL(parsed)
+	if !compatRoute && !customProviderRoute {
+		return configErr("publishing gateway URL must be a Cloudflare AI Gateway compat or custom-provider route")
+	}
+	dynamicRouteModel := isCloudflareDynamicRouteModel(config.Model)
+	if compatRoute != dynamicRouteModel {
+		return configErr("dynamic route models require /compat; provider-native routes require a concrete model")
+	}
+	if lowerModel == "pr-reviewer" || strings.HasPrefix(lowerModel, "bifrost/") {
+		return configErr("publishing model must be an explicit upstream model id or dynamic route")
+	}
 	if config.CompletionURL != "" {
 		completion, err := url.Parse(config.CompletionURL)
 		if err != nil || completion.Scheme != "https" || completion.Host == "" || completion.User != nil || completion.Fragment != "" {
@@ -1193,6 +1211,79 @@ func validatePublishing(config PublishingConfig) error {
 		return configErr("map-reduce min chars contains a line break")
 	}
 	return nil
+}
+
+func isCloudflareAIGatewayBaseURL(parsed *url.URL) bool {
+	if parsed == nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), "gateway.ai.cloudflare.com") ||
+		parsed.Port() != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
+		parsed.EscapedPath() != parsed.Path {
+		return false
+	}
+	return true
+}
+
+func isCloudflareDynamicRouteModel(model string) bool {
+	if !strings.HasPrefix(model, "dynamic/") {
+		return false
+	}
+	route := strings.TrimPrefix(model, "dynamic/")
+	if route == "" {
+		return false
+	}
+	for _, char := range route {
+		if !((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func isCloudflareCompatURL(parsed *url.URL) bool {
+	if !isCloudflareAIGatewayBaseURL(parsed) {
+		return false
+	}
+	parts := strings.Split(parsed.Path, "/")
+	if len(parts) != 5 || parts[0] != "" || parts[1] != "v1" || parts[4] != "compat" || len(parts[2]) != 32 || parts[3] == "" {
+		return false
+	}
+	for _, char := range parts[2] {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
+	}
+	for _, char := range parts[3] {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func isCloudflareCustomProviderURL(parsed *url.URL) bool {
+	if !isCloudflareAIGatewayBaseURL(parsed) {
+		return false
+	}
+	parts := strings.Split(parsed.Path, "/")
+	if len(parts) != 6 || parts[0] != "" || parts[1] != "v1" || parts[5] != "v1" ||
+		len(parts[2]) != 32 || parts[3] == "" || !strings.HasPrefix(parts[4], "custom-") ||
+		len(parts[4]) == len("custom-") {
+		return false
+	}
+	for _, char := range parts[2] {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
+	}
+	for _, slug := range []string{parts[3], strings.TrimPrefix(parts[4], "custom-")} {
+		for _, char := range slug {
+			if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+				(char >= '0' && char <= '9') || char == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validateQualification(profile, model string) error {

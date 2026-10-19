@@ -5,18 +5,18 @@
  * down the receipt-only branch, and the only two non-receipt profiles are manual
  * qualification lanes that *assert* `REVIEW_PUBLICATION_MODE === 'disabled'` and
  * hardcode `githubWrites: 0`. This module is the missing lane -- it reads the real
- * pull request at the admitted head, runs the persona panel through the Bifrost
- * gateway, and publishes a fail-closed App check.
+ * pull request at the admitted head, runs the persona panel through its
+ * configured OpenAI-compatible gateway, and publishes a fail-closed App check.
  *
  * Two invariants this file exists to enforce:
  *
- * 1. **Bifrost only.** The legacy `runLiveReviewMain` defaults its base URL to
+ * 1. **One configured gateway.** The legacy `runLiveReviewMain` defaults its base URL to
  *    `openrouter.ai` and its repository to a hardcoded fallback. Reaching it from a
  *    Kubernetes dispatch would review the wrong repository against the wrong provider.
  *    Here the gateway base URL and key are *required*; there is no default and no
  *    second transport. That includes rate limiting: a provider 429 is ridden out on the same
- *    gateway (cross-review concurrency leases, then the engines' rate-limit ladder), never by
- *    falling back to another transport or provider -- see `providerPublishingModelClient`.
+ *    configured gateway (cross-review concurrency leases, then the engines' rate-limit ladder),
+ *    never by falling back to another transport or provider -- see `providerPublishingModelClient`.
  *
  * 2. **Fail closed.** Only a clean panel verdict produces `success`. Provider
  *    failure, panel failure, a non-shipping verdict, or any unexpected error all
@@ -181,11 +181,9 @@ export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths }
 /**
  * Hard ceiling for every model call made by the hosted publishing worker.
  *
- * Bifrost may route the `pr-reviewer` alias through OpenRouter. OpenRouter
- * reserves credit against the request's declared completion ceiling and, when
- * `max_tokens` is absent, uses the model's full 131,072-token output limit. A
- * healthy funded key can therefore reject an ordinary review before generation
- * starts. Reserve a large emergency ceiling: reasoning and final JSON share
+ * The provider-native Cloudflare custom route uses an explicit upstream model
+ * id; the retired `pr-reviewer` alias is rejected at the transport boundary.
+ * Reserve a large completion ceiling because reasoning and final JSON share
  * the allowance, and 8,000 tokens proved insufficient on run 36595979843.
  * Apply the same ceiling to persona, moderator, arbiter, and composed-engine
  * calls while direct transports retain their deliberately uncapped behaviour.
@@ -206,11 +204,11 @@ function boundedPublishingModelClient(client: ReviewModelClient): ReviewModelCli
 }
 
 /**
- * The publishing worker's model client: the bounded Bifrost client, wrapped with the cross-review
+ * The publishing worker's model client: the bounded gateway client, wrapped with the cross-review
  * provider concurrency limit (`../gateway/concurrencyLimitedModelClient`).
  *
  * Deliberately NO fallback transport. The policy schema's provider pool
- * (`../gateway/providerPool`) can describe several providers, but this lane is Bifrost-only by
+ * (`../gateway/providerPool`) can describe several providers, but this lane is single-transport by
  * invariant (module header): the gateway owns model routing and any fallback targets. When the one
  * upstream behind the review alias is saturated, the remedies are the ones applied here -- hold at
  * most the configured number of concurrent calls across all reviews (leases) and per worker (local
@@ -450,7 +448,7 @@ export interface PublishingReviewReceipt {
   headSha: string;
   baseSha: string;
   publicationMode: typeof PUBLICATION_MODE_APP_GATE | 'disabled';
-  transport: 'bifrost';
+  transport: 'cloudflare-ai-gateway' | 'openai-compatible';
   model: string;
   verdict: string;
   conclusion: PublishingConclusion;
@@ -576,7 +574,7 @@ function validateConfiguredCompletionEndpoint(endpoint: string): void {
 }
 
 /**
- * Bifrost is the only admitted transport. Both the base URL and the key are
+ * The provider-native Cloudflare route and Run token are the intended transport. Both the base URL and key are
  * required: defaulting either one is how a misconfigured worker silently reviews
  * against the wrong provider.
  */
@@ -921,10 +919,19 @@ function renderUnreportedLanes(panelResult: PanelResult): string | null {
  * alias. Publish both whenever they differ instead of only the requested value, so a reader is
  * never left assuming the alias and the served model are the same thing.
  */
-function renderTransportSummary(requestedModel: string, resolvedModel?: string): string {
+function renderTransportSummary(
+  requestedModel: string,
+  resolvedModel: string | undefined,
+  transportName: PublishingReviewReceipt['transport'],
+): string {
   return resolvedModel && resolvedModel !== requestedModel
-    ? `Transport: bifrost \`${requestedModel}\` (resolved \`${resolvedModel}\`).`
-    : `Transport: bifrost \`${requestedModel}\`.`;
+    ? `Transport: ${transportName} \`${requestedModel}\` (resolved \`${resolvedModel}\`).`
+    : `Transport: ${transportName} \`${requestedModel}\`.`;
+}
+
+function transportNameForEnvironment(env: NodeJS.ProcessEnv): PublishingReviewReceipt['transport'] {
+  return value(env, 'CLOUDFLARE_AIG_BASE_URL') || value(env, 'CLOUDFLARE_AIG_RUN_TOKEN')
+    ? 'cloudflare-ai-gateway' : 'openai-compatible';
 }
 
 function renderTelemetrySummary(telemetry: {
@@ -1162,7 +1169,7 @@ export interface PublishingReviewDeps {
   /** Injectable for tests. Used only when `resolveReviewEngine(workerConfig)` selects `'composed'`. */
   composedReviewRunner?: typeof executeComposedReview;
   client?: ReviewModelClient;
-  /** Separate grounded-verifier seam; production leaves it unset so the lane uses the metered Bifrost client. */
+  /** Separate grounded-verifier seam; production leaves it unset so the lane uses the metered gateway client. */
   groundedVerifierClient?: ReviewModelClient;
   now?: () => number;
   /** Worker/runtime shutdown signal; linked to the panel's configured deadline. */
@@ -1808,7 +1815,8 @@ export async function runPublishingReviewWorker(
               ...(panelFailure ? [renderCoverageSummary(panelFailure.coverage)] : []),
               ...(panelFailure?.panelEvidence
                 ? [
-                    renderTransportSummary(panelFailure.panelEvidence.requestedModel, panelFailure.panelEvidence.resolvedModel),
+                    renderTransportSummary(panelFailure.panelEvidence.requestedModel, panelFailure.panelEvidence.resolvedModel,
+                      transportNameForEnvironment(env)),
                     renderTelemetrySummary(panelFailure.panelEvidence.telemetry),
                     ...(panelFailure.panelEvidence.failedLanes.length > 0
                       ? [renderFailedLanesSummary(panelFailure.panelEvidence.failedLanes)]
@@ -1857,6 +1865,8 @@ export async function runPublishingReviewWorker(
     // worker can still persist a durable terminal failure for a configuration
     // error. The check id remains optional only for createCheck failures.
     const transport = openaiTransport(env);
+    const transportName = transport.authorizationHeaderName === 'cf-aig-authorization'
+      ? 'cloudflare-ai-gateway' : 'openai-compatible';
     const baseWorkerConfig = authoritative || qualificationOnly
       ? parsePreparedReviewExecution(value(env, 'REVIEW_PREPARED_CONFIG_JSON'), preparedConfigDigest || '',
         { baseUrl: transport.baseUrl, model: transport.model }).config
@@ -2198,7 +2208,8 @@ export async function runPublishingReviewWorker(
     } : undefined;
 
     const modelClient = providerPublishingModelClient(boundedPublishingModelClient(
-      deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey }),
+      deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey,
+        authorizationHeaderName: transport.authorizationHeaderName }),
     ), env, deps.providerLease, now);
     const preparedComposedBudget = workerConfig.review_configuration_receipt?.effective.composed_budget;
     const preparedAttemptBudget = preparedComposedBudget?.provider_attempt_budget;
@@ -2655,7 +2666,7 @@ export async function runPublishingReviewWorker(
               ...(verdictCacheScope ? { verdictCache: verdictCacheScope } : {}),
               ...(mapReduce ? { mapReduce } : {}),
               planningHistoryContext,
-              // Same upstream production Bifrost native JSON contract as the panel call below.
+              // Same upstream production OpenAI-compatible JSON contract as the panel call below.
               requestPolicy: { responseFormat: { type: 'json_object' } },
               publisherShadow: true,
             } as Parameters<typeof executeComposedReview>[0]);
@@ -2712,7 +2723,7 @@ export async function runPublishingReviewWorker(
           // arbiter. Eligibility is logged on every run either way.
           ...(skipEmptyModerationEnabledFor(env, identity.repo) ? { skipEmptyModeration: true } : {}),
           ...(unreadable.length > 0 ? { unreadableDiffHeaders: unreadable.length } : {}),
-          // Keep the upstream production Bifrost native JSON contract while
+          // Keep the upstream production OpenAI-compatible JSON contract while
           // enforcing the worker's overall cancellation boundary.
           requestPolicy: { responseFormat: { type: 'json_object' } },
         } as Parameters<typeof executePersonaPanel>[0]);
@@ -3331,7 +3342,7 @@ export async function runPublishingReviewWorker(
           `- **Rationale**: \`${safeClassifierRationale}\``,
           groundedReviewSummary,
           renderCoverageSummary(coverage, reviewEngine, panelResult.taskPlan?.length),
-          renderTransportSummary(transport.model, resolvedTransportModel),
+          renderTransportSummary(transport.model, resolvedTransportModel, transportName),
           `Repository visibility: ${repositoryVisibility}.`,
         ]
       : fastShipApproved
@@ -3352,7 +3363,7 @@ export async function runPublishingReviewWorker(
           renderCoverageSummary(coverage, reviewEngine, panelResult.taskPlan?.length),
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           ...renderReviewDepthDisclosure(panelResult),
-          renderTransportSummary(transport.model, resolvedTransportModel),
+          renderTransportSummary(transport.model, resolvedTransportModel, transportName),
           `Repository visibility: ${repositoryVisibility}.`,
         ]
       : [
@@ -3398,7 +3409,7 @@ export async function runPublishingReviewWorker(
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           ...renderReviewDepthDisclosure(panelResult),
           ...(renderUnreportedLanes(panelResult) ? [renderUnreportedLanes(panelResult)!] : []),
-          renderTransportSummary(transport.model, resolvedTransportModel),
+          renderTransportSummary(transport.model, resolvedTransportModel, transportName),
           `Repository visibility: ${repositoryVisibility}.`,
           renderTelemetrySummary({
             totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs,
@@ -3688,7 +3699,7 @@ export async function runPublishingReviewWorker(
         summary: [
           infrastructureSummary,
           renderCoverageSummary(coverage, reviewEngine, panelResult.taskPlan?.length),
-          renderTransportSummary(transport.model, resolvedTransportModel),
+          renderTransportSummary(transport.model, resolvedTransportModel, transportName),
           renderTelemetrySummary({ totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs, tokenAccounting }),
           renderFailedLanesSummary(failedLanes),
           ...(workerLogLocator ? [workerLogLocator] : []),
@@ -3911,7 +3922,7 @@ export async function runPublishingReviewWorker(
       headSha: identity.headSha,
       baseSha: identity.baseSha,
       publicationMode: qualificationOnly ? 'disabled' : PUBLICATION_MODE_APP_GATE,
-      transport: 'bifrost',
+      transport: transportName,
       model: transport.model,
       // A review with an unreported malformed task has no verdict either; neither failure
       // may report arbitration's BLOCK, which was derived only from incomplete coverage.
@@ -4003,7 +4014,7 @@ export async function runPublishingReviewWorker(
         headSha: identity.headSha,
         baseSha: identity.baseSha,
         publicationMode: qualificationOnly ? 'disabled' : PUBLICATION_MODE_APP_GATE,
-        transport: 'bifrost',
+        transport: transportNameForEnvironment(env),
         model: value(env, 'REVIEW_MODEL'),
         verdict: 'INCOMPLETE',
         conclusion: 'failure',

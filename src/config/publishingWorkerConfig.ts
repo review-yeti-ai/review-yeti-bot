@@ -30,6 +30,8 @@ export const PUBLISHING_MAX_TURNS = 15;
 export const PUBLISHING_IDLE_TIMEOUT_SECONDS = 180;
 /** Evidence phase only. The admitted lifecycle reserves another five minutes for closeout. */
 export const PUBLISHING_OVERALL_TIMEOUT_SECONDS = 1200;
+/** Canonical Neuralwatt standard-tier model route for the app-gate publishing lane. */
+export const NEURALWATT_FLASH_ROUTE_MODEL = 'dynamic/nw-flash' as const;
 const INACTIVE_CONFIDENCE_THRESHOLD_REASON = 'The publishing worker does not consume confidence_threshold; a self-reported score cannot reduce evidence requirements or change blocker eligibility.';
 
 let cachedCompiledIndex: CompiledDomainIndex | null = null;
@@ -307,15 +309,22 @@ function normalizeComposedOverrides(value: unknown): ComposedEngineConfig {
 
 const SUPPORTED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
-function resolveBifrostEffort(policy: Record<string, any> | undefined): { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'; requested?: string } {
+function resolveBifrostEffort(
+  policy: Record<string, any> | undefined,
+  model: string,
+): { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'; requested?: string } {
+  const requiredEffort = model === NEURALWATT_FLASH_ROUTE_MODEL ? 'low' : undefined;
   const transports: unknown = policy?.transports;
-  if (transports === undefined) return { effort: 'medium' };
+  if (transports === undefined) return { effort: requiredEffort ?? 'medium' };
   if (!Array.isArray(transports)) throw new Error('central transports must be an array');
   const enabled = transports.filter((item) => item && typeof item === 'object' && item.name === 'bifrost' && item.enabled === true);
   if (enabled.length !== 1) throw new Error('central policy must enable exactly one Bifrost transport');
   const requested = enabled[0].reasoning_effort;
   if (typeof requested !== 'string' || !SUPPORTED_EFFORTS.has(requested)) {
     throw new Error('unsupported Bifrost reasoning_effort');
+  }
+  if (requiredEffort && requested !== requiredEffort) {
+    throw new Error(`Neuralwatt ${model} requires reasoning_effort ${requiredEffort}`);
   }
   return { effort: requested as 'low' | 'medium' | 'high' | 'xhigh' | 'max', requested };
 }
@@ -355,7 +364,8 @@ export function resolveWorkerConfig(
   let severityPolicy: 'review-yeti-severity.v2' | undefined;
   let requestedProfile: 'chill' | 'balanced' | 'assertive' = baseConfig.profile;
   let requestedBifrostEffort: string | undefined;
-  let bifrostEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' = 'medium';
+  let bifrostEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' =
+    transport.model === NEURALWATT_FLASH_ROUTE_MODEL ? 'low' : 'medium';
   let requestedConfidenceThreshold: number | null = null;
   let effectiveConfidenceThreshold = baseConfig.confidence_threshold
     ?? baseConfig.reviews?.confidence_threshold ?? baseConfig.dials?.confidence_threshold ?? 70;
@@ -400,7 +410,7 @@ export function resolveWorkerConfig(
       const confidenceThreshold = resolveInactiveConfidenceThreshold(policy, effectiveConfidenceThreshold);
       requestedConfidenceThreshold = confidenceThreshold.requested;
       effectiveConfidenceThreshold = confidenceThreshold.effective;
-      const bifrost = resolveBifrostEffort(policy);
+      const bifrost = resolveBifrostEffort(policy, transport.model);
       bifrostEffort = bifrost.effort;
       requestedBifrostEffort = bifrost.requested;
       configuredMcpServers = enabledMcpServerIds(policy);
@@ -582,7 +592,9 @@ export function resolveWorkerConfig(
     reviewer_effort: bifrostEffort,
     reviewers: {
       execution: 'personas',
-      fallback: 'ordered',
+      // The single Cloudflare dynamic route owns its configured fallback graph.
+      // Do not let the worker try another provider or transport for this model.
+      fallback: transport.model === NEURALWATT_FLASH_ROUTE_MODEL ? 'none' : 'ordered',
       overall_timeout_s: PUBLISHING_OVERALL_TIMEOUT_SECONDS,
       providers: [
         {
