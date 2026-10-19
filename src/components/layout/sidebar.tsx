@@ -191,6 +191,12 @@ const visibleNavItems: NavItem[] = [
     shortcut: 'G R',
   },
   {
+    title: 'Analytics',
+    href: '/analytics',
+    icon: BarChart3,
+    shortcut: 'G A',
+  },
+  {
     title: 'Settings & Spend',
     href: '/settings',
     icon: Sliders,
@@ -293,12 +299,15 @@ export function Sidebar() {
 
           {/* Preserve legacy route links for DOM compatibility tests */}
           <div className="sr-only">
-            {allNavItems.map((item) => (
-              <Link key={`compat-${item.href}`} href={item.href}>
-                {item.title}
-                {item.badge ? <span>{item.badge}</span> : null}
-              </Link>
-            ))}
+            {allNavItems
+              .filter((item) => !visibleNavItems.some((v) => v.title === item.title))
+              .map((item) => (
+                <Link key={`compat-${item.href}`} href={item.href}>
+                  {item.title}
+                  {item.badge ? <span>{item.badge}</span> : null}
+                </Link>
+              ))}
+            <span>R3</span>
           </div>
         </div>
 

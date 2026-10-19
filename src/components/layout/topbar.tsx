@@ -63,6 +63,10 @@ const cleanPageTitles: Record<string, { label: string; subtitle: string }> = {
     label: 'Repositories & Areas',
     subtitle: 'Per-repository triggers, policy inheritance, and codebase area activity',
   },
+  '/analytics': {
+    label: 'Analytics',
+    subtitle: 'Signal-to-noise ratio, bugs resolved before merge, Approvability, and spend',
+  },
   '/settings': {
     label: 'Settings & Spend Controls',
     subtitle: 'Detection mode defaults, .reviewyeti/ rules, Approvability, and spend limits',
