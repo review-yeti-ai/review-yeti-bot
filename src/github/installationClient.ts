@@ -480,6 +480,38 @@ export class GitHubInstallationClient {
   }
 
   /**
+   * Updates the body of a pull request via `PATCH /repos/:owner/:repo/pulls/:pull_number`.
+   */
+  async updatePullRequestBody(owner: string, repo: string, prNumber: number, body: string): Promise<void> {
+    await this.request(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${prNumber}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ body }),
+    });
+  }
+
+  /**
+   * Updates the Review Yeti summary block (`<!-- review-yeti:summary:start -->...<!-- review-yeti:summary:end -->`)
+   * in-place inside the pull request description while preserving all user-authored text.
+   */
+  async syncPullRequestSummaryBlock(
+    owner: string,
+    repo: string,
+    prNumber: number,
+    summaryMarkdown: string,
+    existingBody?: string,
+  ): Promise<string> {
+    const { upsertPRDescriptionSummary } = await import('../review/summaryEngine');
+    const currentBody = existingBody !== undefined
+      ? existingBody
+      : (await this.getPullRequest(owner, repo, prNumber)).body;
+    const nextBody = upsertPRDescriptionSummary(currentBody, summaryMarkdown);
+    if (nextBody !== currentBody) {
+      await this.updatePullRequestBody(owner, repo, prNumber, nextBody);
+    }
+    return nextBody;
+  }
+
+  /**
    * Queries pull requests for a repository with bounded pagination.
    */
   async listPullRequests(

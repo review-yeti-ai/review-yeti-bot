@@ -713,10 +713,12 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
 
         const summary = checkSummary(panel);
         const ship = panel.arbiter.verdict === 'SHIP';
+        const effectiveMinSeverity = config.min_severity ?? config.reviews?.min_severity;
         const finalInline = buildFinalInlineComments({
           findings: retainedFindings,
           max: MAX_FINAL_INLINE_COMMENTS,
           changedFiles: reviewChangedFiles,
+          ...(effectiveMinSeverity ? { minSeverity: effectiveMinSeverity } : {}),
         });
         await assertCurrentHead();
         const final = await github.publishReview({

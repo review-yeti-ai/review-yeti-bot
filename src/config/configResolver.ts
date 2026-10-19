@@ -1,7 +1,26 @@
 import yaml from 'js-yaml';
-import { CtReviewConfigV3, CtReviewConfigV4, ctReviewConfigV3Schema, PreChecksConfig } from './schema';
+import {
+  CtReviewConfigV3,
+  CtReviewConfigV4,
+  ctReviewConfigV3Schema,
+  PreChecksConfig,
+  DetectionMode,
+  MinimumSeverity,
+  resolveDetectionModeSettings,
+} from './schema';
 import { parseAndValidateConfig, createDefaultV3Config, ConfigValidationError, translateLegacyConfigToV3, sanitizeV3Config, normalizeConfigToV4 } from './configLoader';
+import {
+  loadReviewYetiDirectoryFromFiles,
+  applyReviewYetiDirectoryToConfig,
+  ReviewYetiDirectoryConfig,
+} from './reviewYetiDirLoader';
 import { sha256 } from '../review/reviewCore';
+
+export {
+  loadReviewYetiDirectoryFromFiles,
+  applyReviewYetiDirectoryToConfig,
+  type ReviewYetiDirectoryConfig,
+};
 
 export interface RepositoryContentClient {
   getFileContent(owner: string, repo: string, path: string, ref?: string): Promise<string | null>;
@@ -137,6 +156,41 @@ export class ConfigResolver {
     return null;
   }
 
+  /**
+   * Resolves repository-native `.reviewyeti/` Markdown and ignore files (`.reviewyeti/ignore`,
+   * `.reviewyeti/instructions.md`, `.reviewyetiignore`) using a `RepositoryContentClient`.
+   */
+  public async resolveReviewYetiDirectory(
+    owner: string,
+    repo: string,
+    ref: string | undefined,
+    client: RepositoryContentClient,
+    extraPaths: string[] = []
+  ): Promise<ReviewYetiDirectoryConfig> {
+    const candidateFiles = Array.from(
+      new Set([
+        '.reviewyetiignore',
+        'reviewyeti.md',
+        '.reviewyeti/ignore',
+        '.reviewyeti/ignore.md',
+        '.reviewyeti/instructions.md',
+        ...extraPaths,
+      ])
+    );
+
+    const fileMap: Record<string, string | null> = {};
+    for (const relPath of candidateFiles) {
+      const content = ref !== undefined
+        ? await client.getFileContent(owner, repo, relPath, ref)
+        : await client.getFileContent(owner, repo, relPath);
+      if (content !== null && content !== undefined) {
+        fileMap[relPath] = content;
+      }
+    }
+
+    return loadReviewYetiDirectoryFromFiles(fileMap);
+  }
+
   public deepMergeConfigs(
     sys: CtReviewConfigV3,
     org: any | null,
@@ -145,19 +199,59 @@ export class ConfigResolver {
     const orgObj = org || {};
     const repoObj = repo || {};
 
-    // 1. Resolve top-level scalars
-    const profile = repoObj.profile ?? orgObj.profile ?? sys.profile;
+    // 1. Resolve Detection Mode (`fast` | `balanced` | `deep`) & Minimum Severity (`low` | `medium` | `high` | `critical`)
+    const rawMode =
+      repoObj.mode ??
+      repoObj.reviews?.mode ??
+      orgObj.mode ??
+      orgObj.reviews?.mode ??
+      sys.mode ??
+      sys.reviews?.mode;
+    const mode: DetectionMode | undefined =
+      rawMode === 'fast' || rawMode === 'balanced' || rawMode === 'deep' ? rawMode : undefined;
+    const modeSettings = mode ? resolveDetectionModeSettings(mode) : undefined;
+
+    const min_severity: MinimumSeverity | undefined =
+      repoObj.min_severity ??
+      repoObj.reviews?.min_severity ??
+      orgObj.min_severity ??
+      orgObj.reviews?.min_severity ??
+      sys.min_severity ??
+      sys.reviews?.min_severity;
+
+    // 2. Resolve top-level scalars (Detection Mode supplies defaults when not explicitly overridden)
+    const profile =
+      repoObj.profile ??
+      repoObj.reviews?.profile ??
+      orgObj.profile ??
+      orgObj.reviews?.profile ??
+      modeSettings?.profile ??
+      sys.profile;
     const confidence_threshold = repoObj.confidence_threshold ?? orgObj.confidence_threshold ?? sys.confidence_threshold;
     const mascot = repoObj.mascot ?? orgObj.mascot ?? sys.mascot;
-    const reviewer_effort = repoObj.reviewer_effort ?? orgObj.reviewer_effort ?? sys.reviewer_effort;
+    const reviewer_effort =
+      repoObj.reviewer_effort ??
+      repoObj.reviews?.reviewer_effort ??
+      orgObj.reviewer_effort ??
+      orgObj.reviews?.reviewer_effort ??
+      modeSettings?.reviewerEffort ??
+      sys.reviewer_effort;
     const default_effort = repoObj.default_effort ?? orgObj.default_effort ?? sys.default_effort ?? reviewer_effort;
-    const default_max_turns = repoObj.default_max_turns ?? repoObj.reviews?.default_max_turns ?? orgObj.default_max_turns ?? orgObj.reviews?.default_max_turns ?? sys.default_max_turns ?? sys.reviews?.default_max_turns ?? 20;
+    const default_max_turns =
+      repoObj.default_max_turns ??
+      repoObj.reviews?.default_max_turns ??
+      orgObj.default_max_turns ??
+      orgObj.reviews?.default_max_turns ??
+      modeSettings?.maxInvestigationTurns ??
+      sys.default_max_turns ??
+      sys.reviews?.default_max_turns ??
+      20;
     const quorum = repoObj.quorum ?? orgObj.quorum ?? sys.quorum;
 
-    // 2. Global persona model override dial if specified
+    // 3. Global persona model override dial if specified
     const persona_model = repoObj.dials?.persona_model ?? orgObj.dials?.persona_model ?? sys.dials?.persona_model;
 
-    // 3. Merge Personas (Keyed by ID across 10 persona lanes)
+    // 4. Merge Personas (Keyed by ID across 10 persona lanes)
     const personaMap = new Map<string, any>();
 
     // Seed with system default personas (10 standard personas)
@@ -188,7 +282,7 @@ export class ConfigResolver {
 
     const mergedPersonas = Array.from(personaMap.values());
 
-    // 4. Merge Reviewers & Providers
+    // 5. Merge Reviewers & Providers
     const sysProviders = sys.reviewers.providers || [];
     const orgProviders = orgObj.reviewers?.providers;
     const repoProviders = repoObj.reviewers?.providers;
@@ -205,17 +299,19 @@ export class ConfigResolver {
       },
     };
 
-    // 5. Array Overrides
+    // 6. Array Overrides
     const path_instructions = repoObj.path_instructions ?? orgObj.path_instructions ?? sys.path_instructions ?? [];
     const rules = repoObj.rules ?? orgObj.rules ?? sys.rules ?? [];
     const path_filters = repoObj.path_filters ?? orgObj.path_filters ?? sys.path_filters ?? [];
     const mcps = repoObj.mcps ?? orgObj.mcps ?? sys.mcps ?? [];
 
-    // 6. Sub-object merges
+    // 7. Sub-object merges
     const mergedReviews = {
       ...sys.reviews,
       ...(orgObj.reviews || {}),
       ...(repoObj.reviews || {}),
+      ...(mode ? { mode } : {}),
+      ...(min_severity ? { min_severity } : {}),
       profile,
       reviewer_effort,
       default_max_turns,
@@ -261,12 +357,14 @@ export class ConfigResolver {
 
     const mergedPreChecks = this.mergePreChecks(sys.pre_checks, orgObj.pre_checks, repoObj.pre_checks);
 
-    // 7. Construct merged V3 config
+    // 8. Construct merged V3 config
     const result: CtReviewConfigV3 = {
       ...sys,
       ...orgObj,
       ...repoObj,
       version: 3,
+      ...(mode ? { mode } : {}),
+      ...(min_severity ? { min_severity } : {}),
       profile,
       quorum,
       ...(reviewer_effort ? { reviewer_effort } : {}),

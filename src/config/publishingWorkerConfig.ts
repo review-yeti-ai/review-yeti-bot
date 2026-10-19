@@ -1,6 +1,6 @@
 import { createDefaultV3Config, isTriggerActionAllowed, type TriggerActionOptions } from './configLoader';
 import { disputedBlockerAdjudicatorSchema, effectiveReviewConfigReceiptSchema, composedEngineConfigSchema,
-  type ComposedEngineConfig, type CtReviewConfigV3,
+  resolveDetectionModeSettings, type DetectionMode, type ComposedEngineConfig, type CtReviewConfigV3,
   type DisputedBlockerAdjudicator, type ProviderId, type ReviewEngineName } from './schema';
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, type CompiledDomainIndex } from '../pipeline/domainIndex';
@@ -372,12 +372,20 @@ export function resolveWorkerConfig(
   let configuredMcpServers: string[] = [];
   let composed: ComposedEngineConfig = {};
   let disputedBlockerAdjudicator: DisputedBlockerAdjudicator | undefined;
+  let requestedMode: DetectionMode | undefined;
 
   if (env.REVIEW_YETI_POLICY_JSON) {
     try {
       const raw = JSON.parse(env.REVIEW_YETI_POLICY_JSON);
       policy = raw.review_yeti || raw;
       if (!policy || typeof policy !== 'object' || Array.isArray(policy)) throw new Error('review_yeti policy must be an object');
+      if (policy.mode !== undefined) {
+        if (!['fast', 'balanced', 'deep'].includes(policy.mode)) throw new Error('unsupported review mode');
+        requestedMode = policy.mode as DetectionMode;
+        const modeDefaults = resolveDetectionModeSettings(requestedMode);
+        requestedProfile = modeDefaults.profile;
+        maxInvestigationTurns = modeDefaults.maxInvestigationTurns;
+      }
       if (policy.budget?.max_investigation_turns) {
         maxInvestigationTurns = Number(policy.budget.max_investigation_turns);
       }
@@ -431,6 +439,15 @@ export function resolveWorkerConfig(
     }
   }
 
+  if (!requestedMode && env.REVIEW_MODE && ['fast', 'balanced', 'deep'].includes(env.REVIEW_MODE)) {
+    requestedMode = env.REVIEW_MODE as DetectionMode;
+    const modeDefaults = resolveDetectionModeSettings(requestedMode);
+    if (!policy?.profile) requestedProfile = modeDefaults.profile;
+    if (!policy?.budget?.max_investigation_turns && !env.MAX_INVESTIGATION_TURNS) {
+      maxInvestigationTurns = modeDefaults.maxInvestigationTurns;
+    }
+  }
+
   if (personasList.length === 0 && env.REVIEW_PERSONAS) {
     personasList = env.REVIEW_PERSONAS.split(',').map((p) => p.trim()).filter(Boolean);
   }
@@ -443,10 +460,17 @@ export function resolveWorkerConfig(
   }
 
   const default6 = ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'];
-  const effectivePersonaNames = personasList.length > 0 ? personasList : default6;
+  const effectivePersonaNames =
+    personasList.length > 0
+      ? personasList
+      : requestedMode
+      ? resolveDetectionModeSettings(requestedMode).personas
+      : default6;
   const groundedVerificationCapability = groundedVerificationCapabilityForRuntime(GROUNDED_VERIFICATION_VERSION);
 
   const personaMap: Record<string, { id: string; required: boolean; charter: string }> = {
+    'correctness': { id: 'correctness-lane', required: false, charter: 'builtin:correctness' },
+    'correctness-lane': { id: 'correctness-lane', required: false, charter: 'builtin:correctness' },
     'security': { id: 'sec-lane', required: true, charter: 'builtin:security' },
     'sec-lane': { id: 'sec-lane', required: true, charter: 'builtin:security' },
     'performance': { id: 'perf-lane', required: false, charter: 'builtin:performance' },
