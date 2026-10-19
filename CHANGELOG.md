@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.131.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.130.2...v1.131.0) (2026-10-19)
+
+
+### Features
+
+* **ux:** simplify review configuration, detection modes, and local CLI review ([#1512](https://github.com/review-yeti-ai/review-yeti-bot/issues/1512)) ([7ab0674](https://github.com/review-yeti-ai/review-yeti-bot/commit/7ab067427f053f870b441e1cdafa61717f02e436))
+
 ## [1.130.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.130.1...v1.130.2) (2026-10-19)
 
 
