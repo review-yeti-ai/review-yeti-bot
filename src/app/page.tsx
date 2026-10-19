@@ -22,7 +22,7 @@ export default function OverviewPage() {
   const [stats, setStats] = React.useState<OverviewStats | null>(null);
   const [reviewJobs, setReviewJobs] = React.useState<ReviewJob[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [selectedTab, setSelectedTab] = React.useState('live');
+  const [selectedTab, setSelectedTab] = React.useState('reviews');
 
   const loadData = React.useCallback(async () => {
     setLoading(true);
@@ -47,18 +47,18 @@ export default function OverviewPage() {
 
   return (
     <div className="space-y-4">
-      {/* 1. Streamlined Swarm Status Bar (De-duplicated against Topbar) */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 pb-1 border-b border-white/[0.06]">
-        <div className="flex flex-wrap items-center gap-2">
+      {/* 1. Streamlined Review Status Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 pb-2 border-b border-white/[0.06]">
+        <div className="flex flex-wrap items-center gap-2.5">
           <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400/50" />
-          <span className="text-xs font-mono font-medium text-zinc-200">
-            Active Edge Swarm
+          <span className="text-xs font-medium text-zinc-200">
+            Detection Mode: <strong className="text-indigo-300 font-mono">Balanced</strong>
           </span>
           <span className="linear-kbd text-[10px] font-mono text-zinc-400">
-            Today: {stats?.todayDateBadge || new Date().toISOString().slice(0, 10)}
+            Min Severity: Medium
           </span>
-          <span className="linear-kbd text-[10px] font-mono text-indigo-300">
-            Trailing 24h: {stats?.trailing24hReviewsExecuted ?? 0} Reviews | {stats?.trailing24hAvgTokensPerPR ?? 0} tok/PR | ${(stats?.trailing24hAvgCostPerPR ?? 0).toFixed(4)}/PR
+          <span className="linear-kbd text-[10px] font-mono text-emerald-300">
+            .reviewyeti/ Convention Enabled
           </span>
         </div>
 
@@ -76,20 +76,20 @@ export default function OverviewPage() {
         </div>
       </div>
 
-      {/* 2. Executive KPI Summary (Tremor Card Strip) */}
+      {/* 2. Executive KPI Summary */}
       <OverviewMetrics stats={stats} onUpdateStats={loadData} />
 
-      {/* 3. Primary Command Center & Operational Workspace with Tremor Tabs */}
+      {/* 3. Primary Review Activity & Operational Workspace */}
       <TabGroup value={selectedTab} onValueChange={setSelectedTab} className="mt-2">
         <TabList variant="line" className="border-b border-white/[0.08]">
-          <Tab value="live" icon={Radio}>
-            Live Swarm Command Center
-            <span className="ml-1.5 px-1.5 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse">
-              LIVE
-            </span>
-          </Tab>
           <Tab value="reviews" icon={Clock}>
             Recent Reviews & Audit Log ({reviewJobs.length})
+          </Tab>
+          <Tab value="live" icon={Radio}>
+            Live Swarm Command Center
+            <span className="ml-1.5 px-1.5 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+              LIVE
+            </span>
           </Tab>
           <Tab value="telemetry" icon={BarChart3}>
             Fleet Telemetry & Compaction ROI
@@ -97,16 +97,16 @@ export default function OverviewPage() {
         </TabList>
 
         <TabPanels className="pt-2">
-          {/* Panel 1: Live Swarm Command Center (Hero Active by default!) */}
+          {/* Panel 1: Operational Reviews & Audit Trail (Default Hero View) */}
+          <TabPanel value="reviews">
+            <RecentReviewsTable jobs={reviewJobs} loading={loading} onRefresh={loadData} />
+          </TabPanel>
+
+          {/* Panel 2: Live Swarm Command Center */}
           <TabPanel value="live">
             <div className="rounded-lg border border-white/[0.08] bg-[#0c0d12]/90 backdrop-blur-md p-2 sm:p-4 shadow-xl">
               <LiveDashboardView />
             </div>
-          </TabPanel>
-
-          {/* Panel 2: Operational Reviews & Audit Trail */}
-          <TabPanel value="reviews">
-            <RecentReviewsTable jobs={reviewJobs} loading={loading} onRefresh={loadData} />
           </TabPanel>
 
           {/* Panel 3: System Telemetry & Compaction ROI */}
