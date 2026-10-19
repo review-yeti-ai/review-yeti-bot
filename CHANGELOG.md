@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.130.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.130.1...v1.130.2) (2026-10-19)
+
+
+### Bug Fixes
+
+* route Yeti publishing through Cloudflare dynamic model ([#1510](https://github.com/review-yeti-ai/review-yeti-bot/issues/1510)) ([6ababd6](https://github.com/review-yeti-ai/review-yeti-bot/commit/6ababd6d5c68b06937817ad04b67ec12b0640809))
+
 ## [1.130.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.130.0...v1.130.1) (2026-10-18)
 
 
