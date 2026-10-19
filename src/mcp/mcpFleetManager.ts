@@ -202,7 +202,7 @@ export class McpFleetManager {
     if (ctMcpUrl && isCurrentCtMcpUrl(ctMcpUrl) && !this.servers.has('ct-mcp')) {
       const ctMcp: CustomMcpServerConfig = {
         id: 'ct-mcp',
-        name: 'Call Telemetry MCP Router',
+        name: 'Configured MCP Router',
         transport: 'http',
         url: ctMcpUrl,
         enabled: true,
@@ -338,10 +338,7 @@ export class McpFleetManager {
       'Accept': 'application/json, text/event-stream',
     };
 
-    if (
-      server.id === 'ct-mcp' ||
-      (server.name && server.name.includes('Call Telemetry MCP Router'))
-    ) {
+    if (server.id === 'ct-mcp') {
       const apiKey = await this.resolveCtMcpApiKey();
       if (apiKey) {
         headers['Authorization'] = `Bearer ${apiKey}`;

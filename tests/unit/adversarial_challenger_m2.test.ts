@@ -23,6 +23,7 @@ import type { WorkerReviewCompletionAdapter } from '../../src/review/workerRevie
 import { logger } from '../../src/utils/logger';
 import { DEFAULT_TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import { AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceIdentity';
+import { TEST_CLOUDFLARE_AIG_BASE_URL, TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 const HEAD_SHA = '1111111111111111111111111111111111111111';
 const BASE_SHA = '2222222222222222222222222222222222222222';
@@ -53,7 +54,7 @@ function makeSamplePolicyFile(reviewEngine?: 'composed' | 'panel' | 'dsh') {
 }
 
 const sampleTransport = {
-  baseUrl: 'https://gateway.example.invalid/v1',
+  baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL,
   model: 'fixture-model',
 };
 
@@ -531,8 +532,8 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
         REVIEW_PREPARED_CONFIG_JSON: JSON.stringify(envelope),
         REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
         REVIEW_MODEL: sampleTransport.model,
-        OPENAI_BASE_URL: sampleTransport.baseUrl,
-        OPENAI_API_KEY: 'vk_fake',
+        ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
         GH_TOKEN: 'ghs_fake',
         GITHUB_PUBLISH_TOKEN: 'ghs_fake',
         REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',

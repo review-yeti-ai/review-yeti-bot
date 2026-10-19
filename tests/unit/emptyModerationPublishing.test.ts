@@ -5,6 +5,7 @@ import {
   EMPTY_MODERATION_SKIPPED_MODEL,
   SKIP_EMPTY_MODERATION_FLAG,
 } from '../../src/review/emptyModeration';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * REL-1139 (example-meta ADR 0687): the publishing worker asks the panel to skip the moderator only
@@ -30,8 +31,8 @@ function env(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-    OPENAI_API_KEY: 'vk-test',
+    ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
     GH_TOKEN: 'ghs_test',
     ...extra,
   };

@@ -5,6 +5,7 @@ import { ProviderAttemptBudget } from '../../src/gateway/providerAttemptBudget';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { TaskSourceDelivery } from '../../src/review/taskSourceDelivery';
 import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * Mutation target 1 (composed-engine PR): "Remove `panelSize: 1` -> a threshold-invariance test
@@ -53,8 +54,8 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-    OPENAI_API_KEY: 'vk-test',
+    ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
     GH_TOKEN: 'ghs_test',
     ...overrides,
   };

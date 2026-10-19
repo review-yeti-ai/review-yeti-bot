@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 import { logger } from '../../src/utils/logger';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * REL-1132: the publishing worker's token figures (receipt metrics, check-summary telemetry and the
@@ -27,8 +28,8 @@ function env(): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-    OPENAI_API_KEY: 'vk-test',
+    ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
     GH_TOKEN: 'ghs_test',
   };
 }

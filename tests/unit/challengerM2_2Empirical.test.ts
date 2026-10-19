@@ -13,6 +13,7 @@ import {
   readOperatorGoAssertionManifest,
   type GoProcessResult,
 } from '../support/operatorGoFailureReceipt';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 describe('Challenger M2-2 Empirical Stress Suite', () => {
   // =========================================================================
@@ -420,8 +421,8 @@ describe('Challenger M2-2 Empirical Stress Suite', () => {
       REVIEW_BASE_SHA: 'd'.repeat(40),
       REVIEW_EXECUTION_ATTEMPT: '1',
       REVIEW_PUBLICATION_MODE: 'app-gate',
-      OPENAI_BASE_URL: 'https://bifrost.example.com',
-      OPENAI_API_KEY: 'secret-key',
+      ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
       REVIEW_MODEL: 'test-model',
       GITHUB_PUBLISH_TOKEN: 'ghs_token_superseded',
     };

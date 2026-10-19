@@ -19,6 +19,7 @@ import type { ReviewTask } from '../../src/panel/reviewTask';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
 import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
 import { preparedCheckpointHistory } from '../support/preparedCheckpointHistory';
+import { TEST_CLOUDFLARE_AIG_BASE_URL, TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 const BASE = 'b'.repeat(40);
 const COMMIT_SHA_ORIGINAL = '1'.repeat(40);
@@ -38,8 +39,8 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: COMMIT_SHA_AMENDED,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'prepared-review-model',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-    OPENAI_API_KEY: 'vk-test',
+    ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
     GH_TOKEN: 'ghs_test',
     ...overrides,
   };
@@ -92,7 +93,7 @@ function setupPolicyAndPrepared() {
     schema: 'exampleorg.review-policy.v1',
     review_yeti: { personas: 'security,testing', review_engine: 'composed', budget: { max_investigation_turns: 1 } },
   });
-  const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+  const transport = { baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL, model: 'prepared-review-model' };
   const prepared = preparePublishingPolicy(
     {
       content,
@@ -141,7 +142,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
         REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
         REVIEW_MODEL: transport.model,
-        OPENAI_BASE_URL: transport.baseUrl,
+        ...TEST_CLOUDFLARE_AIG_SETTINGS,
         GITHUB_PUBLISH_TOKEN: 'ghs_fake',
         REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
         REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
@@ -207,7 +208,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
         REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
         REVIEW_MODEL: transport.model,
-        OPENAI_BASE_URL: transport.baseUrl,
+        ...TEST_CLOUDFLARE_AIG_SETTINGS,
         GITHUB_PUBLISH_TOKEN: 'ghs_fake',
         REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
         REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
@@ -254,7 +255,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
         REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
         REVIEW_MODEL: transport.model,
-        OPENAI_BASE_URL: transport.baseUrl,
+        ...TEST_CLOUDFLARE_AIG_SETTINGS,
         GITHUB_PUBLISH_TOKEN: 'ghs_fake',
         REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
         REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
@@ -454,7 +455,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
         REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
         REVIEW_MODEL: transport.model,
-        OPENAI_BASE_URL: transport.baseUrl,
+        ...TEST_CLOUDFLARE_AIG_SETTINGS,
         GITHUB_PUBLISH_TOKEN: 'ghs_fake',
         REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
         REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
@@ -529,7 +530,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
         REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
         REVIEW_MODEL: transport.model,
-        OPENAI_BASE_URL: transport.baseUrl,
+        ...TEST_CLOUDFLARE_AIG_SETTINGS,
         GITHUB_PUBLISH_TOKEN: 'ghs_fake',
         REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
         REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
@@ -594,7 +595,7 @@ describe('Empirical Challenger: Retry Safety Fences, Policy Invalidation & Fail-
         REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
         REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
         REVIEW_MODEL: transport.model,
-        OPENAI_BASE_URL: transport.baseUrl,
+        ...TEST_CLOUDFLARE_AIG_SETTINGS,
         GITHUB_PUBLISH_TOKEN: 'ghs_fake',
         REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
         REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',

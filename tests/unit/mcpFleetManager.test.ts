@@ -153,7 +153,7 @@ describe('McpFleetManager Unit Tests', () => {
     expect(result.error).toContain('not found in registered MCP fleet');
   });
 
-  describe('Call Telemetry MCP HTTP Federation & JSON-RPC 2.0 Transport', () => {
+  describe('Configured MCP Router HTTP Federation & JSON-RPC 2.0 Transport', () => {
     it('rejects a retired Bifrost server registration', async () => {
       await expect(mcpFleetManager.registerServer({
         id: 'bifrost-gateway',
@@ -174,6 +174,7 @@ describe('McpFleetManager Unit Tests', () => {
       const ctMcp = servers.find((s) => s.id === 'ct-mcp');
       expect(ctMcp).toBeDefined();
       expect(ctMcp?.transport).toBe('http');
+      expect(ctMcp?.name).toBe('Configured MCP Router');
       expect(ctMcp?.status).toBe('online');
       expect(ctMcp?.url).toBe('https://mcp.example.invalid/router/mcp');
 
@@ -188,6 +189,40 @@ describe('McpFleetManager Unit Tests', () => {
       expect(registeredTools).toContain('knowledge_get');
       expect(registeredTools).toContain('advise_blocker');
       expect(registeredTools).toContain('health');
+    });
+
+    it('does not send the dedicated MCP key to a custom server that reuses the router name', async () => {
+      const originalKey = process.env.CT_MCP_KEY;
+      const serverId = `custom_router_name_${Date.now()}`;
+      let capturedHeaders: Record<string, string> = {};
+      process.env.CT_MCP_KEY = 'dedicated-mcp-key-test';
+      vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+        capturedHeaders = (init?.headers || {}) as Record<string, string>;
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools: [] } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+
+      try {
+        await mcpFleetManager.registerServer({
+          id: serverId,
+          name: 'Configured MCP Router',
+          transport: 'http',
+          url: 'https://custom.example.invalid/mcp',
+          enabled: true,
+          status: 'online',
+          toolsCount: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+        expect(capturedHeaders).not.toHaveProperty('Authorization');
+        expect(capturedHeaders).not.toHaveProperty('x-api-key');
+      } finally {
+        await mcpFleetManager.unregisterServer(serverId);
+        if (originalKey === undefined) delete process.env.CT_MCP_KEY;
+        else process.env.CT_MCP_KEY = originalKey;
+      }
     });
 
     it('discovers tools from HTTP server via JSON-RPC tools/list with auth headers', async () => {

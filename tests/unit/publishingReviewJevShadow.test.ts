@@ -6,6 +6,7 @@ import type { JevAskRequest, JevAsker, JevOutcome } from '../../src/gateway/jevC
 import { createFailingJevStub } from '../support/jevStub';
 import { groundedFixtureClient, groundedFixtureProvider } from '../support/groundedReviewFixture';
 import { logger } from '../../src/utils/logger';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * REL-1081 (plan W4, section 3): Jev triage in shadow mode must change NOTHING about the review.
@@ -53,8 +54,8 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-    OPENAI_API_KEY: 'vk-test',
+    ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
     GH_TOKEN: 'ghs_test',
     ...overrides,
   };

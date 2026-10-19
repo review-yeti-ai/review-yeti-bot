@@ -36,6 +36,7 @@ import {
   type BudgetCandidate,
   type ReviewBudgetInput,
 } from '../../src/review/reviewBudget';
+import { TEST_CLOUDFLARE_AIG_BASE_URL, TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * REL-1082 (plan 2026-09-23 section 4 W5): risk-ordered review budget per lane
@@ -447,7 +448,7 @@ describe('packLaneBudget', () => {
 // ---------------------------------------------------------------------------
 
 describe('one applicability decision', () => {
-  const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'k', model: 'review-model' };
+  const transport = { baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL, apiKey: 'k', model: 'review-model' };
   const roster = resolveWorkerConfig({ REVIEW_PERSONAS: 'security,architecture,testing' }, transport)
     .personas.filter((persona) => persona.enabled);
   const corpus: Record<string, string> = {
@@ -1034,8 +1035,8 @@ describe('composed engine wiring', () => {
       REVIEW_RUN_ID: 'run_' + 'c'.repeat(32), REVIEW_REPO: 'acme/release-fixture', REVIEW_REPOSITORY_ID: '1339040553',
       REVIEW_POLICY_DIGEST: 'c'.repeat(64), REVIEW_CONFIG_DIGEST: 'd'.repeat(64), REVIEW_EXECUTION_ATTEMPT: '1',
       REVIEW_PR_NUMBER: '1', REVIEW_HEAD_SHA: 'e'.repeat(40), REVIEW_BASE_SHA: 'b'.repeat(40),
-      REVIEW_MODEL: 'ollama/glm-5.3-flash', OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-      OPENAI_API_KEY: 'vk-test', GH_TOKEN: 'ghs_test', REVIEW_YETI_BUDGET: 'all', REVIEW_YETI_DIFF_SHRINK: 'all',
+      REVIEW_MODEL: 'ollama/glm-5.3-flash', ...TEST_CLOUDFLARE_AIG_SETTINGS,
+       GH_TOKEN: 'ghs_test', REVIEW_YETI_BUDGET: 'all', REVIEW_YETI_DIFF_SHRINK: 'all',
       REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'composed' } }) },
     { checkClient, repoFileProviderFactory, currentPullRequestVerifier: vi.fn(async () => undefined), sourceLoader: vi.fn(async () => ({ diff, githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const), composedReviewRunner: vi.fn(async () => result) as never, client: {} as never });
@@ -1293,8 +1294,8 @@ describe('publishing worker wiring', () => {
       REVIEW_HEAD_SHA: HEAD,
       REVIEW_BASE_SHA: BASE,
       REVIEW_MODEL: 'ollama/glm-5.3-flash',
-      OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-      OPENAI_API_KEY: 'vk-test',
+      ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
       GH_TOKEN: 'ghs_test',
       ...overrides,
     };

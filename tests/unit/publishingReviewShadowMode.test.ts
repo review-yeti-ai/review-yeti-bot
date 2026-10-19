@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * Shadow mode (`review_engine: 'shadow'`, `src/cli/publishingReview.ts`'s `resolveReviewEngine`)
@@ -52,8 +53,8 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-    OPENAI_API_KEY: 'vk-test',
+    ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
     GH_TOKEN: 'ghs_test',
     ...overrides,
   };
