@@ -135,7 +135,7 @@ export function RepoTable({
                     <Badge variant="outline" className="text-[10px] font-mono border-emerald-500/30 text-emerald-300 bg-emerald-500/10">
                       {r.modelOverrides && Object.keys(r.modelOverrides).length > 0
                         ? `${Object.keys(r.modelOverrides).length} overrides`
-                        : '.reviewyeti/ Ready'}
+                        : 'Default Models'}
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right">

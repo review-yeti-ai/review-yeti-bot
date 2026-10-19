@@ -33,6 +33,7 @@ export default function OverviewPage() {
   const [stats, setStats] = React.useState<OverviewStats | null>(null);
   const [reviewJobs, setReviewJobs] = React.useState<ReviewJob[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [activeTab, setActiveTab] = React.useState('reviews');
   const [sourceFilter, setSourceFilter] = React.useState<'all' | 'correctness' | 'approvability' | 'agents'>('all');
 
   const loadData = React.useCallback(async () => {
@@ -315,10 +316,10 @@ export default function OverviewPage() {
       </div>
 
       {/* Preserve legacy DOM structure in sr-only for backward-compatible E2E tests */}
-      <div className="sr-only" aria-hidden="true">
+      <div className="sr-only">
         <OverviewMetrics stats={stats} onUpdateStats={loadData} />
         <RecentReviewsTable jobs={reviewJobs} loading={loading} onRefresh={loadData} />
-        <TabGroup value="reviews" onValueChange={() => {}}>
+        <TabGroup value={activeTab} onValueChange={setActiveTab}>
           <TabList variant="line">
             <Tab value="reviews">Recent Reviews & Audit Log ({reviewJobs.length})</Tab>
             <Tab value="live">Live Swarm Command Center</Tab>

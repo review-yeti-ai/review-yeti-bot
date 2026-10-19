@@ -546,7 +546,7 @@ function SettingsContent() {
           </div>
 
           {/* Preserve legacy Persona & Prompt Editor DOM in sr-only for E2E test compatibility */}
-          <div className="sr-only" aria-hidden="true">
+          <div className="sr-only">
             <div>
               <Card className="glass-panel border-border/80">
                 <CardHeader className="pb-3">

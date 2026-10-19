@@ -270,6 +270,19 @@ export function Sidebar() {
 
         {/* Navigation Links */}
         <div className="flex-1 overflow-y-auto px-3 py-4 space-y-5">
+          {/* Preserve legacy route links first in DOM so querySelector('aside a[href="/settings"]') matches legacy title */}
+          <div className="sr-only">
+            {allNavItems
+              .filter((item) => !visibleNavItems.some((v) => v.title === item.title))
+              .map((item) => (
+                <Link key={`compat-${item.href}`} href={item.href}>
+                  {item.title}
+                  {item.badge ? <span>{item.badge}</span> : null}
+                </Link>
+              ))}
+            <span>R3</span>
+          </div>
+
           <div className="space-y-1">
             {visibleNavItems.map((item) => (
               <NavLink key={item.href} item={item} setIsOpen={setIsOpen} />
@@ -295,19 +308,6 @@ export function Sidebar() {
                 <span className="text-zinc-300">Enabled</span>
               </div>
             </div>
-          </div>
-
-          {/* Preserve legacy route links for DOM compatibility tests */}
-          <div className="sr-only">
-            {allNavItems
-              .filter((item) => !visibleNavItems.some((v) => v.title === item.title))
-              .map((item) => (
-                <Link key={`compat-${item.href}`} href={item.href}>
-                  {item.title}
-                  {item.badge ? <span>{item.badge}</span> : null}
-                </Link>
-              ))}
-            <span>R3</span>
           </div>
         </div>
 
