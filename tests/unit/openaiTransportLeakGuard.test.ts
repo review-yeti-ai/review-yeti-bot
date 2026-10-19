@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { openaiTransport, invalidPublishingReviewContract } from '../../src/review/openaiTransport';
 
-const route = 'https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1';
+const route = 'https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/compat';
+const providerRoute = 'https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-neuralwatt/v1';
 
 describe('publishing transport admits only the dedicated Cloudflare Run route', () => {
-  const base = { REVIEW_MODEL: 'approved-model-config-pending' };
+  const base = { REVIEW_MODEL: 'dynamic/nw-flash' };
 
-  it('pairs the Cloudflare custom-provider URL only with its dedicated Run token', () => {
+  it('pairs the Cloudflare compatibility route only with its dedicated Run token', () => {
     const env = {
       ...base,
       CLOUDFLARE_AIG_BASE_URL: route,
@@ -17,7 +18,38 @@ describe('publishing transport admits only the dedicated Cloudflare Run route', 
     expect(openaiTransport(env)).toEqual({
       baseUrl: route,
       apiKey: 'test-run-token',
-      model: 'approved-model-config-pending',
+      model: 'dynamic/nw-flash',
+      authorizationHeaderName: 'cf-aig-authorization',
+    });
+  });
+
+  it('refuses a provider-native custom URL for the dynamic model because it bypasses the dynamic fallback route', () => {
+    const env = {
+      ...base,
+      CLOUDFLARE_AIG_BASE_URL: providerRoute,
+      CLOUDFLARE_AIG_RUN_TOKEN: 'test-run-token',
+    } as unknown as NodeJS.ProcessEnv;
+    expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
+  });
+
+  it('rejects a malformed dynamic route name on /compat', () => {
+    const env = {
+      CLOUDFLARE_AIG_BASE_URL: route,
+      CLOUDFLARE_AIG_RUN_TOKEN: 'test-run-token',
+      REVIEW_MODEL: 'dynamic/',
+    } as unknown as NodeJS.ProcessEnv;
+    expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
+  });
+
+  it('keeps a provider-native custom URL paired with a concrete upstream model', () => {
+    const env = {
+      CLOUDFLARE_AIG_BASE_URL: providerRoute,
+      CLOUDFLARE_AIG_RUN_TOKEN: 'test-run-token',
+      REVIEW_MODEL: 'deepseek-ai/DeepSeek-V4.1-Flash',
+    } as unknown as NodeJS.ProcessEnv;
+    expect(openaiTransport(env)).toMatchObject({
+      baseUrl: providerRoute,
+      model: 'deepseek-ai/DeepSeek-V4.1-Flash',
       authorizationHeaderName: 'cf-aig-authorization',
     });
   });

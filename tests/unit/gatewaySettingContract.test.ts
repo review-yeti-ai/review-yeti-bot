@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { missingGatewaySettings, requireGatewaySettings, resolveGatewaySettings } from '../../src/review/openaiTransport';
 
 const cloudflareBaseUrl = 'https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1';
+const cloudflareCompatBaseUrl = 'https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/compat';
 
 describe('gateway setting contract', () => {
   it('accepts the dedicated Cloudflare base URL and Run token as a pair', () => {
@@ -9,6 +10,15 @@ describe('gateway setting contract', () => {
     expect(missingGatewaySettings(env)).toEqual([]);
     expect(requireGatewaySettings(env)).toEqual({
       baseUrl: cloudflareBaseUrl,
+      apiKey: 'run-token',
+      authorizationHeaderName: 'cf-aig-authorization',
+    });
+  });
+
+  it('accepts the dedicated Cloudflare /compat base URL for dynamic route selection', () => {
+    const env = { CLOUDFLARE_AIG_BASE_URL: cloudflareCompatBaseUrl, CLOUDFLARE_AIG_RUN_TOKEN: 'run-token' } as unknown as NodeJS.ProcessEnv;
+    expect(requireGatewaySettings(env)).toEqual({
+      baseUrl: cloudflareCompatBaseUrl,
       apiKey: 'run-token',
       authorizationHeaderName: 'cf-aig-authorization',
     });

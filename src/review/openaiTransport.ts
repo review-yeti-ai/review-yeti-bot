@@ -1,5 +1,6 @@
 import { createDefaultV3Config } from '../config/configLoader';
 import {
+  NEURALWATT_FLASH_ROUTE_MODEL,
   PUBLISHING_IDLE_TIMEOUT_SECONDS,
   PUBLISHING_MAX_TURNS,
   PUBLISHING_OVERALL_TIMEOUT_SECONDS,
@@ -27,10 +28,11 @@ export function invalidPublishingReviewContract(): Error {
 }
 
 /**
- * Review publishing uses the dedicated Cloudflare AI Gateway Run credential
- * and an explicit custom-provider route. Generic OpenAI-compatible credentials
- * remain available to non-publishing callers; retired Bifrost credential names
- * are deliberately not accepted here.
+ * Review publishing uses the dedicated Cloudflare AI Gateway Run credential.
+ * Dynamic routes use `/compat` and select their route through `model:
+ * dynamic/<route>`; provider-native `custom-*` routes remain a separate path
+ * without the infrastructure dynamic-route fallback flow. Generic OpenAI-
+ * compatible credentials remain available to non-publishing callers.
  */
 /****INTERNAL****
  * Unpaired read. NOT exported: calling this alone is how two incidents in this
@@ -136,6 +138,23 @@ function isCloudflareCustomProviderBaseUrl(candidate: string): boolean {
   }
 }
 
+/** Cloudflare dynamic routes use /v1/{account}/{gateway}/compat. */
+function isCloudflareCompatBaseUrl(candidate: string): boolean {
+  if (/[\u0000-\u0020\u007f\\?#]/u.test(candidate) || /%(?![0-9a-f]{2})/iu.test(candidate)) return false;
+  try {
+    const url = new URL(candidate);
+    return url.protocol === 'https:' && url.hostname.toLowerCase().replace(/\.+$/u, '') === 'gateway.ai.cloudflare.com'
+      && !url.username && !url.password && !url.search && !url.hash
+      && /^\/v1\/[a-f0-9]{32}\/[a-z0-9-]+\/compat$/iu.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function isCloudflareDynamicRouteModel(model: string): boolean {
+  return /^dynamic\/[a-z0-9-]+$/u.test(model);
+}
+
 /** True when the base URL parses as an absolute https URL.
  *
  * A scheme-less value like `gateway.internal/v1` (a one-keystroke typo) is not
@@ -190,8 +209,8 @@ export function resolveGatewaySettings(env: NodeJS.ProcessEnv): GatewayResolutio
         ],
       };
     }
-    if (!isCloudflareCustomProviderBaseUrl(cloudflareBaseUrl)) {
-      return { status: 'refused', reason: 'Cloudflare AI Gateway base URL is not a valid custom-provider v1 route' };
+    if (!isCloudflareCustomProviderBaseUrl(cloudflareBaseUrl) && !isCloudflareCompatBaseUrl(cloudflareBaseUrl)) {
+      return { status: 'refused', reason: 'Cloudflare AI Gateway base URL is not a valid compat or custom-provider route' };
     }
     return { status: 'ok', baseUrl: cloudflareBaseUrl, apiKey: cloudflareRunToken,
       authorizationHeaderName: 'cf-aig-authorization' };
@@ -271,9 +290,10 @@ export function openaiTransport(env: NodeJS.ProcessEnv): OpenAITransportConfig {
   const apiKey = resolution.apiKey;
   const model = value(env, 'REVIEW_MODEL');
   if (!baseUrl || !apiKey || !model) throw invalidPublishingReviewContract();
-  if (['pr-reviewer', 'bifrost/pr-reviewer'].includes(model.toLowerCase())) {
-    // The historical alias has no meaning on a provider-native custom route.
-    // Require a separately approved upstream model id before any request can run.
+  if (model.toLowerCase() === 'pr-reviewer' || model.toLowerCase().startsWith('bifrost/')) {
+    // Historical internal aliases are neither Cloudflare dynamic route names
+    // nor provider-native upstream model IDs. Fail closed until the deployment
+    // selects an explicit route/model contract.
     throw invalidPublishingReviewContract();
   }
   let parsed: URL;
@@ -284,13 +304,23 @@ export function openaiTransport(env: NodeJS.ProcessEnv): OpenAITransportConfig {
   }
   // A plaintext or non-gateway base URL would ship diffs off the intended path.
   if (parsed.protocol !== 'https:') throw invalidPublishingReviewContract();
+  // A Cloudflare dynamic route is selected with `dynamic/<route>` on `/compat`.
+  // A provider-native custom URL forwards a concrete upstream model directly and
+  // cannot invoke the dynamic route's configured fallback graph.
+  const dynamicRouteModel = isCloudflareDynamicRouteModel(model);
+  if ((isCloudflareCompatBaseUrl(baseUrl) && !dynamicRouteModel)
+      || (isCloudflareCustomProviderBaseUrl(baseUrl) && dynamicRouteModel)) {
+    throw invalidPublishingReviewContract();
+  }
   return { baseUrl, apiKey, model, authorizationHeaderName: resolution.authorizationHeaderName };
 }
 
 export function createOpenAIPublishingConfig(model: string): ReturnType<typeof createDefaultV3Config> {
-  // Provider identity remains bound to the central prepared policy until its
-  // model selection and route migration are authorized together.
+  // Keep the prepared worker's single internal provider slot. The canonical
+  // Neuralwatt dynamic route delegates primary/fallback selection to the
+  // gateway and uses low effort; the worker never adds a second provider.
   const providerId = 'bifrost';
+  const effort = model === NEURALWATT_FLASH_ROUTE_MODEL ? 'low' : 'medium';
   const config = createDefaultV3Config();
   return {
     ...config,
@@ -305,7 +335,7 @@ export function createOpenAIPublishingConfig(model: string): ReturnType<typeof c
           id: providerId,
           enabled: true,
           model,
-          effort: 'medium',
+          effort,
           review_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
           arbiter_timeout_s: PUBLISHING_IDLE_TIMEOUT_SECONDS,
         },

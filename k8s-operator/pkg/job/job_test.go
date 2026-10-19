@@ -1037,6 +1037,68 @@ func TestBuildWorkerJobAppGateIsNotReceiptOnly(t *testing.T) {
 	}
 }
 
+func TestBuildWorkerJobAcceptsDynamicNeuralwattRouteOnCompat(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	input.Publishing.GatewayBaseURL = "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/ct-pilot-neuralwatt/compat"
+	input.Publishing.Model = "dynamic/nw-flash"
+	result, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build app-gate dynamic route job: %v", err)
+	}
+	container := result.Spec.Template.Spec.Containers[0]
+	if got := envValue(container, "CLOUDFLARE_AIG_BASE_URL"); got != input.Publishing.GatewayBaseURL {
+		t.Fatalf("dynamic route base URL = %q", got)
+	}
+	if got := envValue(container, "REVIEW_MODEL"); got != "dynamic/nw-flash" {
+		t.Fatalf("dynamic route model = %q", got)
+	}
+}
+
+func TestBuildWorkerJobRejectsDynamicModelOnProviderNativeURL(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	input.Publishing.Model = "dynamic/nw-flash"
+	if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "dynamic route models require /compat") {
+		t.Fatalf("provider-native custom URL must not claim dynamic fallback routing, got %v", err)
+	}
+}
+
+func TestBuildWorkerJobRejectsConcreteModelOnCompatDynamicURL(t *testing.T) {
+	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	input.Publishing.GatewayBaseURL = "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/ct-pilot-neuralwatt/compat"
+	if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "dynamic route models require /compat") {
+		t.Fatalf("compat endpoint must receive a dynamic route model, got %v", err)
+	}
+}
+
+func TestBuildWorkerJobRejectsMalformedDynamicRouteModel(t *testing.T) {
+	for _, model := range []string{"dynamic/", "Dynamic/nw-flash", "dynamic/nw-flash/extra"} {
+		t.Run(model, func(t *testing.T) {
+			now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
+			review := reviewFixture(now)
+			review.Spec.PublicationMode = "app-gate"
+			input := buildInput(review, now)
+			input.Publishing = publishingFixture()
+			input.Publishing.GatewayBaseURL = "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/ct-pilot-neuralwatt/compat"
+			input.Publishing.Model = model
+			if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "dynamic route models require /compat") {
+				t.Fatalf("malformed dynamic route must be rejected, got %v", err)
+			}
+		})
+	}
+}
+
 // A disabled dispatch must keep producing a receipt-only pod.
 func TestBuildWorkerJobDisabledStaysReceiptOnly(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)

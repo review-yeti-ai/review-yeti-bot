@@ -112,7 +112,7 @@ dispatcher:
     workflowShas: ""
     # Cross-review provider concurrency leases (docs/CONFIGURATION_REFERENCE.md). Empty by default:
     # the lease route is not mounted and workers use only their local cap. Example for one review
-    # key on an upstream account with 15 slots shared with other keys: "pr-reviewer=12".
+    # key on an upstream account with 15 slots shared with other keys: "dynamic/nw-flash=12".
     # A malformed value is logged and leaves the route unmounted; it never stops the service.
     providerConcurrency: ""
     # Lease time-to-live in milliseconds (5000-600000); empty means the service default, 60000.
@@ -305,8 +305,11 @@ secrets:
 # Both gatewayBaseUrl and model are EMPTY by default and are deliberately not
 # defaulted: an unset transport leaves the operator's publishing config incomplete,
 # so BuildWorkerJob refuses every app-gate review rather than dispatching one
-# against a gateway nobody chose. Cloudflare AI Gateway is the only admitted transport;
-# no model or route is selected by this public chart, so the lane fails closed.
+# against a gateway nobody chose. Cloudflare AI Gateway is the only admitted transport.
+# The standard Yeti route is selected by the private deployment as a `/compat`
+# base URL plus model `dynamic/nw-flash`; only that dynamic route uses the
+# gateway fallback graph. A provider-native `custom-*` URL does not provide it.
+# No model or route is selected by this public chart, so the lane fails closed.
 #
 # The secret reference may default, because a Secret *name* is not a transport
 # choice; it points at the Doppler-projected credential below.

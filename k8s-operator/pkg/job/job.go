@@ -237,9 +237,11 @@ type Input struct {
 }
 
 // PublishingConfig configures the app-gate publishing lane. Cloudflare AI
-// Gateway custom-provider routes are the only admitted transport, and neither
-// the route nor model has a default, so malformed or incomplete values refuse
-// the Job before a worker can issue a request.
+// Gateway dynamic routes use /compat with a dynamic/<route> model; direct
+// custom-provider routes use a concrete upstream model and do not execute the
+// dynamic route's fallback graph. Neither route nor model has a default, so
+// malformed or incomplete values refuse the Job before a worker can issue a
+// request.
 type PublishingConfig struct {
 	GatewayBaseURL    string
 	Model             string
@@ -1146,12 +1148,18 @@ func validatePublishing(config PublishingConfig) error {
 	if config.GatewaySecretKey != "CLOUDFLARE_AIG_RUN_TOKEN" {
 		return configErr("publishing gateway secret key must be CLOUDFLARE_AIG_RUN_TOKEN")
 	}
-	if !isCloudflareCustomProviderURL(parsed) {
-		return configErr("publishing gateway URL must be a Cloudflare AI Gateway custom-provider v1 route")
-	}
 	lowerModel := strings.ToLower(config.Model)
+	compatRoute := isCloudflareCompatURL(parsed)
+	customProviderRoute := isCloudflareCustomProviderURL(parsed)
+	if !compatRoute && !customProviderRoute {
+		return configErr("publishing gateway URL must be a Cloudflare AI Gateway compat or custom-provider route")
+	}
+	dynamicRouteModel := isCloudflareDynamicRouteModel(config.Model)
+	if compatRoute != dynamicRouteModel {
+		return configErr("dynamic route models require /compat; provider-native routes require a concrete model")
+	}
 	if lowerModel == "pr-reviewer" || strings.HasPrefix(lowerModel, "bifrost/") {
-		return configErr("publishing model must be an explicit upstream model id for the Cloudflare custom-provider route")
+		return configErr("publishing model must be an explicit upstream model id or dynamic route")
 	}
 	if config.CompletionURL != "" {
 		completion, err := url.Parse(config.CompletionURL)
@@ -1205,10 +1213,55 @@ func validatePublishing(config PublishingConfig) error {
 	return nil
 }
 
-func isCloudflareCustomProviderURL(parsed *url.URL) bool {
+func isCloudflareAIGatewayBaseURL(parsed *url.URL) bool {
 	if parsed == nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), "gateway.ai.cloudflare.com") ||
 		parsed.Port() != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
 		parsed.EscapedPath() != parsed.Path {
+		return false
+	}
+	return true
+}
+
+func isCloudflareDynamicRouteModel(model string) bool {
+	if !strings.HasPrefix(model, "dynamic/") {
+		return false
+	}
+	route := strings.TrimPrefix(model, "dynamic/")
+	if route == "" {
+		return false
+	}
+	for _, char := range route {
+		if !((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func isCloudflareCompatURL(parsed *url.URL) bool {
+	if !isCloudflareAIGatewayBaseURL(parsed) {
+		return false
+	}
+	parts := strings.Split(parsed.Path, "/")
+	if len(parts) != 5 || parts[0] != "" || parts[1] != "v1" || parts[4] != "compat" || len(parts[2]) != 32 || parts[3] == "" {
+		return false
+	}
+	for _, char := range parts[2] {
+		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f') || (char >= 'A' && char <= 'F')) {
+			return false
+		}
+	}
+	for _, char := range parts[3] {
+		if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func isCloudflareCustomProviderURL(parsed *url.URL) bool {
+	if !isCloudflareAIGatewayBaseURL(parsed) {
 		return false
 	}
 	parts := strings.Split(parsed.Path, "/")
