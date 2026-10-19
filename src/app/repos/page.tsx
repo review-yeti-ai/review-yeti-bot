@@ -231,7 +231,7 @@ export default function ReposPage() {
             Repositories &amp; Automation
           </h1>
           <p className="text-xs text-muted-foreground">
-            GitHub webhook triggers, enforcement profiles, and active PR review status
+            Per-repository Detection Mode, Approvability gates, <code className="text-zinc-200 font-mono">.reviewyeti/</code> policy inheritance, and codebase areas
           </p>
         </div>
 
@@ -517,6 +517,67 @@ export default function ReposPage() {
               onOpenRules={(owner, repo) => setRulesModalRepo({ owner, repo })}
             />
           )}
+        </CardContent>
+      </Card>
+
+      {/* Codebase Areas & Check Run Agents Summary */}
+      <Card className="border-border/80 bg-[#0b0c10]">
+        <CardHeader className="pb-2">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <div>
+              <CardTitle className="text-sm font-semibold text-zinc-100">
+                Codebase Areas &amp; Scoped Check Run Agents
+              </CardTitle>
+              <CardDescription className="text-xs text-zinc-400">
+                Group pull request activity and custom <code className="text-zinc-200 font-mono">.reviewyeti/checks/*.md</code> agents by product area and path globs.
+              </CardDescription>
+            </div>
+            <span className="px-2.5 py-1 rounded-md font-mono text-[11px] bg-white/[0.04] text-zinc-300 border border-white/[0.08]">
+              Policy Repo: reviewyeti-ai/.github
+            </span>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+            <div className="p-3 rounded-lg border border-white/[0.06] bg-[#08090c] space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-zinc-100">Auth &amp; Security</span>
+                <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300">
+                  checks/security.md
+                </span>
+              </div>
+              <div className="font-mono text-[11px] text-zinc-400">src/auth/**, src/github/**</div>
+              <p className="text-[11px] text-zinc-400">
+                Enforces tenant boundary isolation, webhook signature verification, and secret redaction.
+              </p>
+            </div>
+
+            <div className="p-3 rounded-lg border border-white/[0.06] bg-[#08090c] space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-zinc-100">Review Engine &amp; CLI</span>
+                <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300">
+                  instructions.md
+                </span>
+              </div>
+              <div className="font-mono text-[11px] text-zinc-400">src/review/**, src/cli/**</div>
+              <p className="text-[11px] text-zinc-400">
+                Incremental diff scoping, worktree isolation, and in-place PR description summary markers.
+              </p>
+            </div>
+
+            <div className="p-3 rounded-lg border border-white/[0.06] bg-[#08090c] space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-zinc-100">Docs &amp; Tests (Auto-Approve)</span>
+                <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-zinc-500/20 text-zinc-300">
+                  approvability.md
+                </span>
+              </div>
+              <div className="font-mono text-[11px] text-zinc-400">docs/**, tests/**</div>
+              <p className="text-[11px] text-zinc-400">
+                Eligible for automatic approval when zeroMedium+ correctness findings remain unresolved.
+              </p>
+            </div>
+          </div>
         </CardContent>
       </Card>
 

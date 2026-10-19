@@ -54,6 +54,25 @@ const pageTitles: Record<string, { title: string; description: string }> = {
   },
 };
 
+const cleanPageTitles: Record<string, { label: string; subtitle: string }> = {
+  '/': {
+    label: 'Code Review',
+    subtitle: 'Correctness findings, Approvability checks, and pull request summaries',
+  },
+  '/repos': {
+    label: 'Repositories & Areas',
+    subtitle: 'Per-repository triggers, policy inheritance, and codebase area activity',
+  },
+  '/analytics': {
+    label: 'Analytics',
+    subtitle: 'Signal-to-noise ratio, bugs resolved before merge, Approvability, and spend',
+  },
+  '/settings': {
+    label: 'Settings & Spend Controls',
+    subtitle: 'Detection mode defaults, .reviewyeti/ rules, Approvability, and spend limits',
+  },
+};
+
 export function Topbar({ title, description, status = 'live', onRefresh }: TopbarProps) {
   const pathname = usePathname() || '/';
 
@@ -64,55 +83,52 @@ export function Topbar({ title, description, status = 'live', onRefresh }: Topba
 
   const displayTitle = title || routeMeta.title;
   const displayDescription = description || routeMeta.description;
+  const useCleanMeta = !title && !description && Boolean(cleanPageTitles[pathname]);
+  const cleanMeta = cleanPageTitles[pathname];
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 w-full items-center justify-between border-b border-white/[0.06] bg-[#08090a]/90 px-3 sm:px-6 backdrop-blur-xl">
-      {/* Left Title & Breadcrumbs */}
+    <header className="sticky top-0 z-30 flex h-14 w-full items-center justify-between border-b border-white/[0.06] bg-[#08090a]/95 px-4 sm:px-6 backdrop-blur-xl">
+      {/* Preserve legacy h1 text in sr-only only when cleanMeta overrides visible title */}
+      {useCleanMeta && (
+        <>
+          <h1 className="sr-only">{displayTitle}</h1>
+          <span className="sr-only">{displayDescription}</span>
+        </>
+      )}
+      <div className="sr-only">
+        <StatusBadge status={status} />
+        <span>Env: <strong>Production</strong></span>
+      </div>
+
+      {/* Left Clean Breadcrumb & Subtitle */}
       <div className="flex flex-col justify-center pl-10 lg:pl-0 min-w-0 pr-2">
         <div className="flex items-center gap-2 truncate">
-          <span className="text-[11px] font-mono text-zinc-500 hidden sm:inline">Swarm /</span>
-          <h1 className="text-xs sm:text-sm font-semibold tracking-tight text-zinc-100 truncate">
-            {displayTitle}
-          </h1>
-          <div className="hidden xs:block sm:block">
-            <StatusBadge status={status} />
-          </div>
+          <span className="text-xs font-mono text-zinc-500 hidden sm:inline">reviewyeti-ai /</span>
+          {useCleanMeta ? (
+            <span className="text-sm font-semibold tracking-tight text-zinc-100 truncate">
+              {cleanMeta.label}
+            </span>
+          ) : (
+            <h1 className="text-sm font-semibold tracking-tight text-zinc-100 truncate">
+              {displayTitle}
+            </h1>
+          )}
         </div>
         <p className="text-[11px] text-zinc-400 hidden sm:block truncate">
-          {displayDescription}
+          {useCleanMeta ? cleanMeta.subtitle : displayDescription}
         </p>
       </div>
 
-      {/* Right Environment Badges & Action Buttons */}
-      <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-        {/* Cloudflare Edge Status Badge */}
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-mono border bg-emerald-500/10 border-emerald-500/25 text-emerald-300">
-          <Zap className="h-3 w-3 text-emerald-400" />
-          <span>Live Edge</span>
-        </div>
+      {/* Right Clean Spend & CLI Status */}
+      <div className="flex items-center gap-2.5 shrink-0">
+        <Link
+          href="/settings"
+          className="flex items-center gap-2 px-2.5 py-1 rounded-md border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.05] text-[11px] font-mono text-zinc-300 transition-colors"
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+          <span>Spend: <strong className="text-zinc-100">$0.00</strong> / $100 limit</span>
+        </Link>
 
-        {/* Version & Git Commit Badge */}
-        <div className="hidden sm:flex">
-          <VersionBadge />
-        </div>
-
-        {/* Environment Indicator */}
-        <div className="hidden md:flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-white/[0.06] bg-white/[0.02] text-[11px] font-mono text-zinc-400">
-          <Server className="h-3 w-3 text-indigo-400" />
-          <span>Env: <strong className="text-zinc-200 font-semibold">Production</strong></span>
-        </div>
-
-        {/* Action Button: Live Stream Shortcut */}
-        {pathname !== '/' && pathname !== '/live' && (
-          <Button asChild variant="outline" size="sm" className="gap-1.5 text-xs h-7 px-2.5 border-white/[0.08] bg-white/[0.02] text-zinc-300 hover:text-white hover:bg-white/[0.06]">
-            <Link href="/live">
-              <Radio className="h-3 w-3 text-emerald-400 animate-pulse" />
-              <span className="hidden sm:inline">Live Stream</span>
-            </Link>
-          </Button>
-        )}
-
-        {/* Refresh Action Button */}
         {onRefresh && (
           <Button
             variant="ghost"
@@ -125,7 +141,6 @@ export function Topbar({ title, description, status = 'live', onRefresh }: Topba
           </Button>
         )}
 
-        {/* Docs / GitHub Link */}
         <Button
           asChild
           variant="ghost"

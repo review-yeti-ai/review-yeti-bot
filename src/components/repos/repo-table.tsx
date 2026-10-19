@@ -41,10 +41,10 @@ export function RepoTable({
           <TableRow>
             <TableHead>Repository Name</TableHead>
             <TableHead className="w-[140px]">Automation</TableHead>
-            <TableHead className="w-[160px]">Review Profile</TableHead>
+            <TableHead className="w-[180px]">Detection Mode</TableHead>
             <TableHead className="w-[180px]">Architectural Diagrams</TableHead>
-            <TableHead className="w-[140px]">Model Overrides</TableHead>
-            <TableHead className="text-right w-[160px]">Actions / Scan</TableHead>
+            <TableHead className="w-[160px]">Convention &amp; Models</TableHead>
+            <TableHead className="text-right w-[160px]">Review Rules</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -95,13 +95,13 @@ export function RepoTable({
                         onChangeProfile(r.owner, r.repo, val)
                       }
                     >
-                      <SelectTrigger className="h-7 text-xs bg-background/80 min-w-[130px]">
+                      <SelectTrigger className="h-7 text-xs bg-background/80 min-w-[145px]">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="chill">Chill (Low strictness)</SelectItem>
-                        <SelectItem value="balanced">Balanced (Standard)</SelectItem>
-                        <SelectItem value="assertive">Assertive (Strict)</SelectItem>
+                        <SelectItem value="chill">Fast (Prefer Precision)</SelectItem>
+                        <SelectItem value="balanced">Balanced (Default)</SelectItem>
+                        <SelectItem value="assertive">Deep (Prefer Coverage)</SelectItem>
                       </SelectContent>
                     </Select>
                   </TableCell>
@@ -132,7 +132,7 @@ export function RepoTable({
                     </div>
                   </TableCell>
                   <TableCell>
-                    <Badge variant="outline" className="text-[10px] font-mono border-border/80">
+                    <Badge variant="outline" className="text-[10px] font-mono border-emerald-500/30 text-emerald-300 bg-emerald-500/10">
                       {r.modelOverrides && Object.keys(r.modelOverrides).length > 0
                         ? `${Object.keys(r.modelOverrides).length} overrides`
                         : 'Default Models'}
