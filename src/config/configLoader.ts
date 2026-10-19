@@ -1,5 +1,5 @@
 import yaml from 'js-yaml';
-import { ctReviewConfigSchema, ctReviewConfigV3Schema, ctReviewConfigV4Schema, CtReviewConfig, CtReviewConfigV3, CtReviewConfigV4, PreChecksConfig, resolvePreChecksConfig, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS, MAX_FILE_SIZE_DEFAULT, MODERN_TESTING_MODELS, DEFAULT_AUTO_REVIEW_TRIGGERS } from './schema';
+import { ctReviewConfigSchema, ctReviewConfigV3Schema, ctReviewConfigV4Schema, CtReviewConfig, CtReviewConfigV3, CtReviewConfigV4, PreChecksConfig, resolvePreChecksConfig, V3_PROVIDER_MODELS, R4_ALLOWED_MODELS, MAX_FILE_SIZE_DEFAULT, MODERN_TESTING_MODELS, DEFAULT_AUTO_REVIEW_TRIGGERS, resolveDetectionModeSettings, DetectionMode } from './schema';
 import { logger } from '../utils/logger';
 import { OMNIROUTE_GENERATED_PROVIDERS, OMNIROUTE_GENERATED_MODEL_LIST } from '../types/providers.generated';
 import { CommunityPersonaLoader, CommunityPersonaLoaderOptions, sanitizePersonaId } from '../personas/communityPersonaLoader';
@@ -519,6 +519,34 @@ export function parseAndValidateConfig(rawYaml: string, isCodeRabbitFormat = fal
   }
   if (raw.swarm_context_isolation === undefined) {
     raw.swarm_context_isolation = true;
+  }
+  if (String(raw.version ?? 1) === '3.0') {
+    raw.version = 3;
+  }
+  const requestedMode = (raw.mode ?? (raw.reviews as any)?.mode) as DetectionMode | undefined;
+  if (requestedMode === 'fast' || requestedMode === 'balanced' || requestedMode === 'deep') {
+    const modeSettings = resolveDetectionModeSettings(requestedMode);
+    if (raw.profile === undefined && (raw.reviews as any)?.profile === undefined) {
+      raw.profile = modeSettings.profile;
+    }
+    if (raw.reviewer_effort === undefined && (raw.reviews as any)?.reviewer_effort === undefined) {
+      raw.reviewer_effort = modeSettings.reviewerEffort;
+    }
+    if (raw.default_max_turns === undefined && (raw.reviews as any)?.default_max_turns === undefined) {
+      raw.default_max_turns = modeSettings.maxInvestigationTurns;
+    }
+  }
+  if (
+    (String(raw.version ?? 1) === '3' || String(raw.version ?? 1) === '4') &&
+    (raw.mode !== undefined || raw.min_severity !== undefined || (raw.reviews as any)?.mode !== undefined || (raw.reviews as any)?.min_severity !== undefined) &&
+    !raw.quorum &&
+    !raw.personas &&
+    !raw.reviewers
+  ) {
+    const defaults = createDefaultV3Config();
+    raw.quorum = defaults.quorum;
+    raw.personas = defaults.personas;
+    raw.reviewers = defaults.reviewers;
   }
   if (String(raw.version ?? 1) === '4') {
     if ('lenses' in raw) throw new ConfigValidationError('version 4 personas cannot be mixed with legacy lenses');

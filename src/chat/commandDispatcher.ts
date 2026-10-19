@@ -51,6 +51,18 @@ export interface DispatchResult {
 
 export function parseCommand(commandStr: string): ParsedCommand | null {
   if (!commandStr || typeof commandStr !== 'string') return null;
+  const trimmed = commandStr.trim();
+  const naturalFixMatch = trimmed.match(
+    /(?:^|\s)@(?:review-yeti|review-yeti-bot|ct-review|ct-review-bot|bot)(?:\[bot\])?\s+fix\s+(?:it|this)(?:\s+for\s+me)?(?:\s+([\s\S]*))?$/i
+  ) || trimmed.match(/^fix\s+(?:it|this)\s+for\s+me(?:\s+([\s\S]*))?$/i);
+  if (naturalFixMatch) {
+    return {
+      command: 'fix',
+      args: (naturalFixMatch[1] || '').trim(),
+      rawText: commandStr,
+    };
+  }
+
   const match = commandStr.match(
     /(?:^|\s)@(review-yeti|review-yeti-bot|ct-review|ct-review-bot|bot)(?:\[bot\])?\s+(review|explain|fix|refactor|ignore|mute|summarize|ask|learn|remember|forget)(?:\s+([\s\S]*))?$/i
   );
@@ -117,12 +129,23 @@ export class CommandDispatcher {
     }
   }
 
-  private async handleReview(_parsed: ParsedCommand, context: ChatContext): Promise<DispatchResult> {
+  private async handleReview(parsed: ParsedCommand, context: ChatContext): Promise<DispatchResult> {
+    const modeMatch = parsed.args.match(/\b(fast|balanced|deep)\b/i);
+    const mode = modeMatch ? (modeMatch[1].toLowerCase() as 'fast' | 'balanced' | 'deep') : undefined;
     if (context.onRunReviewPipeline && context.payload) {
-      await context.onRunReviewPipeline(context.payload);
-      return { command: 'review', success: true, message: 'Full panel code review pipeline triggered.' };
+      const payload = mode ? { ...context.payload, mode } : context.payload;
+      await context.onRunReviewPipeline(payload);
+      return {
+        command: 'review',
+        success: true,
+        message: mode ? `Full panel code review pipeline triggered (${mode} mode).` : 'Full panel code review pipeline triggered.',
+      };
     }
-    return { command: 'review', success: true, message: 'Review command parsed.' };
+    return {
+      command: 'review',
+      success: true,
+      message: mode ? `Review command parsed (${mode} mode).` : 'Review command parsed.',
+    };
   }
 
   private async handleExplain(parsed: ParsedCommand, context: ChatContext): Promise<DispatchResult> {

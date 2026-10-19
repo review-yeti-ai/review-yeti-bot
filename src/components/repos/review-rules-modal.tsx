@@ -45,6 +45,8 @@ export function ReviewRulesModal({
   const [successMessage, setSuccessMessage] = React.useState<string | null>(null);
 
   // Form State
+  const [mode, setMode] = React.useState<'fast' | 'balanced' | 'deep'>('balanced');
+  const [minSeverity, setMinSeverity] = React.useState<'low' | 'medium' | 'high' | 'critical' | 'P0' | 'P1' | 'P2'>('low');
   const [profile, setProfile] = React.useState<'chill' | 'balanced' | 'assertive'>('balanced');
   const [reviewerEffort, setReviewerEffort] = React.useState<'low' | 'medium' | 'high' | 'xhigh' | 'max'>('low');
   const [confidenceThreshold, setConfidenceThreshold] = React.useState<number>(70);
@@ -79,6 +81,8 @@ export function ReviewRulesModal({
     fetchRepositoryReviewRules(owner, repo)
       .then((rules) => {
         if (rules.reviews) {
+          setMode(rules.reviews.mode || 'balanced');
+          setMinSeverity(rules.reviews.min_severity || 'low');
           setProfile(rules.reviews.profile || 'balanced');
           setReviewerEffort(rules.reviews.reviewer_effort || 'low');
           setConfidenceThreshold(rules.reviews.confidence_threshold ?? 70);
@@ -121,6 +125,8 @@ export function ReviewRulesModal({
 
     const payload: Partial<RepositoryReviewRules> = {
       reviews: {
+        mode,
+        min_severity: minSeverity,
         profile,
         reviewer_effort: reviewerEffort,
         confidence_threshold: Number(confidenceThreshold),
@@ -203,6 +209,55 @@ export function ReviewRulesModal({
 
             {/* TAB 1: REVIEWS */}
             <TabsContent value="reviews" className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-foreground">Detection Mode</label>
+                  <Select
+                    value={mode}
+                    onValueChange={(val: 'fast' | 'balanced' | 'deep') => {
+                      setMode(val);
+                      if (val === 'fast') {
+                        setProfile('chill');
+                        setReviewerEffort('low');
+                      } else if (val === 'balanced') {
+                        setProfile('balanced');
+                        setReviewerEffort('medium');
+                      } else if (val === 'deep') {
+                        setProfile('assertive');
+                        setReviewerEffort('high');
+                      }
+                    }}
+                  >
+                    <SelectTrigger className="text-xs h-9">
+                      <SelectValue placeholder="Select detection mode" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="fast">Fast (Prefer precision, high-signal only)</SelectItem>
+                      <SelectItem value="balanced">Balanced (Default precision &amp; coverage)</SelectItem>
+                      <SelectItem value="deep">Deep (Prefer coverage, exhaustive audit)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-foreground">Minimum Severity</label>
+                  <Select
+                    value={minSeverity}
+                    onValueChange={(val: any) => setMinSeverity(val)}
+                  >
+                    <SelectTrigger className="text-xs h-9">
+                      <SelectValue placeholder="Select minimum severity" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Low (All actionable findings)</SelectItem>
+                      <SelectItem value="medium">Medium (Skip minor nits)</SelectItem>
+                      <SelectItem value="high">High (High &amp; critical bugs only)</SelectItem>
+                      <SelectItem value="critical">Critical (Blocking P0 issues only)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-foreground">Strictness Profile</label>

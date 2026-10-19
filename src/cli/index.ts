@@ -13,9 +13,16 @@ import {
   InitWizardOptions,
   InitWizardResult,
 } from './initWizard';
+import {
+  runLocalReview,
+  LocalReviewOptions,
+  LocalReviewResult,
+} from './localReview';
+import { DetectionMode, MinimumSeverity } from '../config/schema';
 
 export * from './preCommit';
 export * from './initWizard';
+export * from './localReview';
 
 const VERSION = '1.28.6';
 
@@ -29,11 +36,22 @@ USAGE:
   npx review-yeti <command> [options]
 
 COMMANDS:
+  review               Run local code review with detection modes (fast | balanced | deep)
   init                 Run 30-second GitHub App onboarding setup wizard
   pre-commit           Evaluate staged git changes (git diff --cached) for P0/P1 issues
   install-hook         Install Review Yeti as a git pre-commit hook
   --version, -v        Show CLI version
   --help, -h           Show this help message
+
+OPTIONS (review):
+  --mode <mode>        Detection mode: fast | balanced | deep (default: balanced)
+  --min-severity <s>   Minimum severity: low | medium | high | critical
+  --base <ref>         Compare against base git ref (e.g. origin/main)
+  --head <ref>         Target head git ref (default: HEAD)
+  --isolate            Run inside an isolated temporary git worktree
+  --raw                Stream newline-delimited JSONL findings for coding agents
+  --json               Output machine-readable JSON evaluation report
+  --strict             Exit non-zero on P1 issues in addition to P0 issues
 
 OPTIONS (init):
   --port <number>      Port for local callback listener (default: 3333)
@@ -60,6 +78,8 @@ OPTIONS (install-hook):
   --dir <path>         Target repository root directory
 
 EXAMPLES:
+  $ npx review-yeti review --mode fast --raw
+  $ npx review-yeti review --base origin/main --isolate
   $ npx review-yeti init
   $ npx review-yeti init --org my-org --no-browser
   $ npx review-yeti init --dry-run --json
@@ -95,6 +115,47 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<nu
   if (command === '--version' || command === '-v' || command === 'version') {
     printVersion();
     return 0;
+  }
+
+  if (command === 'review') {
+    const getFlagValue = (flagName: string): string | undefined => {
+      const idx = flags.indexOf(flagName);
+      if (idx !== -1 && flags[idx + 1] && !flags[idx + 1].startsWith('-')) {
+        return flags[idx + 1];
+      }
+      return undefined;
+    };
+
+    const modeVal = getFlagValue('--mode') as DetectionMode | undefined;
+    const minSeverityVal = getFlagValue('--min-severity') as MinimumSeverity | undefined;
+    const diffPathArg = getFlagValue('--diff');
+    let diffContent: string | undefined;
+    if (diffPathArg) {
+      const resolvedDiffPath = path.resolve(process.cwd(), diffPathArg);
+      if (!fs.existsSync(resolvedDiffPath)) {
+        console.error(`Error: Diff file not found: ${resolvedDiffPath}`);
+        return 1;
+      }
+      diffContent = fs.readFileSync(resolvedDiffPath, 'utf-8');
+    }
+
+    const reviewOptions: LocalReviewOptions = {
+      mode: modeVal && ['fast', 'balanced', 'deep'].includes(modeVal) ? modeVal : undefined,
+      minSeverity: minSeverityVal,
+      base: getFlagValue('--base'),
+      head: getFlagValue('--head'),
+      isolate: flags.includes('--isolate'),
+      raw: flags.includes('--raw'),
+      json: flags.includes('--json'),
+      strict: flags.includes('--strict'),
+      noColor: flags.includes('--no-color'),
+      quiet: flags.includes('--quiet') || flags.includes('-q'),
+      diff: diffContent,
+      model: getFlagValue('--model'),
+    };
+
+    const result = await runLocalReview(reviewOptions);
+    return result.exitCode;
   }
 
   if (command === 'init') {

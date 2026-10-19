@@ -236,6 +236,8 @@ export interface ActivePullRequestSummary {
 
 export interface RepositoryReviewRules {
   reviews: {
+    mode?: 'fast' | 'balanced' | 'deep';
+    min_severity?: 'low' | 'medium' | 'high' | 'critical' | 'P0' | 'P1' | 'P2';
     profile?: 'chill' | 'balanced' | 'assertive';
     reviewer_effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
     default_max_turns?: number;

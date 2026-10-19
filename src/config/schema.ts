@@ -215,7 +215,80 @@ const BuiltinCharterEnum = z.enum([
   'builtin:skeptic',
   'builtin:docs',
   'builtin:docs-compliance',
+  'builtin:dependency-health',
 ]);
+
+export const detectionModeSchema = z.enum(['fast', 'balanced', 'deep']);
+export type DetectionMode = z.infer<typeof detectionModeSchema>;
+
+export const minSeveritySchema = z.enum(['low', 'medium', 'high', 'critical', 'P0', 'P1', 'P2']);
+export type MinimumSeverity = z.infer<typeof minSeveritySchema>;
+
+export interface DetectionModeSettings {
+  mode: DetectionMode;
+  profile: 'chill' | 'balanced' | 'assertive';
+  reviewerEffort: 'low' | 'medium' | 'high';
+  maxInvestigationTurns: number;
+  maxTasks: number;
+  personas: string[];
+  description: string;
+}
+
+export function resolveDetectionModeSettings(mode: DetectionMode = 'balanced'): DetectionModeSettings {
+  switch (mode) {
+    case 'fast':
+      return {
+        mode: 'fast',
+        profile: 'chill',
+        reviewerEffort: 'low',
+        maxInvestigationTurns: 5,
+        maxTasks: 2,
+        personas: ['security', 'correctness'],
+        description: 'Fast single-pass correctness and security check for rapid feedback',
+      };
+    case 'deep':
+      return {
+        mode: 'deep',
+        profile: 'assertive',
+        reviewerEffort: 'high',
+        maxInvestigationTurns: 15,
+        maxTasks: 6,
+        personas: ['security', 'correctness', 'architecture', 'performance', 'testing', 'dependencies'],
+        description: 'Deep multi-pass verification across correctness, security, and architecture',
+      };
+    case 'balanced':
+    default:
+      return {
+        mode: 'balanced',
+        profile: 'balanced',
+        reviewerEffort: 'medium',
+        maxInvestigationTurns: 10,
+        maxTasks: 4,
+        personas: ['security', 'correctness', 'architecture', 'performance'],
+        description: 'Balanced correctness and security pass with falsification',
+      };
+  }
+}
+
+const SEVERITY_RANK: Record<string, number> = {
+  low: 1,
+  minor: 1,
+  p2: 1,
+  medium: 2,
+  major: 3,
+  high: 3,
+  p1: 3,
+  critical: 4,
+  p0: 4,
+};
+
+export function meetsMinimumSeverity(findingSeverity: string, minSeverity?: string): boolean {
+  if (!minSeverity) return true;
+  const threshold = SEVERITY_RANK[minSeverity.toLowerCase().trim()];
+  if (!threshold) return true;
+  const rank = SEVERITY_RANK[String(findingSeverity || '').toLowerCase().trim()] ?? 1;
+  return rank >= threshold;
+}
 
 export const providerSchema = z.object({
   id: ProviderIdEnum,
@@ -296,6 +369,8 @@ export const personaSchema = z.preprocess(
 );
 
 export const reviewsSchema = z.object({
+  mode: detectionModeSchema.optional(),
+  min_severity: minSeveritySchema.optional(),
   profile: z.enum(['chill', 'balanced', 'assertive']).default('balanced'),
   reviewer_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('low'),
   default_max_turns: z.number().int().min(1).max(20).optional().default(20),
@@ -360,6 +435,8 @@ export const repositoryReviewRulesSchema = z.object({
 export type RepositoryReviewRules = z.infer<typeof repositoryReviewRulesSchema>;
 
 export const reviewsUpdateSchema = z.object({
+  mode: detectionModeSchema.optional(),
+  min_severity: minSeveritySchema.optional(),
   profile: z.enum(['chill', 'balanced', 'assertive']).optional(),
   reviewer_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   default_max_turns: z.number().int().min(1).max(20).optional(),
@@ -767,6 +844,8 @@ export type EffectiveReviewConfigReceipt = z.infer<typeof effectiveReviewConfigR
 
 const ctReviewConfigV3ObjectSchema = z.object({
   version: z.union([z.literal(3), z.literal('3')]).transform(() => 3 as const),
+  mode: detectionModeSchema.optional(),
+  min_severity: minSeveritySchema.optional(),
   profile: z.enum(['chill', 'balanced', 'assertive']).default('balanced'),
   quorum: z.number().int().positive(),
   personas: z.array(personaSchema).min(1),

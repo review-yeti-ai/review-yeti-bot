@@ -314,21 +314,6 @@ export function createDashboardRouter(): Router {
       });
     }
 
-    if (baseUrl.includes('.internal')) {
-      const latencyMs = Math.floor(Math.random() * 20) + 10;
-      dashboardStore.updateProviderConfig(id, {
-        status: 'connected',
-        latencyMs,
-      });
-      return res.status(200).json({
-        success: true,
-        status: 'configured',
-        statusCode: 200,
-        latencyMs,
-        message: `Connection to ${displayName} endpoint (${baseUrl}) verified successfully. HTTP 200 OK`,
-      });
-    }
-
     const startMs = Date.now();
 
     try {
@@ -491,53 +476,27 @@ export function createDashboardRouter(): Router {
     const prNumber = body.prNumber || Math.floor(Math.random() * 200) + 1000;
     const title = body.title || `Test Review Execution for ${repo} #${prNumber}`;
     const verdict = body.verdict || 'SHIP';
-    const personas = body.personas || ['security', 'architecture', 'quality', 'database', 'performance'];
+    const personas: string[] = Array.isArray(body.personas) && body.personas.length > 0
+      ? body.personas
+      : ['security', 'architecture', 'quality', 'database', 'performance'];
     const tokenDetails = body.tokenDetails || { prompt: 15000, completion: 2500, total: 17500 };
     const costUSD = body.costUSD || 0.15;
 
     const personaSettings = dashboardStore.getPersonaSettings();
-    const personaLogs = [
-      {
-        persona: 'security',
-        displayName: 'Security & Tenancy Guardian',
-        decision: 'SHIP',
-        confidence: 0.98,
-        latencyMs: 420,
-        model: personaSettings['security']?.model || 'claude-5-sonnet',
+    const personaLogs = personas.map((personaId: string) => {
+      const cfg = personaSettings[personaId];
+      return {
+        persona: personaId,
+        displayName: cfg?.displayName || cfg?.name || personaId,
+        decision: verdict === 'NACK' ? 'NACK' : 'SHIP',
+        confidence: cfg ? Number((cfg.confidenceThreshold / 100).toFixed(2)) : 0.9,
+        latencyMs: 0,
+        model: cfg?.model || 'configured-model',
         findingsCount: 0,
-        summary: 'Verified multi-tenant Isolation bounds, zero SQL parameter leakage in 32k diff.',
-      },
-      {
-        persona: 'architecture',
-        displayName: 'System Architecture Auditor',
-        decision: 'SHIP',
-        confidence: 0.96,
-        latencyMs: 510,
-        model: personaSettings['architecture']?.model || 'grok-cli/grok-4.5',
-        findingsCount: 0,
-        summary: 'Approved ingestion layer interface contracts across 14 modified modules.',
-      },
-      {
-        persona: 'quality',
-        displayName: 'Code Quality & Style Enforcer',
-        decision: 'SHIP',
-        confidence: 0.94,
-        latencyMs: 380,
-        model: personaSettings['quality']?.model || 'claude-haiku-4.5',
-        findingsCount: 0,
-        summary: 'Clean TypeScript types with 100% test coverage.',
-      },
-      {
-        persona: 'database',
-        displayName: 'Database & Persistence Specialist',
-        decision: 'SHIP',
-        confidence: 0.92,
-        latencyMs: 410,
-        model: personaSettings['database']?.model || 'glm-5.2',
-        findingsCount: 0,
-        summary: 'Validated concurrent B-tree index creation statements.',
-      },
-    ];
+        summary: `Synthetic verification completed for ${personaId} (${repo} #${prNumber}).`,
+        status: 'success',
+      };
+    });
 
     const testRun = {
       id: `job-test-${Date.now()}`,
@@ -553,25 +512,18 @@ export function createDashboardRouter(): Router {
       tokenDetails,
       costUSD,
       cost: costUSD,
-      latencyMs: 1840,
+      latencyMs: 0,
       timestamp: new Date().toISOString(),
       headSha: crypto.randomBytes(4).toString('hex'),
       quorum: `${personas.length}/${personas.length}`,
       isSynthetic: true,
-      personaLogs: personaLogs.map((p: any) => ({ ...p, status: 'success' })),
+      personaLogs,
       mermaidDiagram: `sequenceDiagram
   autonumber
   actor User as Developer
-  participant Bot as CT-Review-Bot
-  participant Sec as Security Guardian
-  participant Arch as Architecture Auditor
-
-  User->>Bot: Open PR #${prNumber} (${title})
-  Bot->>Sec: Scan Input Payload Sanitation
-  Sec-->>Bot: Verdict (SHIP - 98% Confidence)
-  Bot->>Arch: Audit Ingestion Abstraction
-  Arch-->>Bot: Verdict (SHIP - 96% Confidence)
-  Bot-->>User: Arbitrated Final Verdict: SHIP`,
+  participant Bot as Review Yeti
+  User->>Bot: Diagnostic Test PR #${prNumber} (${title})
+  Bot-->>User: Verdict: ${verdict}`,
     };
 
     try {
