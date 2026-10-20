@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.134.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.133.0...v1.134.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** add gh-connected PR status/review commands, auto LLM gateway client & local Check Run Agent evaluation ([#1518](https://github.com/review-yeti-ai/review-yeti-bot/issues/1518)) ([14bca84](https://github.com/review-yeti-ai/review-yeti-bot/commit/14bca843be2b80387e7553cd0ae9b0fc6bea6b21))
+
 ## [1.133.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.132.0...v1.133.0) (2026-10-20)
 
 
