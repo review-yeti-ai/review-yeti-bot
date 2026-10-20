@@ -210,6 +210,7 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<nu
     const prFlagVal = getFlagValue('--pr') || positionalPr;
     const parsedPr = parsePrReference(prFlagVal);
 
+    const outputFormat = getFlagValue('--output');
     if (flags[0] === 'review') {
       const modeVal = getFlagValue('--mode') as DetectionMode | undefined;
       const minSeverityVal = getFlagValue('--min-severity') as MinimumSeverity | undefined;
