@@ -197,6 +197,19 @@ const visibleNavItems: NavItem[] = [
     shortcut: 'G A',
   },
   {
+    title: 'Memory & Rules',
+    href: '/memory',
+    icon: Database,
+    shortcut: 'G M',
+  },
+  {
+    title: 'Live Stream',
+    href: '/live',
+    icon: Radio,
+    badge: 'LIVE',
+    shortcut: 'G L',
+  },
+  {
     title: 'Settings & Spend',
     href: '/settings',
     icon: Sliders,

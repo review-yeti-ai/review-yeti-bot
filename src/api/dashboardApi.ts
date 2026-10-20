@@ -3,7 +3,38 @@ import crypto from 'crypto';
 import { dashboardStore } from '../persistence/dashboardStore';
 import { getSystemVersionInfo } from '../utils/versionInfo';
 import { updateRepositoryReviewRulesSchema } from '../config/schema';
+import { loadReviewYetiDirectoryFromFs, type CustomCheckDefinition } from '../config/reviewYetiDirLoader';
 import { resolveReviewDiff } from '../review/diffService';
+
+const DEFAULT_CHECK_RUN_AGENTS: CustomCheckDefinition[] = [
+  {
+    id: 'auth-boundary',
+    name: 'Auth & Tenant Boundary Invariants',
+    rule: 'Verify all newly added API routes enforce tenant isolation and require authentication middleware before accessing persistent stores.',
+    scope: ['src/api/**', 'src/auth/**'],
+    severity: 'P0',
+    action: 'request_changes',
+    sourceFile: '.reviewyeti/checks/auth-boundary.md',
+  },
+  {
+    id: 'migration-safety',
+    name: 'Zero-Downtime Migration Safety',
+    rule: 'Ensure database schema changes avoid table-locking column renames or non-nullable additions without defaults.',
+    scope: ['src/persistence/**', 'migrations/**', '**/*.sql'],
+    severity: 'P1',
+    action: 'request_changes',
+    sourceFile: '.reviewyeti/checks/migration-safety.md',
+  },
+  {
+    id: 'secret-hygiene',
+    name: 'Secret & Token Redaction Gate',
+    rule: 'Ensure no raw tokens, private keys, or unmasked credentials are logged or serialized in error payloads.',
+    scope: ['**'],
+    severity: 'P0',
+    action: 'request_changes',
+    sourceFile: '.reviewyeti/checks/secret-hygiene.md',
+  },
+];
 
 export function createDashboardRouter(): Router {
   const router = Router();
@@ -259,6 +290,22 @@ export function createDashboardRouter(): Router {
         error: err?.message || 'Invalid settings payload',
       });
     }
+  });
+
+  // GET /api/dashboard/check-agents
+  router.get('/check-agents', (_req: Request, res: Response) => {
+    const dirConfig = loadReviewYetiDirectoryFromFs(process.cwd());
+    const agents = dirConfig.checks.length > 0 ? dirConfig.checks : DEFAULT_CHECK_RUN_AGENTS;
+    return res.status(200).json({
+      success: true,
+      agents,
+      directoryConfig: {
+        mode: dirConfig.mode,
+        minSeverity: dirConfig.minSeverity,
+        ignorePatternsCount: dirConfig.ignorePatterns.length,
+        scopedInstructionsCount: dirConfig.scopedInstructions.length,
+      },
+    });
   });
 
   // GET /api/dashboard/providers

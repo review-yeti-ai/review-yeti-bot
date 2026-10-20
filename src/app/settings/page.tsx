@@ -14,6 +14,7 @@ import { PersonaConfigDrawer } from '@/components/settings/persona-config-drawer
 import { PromptEditor } from '@/components/settings/prompt-editor';
 import { PromptTestModal } from '@/components/settings/prompt-test-modal';
 import { ProviderSettings } from '@/components/settings/provider-settings';
+import * as apiClient from '@/lib/api-client';
 import { fetchPersonas, updatePersona, fetchProviders } from '@/lib/api-client';
 import { PersonaSetting, ProviderConfigRecord, ModelRegistryItem } from '@/types/dashboard';
 
@@ -76,6 +77,40 @@ function SettingsContent() {
   const [detectionMode, setDetectionMode] = React.useState<'fast' | 'balanced' | 'deep'>('balanced');
   const [minSeverity, setMinSeverity] = React.useState<'low' | 'medium' | 'high' | 'critical'>('medium');
   const [prSummarySync, setPrSummarySync] = React.useState<boolean>(true);
+  const [autoApproveCleanPRs, setAutoApproveCleanPRs] = React.useState<boolean>(true);
+  const [monthlyBudgetUSD, setMonthlyBudgetUSD] = React.useState<number>(100);
+  const [perReviewCapUSD, setPerReviewCapUSD] = React.useState<number>(10);
+  const [perPrCapUSD, setPerPrCapUSD] = React.useState<number>(50);
+  const [checkRunPerPrCapUSD, setCheckRunPerPrCapUSD] = React.useState<number>(100);
+  const [checkAgents, setCheckAgents] = React.useState<apiClient.CheckRunAgentItem[]>([
+    {
+      id: 'auth-boundary',
+      name: 'Auth & Tenant Boundary Invariants',
+      rule: 'Verify all newly added API routes enforce tenant isolation and require authentication middleware.',
+      scope: ['src/api/**', 'src/auth/**'],
+      severity: 'P0',
+      action: 'request_changes',
+      sourceFile: '.reviewyeti/checks/auth-boundary.md',
+    },
+    {
+      id: 'migration-safety',
+      name: 'Zero-Downtime Migration Safety',
+      rule: 'Ensure database schema changes avoid table-locking column renames or non-nullable additions.',
+      scope: ['src/persistence/**', 'migrations/**', '**/*.sql'],
+      severity: 'P1',
+      action: 'request_changes',
+      sourceFile: '.reviewyeti/checks/migration-safety.md',
+    },
+    {
+      id: 'secret-hygiene',
+      name: 'Secret & Token Redaction Gate',
+      rule: 'Ensure no raw tokens, private keys, or unmasked credentials are logged or serialized.',
+      scope: ['**'],
+      severity: 'P0',
+      action: 'request_changes',
+      sourceFile: '.reviewyeti/checks/secret-hygiene.md',
+    },
+  ]);
 
   const [providers, setProviders] = React.useState<Record<string, ProviderConfigRecord>>({});
   const [modelRegistry, setModelRegistry] = React.useState<Record<string, ModelRegistryItem>>({});
@@ -91,6 +126,59 @@ function SettingsContent() {
     enabled: true,
     customPrompt: '',
     charter: `builtin:${selectedId}`,
+  };
+
+  const loadWorkspaceSettings = React.useCallback(async () => {
+    try {
+      if (typeof apiClient.fetchDashboardSettings === 'function') {
+        const s = await apiClient.fetchDashboardSettings();
+        if (s.detectionMode && ['fast', 'balanced', 'deep'].includes(s.detectionMode)) {
+          setDetectionMode(s.detectionMode);
+        }
+        if (s.minSeverity && ['low', 'medium', 'high', 'critical'].includes(s.minSeverity)) {
+          setMinSeverity(s.minSeverity);
+        }
+        if (typeof s.prSummarySync === 'boolean') {
+          setPrSummarySync(s.prSummarySync);
+        }
+        if (typeof s.autoApproveCleanPRs === 'boolean') {
+          setAutoApproveCleanPRs(s.autoApproveCleanPRs);
+        }
+        if (s.providerCostCaps) {
+          if (typeof s.providerCostCaps.monthlyBudgetUSD === 'number') {
+            setMonthlyBudgetUSD(s.providerCostCaps.monthlyBudgetUSD);
+          }
+          if (typeof s.providerCostCaps.perReviewCapUSD === 'number') {
+            setPerReviewCapUSD(s.providerCostCaps.perReviewCapUSD);
+          }
+          if (typeof s.providerCostCaps.perPrCapUSD === 'number') {
+            setPerPrCapUSD(s.providerCostCaps.perPrCapUSD);
+          }
+          if (typeof s.providerCostCaps.checkRunPerPrCapUSD === 'number') {
+            setCheckRunPerPrCapUSD(s.providerCostCaps.checkRunPerPrCapUSD);
+          }
+        }
+      }
+      if (typeof apiClient.fetchCheckRunAgents === 'function') {
+        const agents = await apiClient.fetchCheckRunAgents();
+        if (Array.isArray(agents) && agents.length > 0) {
+          setCheckAgents(agents);
+        }
+      }
+    } catch {
+      // Retain defaults when offline or unconfigured
+    }
+  }, []);
+
+  const persistSettingsPatch = async (patch: Record<string, any>, successMsg: string) => {
+    try {
+      if (typeof apiClient.updateDashboardSettings === 'function') {
+        await apiClient.updateDashboardSettings(patch);
+      }
+      setToastMessage(successMsg);
+    } catch (err: any) {
+      setToastMessage(`Failed to persist settings: ${err?.message || 'Error'}`);
+    }
   };
 
   const loadPersonasData = React.useCallback(async () => {
@@ -111,15 +199,17 @@ function SettingsContent() {
 
   const loadProvidersData = React.useCallback(async () => {
     try {
-      const res = await fetchProviders();
-      if (res && res.providers) {
-        setProviders(res.providers);
-      }
-      if (res && res.modelRegistry) {
-        setModelRegistry(res.modelRegistry);
-      }
-      if (res && res.models) {
-        setDynamicModels(res.models);
+      if (typeof fetchProviders === 'function') {
+        const res = await fetchProviders();
+        if (res && res.providers) {
+          setProviders(res.providers);
+        }
+        if (res && res.modelRegistry) {
+          setModelRegistry(res.modelRegistry);
+        }
+        if (res && res.models) {
+          setDynamicModels(res.models);
+        }
       }
     } catch (err: any) {
       setToastMessage(`Error loading provider settings: ${err?.message}`);
@@ -129,7 +219,8 @@ function SettingsContent() {
   React.useEffect(() => {
     loadPersonasData();
     loadProvidersData();
-  }, [loadPersonasData, loadProvidersData]);
+    loadWorkspaceSettings();
+  }, [loadPersonasData, loadProvidersData, loadWorkspaceSettings]);
 
   const handleSelectPersona = (id: string) => {
     setSelectedId(id);
@@ -315,11 +406,15 @@ function SettingsContent() {
         </div>
       </div>
 
-      {/* Tabs Bar (sr-only labels preserved for E2E while keeping clean layout) */}
+      {/* Visible Tabs Bar */}
       <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
-        <TabsList className="sr-only">
-          <TabsTrigger value="personas">Review Tasks &amp; Personas</TabsTrigger>
-          <TabsTrigger value="models">Model Providers &amp; Budgets</TabsTrigger>
+        <TabsList className="bg-[#0b0c10] border border-white/[0.08] p-1">
+          <TabsTrigger value="personas" className="text-xs px-3 py-1.5">
+            Review Tasks &amp; Personas
+          </TabsTrigger>
+          <TabsTrigger value="models" className="text-xs px-3 py-1.5">
+            Model Providers &amp; Budgets
+          </TabsTrigger>
         </TabsList>
 
         {toastMessage && (
@@ -332,7 +427,7 @@ function SettingsContent() {
         )}
 
         {/* Primary Settings View */}
-        <TabsContent value="personas" className="space-y-5 mt-2">
+        <TabsContent value="personas" className="space-y-5 mt-3">
           {/* 1. Detection Mode & Minimum Severity */}
           <Card className="border-white/[0.08] bg-[#0b0c10]">
             <CardHeader className="pb-3">
@@ -383,7 +478,10 @@ function SettingsContent() {
                       type="button"
                       onClick={() => {
                         setDetectionMode(m.id);
-                        setToastMessage(`Default detection mode set to '${m.title} (${m.subtitle})'`);
+                        persistSettingsPatch(
+                          { detectionMode: m.id },
+                          `Default detection mode set to '${m.title} (${m.subtitle})'`
+                        );
                       }}
                       className={`text-left p-3.5 rounded-xl border transition-all ${
                         active
@@ -423,7 +521,10 @@ function SettingsContent() {
                         type="button"
                         onClick={() => {
                           setMinSeverity(sev);
-                          setToastMessage(`Minimum finding severity set to '${sev.toUpperCase()}'`);
+                          persistSettingsPatch(
+                            { minSeverity: sev },
+                            `Minimum finding severity set to '${sev.toUpperCase()}'`
+                          );
                         }}
                         className={`py-1.5 px-2 rounded-md border text-xs font-mono uppercase transition-colors ${
                           minSeverity === sev
@@ -450,7 +551,14 @@ function SettingsContent() {
                     type="button"
                     role="switch"
                     aria-checked={prSummarySync}
-                    onClick={() => setPrSummarySync(!prSummarySync)}
+                    onClick={() => {
+                      const next = !prSummarySync;
+                      setPrSummarySync(next);
+                      persistSettingsPatch(
+                        { prSummarySync: next },
+                        `PR Description Summary sync ${next ? 'enabled' : 'disabled'}`
+                      );
+                    }}
                     className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
                       prSummarySync ? 'bg-emerald-500' : 'bg-zinc-700'
                     }`}
@@ -481,12 +589,31 @@ function SettingsContent() {
               <CardContent className="space-y-2.5 text-xs">
                 <div className="flex items-center justify-between p-2.5 rounded-lg border border-white/[0.06] bg-[#08090c]">
                   <div>
-                    <div className="font-semibold text-zinc-200">Minimum Blocking Severity</div>
-                    <div className="text-[11px] text-zinc-400">Unresolved Correctness comments at or above this level block auto-approval</div>
+                    <div className="font-semibold text-zinc-200">Auto-Approve Clean Pull Requests</div>
+                    <div className="text-[11px] text-zinc-400">Submit GitHub APPROVE review automatically when 0 blocking issues remain</div>
                   </div>
-                  <span className="px-2 py-0.5 rounded font-mono text-[11px] bg-white/[0.05] text-zinc-200 border border-white/[0.08]">
-                    Medium
-                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={autoApproveCleanPRs}
+                    onClick={() => {
+                      const next = !autoApproveCleanPRs;
+                      setAutoApproveCleanPRs(next);
+                      persistSettingsPatch(
+                        { autoApproveCleanPRs: next },
+                        `Auto-Approve Clean PRs ${next ? 'enabled' : 'disabled'}`
+                      );
+                    }}
+                    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                      autoApproveCleanPRs ? 'bg-emerald-500' : 'bg-zinc-700'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition ${
+                        autoApproveCleanPRs ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
                 </div>
                 <div className="flex items-center justify-between p-2.5 rounded-lg border border-white/[0.06] bg-[#08090c]">
                   <div>
@@ -517,60 +644,164 @@ function SettingsContent() {
             {/* Spend Controls & Guardrails */}
             <Card className="border-white/[0.08] bg-[#0b0c10]">
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-semibold text-zinc-100">
-                  Spend Controls &amp; Pre-Execution Caps
-                </CardTitle>
-                <CardDescription className="text-xs text-zinc-400">
-                  Predictable usage guardrails evaluated before dispatching any review or Check Run Agent.
-                </CardDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-sm font-semibold text-zinc-100">
+                      Spend Controls &amp; Pre-Execution Caps
+                    </CardTitle>
+                    <CardDescription className="text-xs text-zinc-400">
+                      Predictable usage guardrails evaluated before dispatching any review or Check Run Agent.
+                    </CardDescription>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      persistSettingsPatch(
+                        {
+                          providerCostCaps: {
+                            monthlyBudgetUSD,
+                            perReviewCapUSD,
+                            perPrCapUSD,
+                            checkRunPerPrCapUSD,
+                          },
+                        },
+                        `Saved Spend Controls ($${monthlyBudgetUSD}/mo, $${perPrCapUSD}/PR)`
+                      )
+                    }
+                    className="h-7 text-[11px] border-white/[0.1] bg-white/[0.03]"
+                  >
+                    Save Caps
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="space-y-2 text-xs font-mono">
-                <div className="flex items-center justify-between p-2.5 rounded-lg border border-white/[0.06] bg-[#08090c]">
-                  <span className="text-zinc-300">Workspace Monthly Limit</span>
-                  <span className="text-emerald-400 font-semibold">$0.00 / $100.00</span>
+                <div className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-[#08090c]">
+                  <span className="text-zinc-300">Workspace Monthly Limit ($)</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={10000}
+                    value={monthlyBudgetUSD}
+                    onChange={(e) => setMonthlyBudgetUSD(Math.max(1, Number(e.target.value) || 0))}
+                    className="w-24 h-7 text-right font-mono text-xs bg-black/40 border-white/[0.1]"
+                  />
                 </div>
-                <div className="flex items-center justify-between p-2.5 rounded-lg border border-white/[0.06] bg-[#08090c]">
-                  <span className="text-zinc-300">Correctness Per-Review Cap</span>
-                  <span className="text-zinc-200">$10.00 max</span>
+                <div className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-[#08090c]">
+                  <span className="text-zinc-300">Correctness Per-Review Cap ($)</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={500}
+                    value={perReviewCapUSD}
+                    onChange={(e) => setPerReviewCapUSD(Math.max(1, Number(e.target.value) || 0))}
+                    className="w-24 h-7 text-right font-mono text-xs bg-black/40 border-white/[0.1]"
+                  />
                 </div>
-                <div className="flex items-center justify-between p-2.5 rounded-lg border border-white/[0.06] bg-[#08090c]">
-                  <span className="text-zinc-300">Correctness Per-PR Cap</span>
-                  <span className="text-zinc-200">$50.00 max</span>
+                <div className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-[#08090c]">
+                  <span className="text-zinc-300">Correctness Per-PR Cap ($)</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={perPrCapUSD}
+                    onChange={(e) => setPerPrCapUSD(Math.max(1, Number(e.target.value) || 0))}
+                    className="w-24 h-7 text-right font-mono text-xs bg-black/40 border-white/[0.1]"
+                  />
                 </div>
-                <div className="flex items-center justify-between p-2.5 rounded-lg border border-white/[0.06] bg-[#08090c]">
-                  <span className="text-zinc-300">Check Run Agents Per-PR Limit</span>
-                  <span className="text-zinc-200">$100.00 max</span>
+                <div className="flex items-center justify-between p-2 rounded-lg border border-white/[0.06] bg-[#08090c]">
+                  <span className="text-zinc-300">Check Run Agents Per-PR Limit ($)</span>
+                  <Input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={checkRunPerPrCapUSD}
+                    onChange={(e) => setCheckRunPerPrCapUSD(Math.max(1, Number(e.target.value) || 0))}
+                    className="w-24 h-7 text-right font-mono text-xs bg-black/40 border-white/[0.1]"
+                  />
                 </div>
               </CardContent>
             </Card>
           </div>
 
-          {/* Preserve legacy Persona & Prompt Editor DOM in sr-only for E2E test compatibility */}
-          <div className="sr-only">
-            <div>
-              <Card className="glass-panel border-border/80">
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-base font-bold">
-                    <Sliders className="h-5 w-5 text-purple-400" />
-                    Composed Swarm Review Task Dimensions
+          {/* 3. Check Run Agents (.reviewyeti/checks/*.md) */}
+          <Card className="border-white/[0.08] bg-[#0b0c10]">
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-sm font-semibold text-zinc-100">
+                    Check Run Agents (<code className="text-zinc-200 font-mono">.reviewyeti/checks/*.md</code>)
                   </CardTitle>
-                  <CardDescription>
-                    Review Yeti operates as a unified Composed Swarm Reviewer. Review tasks are dynamically planned across the closed dimensions below based on the PR diff, running with subagent context compaction and bounded concurrency via native <code className="text-indigo-300 font-mono">reviewyeti-ai/yeti-pr-reviewer</code>.
+                  <CardDescription className="text-xs text-zinc-400">
+                    Each Markdown file in <code className="text-zinc-300 font-mono">.reviewyeti/checks/</code> runs as a dedicated GitHub Check Run scoped to matching file globs.
                   </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <PersonaSelector
-                    selectedPersonaId={selectedId}
-                    onSelectPersona={handleSelectPersona}
-                    onConfigurePersona={handleConfigurePersona}
-                    onToggleActive={handleToggleActive}
-                    personas={personas}
-                  />
-                </CardContent>
-              </Card>
+                </div>
+                <span className="px-2.5 py-0.5 rounded-full font-mono text-[11px] bg-indigo-500/10 text-indigo-300 border border-indigo-500/25">
+                  {checkAgents.length} Active Check Agents
+                </span>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {checkAgents.map((agent) => (
+                  <div
+                    key={agent.id}
+                    className="p-3 rounded-xl border border-white/[0.07] bg-[#08090c] flex flex-col justify-between gap-2"
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <span className="text-xs font-semibold text-zinc-100 truncate">{agent.name}</span>
+                        <span className="px-1.5 py-0.5 rounded font-mono text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/25 shrink-0">
+                          {agent.severity} · {agent.action === 'request_changes' ? 'Blocking' : 'Advisory'}
+                        </span>
+                      </div>
+                      <div className="text-[10px] font-mono text-zinc-500 mb-1.5">
+                        {agent.sourceFile || `.reviewyeti/checks/${agent.id}.md`}
+                      </div>
+                      <p className="text-xs text-zinc-400 line-clamp-2 leading-relaxed">{agent.rule}</p>
+                    </div>
+                    <div className="pt-2 border-t border-white/[0.05] flex flex-wrap gap-1">
+                      {agent.scope.map((glob) => (
+                        <span
+                          key={glob}
+                          className="px-1.5 py-0.5 rounded bg-white/[0.04] text-[10px] font-mono text-zinc-300"
+                        >
+                          {glob}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
 
-              {/* Active Selected Persona Detail & Prompt Editor Panel */}
-              <div id="persona-settings-grid" className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* 4. Built-in Review Personas & System Prompt Editor (Visible) */}
+          <div className="space-y-5">
+            <Card className="border-white/[0.08] bg-[#0b0c10]">
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-sm font-semibold text-zinc-100">
+                  <Sliders className="h-4 w-4 text-indigo-400" />
+                  Composed Swarm Review Task Dimensions
+                </CardTitle>
+                <CardDescription className="text-xs text-zinc-400">
+                  Configure domain-specific review personas, reasoning effort, confidence thresholds, and system prompts.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <PersonaSelector
+                  selectedPersonaId={selectedId}
+                  onSelectPersona={handleSelectPersona}
+                  onConfigurePersona={handleConfigurePersona}
+                  onToggleActive={handleToggleActive}
+                  personas={personas}
+                />
+              </CardContent>
+            </Card>
+
+            {/* Active Selected Persona Detail & Prompt Editor Panel */}
+            <div id="persona-settings-grid" className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                 {/* Left Column: Persona Configuration Controls */}
                 <Card className="glass-panel border-border/80 lg:col-span-1">
                   <CardHeader>
@@ -757,7 +988,6 @@ function SettingsContent() {
                   />
                 </div>
               </div>
-            </div>
           </div>
 
           {/* Slide-Over Drawer / Modal Dialog for Persona Editing */}

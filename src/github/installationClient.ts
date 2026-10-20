@@ -808,6 +808,33 @@ export class GitHubInstallationClient {
     return Number(data.id);
   }
 
+  async publishNamedCheck(
+    owner: string,
+    repo: string,
+    headSha: string,
+    checkName: string,
+    options: ValidationCheckOptions,
+  ): Promise<number> {
+    const title = validateCheckRunTitle(options.title);
+    const data = await this.request(`/repos/${owner}/${repo}/check-runs`, {
+      method: 'POST',
+      body: JSON.stringify({
+        name: checkName,
+        head_sha: headSha,
+        status: 'completed',
+        conclusion: options.conclusion,
+        completed_at: new Date(this.now()).toISOString(),
+        output: {
+          title,
+          summary: options.summary.slice(0, 65_000),
+          ...(options.text ? { text: options.text.slice(0, 65_000) } : {}),
+        },
+        ...(options.detailsUrl ? { details_url: options.detailsUrl } : {}),
+      }),
+    });
+    return Number(data.id);
+  }
+
   /**
    * Emits an authenticated repository_dispatch event to a target repository.
    * Requires `contents: write` permission on the target repository.
