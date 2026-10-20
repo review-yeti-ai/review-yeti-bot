@@ -1093,7 +1093,7 @@ describe('Authenticated MCP operator connection check', () => {
         }), env);
 
         assert.equal(catalog.status, 200);
-        assert.equal((await catalog.json() as any).toolsCount, 12);
+        assert.equal((await catalog.json() as any).toolsCount, 20);
         assert.equal(authHealth.status, 401);
         assert.deepEqual(await authenticatedAlias.json(), {
           authenticated: true,

@@ -10,3 +10,4 @@ export * from './purgeCache.js';
 export * from './attestPrGate.js';
 export * from './disputeFinding.js';
 export * from './replyReviewThread.js';
+export * from './apiParityTools.js';

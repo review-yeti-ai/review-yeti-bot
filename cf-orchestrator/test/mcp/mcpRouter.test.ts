@@ -42,7 +42,7 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
     assert.equal(res.jsonrpc, '2.0');
     assert.ok(res.result);
     assert.ok(Array.isArray(res.result.tools));
-    assert.equal(res.result.tools.length, 12);
+    assert.equal(res.result.tools.length, 20);
 
     const toolNames = res.result.tools.map((t: any) => t.name);
     assert.ok(toolNames.includes('review_yeti_query_active_jobs'));
@@ -57,6 +57,14 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
     assert.ok(toolNames.includes('review_yeti_attest_pr_gate'));
     assert.ok(toolNames.includes('review_yeti_dispute_finding'));
     assert.ok(toolNames.includes('review_yeti_reply_review_thread'));
+    assert.ok(toolNames.includes('review_yeti_get_onboarding_status'));
+    assert.ok(toolNames.includes('review_yeti_configure_onboarding'));
+    assert.ok(toolNames.includes('review_yeti_list_repositories'));
+    assert.ok(toolNames.includes('review_yeti_update_repository_settings'));
+    assert.ok(toolNames.includes('review_yeti_get_platform_settings'));
+    assert.ok(toolNames.includes('review_yeti_update_platform_settings'));
+    assert.ok(toolNames.includes('review_yeti_get_usage_analytics'));
+    assert.ok(toolNames.includes('review_yeti_manage_memory_graph'));
   });
 
   it('supports unprefixed tool name aliases and legacy aliases', () => {
@@ -329,6 +337,46 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
       assert.equal(res.status, 405);
       const text = await res.text();
       assert.ok(text.includes('Method Not Allowed'));
+    });
+
+    it('executes API parity tools (onboarding, repo settings, platform settings, usage analytics & memory graph)', async () => {
+      const updateRes = await defaultMcpRouter.handleRpc(
+        {
+          jsonrpc: '2.0',
+          id: 99,
+          method: 'tools/call',
+          params: {
+            name: 'review_yeti_update_platform_settings',
+            arguments: {
+              detectionMode: 'deep',
+              minSeverity: 'high',
+              monthlyCostCapUSD: 220,
+            },
+          },
+        },
+        {}
+      );
+      assert.ok(!updateRes.error);
+      const updatePayload = JSON.parse(updateRes.result.content[1].text);
+      assert.equal(updatePayload.settings.detectionMode, 'deep');
+      assert.equal(updatePayload.settings.monthlyCostCapUSD, 220);
+
+      const analyticsRes = await defaultMcpRouter.handleRpc(
+        {
+          jsonrpc: '2.0',
+          id: 100,
+          method: 'tools/call',
+          params: {
+            name: 'review_yeti_get_usage_analytics',
+            arguments: { timeframe: '7d' },
+          },
+        },
+        {}
+      );
+      assert.ok(!analyticsRes.error);
+      const analyticsPayload = JSON.parse(analyticsRes.result.content[1].text);
+      assert.equal(analyticsPayload.costs.monthlyCapUSD, 220);
+      assert.ok(Array.isArray(analyticsPayload.costs.breakdownByModel));
     });
   });
 });

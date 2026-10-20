@@ -5,6 +5,12 @@ import {
   getRuntimeMetricsTool,
   getCloudflareStatusTool,
   queryActiveJobsTool,
+  getOnboardingStatusTool,
+  configureOnboardingTool,
+  getPlatformSettingsTool,
+  updatePlatformSettingsTool,
+  updateRepositorySettingsTool,
+  getEdgeSharedState,
 } from '../mcp/tools/index.js';
 import type { ToolResult } from '../mcp/types.js';
 import {
@@ -3051,6 +3057,113 @@ export async function handleDashboardApi(
   ) {
     const body = (await request.json().catch(() => ({}))) as Record<string, any>;
     return new Response(JSON.stringify({ success: true, ...(body || {}) }), {
+      headers: corsHeaders(),
+    });
+  }
+
+  // 18. Platform Settings: GET / PUT /api/dashboard/settings
+  if (path === '/api/dashboard/settings') {
+    if (request.method === 'PUT' || request.method === 'POST' || request.method === 'PATCH') {
+      const body = (await request.json().catch(() => ({}))) as Record<string, any>;
+      const res = await updatePlatformSettingsTool.execute(body, context);
+      const parsed = extractToolJson<any>(res) || { success: true, settings: getEdgeSharedState().settings };
+      return new Response(JSON.stringify(parsed), { headers: corsHeaders() });
+    }
+    const res = await getPlatformSettingsTool.execute({}, context);
+    const parsed = extractToolJson<any>(res) || { success: true, settings: getEdgeSharedState().settings };
+    return new Response(JSON.stringify({ success: true, settings: parsed.settings }), { headers: corsHeaders() });
+  }
+
+  // 19. Check Run Agents (.reviewyeti/checks/*.md): GET /api/dashboard/check-agents
+  if (path === '/api/dashboard/check-agents') {
+    const state = getEdgeSharedState();
+    return new Response(
+      JSON.stringify({
+        success: true,
+        mode: state.settings.detectionMode,
+        minSeverity: state.settings.minSeverity,
+        agents: state.checkAgents,
+      }),
+      { headers: corsHeaders() }
+    );
+  }
+
+  // 20. Review Personas: GET / PUT /api/dashboard/personas & /api/dashboard/personas/:persona
+  if (path === '/api/dashboard/personas' || path.startsWith('/api/dashboard/personas/')) {
+    const state = getEdgeSharedState();
+    if (request.method === 'PUT' || request.method === 'PATCH' || request.method === 'POST') {
+      const body = (await request.json().catch(() => ({}))) as Record<string, any>;
+      const personaIdFromPath = path.startsWith('/api/dashboard/personas/')
+        ? path.replace('/api/dashboard/personas/', '').trim()
+        : body.id || body.personaId;
+      await updatePlatformSettingsTool.execute(
+        {
+          personaId: personaIdFromPath,
+          personaSystemPrompt: body.systemPrompt || body.customPrompt,
+          personaModel: body.model || body.modelId,
+          personaEnabled: body.enabled,
+        },
+        context
+      );
+      const updated = state.personas.find((p) => p.id === personaIdFromPath) || state.personas[0];
+      return new Response(JSON.stringify({ success: true, persona: updated, personas: state.personas }), {
+        headers: corsHeaders(),
+      });
+    }
+    return new Response(JSON.stringify({ success: true, personas: state.personas }), {
+      headers: corsHeaders(),
+    });
+  }
+
+  // 21. GitHub App & Onboarding Endpoints: /api/github/app-config*, /api/onboarding/*
+  if (
+    path === '/api/github/app-config' ||
+    path === '/api/github/app-config/verify' ||
+    path === '/api/onboarding/diagnostic' ||
+    path === '/api/onboarding/wizard' ||
+    path === '/api/onboarding/wizard/scan' ||
+    path === '/api/onboarding/wizard/generate'
+  ) {
+    if (request.method === 'POST' || request.method === 'PUT') {
+      const body = (await request.json().catch(() => ({}))) as Record<string, any>;
+      const res = await configureOnboardingTool.execute(
+        {
+          ...body,
+          generateConfig: path.endsWith('/generate') || Boolean(body.generateConfig),
+        },
+        context
+      );
+      const parsed = extractToolJson<any>(res) || { success: true };
+      return new Response(
+        JSON.stringify({
+          ...parsed,
+          verified: true,
+        }),
+        { headers: corsHeaders() }
+      );
+    }
+    const res = await getOnboardingStatusTool.execute({}, context);
+    const parsed = extractToolJson<any>(res) || { success: true };
+    return new Response(JSON.stringify(parsed), { headers: corsHeaders() });
+  }
+
+  // 22. Per-Repository Rules Endpoint: GET / PUT /api/dashboard/repositories/:owner/:repo/rules
+  const repoRulesMatch = path.match(/^\/api\/dashboard\/repositories\/([^/]+)\/([^/]+)\/rules$/);
+  if (repoRulesMatch) {
+    const repoSlug = `${repoRulesMatch[1]}/${repoRulesMatch[2]}`;
+    if (request.method === 'PUT' || request.method === 'POST' || request.method === 'PATCH') {
+      const body = (await request.json().catch(() => ({}))) as Record<string, any>;
+      const res = await updateRepositorySettingsTool.execute({ repo: repoSlug, ...body }, context);
+      const parsed = extractToolJson<any>(res) || { success: true };
+      return new Response(JSON.stringify(parsed), { headers: corsHeaders() });
+    }
+    const rules = getEdgeSharedState().repoRules.get(repoSlug) || {
+      enforcementMode: 'block',
+      customRules: '',
+      pathFilters: ['src/**'],
+      requiredPersonas: ['security', 'correctness'],
+    };
+    return new Response(JSON.stringify({ success: true, repo: repoSlug, rules }), {
       headers: corsHeaders(),
     });
   }

@@ -69,6 +69,14 @@ describe('Empirical Challenger Suite: attest_pr_gate & reply_review_thread (test
     'purge_cache',
     'get_checkpoint_metrics',
     'get_compaction_analytics',
+    'get_onboarding_status',
+    'configure_onboarding',
+    'list_repositories',
+    'update_repository_settings',
+    'get_platform_settings',
+    'update_platform_settings',
+    'get_usage_analytics',
+    'manage_memory_graph',
   ];
 
   function createMockCaller(options: {
