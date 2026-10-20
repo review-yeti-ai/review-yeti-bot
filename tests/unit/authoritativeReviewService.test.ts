@@ -12,9 +12,12 @@ import { createAuthoritativeReviewService, type AuthoritativeReviewServiceOption
 import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
 import type { ReviewAdmissionInput } from '../../src/review/reviewRun';
 import { OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS,
+  OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS,
+  operatorPassthroughIdentityForCandidate,
   OperatorPassthroughDeliveryIdentityConflictError,
   type OperatorPassthroughPublicationRepository, type OperatorPassthroughReconcileAdmission,
 } from '../../src/review/operatorPassthrough';
+import { REVIEW_GATE_CHECK_NAME, REVIEW_WORKER_CHECK_NAME } from '../../src/review/reviewCheckIdentity';
 
 const mocks = vi.hoisted(() => ({
   publisherConstructor: vi.fn(), resolverConstructor: vi.fn(),
@@ -56,12 +59,15 @@ vi.mock('../../src/github/authoritativeReviewReader', () => ({
   }),
 }));
 vi.mock('../../src/github/boundedAppToken', () => ({ getBoundedRepositoryToken: mocks.mint }));
-vi.mock('../../src/github/reviewGateClient', () => ({
-  GitHubReviewGateClient: vi.fn(function (options) {
-    mocks.clientConstructor(options);
-    return { client: 'gate' };
-  }),
-}));
+vi.mock('../../src/github/reviewGateClient', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/github/reviewGateClient')>();
+  return {
+    ...actual,
+    GitHubReviewGateClient: vi.fn(function (options) {
+      return mocks.clientConstructor(options) ?? { client: 'gate' };
+    }),
+  };
+});
 
 const APP_ID = 4385771;
 const candidate = { repositoryId: 123, owner: 'example', repo: 'candidate', prNumber: 42,
@@ -129,6 +135,7 @@ beforeEach(() => {
   mocks.advance.mockReset().mockResolvedValue(2);
   mocks.publish.mockReset().mockResolvedValue({ status: 'idle' });
   mocks.mint.mockReset().mockResolvedValue({ token: 'ghs_fake_scoped_token' });
+  mocks.clientConstructor.mockReset();
   vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected external request'));
 });
 afterEach(() => {
@@ -448,12 +455,320 @@ describe('authoritative operator-pause admission responses', () => {
     } as unknown as OperatorPassthroughPublicationRepository;
   }
 
-  async function resolveBeforeBound<T>(promise: Promise<T>): Promise<T> {
+  it('uses the caller-owned MCP scope for fresh resolution, record, publisher claims, and receipt readback', async () => {
+    const f = fixture();
+    mocks.currentCandidate.mockClear();
+    const controller = new AbortController();
+    const scope = { deadlineAtMs: performance.now() + OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS,
+      signal: controller.signal };
+    const publicationId = 'f'.repeat(64);
+    const auditDigest = 'd'.repeat(64);
+    const publisherScopes: unknown[] = [];
+    const repository = operatorRepository({
+      record: vi.fn(async (_input: unknown, _now: unknown, receivedScope: unknown) => {
+        expect(receivedScope).toBe(scope);
+        return { status: 'accepted', publicationId, auditDigest,
+          verdict: 'SHIP', expectedLanes: 0, completedLanes: 0 };
+      }),
+      claimPublication: vi.fn(async (_workerId: string, _now: number, _leaseMs: number,
+        _requestedPublicationId: string, receivedScope: unknown) => {
+        publisherScopes.push(receivedScope);
+        return null;
+      }),
+      getPublication: vi.fn(async (_requestedPublicationId: string, receivedScope: unknown) => {
+        expect(receivedScope).toBe(scope);
+        return { publicationId, auditDigest, reviewCheckId: null, reviewCreationState: 'reserved',
+          gateCheckId: null, gateCreationState: 'reserved', retirementRequestedAt: null,
+          retiredAt: null, readyForShip: false };
+      }),
+    });
+    const service = createAuthoritativeReviewService({ ...f.options,
+      operatorPassthroughRepository: repository, passthroughEnabled: true });
+
+    const result = await service.admission.recordOperatorPassthrough!({ ...request(), scope });
+
+    expect(mocks.currentCandidate).toHaveBeenCalled();
+    expect(mocks.currentCandidate.mock.calls.every(([, signal]) => signal instanceof AbortSignal)).toBe(true);
+    expect(repository.record).toHaveBeenCalledOnce();
+    expect(publisherScopes).toEqual([scope, scope]);
+    expect(repository.getPublication).toHaveBeenCalledExactlyOnceWith(publicationId, scope);
+    expect(result).toMatchObject({ publicationId, auditDigest, publicationState: 'pending',
+      publicationReceiptAvailable: true, mergeEligible: false });
+  });
+
+  it('does not allow an MCP receipt scope to widen non-MCP pause admissions', async () => {
+    const f = fixture();
+    mocks.currentCandidate.mockClear();
+    const repo = operatorRepository();
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    const controller = new AbortController();
+    const scope = { deadlineAtMs: performance.now() + OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS,
+      signal: controller.signal };
+    const nonMcpRequest = { ...request(), event: { ...request().event, transport: 'github-app' as const,
+      eventName: 'pull_request', deliveryId: 'github-app:scope-rejected' }, scope };
+
+    await expect(service.admission.recordOperatorPassthrough!(nonMcpRequest))
+      .rejects.toThrow('A caller-owned receipt scope is reserved for MCP passthrough');
+    expect(repo.record).not.toHaveBeenCalled();
+    expect(repo.claimPublication).not.toHaveBeenCalled();
+    expect(mocks.currentCandidate).not.toHaveBeenCalled();
+  });
+
+  it('validates a requested MCP review engine against the fresh service policy before recording', async () => {
+    const f = fixture();
+    const repo = operatorRepository();
+    const service = createAuthoritativeReviewService({ ...f.options, operatorPassthroughRepository: repo,
+      passthroughEnabled: true });
+    const wrongEngine = f.prepared.config.review_engine === 'panel' ? 'composed' as const : 'panel' as const;
+
+    await expect(service.admission.recordOperatorPassthrough!({ ...request(), reviewEngine: wrongEngine }))
+      .rejects.toThrow('Requested review_engine is not permitted by the authoritative policy');
+    expect(repo.record).not.toHaveBeenCalled();
+    expect(repo.claimPublication).not.toHaveBeenCalled();
+  });
+
+  it('cancels a caller-owned MCP authority read before durable record or check creation', async () => {
+    const f = fixture();
+    const controller = new AbortController();
+    const scope = { deadlineAtMs: performance.now() + 1_000, signal: controller.signal };
+    const lateCandidate = Promise.withResolvers<typeof candidate>();
+    let candidateSignal: AbortSignal | undefined;
+    mocks.currentCandidate.mockImplementationOnce((_requested: unknown, signal: AbortSignal) => {
+      candidateSignal = signal;
+      return lateCandidate.promise;
+    });
+    const repository = operatorRepository({ record: vi.fn(), claimPublication: vi.fn(), getPublication: vi.fn() });
+    const service = createAuthoritativeReviewService({ ...f.options,
+      operatorPassthroughRepository: repository, passthroughEnabled: true });
+    const pending = service.admission.recordOperatorPassthrough!({ ...request(), scope });
+    const timer = setTimeout(() => controller.abort(), 1_000);
+    await vi.advanceTimersByTimeAsync(1_001);
+    clearTimeout(timer);
+    const result = await pending;
+
+    expect(candidateSignal?.aborted).toBe(true);
+    expect(repository.record).not.toHaveBeenCalled();
+    expect(repository.claimPublication).not.toHaveBeenCalled();
+    expect(repository.getPublication).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ candidateState: 'unavailable', publicationId: null, auditDigest: null,
+      publicationState: 'unavailable', publicationReceiptAvailable: null, mergeEligible: false,
+      publicationFailure: { stage: 'record', classification: 'receipt_deadline' } });
+    lateCandidate.resolve(candidate);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(repository.record).not.toHaveBeenCalled();
+  });
+
+  it('publishes delayed App token and Check Runs requests within budget, scoped to the new publication', async () => {
+    const f = fixture();
+    const identity = operatorPassthroughIdentityForCandidate({
+      repositoryId: candidate.repositoryId, owner: candidate.owner, repo: candidate.repo,
+      prNumber: candidate.prNumber, headSha: candidate.headSha, baseSha: candidate.baseSha,
+      policyDigest: f.prepared.policy.effectivePolicyDigest,
+    }, APP_ID, 7);
+    const { publicationId, auditDigest } = identity;
+    const makeClaim = (stage: 'review' | 'gate') => ({
+      ...identity,
+      publicationSequence: 7,
+      expectedAppId: APP_ID,
+      reviewCheckId: stage === 'gate' ? 5_101 : null,
+      reviewCreationState: stage === 'gate' ? 'bound' as const : 'creating' as const,
+      gateCheckId: null,
+      gateCreationState: stage === 'gate' ? 'creating' as const : 'reserved' as const,
+      retirementRequestedAt: null,
+      retirementReason: null,
+      retiredAt: null,
+      leaseOwner: 'publisher-test',
+      leaseToken: `lease-${stage}`,
+      stage,
+      mayCreate: true,
+      retiring: false,
+    });
+    const claims = [makeClaim('review'), makeClaim('gate')];
+    const otherClaim = { ...makeClaim('review'), publicationId: 'e'.repeat(64),
+      coordinates: { ...identity.coordinates, publicationId: 'e'.repeat(64), prNumber: candidate.prNumber + 1 } };
+    const requestedPublicationIds: Array<string | null> = [];
+    let unrelatedPublicationConsumed = false;
+    const bound = { review: null as number | null, gate: null as number | null };
+    const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+    const repository = operatorRepository({
+      record: vi.fn().mockResolvedValue({ status: 'accepted', publicationId, auditDigest,
+        verdict: 'SHIP', expectedLanes: 0, completedLanes: 0 }),
+      claimPublication: vi.fn(async (_workerId: string, _now: number, _leaseMs: number,
+        requestedPublicationId?: string) => {
+        requestedPublicationIds.push(requestedPublicationId ?? null);
+        if (requestedPublicationId === publicationId) return claims.shift() ?? null;
+        if (requestedPublicationId === undefined) {
+          unrelatedPublicationConsumed = true;
+          return otherClaim;
+        }
+        return null;
+      }),
+      publishLocked: vi.fn(async (current: any, publish: (claim: any) => Promise<any>) => {
+        const result = await publish(current);
+        if ('kind' in result) return 'retry';
+        bound[current.stage as 'review' | 'gate'] = result.id;
+        return 'published';
+      }),
+      getPublication: vi.fn(async (requestedId: string) => ({
+        publicationId: requestedId,
+        auditDigest,
+        reviewCheckId: bound.review,
+        reviewCreationState: bound.review === null ? 'reserved' : 'bound',
+        gateCheckId: bound.gate,
+        gateCreationState: bound.gate === null ? 'reserved' : 'bound',
+        retirementRequestedAt: null,
+        retiredAt: null,
+        readyForShip: bound.review !== null && bound.gate !== null,
+      })),
+    });
+    const completed: Array<{ id: number; name: string; appId: number; headSha: string; externalId: string;
+      status: string; conclusion: string }> = [];
+    mocks.mint.mockImplementation(async () => {
+      await delay(1_000);
+      return { token: 'ghs_delayed_test_token' };
+    });
+    mocks.clientConstructor.mockImplementation((options: any) => {
+      const review = options.checkName === REVIEW_WORKER_CHECK_NAME;
+      const stage = review ? 'review' : 'gate';
+      const id = review ? 5_101 : 5_102;
+      const externalId = review ? identity.reviewExternalId : identity.gateExternalId;
+      return {
+        reconcileOperator: vi.fn(async () => { await delay(1_000); return null; }),
+        createOperatorPending: vi.fn(async (coordinates: any) => {
+          await delay(500);
+          return { id, name: options.checkName, appId: APP_ID, headSha: coordinates.headSha,
+            externalId, status: 'in_progress', conclusion: null };
+        }),
+        updateOperatorExisting: vi.fn(async ({ coordinates, checkId, update }: any) => {
+          await delay(500);
+          const check = { id: checkId, name: options.checkName, appId: APP_ID,
+            headSha: coordinates.headSha, externalId, status: 'completed', conclusion: update.conclusion };
+          completed.push(check);
+          return check;
+        }),
+      };
+    });
+    const service = createAuthoritativeReviewService({ ...f.options,
+      operatorPassthroughRepository: repository, passthroughEnabled: true });
+
+    const pending = service.admission.recordOperatorPassthrough!(request());
+    let settled = false;
+    void pending.then(() => { settled = true; }, () => { settled = true; });
+    for (let elapsed = 0; elapsed < OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS && !settled; elapsed += 500) {
+      await vi.advanceTimersByTimeAsync(500);
+    }
+    expect(settled).toBe(true);
+    const result = await pending;
+
+    expect(result).toMatchObject({ publicationId, auditDigest, publicationState: 'published',
+      publicationReceiptAvailable: true, reviewCheckId: 5_101, gateCheckId: 5_102, mergeEligible: true });
+    expect(requestedPublicationIds).toEqual([publicationId, publicationId]);
+    expect(unrelatedPublicationConsumed).toBe(false);
+    expect(completed).toEqual([
+      { id: 5_101, name: REVIEW_WORKER_CHECK_NAME, appId: APP_ID, headSha: candidate.headSha,
+        externalId: identity.reviewExternalId, status: 'completed', conclusion: 'success' },
+      { id: 5_102, name: REVIEW_GATE_CHECK_NAME, appId: APP_ID, headSha: candidate.headSha,
+        externalId: identity.gateExternalId, status: 'completed', conclusion: 'success' },
+    ]);
+    expect(JSON.stringify(result)).not.toContain('ghs_delayed_test_token');
+  });
+
+  it('keeps a raw-only publication pending and ineligible when Gate reconciliation times out', async () => {
+    const f = fixture();
+    const identity = operatorPassthroughIdentityForCandidate({
+      repositoryId: candidate.repositoryId, owner: candidate.owner, repo: candidate.repo,
+      prNumber: candidate.prNumber, headSha: candidate.headSha, baseSha: candidate.baseSha,
+      policyDigest: f.prepared.policy.effectivePolicyDigest,
+    }, APP_ID, 8);
+    const { publicationId, auditDigest } = identity;
+    const makeClaim = (stage: 'review' | 'gate') => ({
+      ...identity,
+      publicationSequence: 8,
+      expectedAppId: APP_ID,
+      reviewCheckId: stage === 'gate' ? 5_201 : null,
+      reviewCreationState: stage === 'gate' ? 'bound' as const : 'creating' as const,
+      gateCheckId: null,
+      gateCreationState: stage === 'gate' ? 'creating' as const : 'reserved' as const,
+      retirementRequestedAt: null,
+      retirementReason: null,
+      retiredAt: null,
+      leaseOwner: 'publisher-test',
+      leaseToken: `lease-${stage}`,
+      stage,
+      mayCreate: true,
+      retiring: false,
+    });
+    const claims = [makeClaim('review'), makeClaim('gate')];
+    const claimedPublicationIds: Array<string | null> = [];
+    const bound = { review: null as number | null, gate: null as number | null };
+    let gateSignal: AbortSignal | undefined;
+    const repository = operatorRepository({
+      record: vi.fn().mockResolvedValue({ status: 'accepted', publicationId, auditDigest,
+        verdict: 'SHIP', expectedLanes: 0, completedLanes: 0 }),
+      claimPublication: vi.fn(async (_workerId: string, _now: number, _leaseMs: number,
+        requestedPublicationId?: string) => {
+        claimedPublicationIds.push(requestedPublicationId ?? null);
+        return requestedPublicationId === publicationId ? claims.shift() ?? null : null;
+      }),
+      publishLocked: vi.fn(async (current: any, publish: (claim: any) => Promise<any>) => {
+        const result = await publish(current);
+        if ('kind' in result) return 'retry';
+        bound[current.stage as 'review' | 'gate'] = result.id;
+        return 'published';
+      }),
+      getPublication: vi.fn(async (requestedId: string) => ({
+        publicationId: requestedId,
+        auditDigest,
+        reviewCheckId: bound.review,
+        reviewCreationState: bound.review === null ? 'reserved' : 'bound',
+        gateCheckId: bound.gate,
+        gateCreationState: bound.gate === null ? 'reserved' : 'bound',
+        retirementRequestedAt: null,
+        retiredAt: null,
+        readyForShip: bound.review !== null && bound.gate !== null,
+      })),
+    });
+    mocks.clientConstructor.mockImplementation((options: any) => {
+      const review = options.checkName === REVIEW_WORKER_CHECK_NAME;
+      const id = review ? 5_201 : 5_202;
+      const externalId = review ? identity.reviewExternalId : identity.gateExternalId;
+      return {
+        reconcileOperator: vi.fn(async (_coordinates: unknown, signal?: AbortSignal) => {
+          if (review) return null;
+          gateSignal = signal;
+          await new Promise<void>((resolve) => signal?.addEventListener('abort', () => resolve(), { once: true }));
+          return null;
+        }),
+        createOperatorPending: vi.fn(async (coordinates: any) => ({ id, name: options.checkName, appId: APP_ID,
+          headSha: coordinates.headSha, externalId, status: 'in_progress', conclusion: null })),
+        updateOperatorExisting: vi.fn(async ({ coordinates, checkId, update }: any) => ({ id: checkId,
+          name: options.checkName, appId: APP_ID, headSha: coordinates.headSha, externalId,
+          status: 'completed', conclusion: update.conclusion })),
+      };
+    });
+    const service = createAuthoritativeReviewService({ ...f.options,
+      operatorPassthroughRepository: repository, passthroughEnabled: true });
+
+    const pending = service.admission.recordOperatorPassthrough!(request());
+    await vi.advanceTimersByTimeAsync(OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS);
+    const result = await pending;
+
+    expect(bound).toEqual({ review: 5_201, gate: null });
+    expect(gateSignal?.aborted).toBe(true);
+    expect(claimedPublicationIds.every((value) => value === publicationId)).toBe(true);
+    expect(result).toMatchObject({ publicationId, auditDigest, publicationState: 'pending',
+      publicationReceiptAvailable: true, reviewCheckId: 5_201, gateCheckId: null, mergeEligible: false,
+      publicationFailure: { stage: 'gate', classification: 'preflight_timeout' } });
+    expect(JSON.stringify(result)).not.toContain('ghs_fake_scoped_token');
+  });
+
+  async function resolveBeforeBound<T>(promise: Promise<T>, budgetMs = OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS): Promise<T> {
     let settled = false;
     let value: T | undefined;
     let failure: unknown;
     void promise.then((result) => { settled = true; value = result; }, (error) => { settled = true; failure = error; });
-    await vi.advanceTimersByTimeAsync(OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS + 1);
+    await vi.advanceTimersByTimeAsync(budgetMs + 1);
     expect(settled).toBe(true);
     if (failure !== undefined) throw failure;
     return value as T;
@@ -471,7 +786,7 @@ describe('authoritative operator-pause admission responses', () => {
 
     const pending = service.admission.reportOperatorPassthroughUnavailable!(input);
     await vi.advanceTimersByTimeAsync(0);
-    const result = await resolveBeforeBound(pending);
+    const result = await resolveBeforeBound(pending, OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS);
 
     expect(result).toMatchObject({ status: 'unavailable', candidateState: 'unavailable', verdict: 'SHIP',
       expectedLanes: 0, completedLanes: 0, publicationId: null, auditDigest: null,
@@ -527,7 +842,7 @@ describe('authoritative operator-pause admission responses', () => {
     const pending = service.admission.recordOperatorPassthrough!(request());
     await vi.advanceTimersByTimeAsync(0);
     expect(record).toHaveBeenCalledOnce();
-    const result = await resolveBeforeBound(pending);
+    const result = await resolveBeforeBound(pending, OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS);
 
     expect(result).toMatchObject({ status: 'accepted', candidateState: 'current', verdict: 'SHIP',
       publicationId: null, auditDigest: null, publicationState: 'unavailable',
@@ -555,7 +870,7 @@ describe('authoritative operator-pause admission responses', () => {
     const pending = service.admission.recordOperatorPassthrough!(request());
     await vi.advanceTimersByTimeAsync(0);
     expect(repo.claimPublication).toHaveBeenCalledOnce();
-    const result = await resolveBeforeBound(pending);
+    const result = await resolveBeforeBound(pending, OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS);
 
     expect(result).toMatchObject({ verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
       publicationId, auditDigest, publicationState: 'unavailable', publicationReceiptAvailable: true,
@@ -580,7 +895,7 @@ describe('authoritative operator-pause admission responses', () => {
     const pending = service.admission.recordOperatorPassthrough!(request());
     await vi.advanceTimersByTimeAsync(0);
     expect(repo.getPublication).toHaveBeenCalledOnce();
-    const result = await resolveBeforeBound(pending);
+    const result = await resolveBeforeBound(pending, OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS);
 
     expect(result).toMatchObject({ verdict: 'SHIP', publicationId, auditDigest,
       publicationState: 'unavailable', publicationReceiptAvailable: true,
@@ -787,7 +1102,7 @@ describe('authoritative operator-pause admission responses', () => {
     const pending = service.admission.recordOperatorPassthrough!(request());
     await vi.advanceTimersByTimeAsync(0);
     await retryReadStarted.promise;
-    const result = await resolveBeforeBound(pending);
+    const result = await resolveBeforeBound(pending, OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS);
 
     expect(retryReadSignal?.aborted).toBe(true);
     expect(record).toHaveBeenCalledOnce();
