@@ -26,6 +26,75 @@ import {
   PreCommitFinding,
   scanChangedFilesForCredentials,
 } from './preCommit';
+import {
+  evaluateCheckRunAgents,
+  type CheckRunAgentEvaluation,
+  type CheckRunFindingInput,
+} from '../github/checkRunAgentExecutor';
+import {
+  evaluateApprovability,
+  type ApprovabilityDecision,
+} from '../review/approvabilityEngine';
+
+/**
+ * Automatically creates an HTTP `ReviewModelClient` when an LLM gateway key is configured
+ * in the environment (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `REVIEW_YETI_API_KEY`, `CF_AIG_TOKEN`),
+ * unless disabled during unit test runs (`VITEST` / `NODE_ENV=test`).
+ */
+export function createDefaultCliModelClient(options: {
+  apiKey?: string;
+  baseUrl?: string;
+  fetchFn?: typeof fetch;
+  allowInTest?: boolean;
+} = {}): ReviewModelClient | undefined {
+  if (!options.allowInTest && (process.env.VITEST || process.env.NODE_ENV === 'test')) {
+    return undefined;
+  }
+  const apiKey =
+    options.apiKey ||
+    process.env.REVIEW_YETI_API_KEY?.trim() ||
+    process.env.OPENROUTER_API_KEY?.trim() ||
+    process.env.OPENAI_API_KEY?.trim() ||
+    process.env.CF_AIG_TOKEN?.trim();
+
+  if (!apiKey) {
+    return undefined;
+  }
+
+  const baseUrl = (
+    options.baseUrl ||
+    process.env.REVIEW_YETI_BASE_URL?.trim() ||
+    process.env.OPENAI_BASE_URL?.trim() ||
+    'https://openrouter.ai/api/v1'
+  ).replace(/\/+$/u, '');
+
+  const fetchFn = options.fetchFn || globalThis.fetch;
+
+  return {
+    async complete(req: any): Promise<any> {
+      const resp = await fetchFn(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+          'cf-aig-collect-log-payload': 'false',
+        },
+        body: JSON.stringify({
+          model: req.model || 'deepseek/deepseek-chat',
+          messages: req.messages,
+          temperature: req.temperature ?? 0.1,
+          max_tokens: req.maxTokens ?? 1024,
+        }),
+      });
+      if (!resp.ok) {
+        throw new Error(`LLM gateway HTTP ${resp.status}`);
+      }
+      const data = (await resp.json()) as any;
+      const content = data?.choices?.[0]?.message?.content || '';
+      return { content };
+    },
+  } as unknown as ReviewModelClient;
+}
 
 export interface LocalReviewOptions {
   mode?: DetectionMode;
@@ -51,6 +120,8 @@ export interface LocalReviewResult {
   minSeverity: MinimumSeverity;
   isolatedWorktree: boolean;
   findings: PreCommitFinding[];
+  checkEvaluations: CheckRunAgentEvaluation[];
+  approvability: ApprovabilityDecision;
   scannedFilesCount: number;
   ignoredFilesCount: number;
   customChecksCount: number;
@@ -222,19 +293,39 @@ export async function runLocalReview(options: LocalReviewOptions = {}): Promise<
   // Static credential & secret scan
   const staticFindings = scanChangedFilesForCredentials(includedFiles);
 
-  // Optional model scan
+  // Optional model scan (uses explicit modelClient or auto-configured environment gateway client)
   let modelFindings: PreCommitFinding[] = [];
-  if (options.modelClient && includedFiles.length > 0) {
+  const effectiveModelClient = options.modelClient || createDefaultCliModelClient();
+  if (effectiveModelClient && includedFiles.length > 0) {
     modelFindings = await evaluateWithFlashModel(
       includedFiles,
       options.model || 'deepseek/deepseek-chat',
-      options.modelClient
+      effectiveModelClient
     );
   }
 
   const combinedFindings = [...staticFindings, ...modelFindings].filter((f) =>
     meetsMinimumSeverity(f.severity, minSeverity)
   );
+
+  // Evaluate `.reviewyeti/checks/*.md` Check Run Agents & Approvability locally
+  const checkInputs: CheckRunFindingInput[] = combinedFindings.map((f) => ({
+    path: f.filePath,
+    line: f.lineNumber,
+    severity: f.severity,
+    title: `${f.rule}: ${f.message}`,
+    rationale: f.suggestion,
+  }));
+  const checkEvaluations = evaluateCheckRunAgents(
+    dirConfig.checks,
+    includedFiles.map((f) => f.path),
+    checkInputs
+  );
+  const approvability = evaluateApprovability({
+    findings: checkInputs,
+    checkEvaluations,
+    minBlockingSeverity: minSeverity,
+  });
 
   const effectiveStrict = options.strict ?? modeSettings.profile === 'assertive';
   const exitCode = evaluateExitCode(combinedFindings, effectiveStrict);
@@ -256,6 +347,19 @@ export async function runLocalReview(options: LocalReviewOptions = {}): Promise<
         })
       );
     }
+    for (const checkEv of checkEvaluations) {
+      if (checkEv.matchedFiles.length === 0) continue;
+      console.log(
+        JSON.stringify({
+          type: 'check_agent',
+          checkName: checkEv.checkName,
+          conclusion: checkEv.conclusion,
+          matchedFiles: checkEv.matchedFiles,
+          violatingFindingsCount: checkEv.violatingFindings.length,
+          title: checkEv.title,
+        })
+      );
+    }
     console.log(
       JSON.stringify({
         type: 'summary',
@@ -264,6 +368,8 @@ export async function runLocalReview(options: LocalReviewOptions = {}): Promise<
         isolatedWorktree,
         clean,
         exitCode,
+        approved: approvability.approved,
+        approvabilityTitle: approvability.title,
         findingsCount: combinedFindings.length,
         scannedFilesCount: includedFiles.length,
         ignoredFilesCount: totalIgnoredCount,
@@ -281,6 +387,8 @@ export async function runLocalReview(options: LocalReviewOptions = {}): Promise<
           minSeverity,
           isolatedWorktree,
           findings: combinedFindings,
+          checkEvaluations,
+          approvability,
           stats: {
             scannedFiles: includedFiles.length,
             ignoredFiles: totalIgnoredCount,
@@ -321,6 +429,8 @@ export async function runLocalReview(options: LocalReviewOptions = {}): Promise<
     minSeverity,
     isolatedWorktree,
     findings: combinedFindings,
+    checkEvaluations,
+    approvability,
     scannedFilesCount: includedFiles.length,
     ignoredFilesCount: totalIgnoredCount,
     customChecksCount: dirConfig.checks.length,

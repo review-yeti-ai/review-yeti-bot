@@ -18,11 +18,18 @@ import {
   LocalReviewOptions,
   LocalReviewResult,
 } from './localReview';
+import {
+  runGhPrStatus,
+  runGhPrReview,
+  GhPrStatusOptions,
+  GhPrRemoteReviewOptions,
+} from './ghConnectedCli';
 import { DetectionMode, MinimumSeverity } from '../config/schema';
 
 export * from './preCommit';
 export * from './initWizard';
 export * from './localReview';
+export * from './ghConnectedCli';
 
 const VERSION = '1.28.6';
 
@@ -36,7 +43,9 @@ USAGE:
   npx review-yeti <command> [options]
 
 COMMANDS:
-  review               Run local code review with detection modes (fast | balanced | deep)
+  review               Run local or PR code review with detection modes (fast | balanced | deep)
+  pr [number]          Inspect live GitHub PR status, Check Run Agents, Approvability & inline findings via gh
+  status [number]      Alias for "pr" — inspect live GitHub PR review status and open findings
   init                 Run 30-second GitHub App onboarding setup wizard
   pre-commit           Evaluate staged git changes (git diff --cached) for P0/P1 issues
   install-hook         Install Review Yeti as a git pre-commit hook
@@ -48,10 +57,20 @@ OPTIONS (review):
   --min-severity <s>   Minimum severity: low | medium | high | critical
   --base <ref>         Compare against base git ref (e.g. origin/main)
   --head <ref>         Target head git ref (default: HEAD)
+  --pr <number>        Fetch and review a remote GitHub Pull Request via gh / GitHub API
+  --repo <owner/repo>  Target GitHub repository when using --pr
+  --publish            Publish review verdict & .reviewyeti/checks/*.md Check Runs back to GitHub
   --isolate            Run inside an isolated temporary git worktree
   --raw                Stream newline-delimited JSONL findings for coding agents
   --json               Output machine-readable JSON evaluation report
   --strict             Exit non-zero on P1 issues in addition to P0 issues
+
+OPTIONS (pr / status):
+  --pr <number>        Pull Request number (defaults to current branch's open PR via gh pr view)
+  --repo <owner/repo>  Target GitHub repository (defaults to git origin remote)
+  --raw                Stream newline-delimited JSONL PR findings for coding agents
+  --json               Output machine-readable JSON PR status report
+  --quiet, -q          Suppress non-essential console logs
 
 OPTIONS (init):
   --port <number>      Port for local callback listener (default: 3333)
@@ -154,8 +173,80 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<nu
       model: getFlagValue('--model'),
     };
 
+    const prFlagVal = getFlagValue('--pr');
+    if (prFlagVal || flags.includes('--publish')) {
+      const prNum = prFlagVal ? parseInt(prFlagVal, 10) : undefined;
+      const remoteOptions: GhPrRemoteReviewOptions = {
+        ...reviewOptions,
+        repo: getFlagValue('--repo'),
+        prNumber: prNum && !Number.isNaN(prNum) ? prNum : undefined,
+        publish: flags.includes('--publish'),
+      };
+      try {
+        const remoteResult = await runGhPrReview(remoteOptions);
+        return remoteResult.exitCode;
+      } catch (err: any) {
+        console.error(`❌ Error running PR review: ${err?.message || err}`);
+        return 1;
+      }
+    }
+
     const result = await runLocalReview(reviewOptions);
     return result.exitCode;
+  }
+
+  if (command === 'pr' || command === 'status') {
+    const getFlagValue = (flagName: string): string | undefined => {
+      const idx = flags.indexOf(flagName);
+      if (idx !== -1 && flags[idx + 1] && !flags[idx + 1].startsWith('-')) {
+        return flags[idx + 1];
+      }
+      return undefined;
+    };
+
+    const positionalPr = flags.find((f) => /^\d+$/u.test(f));
+    const prFlagVal = getFlagValue('--pr') || positionalPr;
+    const prNum = prFlagVal ? parseInt(prFlagVal, 10) : undefined;
+
+    if (flags[0] === 'review') {
+      const modeVal = getFlagValue('--mode') as DetectionMode | undefined;
+      const minSeverityVal = getFlagValue('--min-severity') as MinimumSeverity | undefined;
+      try {
+        const remoteResult = await runGhPrReview({
+          repo: getFlagValue('--repo'),
+          prNumber: prNum && !Number.isNaN(prNum) ? prNum : undefined,
+          publish: flags.includes('--publish'),
+          mode: modeVal && ['fast', 'balanced', 'deep'].includes(modeVal) ? modeVal : undefined,
+          minSeverity: minSeverityVal,
+          raw: flags.includes('--raw'),
+          json: flags.includes('--json'),
+          strict: flags.includes('--strict'),
+          noColor: flags.includes('--no-color'),
+          quiet: flags.includes('--quiet') || flags.includes('-q'),
+          model: getFlagValue('--model'),
+        });
+        return remoteResult.exitCode;
+      } catch (err: any) {
+        console.error(`❌ Error running PR review: ${err?.message || err}`);
+        return 1;
+      }
+    }
+
+    const statusOptions: GhPrStatusOptions = {
+      repo: getFlagValue('--repo'),
+      prNumber: prNum && !Number.isNaN(prNum) ? prNum : undefined,
+      raw: flags.includes('--raw'),
+      json: flags.includes('--json'),
+      quiet: flags.includes('--quiet') || flags.includes('-q'),
+    };
+
+    try {
+      const statusResult = await runGhPrStatus(statusOptions);
+      return statusResult.exitCode;
+    } catch (err: any) {
+      console.error(`❌ Error fetching GitHub PR status: ${err?.message || err}`);
+      return 1;
+    }
   }
 
   if (command === 'init') {
