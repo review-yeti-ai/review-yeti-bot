@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.132.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.131.0...v1.132.0) (2026-10-19)
+
+
+### Features
+
+* **ui:** distill dashboard SPA around detection mode and recent PR reviews ([#1514](https://github.com/review-yeti-ai/review-yeti-bot/issues/1514)) ([725f52b](https://github.com/review-yeti-ai/review-yeti-bot/commit/725f52b2f930e2e8babf5c13ae9192777a775d59))
+
 ## [1.131.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.130.2...v1.131.0) (2026-10-19)
 
 
