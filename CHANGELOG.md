@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.135.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.134.0...v1.135.0) (2026-10-20)
+
+
+### Features
+
+* **mcp:** achieve full API-to-MCP parity across Node and Cloudflare Edge for onboarding, repo/platform settings, usage analytics & memory ([#1520](https://github.com/review-yeti-ai/review-yeti-bot/issues/1520)) ([2c36b63](https://github.com/review-yeti-ai/review-yeti-bot/commit/2c36b63f80f7e018c4e0b9ced6561bc863897c46))
+
 ## [1.134.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.133.0...v1.134.0) (2026-10-20)
 
 
