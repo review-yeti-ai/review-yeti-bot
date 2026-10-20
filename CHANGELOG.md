@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.136.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.135.0...v1.136.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** support reviewyeti bin alias, --diff-file, --output, and owner/repo#pr references ([#1522](https://github.com/review-yeti-ai/review-yeti-bot/issues/1522)) ([1f7e48e](https://github.com/review-yeti-ai/review-yeti-bot/commit/1f7e48e807927a0ba2e9267ca602bd5ae4e688ac))
+
 ## [1.135.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.134.0...v1.135.0) (2026-10-20)
 
 
