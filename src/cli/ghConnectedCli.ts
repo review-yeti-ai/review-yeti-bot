@@ -101,6 +101,27 @@ export function resolveGhToken(
 /**
  * Parses `owner/repo` from a git remote URL or `owner/repo` slug.
  */
+/**
+ * Parses a PR reference from a number ("123"), owner/repo#number ("owner/repo#123"),
+ * or GitHub PR URL ("https://github.com/owner/repo/pull/123").
+ */
+export function parsePrReference(input?: string): { repo?: string; prNumber?: number } {
+  if (!input) return {};
+  const trimmed = input.trim();
+  if (/^\d+$/u.test(trimmed)) {
+    return { prNumber: parseInt(trimmed, 10) };
+  }
+  const hashMatch = trimmed.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)$/u);
+  if (hashMatch) {
+    return { repo: hashMatch[1], prNumber: parseInt(hashMatch[2], 10) };
+  }
+  const urlMatch = trimmed.match(/github\.com[:/]([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/pull\/(\d+)/u);
+  if (urlMatch) {
+    return { repo: urlMatch[1], prNumber: parseInt(urlMatch[2], 10) };
+  }
+  return {};
+}
+
 export function parseRepoSlug(input: string): { owner: string; repo: string } | null {
   const trimmed = input.trim().replace(/\.git$/u, '');
   const slugMatch = trimmed.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/u);

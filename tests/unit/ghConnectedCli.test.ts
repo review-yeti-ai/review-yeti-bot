@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createDefaultCliModelClient,
   runLocalReview,
+  parsePrReference,
   parseRepoSlug,
   resolveGhToken,
   resolveGhPrTarget,
@@ -276,5 +277,17 @@ describe('GitHub-Connected CLI (review-yeti pr / status / review --pr)', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+  it('parsePrReference supports numeric PRs, owner/repo#number, and GitHub PR URLs', () => {
+    expect(parsePrReference('1516')).toEqual({ prNumber: 1516 });
+    expect(parsePrReference('calltelemetry/cisco-cdr#42')).toEqual({
+      repo: 'calltelemetry/cisco-cdr',
+      prNumber: 42,
+    });
+    expect(parsePrReference('https://github.com/review-yeti-ai/review-yeti-bot/pull/1520')).toEqual({
+      repo: 'review-yeti-ai/review-yeti-bot',
+      prNumber: 1520,
+    });
+    expect(parsePrReference('')).toEqual({});
   });
 });
