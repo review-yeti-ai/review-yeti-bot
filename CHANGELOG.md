@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.133.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.132.0...v1.133.0) (2026-10-20)
+
+
+### Features
+
+* **ux:** wire real APIs, ApexCharts v4, Check Run Agents, Approvability & implicit PR learning ([#1516](https://github.com/review-yeti-ai/review-yeti-bot/issues/1516)) ([337f3a4](https://github.com/review-yeti-ai/review-yeti-bot/commit/337f3a4268eff1148ee32c99472be87f989d4b00))
+
 ## [1.132.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.131.0...v1.132.0) (2026-10-19)
 
 
