@@ -234,6 +234,35 @@ export async function testIntegration(platform: string, credentials: Record<stri
 }
 
 // Config & AST Memory Graph API
+export async function fetchDashboardSettings(): Promise<Record<string, any>> {
+  const res = await request<{ success: boolean; settings: Record<string, any> }>('/api/dashboard/settings');
+  return res.settings || {};
+}
+
+export async function updateDashboardSettings(payload: Record<string, any>): Promise<Record<string, any>> {
+  const res = await request<{ success: boolean; settings: Record<string, any> }>('/api/dashboard/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+  return res.settings || {};
+}
+
+export interface CheckRunAgentItem {
+  id: string;
+  name: string;
+  rule: string;
+  scope: string[];
+  exclude?: string[];
+  severity: 'P0' | 'P1' | 'P2';
+  action: 'comment' | 'request_changes';
+  sourceFile?: string;
+}
+
+export async function fetchCheckRunAgents(): Promise<CheckRunAgentItem[]> {
+  const res = await request<{ success: boolean; agents: CheckRunAgentItem[] }>('/api/dashboard/check-agents');
+  return res.agents || [];
+}
+
 export async function updateDashboardConfig(payload: {
   monthlyCostCapUSD?: number;
   monthlyBudgetUSD?: number;

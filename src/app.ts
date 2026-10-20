@@ -42,6 +42,9 @@ import { buildReviewRunIdentity } from './review/reviewAdmission';
 import { resolveSubmoduleDecision, SubmodulePolicy } from './review/submodulePolicy';
 import { GraphLearningEngine } from './memory/graphLearningEngine';
 import { PRCloseDispatcher } from './github/prCloseDispatcher';
+import { loadReviewYetiDirectoryFromFs } from './config/reviewYetiDirLoader';
+import { publishCheckRunAgents } from './github/checkRunAgentExecutor';
+import { evaluateApprovability } from './review/approvabilityEngine';
 import {
   MAX_FINAL_INLINE_COMMENTS,
   buildFinalInlineComments,
@@ -759,6 +762,47 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
             title: `Binding arbiter verdict: ${panel.arbiter.verdict}`,
             summary,
           }).catch((err) => logger.warn('Failed to complete check run for successful review', { error: err?.message || err }));
+        }
+        if (typeof (github as any).publishNamedCheck === 'function') {
+          try {
+            const dirConfig = loadReviewYetiDirectoryFromFs(process.cwd());
+            if (dirConfig.checks.length > 0) {
+              const checkEvaluations = await publishCheckRunAgents({
+                publisher: github as any,
+                owner,
+                repo,
+                headSha,
+                agents: dirConfig.checks,
+                changedFilePaths: changedFiles.map((f) => f.path),
+                findings: retainedFindings.map((f) => ({
+                  path: f.path,
+                  line: f.line,
+                  severity: f.severity,
+                  title: f.title,
+                  rationale: (f as any).rationale || (f as any).detail,
+                })),
+              });
+              const approvability = evaluateApprovability({
+                findings: retainedFindings.map((f) => ({
+                  path: f.path,
+                  line: f.line,
+                  severity: f.severity,
+                  title: f.title,
+                })),
+                checkEvaluations,
+              });
+              logger.info('Evaluated Check Run Agents & Approvability', {
+                owner,
+                repo,
+                prNumber,
+                checkAgentsEvaluated: checkEvaluations.length,
+                approved: approvability.approved,
+                approvabilityTitle: approvability.title,
+              });
+            }
+          } catch (checkAgentErr: any) {
+            logger.warn('Failed to publish custom Check Run Agents', { error: checkAgentErr?.message || checkAgentErr });
+          }
         }
         const publicationDigest = await durablePersist('publish', { reviewSnapshot, panel, final } as unknown as import('./review/reviewRun').JsonValue);
         if (durableRun) await durableReviewRuns!.succeed(durableRun.runId, durableWorkerId, Date.now(), publicationDigest || sha256({ reviewSnapshot, panel, final }));

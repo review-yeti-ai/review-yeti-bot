@@ -58,6 +58,19 @@ export default function OverviewPage() {
   }, [loadData]);
 
   const totalReviews = stats?.totalReviewsExecuted || reviewJobs.length || 6;
+  const approvedCount =
+    reviewJobs.length > 0
+      ? reviewJobs.filter((j) => (j.verdict || 'SHIP') === 'SHIP').length
+      : 4;
+  const needsApprovalCount =
+    reviewJobs.length > 0
+      ? reviewJobs.filter((j) => (j.verdict || 'SHIP') !== 'SHIP').length
+      : 2;
+  const totalSpendUSD =
+    typeof stats?.totalCostUSD === 'number'
+      ? stats.totalCostUSD
+      : reviewJobs.reduce((acc, j) => acc + (Number(j.cost ?? 0) || 0), 0);
+  const monthlyCapUSD = stats?.monthlyCostCapUSD || 100;
 
   return (
     <div className="space-y-6">
@@ -111,10 +124,10 @@ export default function OverviewPage() {
             <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
           </div>
           <div className="text-2xl font-semibold font-mono text-emerald-400 tabular-nums">
-            4 Approved
+            {approvedCount} Approved
           </div>
           <div className="text-[11px] text-zinc-400 font-mono">
-            2 Needs Human Approval · 0 Skipped
+            {needsApprovalCount} Needs Human Approval · 0 Skipped
           </div>
         </div>
 
@@ -137,7 +150,7 @@ export default function OverviewPage() {
             <ShieldCheck className="h-3.5 w-3.5 text-zinc-400" />
           </div>
           <div className="text-2xl font-semibold font-mono text-zinc-100 tabular-nums">
-            $0.00 <span className="text-xs text-zinc-500 font-normal">/ $100</span>
+            ${totalSpendUSD.toFixed(2)} <span className="text-xs text-zinc-500 font-normal">/ ${monthlyCapUSD}</span>
           </div>
           <div className="text-[11px] text-zinc-400 font-mono">
             Caps: $10/review · $50/PR
@@ -149,9 +162,9 @@ export default function OverviewPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div className="flex flex-wrap items-center gap-1.5">
           {([
-            { id: 'all', label: 'All Checks (6)' },
-            { id: 'correctness', label: 'Correctness (6)' },
-            { id: 'approvability', label: 'Approvability (6)' },
+            { id: 'all', label: `All Checks (${totalReviews})` },
+            { id: 'correctness', label: `Correctness (${totalReviews})` },
+            { id: 'approvability', label: `Approvability (${totalReviews})` },
             { id: 'agents', label: 'Check Run Agents (4)' },
           ] as const).map((tab) => (
             <button
@@ -180,8 +193,48 @@ export default function OverviewPage() {
         </div>
       </div>
 
-      {/* Pull Request Review Feed (Zero-Noise Native GitHub Cards) */}
+      {/* Pull Request Review Feed (Live API Review Jobs + Native GitHub Cards) */}
       <div className="space-y-3">
+        {reviewJobs.slice(0, 6).map((job) => {
+          const isApproved = (job.verdict || 'SHIP') === 'SHIP';
+          const repoSlug = job.repo || 'reviewyeti-ai/review-yeti-bot';
+          const prNum = job.prNumber || 100;
+          const findingsCount = Array.isArray(job.personaLogs)
+            ? job.personaLogs.reduce((sum, l) => sum + (l.findingsCount || 0), 0)
+            : 0;
+          const latencySec = job.latencyMs ? `${(job.latencyMs / 1000).toFixed(1)}s` : '3.8s';
+          return (
+            <div key={job.id} className="rounded-xl border border-white/[0.08] bg-[#0b0c10] p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                {isApproved ? (
+                  <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+                ) : (
+                  <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+                )}
+                <span className="font-mono text-xs text-zinc-400">{repoSlug}</span>
+                <span className="font-mono text-xs font-bold text-zinc-200">#{prNum}</span>
+                <span className="text-sm font-medium text-zinc-100">
+                  {job.title || `PR #${prNum} Code Review`}
+                </span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-[11px] font-mono border ${
+                    isApproved
+                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                      : 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                  }`}
+                >
+                  {isApproved ? 'Approved' : 'Needs Human Approval'}
+                </span>
+                <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-white/[0.04] text-zinc-300 border border-white/[0.07]">
+                  Correctness: {findingsCount} {findingsCount === 1 ? 'Finding' : 'Findings'}
+                </span>
+                <span className="text-[11px] font-mono text-zinc-500">{latencySec}</span>
+              </div>
+            </div>
+          );
+        })}
         {/* PR Card 1: Needs Human Approval with Inline Finding & Fix It For Me */}
         <div className="rounded-xl border border-white/[0.08] bg-[#0b0c10] p-4 space-y-3">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
