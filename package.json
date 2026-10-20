@@ -6,7 +6,8 @@
   "bin": {
     "review-yeti": "bin/review-yeti.js",
     "git-yeti": "bin/review-yeti.js",
-    "ct-review": "bin/review-yeti.js"
+    "ct-review": "bin/review-yeti.js",
+    "reviewyeti": "bin/review-yeti.js"
   },
   "files": [
     "action.yml",

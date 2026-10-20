@@ -21,6 +21,7 @@ import {
 import {
   runGhPrStatus,
   runGhPrReview,
+  parsePrReference,
   GhPrStatusOptions,
   GhPrRemoteReviewOptions,
 } from './ghConnectedCli';
@@ -147,7 +148,8 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<nu
 
     const modeVal = getFlagValue('--mode') as DetectionMode | undefined;
     const minSeverityVal = getFlagValue('--min-severity') as MinimumSeverity | undefined;
-    const diffPathArg = getFlagValue('--diff');
+    const diffPathArg = getFlagValue('--diff') || getFlagValue('--diff-file');
+    const outputFormat = getFlagValue('--output');
     let diffContent: string | undefined;
     if (diffPathArg) {
       const resolvedDiffPath = path.resolve(process.cwd(), diffPathArg);
@@ -164,8 +166,8 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<nu
       base: getFlagValue('--base'),
       head: getFlagValue('--head'),
       isolate: flags.includes('--isolate'),
-      raw: flags.includes('--raw'),
-      json: flags.includes('--json'),
+      raw: flags.includes('--raw') || outputFormat === 'jsonl',
+      json: flags.includes('--json') || outputFormat === 'json' || outputFormat === 'sarif',
       strict: flags.includes('--strict'),
       noColor: flags.includes('--no-color'),
       quiet: flags.includes('--quiet') || flags.includes('-q'),
@@ -175,11 +177,11 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<nu
 
     const prFlagVal = getFlagValue('--pr');
     if (prFlagVal || flags.includes('--publish')) {
-      const prNum = prFlagVal ? parseInt(prFlagVal, 10) : undefined;
+      const parsedPr = parsePrReference(prFlagVal);
       const remoteOptions: GhPrRemoteReviewOptions = {
         ...reviewOptions,
-        repo: getFlagValue('--repo'),
-        prNumber: prNum && !Number.isNaN(prNum) ? prNum : undefined,
+        repo: getFlagValue('--repo') || parsedPr.repo,
+        prNumber: parsedPr.prNumber,
         publish: flags.includes('--publish'),
       };
       try {
@@ -204,17 +206,17 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<nu
       return undefined;
     };
 
-    const positionalPr = flags.find((f) => /^\d+$/u.test(f));
+    const positionalPr = flags.find((f) => /^(\d+|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+|https?:\/\/github\.com\/.+\/pull\/\d+)$/u.test(f));
     const prFlagVal = getFlagValue('--pr') || positionalPr;
-    const prNum = prFlagVal ? parseInt(prFlagVal, 10) : undefined;
+    const parsedPr = parsePrReference(prFlagVal);
 
     if (flags[0] === 'review') {
       const modeVal = getFlagValue('--mode') as DetectionMode | undefined;
       const minSeverityVal = getFlagValue('--min-severity') as MinimumSeverity | undefined;
       try {
         const remoteResult = await runGhPrReview({
-          repo: getFlagValue('--repo'),
-          prNumber: prNum && !Number.isNaN(prNum) ? prNum : undefined,
+          repo: getFlagValue('--repo') || parsedPr.repo,
+          prNumber: parsedPr.prNumber,
           publish: flags.includes('--publish'),
           mode: modeVal && ['fast', 'balanced', 'deep'].includes(modeVal) ? modeVal : undefined,
           minSeverity: minSeverityVal,
@@ -233,10 +235,10 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<nu
     }
 
     const statusOptions: GhPrStatusOptions = {
-      repo: getFlagValue('--repo'),
-      prNumber: prNum && !Number.isNaN(prNum) ? prNum : undefined,
-      raw: flags.includes('--raw'),
-      json: flags.includes('--json'),
+      repo: getFlagValue('--repo') || parsedPr.repo,
+      prNumber: parsedPr.prNumber,
+      raw: flags.includes('--raw') || outputFormat === 'jsonl',
+      json: flags.includes('--json') || outputFormat === 'json' || outputFormat === 'sarif',
       quiet: flags.includes('--quiet') || flags.includes('-q'),
     };
 
@@ -296,7 +298,7 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<nu
       quiet: flags.includes('--quiet') || flags.includes('-q'),
     };
 
-    const diffIndex = flags.indexOf('--diff');
+    const diffIndex = flags.indexOf('--diff') !== -1 ? flags.indexOf('--diff') : flags.indexOf('--diff-file');
     if (diffIndex !== -1 && flags[diffIndex + 1]) {
       const diffFilePath = path.resolve(process.cwd(), flags[diffIndex + 1]);
       if (fs.existsSync(diffFilePath)) {
