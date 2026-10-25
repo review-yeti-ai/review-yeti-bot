@@ -661,6 +661,14 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           return Response.json({ id: 9999, ...body });
         }
 
+        // 4. Repository identity lookup for the v2 queue external id
+        if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(urlStr)) {
+          return Response.json({ id: 1232078607 });
+        }
+
+        if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(String(input))) {
+          return Response.json({ id: 1232078607 });
+        }
         return new Response('Not found', { status: 404 });
       };
 
@@ -677,7 +685,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
       const published = publishedCheckRuns[0];
       assert.equal(published.name, 'Review Yeti');
       assert.equal(published.head_sha, headSha);
-      assert.equal(published.external_id, `merge-group:${headSha}`);
+      assert.match(published.external_id, new RegExp(`^review-yeti-merge-group:v2:1232078607:${headSha}:[0-9a-f]{64}$`));
       assert.equal(published.status, 'completed');
       assert.equal(published.conclusion, 'success');
       assert.equal(published.output.title, 'Review Yeti (Merge Group Attestation)');
@@ -738,6 +746,9 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           return Response.json({ id: 9999, ...body });
         }
 
+        if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(String(input))) {
+          return Response.json({ id: 1232078607 });
+        }
         return new Response('Not found', { status: 404 });
       };
 
@@ -855,6 +866,9 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           return Response.json({ id: 9999, ...body });
         }
 
+        if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(String(input))) {
+          return Response.json({ id: 1232078607 });
+        }
         return new Response('Not found', { status: 404 });
       };
 
@@ -951,6 +965,9 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
             return Response.json({ id: 9999, ...body });
           }
 
+          if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(String(input))) {
+            return Response.json({ id: 1232078607 });
+          }
           return new Response('Not found', { status: 404 });
         }) as any;
 
@@ -1428,6 +1445,9 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           return new Response('GitHub internal server error', { status: 500 });
         }
 
+        if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(String(input))) {
+          return Response.json({ id: 1232078607 });
+        }
         return new Response('Not found', { status: 404 });
       };
 
@@ -1875,6 +1895,9 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
         if (url.includes('/files')) {
           return new Response('GitHub internal error', { status: 500 });
         }
+        if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(String(input))) {
+          return Response.json({ id: 1232078607 });
+        }
         return new Response('Not found', { status: 404 });
       };
 
@@ -1903,6 +1926,9 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
         }
         if (url.includes('/compare/')) {
           return new Response('API rate limit exceeded', { status: 403 });
+        }
+        if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(String(input))) {
+          return Response.json({ id: 1232078607 });
         }
         return new Response('Not found', { status: 404 });
       };
@@ -1944,6 +1970,9 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           const body = JSON.parse(init.body as string);
           publishedCheckRuns.push(body);
           return Response.json({ id: 8888, ...body });
+        }
+        if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(String(input))) {
+          return Response.json({ id: 1232078607 });
         }
         return new Response('Not found', { status: 404 });
       };

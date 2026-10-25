@@ -932,6 +932,31 @@ export async function evaluateCompositeDeltaHazards(params: {
 /**
  * Publishes the Review Yeti check run directly on the merge group commit.
  */
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function fetchRepositoryId(
+  owner: string, repo: string, token: string, fetchFn: typeof fetch,
+): Promise<string | null> {
+  try {
+    const res = await fetchFn(`https://api.github.com/repos/${owner}/${repo}`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'ReviewYeti-Edge-Orchestrator',
+      },
+    });
+    if (!res.ok) return null;
+    const data = await res.json() as { id?: unknown };
+    return typeof data.id === 'number' && Number.isSafeInteger(data.id) && data.id > 0
+      ? String(data.id) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function publishMergeGroupCheckRun(params: {
   owner: string;
   repo: string;
@@ -945,10 +970,18 @@ export async function publishMergeGroupCheckRun(params: {
   const { owner, repo, headSha, token, conclusion, title, summary, fetchFn = fetch } = params;
   const endpoint = `https://api.github.com/repos/${owner}/${repo}/check-runs`;
 
+  // ADR 0808: the queue consumer accepts only the service-published v2 id.
+  // Bind the repository and the attested summary into the snapshot digest.
+  const repositoryId = await fetchRepositoryId(owner, repo, token, fetchFn);
+  if (!repositoryId) {
+    return { success: false, error: 'repository identity unavailable' };
+  }
+  const snapshotDigest = await sha256Hex(`${headSha}\n${summary}`);
+
   const payload = {
     name: REQUIRED_CHECK_NAME,
     head_sha: headSha,
-    external_id: `merge-group:${headSha}`,
+    external_id: `review-yeti-merge-group:v2:${repositoryId}:${headSha}:${snapshotDigest}`,
     status: 'completed',
     conclusion,
     output: {
