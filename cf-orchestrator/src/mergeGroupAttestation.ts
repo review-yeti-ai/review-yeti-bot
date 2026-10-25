@@ -16,11 +16,13 @@
  *    - Incompatible caller/callee contract breaks (with word/invocation boundary matching and modification checks)
  *    - Clean single-PR queue entries with no base drift bypass scan for instant zero-cost attestation
  * 4. Direct check-run publication via GitHub API with name "Review Yeti",
- *    output title "Review Yeti (Merge Group Attestation)", and external ID "merge-group:${headSha}".
+ *    output title "Review Yeti (Merge Group Attestation)", and external ID
+ *    "review-yeti-merge-group:v2:<repositoryId>:<headSha>:<digest>".
  */
 
 import type { Env } from './types.js';
 import { readOperatorPassthroughForTarget } from './operatorPassthroughPublisher.js';
+import { getInstallationToken } from './auth/githubEdgeAuth.js';
 import {
   AUTHORITATIVE_REVIEW_APP_ID,
   PUBLIC_REVIEW_APP_ID,
@@ -1121,9 +1123,9 @@ export async function handleMergeGroupAttestation(
     throw new Error('Bad Request: Missing or invalid repository owner/name in payload');
   }
 
-  const token = env.GITHUB_TOKEN;
+  const token = env.GITHUB_TOKEN || await getInstallationToken(env, owner, repo);
   if (!token) {
-    throw new Error('Configuration error: GITHUB_TOKEN is not set');
+    throw new Error('Configuration error: GitHub token unavailable for merge-group attestation');
   }
   const repoIdentityId = Number(repository.id);
   let expectedApp: number;
