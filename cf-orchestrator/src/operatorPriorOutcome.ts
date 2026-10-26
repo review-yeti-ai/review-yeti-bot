@@ -71,6 +71,108 @@ interface PriorOutcomeOptions {
   sourceRunId?: string | null;
 }
 
+interface RepoGatePrRunState {
+  activeRunId: string | null;
+  latestRunId: string | null;
+  queuedRunIds: string[];
+}
+
+const RUN_ID_PATTERN = /^run_[A-Za-z0-9_-]{1,128}$/u;
+
+async function readRepoGatePrRunState(env: Env, spec: ReviewRunSpec): Promise<RepoGatePrRunState> {
+  try {
+    const repoKey = `${spec.owner}/${spec.repo}`.toLowerCase();
+    const gate = env.REPO_GATE.get(env.REPO_GATE.idFromName(repoKey));
+    const response = await gate.fetch(`http://do/active-run/${spec.prNumber}`);
+    if (!response.ok) reject('prior_queue_state_unavailable');
+    const value = await response.json() as any;
+    const validActiveRunId = value?.activeRunId === null || RUN_ID_PATTERN.test(value?.activeRunId);
+    const validLatestRunId = value?.latestRunId === null || value?.latestRunId === '__EVICTED__'
+      || RUN_ID_PATTERN.test(value?.latestRunId);
+    const queuedRunIds = value?.queuedRunIds;
+    if (!value || typeof value !== 'object' || !validActiveRunId || !validLatestRunId
+      || !Array.isArray(queuedRunIds) || queuedRunIds.some((runId: unknown) =>
+        typeof runId !== 'string' || !RUN_ID_PATTERN.test(runId))
+      || new Set(queuedRunIds).size !== queuedRunIds.length) {
+      reject('prior_queue_state_unavailable');
+    }
+    return {
+      activeRunId: value.activeRunId,
+      latestRunId: value.latestRunId,
+      queuedRunIds,
+    };
+  } catch (error) {
+    if (error instanceof Error && error.message === 'prior_queue_state_unavailable') throw error;
+    reject('prior_queue_state_unavailable');
+  }
+}
+
+function sameRepoGatePrRunState(left: RepoGatePrRunState, right: RepoGatePrRunState): boolean {
+  return left.activeRunId === right.activeRunId
+    && left.latestRunId === right.latestRunId
+    && left.queuedRunIds.length === right.queuedRunIds.length
+    && left.queuedRunIds.every((runId, index) => runId === right.queuedRunIds[index]);
+}
+
+function isIgnoredCurrentRun(runId: string, spec: ReviewRunSpec, sourceRunId?: string | null): boolean {
+  return runId === spec.runId || runId === sourceRunId;
+}
+
+async function assertRegisteredPriorRunIsLive(env: Env, runId: string): Promise<void> {
+  const status = await readDoStatus(env, runId);
+  if (status.phase === 'Pending' || status.phase === 'Running') return;
+  reject(status.phase === 'Completed' || status.phase === 'Failed' || status.phase === 'Cancelled'
+    ? 'prior_queue_state_unavailable' : 'prior_outcome_unknown');
+}
+
+async function assertUnstartedPendingPriorIdentity(
+  env: Env,
+  spec: ReviewRunSpec,
+  runId: string,
+  status: any
+): Promise<void> {
+  if (status.runId !== runId || status.phase !== 'Pending' || status.cancelRequested !== false
+    || status.isCurrentHead !== true || status.workerId || status.jobId || status.terminalReceiptSummary !== null
+    || typeof status.specDigest !== 'string' || !/^sha256:[a-f0-9]{64}$/u.test(status.specDigest)
+    || typeof status.headSha !== 'string' || !/^[a-f0-9]{40}$/iu.test(status.headSha)) {
+    reject('prior_outcome_unknown');
+  }
+
+  let identityResponse: Response;
+  try {
+    const prior = env.REVIEW_RUN.get(env.REVIEW_RUN.idFromName(runId));
+    identityResponse = await prior.fetch('http://do/source-identity');
+  } catch {
+    reject('prior_do_unavailable');
+  }
+  if (!identityResponse.ok) reject('prior_do_unavailable');
+  let identity: any;
+  try { identity = await identityResponse.json(); }
+  catch { reject('prior_do_identity_mismatch'); }
+  if (identity?.version !== 'ReviewRunSourceIdentity.v1' || identity.runId !== runId
+    || identity.owner?.toLowerCase() !== spec.owner.toLowerCase()
+    || identity.repo?.toLowerCase() !== spec.repo.toLowerCase()
+    || identity.prNumber !== spec.prNumber
+    || !/^[a-f0-9]{40}$/iu.test(identity.headSha || '')
+    || !/^[a-f0-9]{40}$/iu.test(identity.baseSha || '')
+    || identity.headSha.toLowerCase() !== status.headSha.toLowerCase()
+    || identity.specDigest !== status.specDigest) {
+    reject('prior_do_identity_mismatch');
+  }
+}
+
+function pendingRunRemainsUnstarted(status: any, runId: string, original: any): boolean {
+  return status.runId === runId
+    && status.phase === 'Pending'
+    && status.cancelRequested === false
+    && status.isCurrentHead === true
+    && !status.workerId
+    && !status.jobId
+    && status.terminalReceiptSummary === null
+    && status.specDigest === original.specDigest
+    && status.headSha === original.headSha;
+}
+
 function blockingReviewerPresent(reviews: any[], currentHeadSha: string): boolean {
   if (!Array.isArray(reviews)) reject('prior_review_state_unavailable');
   if (!/^[a-f0-9]{40}$/u.test(currentHeadSha)) reject('prior_review_state_unavailable');
@@ -141,18 +243,62 @@ async function verifiedRegisteredSourceRunId(
   }
 }
 
-async function latestPriorRunForPr(env: Env, spec: ReviewRunSpec, sourceRunId?: string | null): Promise<string | null> {
-  const repoKey = `${spec.owner}/${spec.repo}`.toLowerCase();
-  const gate = env.REPO_GATE.get(env.REPO_GATE.idFromName(repoKey));
-  const response = await gate.fetch(`http://do/active-run/${spec.prNumber}`);
-  if (!response.ok) reject('prior_queue_state_unavailable');
-  const state = await response.json() as { activeRunId?: string | null; latestRunId?: string | null };
-  if (state.activeRunId && state.activeRunId !== spec.runId && state.activeRunId !== sourceRunId) reject('prior_review_active');
+async function latestPriorRunForPr(
+  env: Env,
+  spec: ReviewRunSpec,
+  sourceRunId?: string | null,
+  candidateSourceRunId?: string | null
+): Promise<string | null> {
+  const state = await readRepoGatePrRunState(env, spec);
+  if (state.activeRunId && !isIgnoredCurrentRun(state.activeRunId, spec, sourceRunId)) {
+    await assertRegisteredPriorRunIsLive(env, state.activeRunId);
+    reject('prior_review_active');
+  }
+  for (const queuedRunId of state.queuedRunIds) {
+    if (isIgnoredCurrentRun(queuedRunId, spec, sourceRunId)) continue;
+    await assertRegisteredPriorRunIsLive(env, queuedRunId);
+    reject('prior_review_active');
+  }
+
   const latestRunId = state.latestRunId;
-  if (!latestRunId || latestRunId === '__EVICTED__' || latestRunId === spec.runId || latestRunId === sourceRunId) return null;
+  if (!latestRunId || latestRunId === '__EVICTED__'
+    || isIgnoredCurrentRun(latestRunId, spec, sourceRunId)) return null;
+  if (latestRunId === candidateSourceRunId && candidateSourceRunId !== sourceRunId) {
+    reject('prior_outcome_unknown');
+  }
 
   const prior = await readDoStatus(env, latestRunId);
-  if (prior.phase === 'Pending' || prior.phase === 'Running') reject('prior_review_active');
+  if (prior.phase === 'Pending') {
+    if (state.activeRunId === latestRunId || state.queuedRunIds.includes(latestRunId)) {
+      reject('prior_review_active');
+    }
+    await assertUnstartedPendingPriorIdentity(env, spec, latestRunId, prior);
+
+    // The first complete membership read showed an unstarted pointer without a
+    // slot or queue entry. Re-read both state owners before treating it as stale.
+    const confirmedMembership = await readRepoGatePrRunState(env, spec);
+    if (confirmedMembership.activeRunId === latestRunId || confirmedMembership.queuedRunIds.includes(latestRunId)) {
+      reject('prior_review_active');
+    }
+    if (confirmedMembership.activeRunId && !isIgnoredCurrentRun(confirmedMembership.activeRunId, spec, sourceRunId)) {
+      await assertRegisteredPriorRunIsLive(env, confirmedMembership.activeRunId);
+      reject('prior_review_active');
+    }
+    for (const queuedRunId of confirmedMembership.queuedRunIds) {
+      if (isIgnoredCurrentRun(queuedRunId, spec, sourceRunId)) continue;
+      await assertRegisteredPriorRunIsLive(env, queuedRunId);
+      reject('prior_review_active');
+    }
+    if (!sameRepoGatePrRunState(state, confirmedMembership)) reject('prior_queue_state_unavailable');
+
+    const confirmedPrior = await readDoStatus(env, latestRunId);
+    if (!pendingRunRemainsUnstarted(confirmedPrior, latestRunId, prior)) reject('prior_outcome_unknown');
+    return null;
+  }
+  if (prior.phase === 'Running') {
+    reject(state.activeRunId === latestRunId || state.queuedRunIds.includes(latestRunId)
+      ? 'prior_review_active' : 'prior_outcome_unknown');
+  }
   if (prior.phase !== 'Completed' && prior.phase !== 'Failed' && prior.phase !== 'Cancelled') reject('prior_outcome_unknown');
   if (prior.headSha !== spec.headSha) return null;
   await priorDoStatus(env, spec, latestRunId);
@@ -180,7 +326,7 @@ export async function assertNoBlockingPriorOutcome(
   if (options.allowCurrentPublisherTerminal) await assertCurrentPublisherRunIsCurrent(env, spec);
   else await assertCurrentRunIsFresh(env, spec);
   const sourceRunId = await verifiedRegisteredSourceRunId(env, spec, options.sourceRunId);
-  const latestPriorRunId = await latestPriorRunForPr(env, spec, sourceRunId);
+  const latestPriorRunId = await latestPriorRunForPr(env, spec, sourceRunId, options.sourceRunId);
   const reviewResponse = await fetchFn(`${base}/pulls/${spec.prNumber}/reviews?per_page=100`, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'review-yeti-cf-orchestrator' },
   });

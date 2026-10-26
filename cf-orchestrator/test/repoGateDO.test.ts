@@ -181,6 +181,23 @@ describe('RepoGateDO Concurrency Gate & PR Active Mapping', () => {
     assert.equal(resBad.status, 400);
   });
 
+  it('HTTP GET /active-run/:prNumber returns exact queued run membership', async () => {
+    const state = new MockDurableObjectState();
+    const env: any = {};
+    const gate = new RepoGateDO(state as any, env);
+
+    await gate.acquireSlot('run_active_other_pr', 'sha_active', 41);
+    await gate.acquireSlot('run_queued_pr_42', 'sha_queued', 42);
+
+    const response = await gate.fetch(new Request('http://do/active-run/42'));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      activeRunId: null,
+      latestRunId: 'run_queued_pr_42',
+      queuedRunIds: ['run_queued_pr_42'],
+    });
+  });
+
   // 10. HTTP POST /evict
   it('HTTP POST /evict removes queued entries by PR number or runId', async () => {
     const state = new MockDurableObjectState();
@@ -395,4 +412,3 @@ describe('RepoGateDO Concurrency Gate & PR Active Mapping', () => {
     assert.equal(statusAfter.queueLength, 0);
   });
 });
-

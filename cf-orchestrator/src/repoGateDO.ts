@@ -416,9 +416,13 @@ export class RepoGateDO {
       }
       const activeRunId = this.getActiveRun(prNumber);
       const latestRunId = this.latestRunIdByPr.get(prNumber);
+      const queuedRunIds = this.queue
+        .filter((item) => item.prNumber === prNumber)
+        .map((item) => item.runId);
       return Response.json({
         activeRunId: activeRunId ?? null,
         latestRunId: latestRunId ?? null,
+        queuedRunIds,
       });
     }
 
@@ -430,4 +434,3 @@ export class RepoGateDO {
     return new Response('Not Found', { status: 404 });
   }
 }
-
