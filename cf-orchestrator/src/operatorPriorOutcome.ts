@@ -4,6 +4,11 @@ import { reviewRunSpecDigest } from './reviewRunIdentity.js';
 
 const PRE_DISPATCH_CONFIG_ERROR = 'Step config for "dispatch-container" is in a invalid format. See https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/';
 const SAFE_SUCCESS_VERDICTS = new Set(['SHIP', 'success']);
+type WorkflowStatusValue = Awaited<ReturnType<WorkflowInstance['status']>>['status'];
+const TERMINAL_WORKFLOW_STATUSES = new Set<WorkflowStatusValue>(['complete', 'errored', 'terminated']);
+const LIVE_WORKFLOW_STATUSES = new Set<WorkflowStatusValue>([
+  'queued', 'running', 'paused', 'waiting', 'waitingForPause',
+]);
 function reject(code: string): never { throw new Error(code); }
 
 async function getJson(url: string, token: string, code: string): Promise<any> {
@@ -187,6 +192,33 @@ function pendingRunRemainsUnstarted(status: any, runId: string, original: any): 
     && status.headSha === original.headSha;
 }
 
+async function assertPriorWorkflowTerminal(env: Env, runId: string): Promise<void> {
+  // Cloudflare's binding types and API do not expose a typed not-found error;
+  // any get/status exception therefore remains an unavailable read, not absence.
+  const binding = env.REVIEW_JOB_WORKFLOW as {
+    get?: (id: string) => Promise<Pick<WorkflowInstance, 'id' | 'status'>>;
+  } | undefined;
+  if (!binding || typeof binding.get !== 'function') reject('prior_workflow_state_unavailable');
+
+  let instance: Pick<WorkflowInstance, 'id' | 'status'>;
+  try { instance = await binding.get(runId); }
+  catch { reject('prior_workflow_state_unavailable'); }
+  if (!instance || instance.id !== runId || typeof instance.status !== 'function') {
+    reject('prior_workflow_state_unavailable');
+  }
+
+  let status: Awaited<ReturnType<WorkflowInstance['status']>>;
+  try { status = await instance.status(); }
+  catch { reject('prior_workflow_state_unavailable'); }
+  if (!status || typeof status !== 'object' || typeof status.status !== 'string') {
+    reject('prior_workflow_state_unavailable');
+  }
+  // Every recognized nonterminal state blocks; future or unknown states fail closed below.
+  if (TERMINAL_WORKFLOW_STATUSES.has(status.status)) return;
+  if (LIVE_WORKFLOW_STATUSES.has(status.status)) reject('prior_review_active');
+  reject('prior_workflow_state_unavailable');
+}
+
 function blockingReviewerPresent(reviews: any[], currentHeadSha: string): boolean {
   if (!Array.isArray(reviews)) reject('prior_review_state_unavailable');
   if (!/^[a-f0-9]{40}$/u.test(currentHeadSha)) reject('prior_review_state_unavailable');
@@ -309,6 +341,7 @@ async function latestPriorRunForPr(
 
     const confirmedPrior = await readDoStatus(env, latestRunId);
     if (!pendingRunRemainsUnstarted(confirmedPrior, latestRunId, prior)) reject('prior_outcome_unknown');
+    await assertPriorWorkflowTerminal(env, latestRunId);
     return null;
   }
   if (prior.phase === 'Running') {

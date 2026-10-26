@@ -57,6 +57,7 @@ type ErrorCode =
   | 'prior_semantic_block'
   | 'prior_do_unavailable'
   | 'prior_do_identity_mismatch'
+  | 'prior_workflow_state_unavailable'
   | 'prior_outcome_unknown'
   | 'prior_review_active'
   | 'prior_queue_state_unavailable'
