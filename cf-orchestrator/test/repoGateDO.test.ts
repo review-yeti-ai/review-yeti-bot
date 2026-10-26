@@ -181,6 +181,65 @@ describe('RepoGateDO Concurrency Gate & PR Active Mapping', () => {
     assert.equal(resBad.status, 400);
   });
 
+  it('HTTP GET /active-run/:prNumber returns exact queued run membership', async () => {
+    const state = new MockDurableObjectState();
+    const env: any = {};
+    const gate = new RepoGateDO(state as any, env);
+
+    await gate.acquireSlot('run_active_other_pr', 'sha_active', 41);
+    await gate.acquireSlot('run_queued_pr_42', 'sha_queued', 42);
+
+    const response = await gate.fetch(new Request('http://do/active-run/42'));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      activeRunId: null,
+      activeRunIds: [],
+      activeRunIdsComplete: true,
+      latestRunId: 'run_queued_pr_42',
+      queuedRunIds: ['run_queued_pr_42'],
+    });
+  });
+
+  it('returns every same-PR active run after the newest releases and preserves membership across restart', async () => {
+    const state = new MockDurableObjectState();
+    const env: any = { MAX_CONCURRENT_JOBS: '3' };
+    const gate1 = new RepoGateDO(state as any, env);
+
+    await gate1.acquireSlot('run_older_same_pr', 'sha_older', 42);
+    await gate1.acquireSlot('run_newer_same_pr', 'sha_newer', 42);
+    await gate1.acquireSlot('run_active_other_pr', 'sha_other', 99);
+    await gate1.releaseSlot('run_newer_same_pr');
+
+    const pr42 = await (await gate1.fetch(new Request('http://do/active-run/42'))).json() as any;
+    assert.equal(pr42.activeRunId, null, 'the legacy single mapping may be empty after releasing its newest run');
+    assert.deepEqual(pr42.activeRunIds, ['run_older_same_pr']);
+    assert.equal(pr42.activeRunIdsComplete, true);
+    assert.equal(pr42.latestRunId, 'run_newer_same_pr');
+    assert.deepEqual(pr42.queuedRunIds, []);
+
+    const pr99 = await (await gate1.fetch(new Request('http://do/active-run/99'))).json() as any;
+    assert.deepEqual(pr99.activeRunIds, ['run_active_other_pr']);
+    assert.equal(pr99.activeRunIdsComplete, true);
+
+    const gate2 = new RepoGateDO(state as any, env);
+    const recovered = await (await gate2.fetch(new Request('http://do/active-run/42'))).json() as any;
+    assert.deepEqual(recovered.activeRunIds, ['run_older_same_pr']);
+    assert.equal(recovered.activeRunIdsComplete, true);
+  });
+
+  it('marks active PR membership incomplete for legacy active jobs without per-run PR mappings', async () => {
+    const state = new MockDurableObjectState();
+    const env: any = {};
+    await state.storage.put('activeJobs', ['run_older_same_pr', 'run_newer_same_pr']);
+    await state.storage.put('activeRunsByPr', [[42, 'run_newer_same_pr']]);
+
+    const gate = new RepoGateDO(state as any, env);
+    const membership = await (await gate.fetch(new Request('http://do/active-run/42'))).json() as any;
+
+    assert.deepEqual(membership.activeRunIds, ['run_newer_same_pr']);
+    assert.equal(membership.activeRunIdsComplete, false);
+  });
+
   // 10. HTTP POST /evict
   it('HTTP POST /evict removes queued entries by PR number or runId', async () => {
     const state = new MockDurableObjectState();
@@ -395,4 +454,3 @@ describe('RepoGateDO Concurrency Gate & PR Active Mapping', () => {
     assert.equal(statusAfter.queueLength, 0);
   });
 });
-

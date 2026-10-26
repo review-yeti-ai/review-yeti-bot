@@ -348,6 +348,41 @@ async function configureAppKeys(env: Env): Promise<void> {
   (env as any).REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY = key;
 }
 
+async function seedUnstartedPriorRun(mock: ReturnType<typeof createTestEnv>, runId: string): Promise<void> {
+  const prior = (mock.env as any).REVIEW_RUN.get(runId);
+  await prior.fetch('http://do/init', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      runId, owner: OWNER, repo: REPO, prNumber: 42,
+      headSha: HEAD_B, baseSha: BASE_A, installationId: 11,
+    }),
+  });
+  const status = await (await prior.fetch('http://do/status')).json() as any;
+  assert.equal(status.runId, runId);
+  assert.equal(status.phase, 'Pending');
+  assert.equal(status.isCurrentHead, true);
+  assert.equal(status.cancelRequested, false);
+  assert.equal(status.headSha, HEAD_B);
+  assert.match(status.specDigest, /^sha256:[a-f0-9]{64}$/u);
+  assert.equal(status.terminalReceiptSummary, null);
+  assert.equal(status.workerId, undefined);
+  assert.equal(status.jobId, undefined);
+  const gate = (mock.env as any).REPO_GATE.get((mock.env as any).REPO_GATE.idFromName(`${OWNER}/${REPO}`));
+  await gate.fetch('http://do/register-run', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prNumber: 42, runId }),
+  });
+}
+
+function setWorkflowStatus(
+  mock: ReturnType<typeof createTestEnv>,
+  statusFor: (runId: string) => unknown | Promise<unknown>
+): void {
+  (mock.env as any).REVIEW_JOB_WORKFLOW = {
+    get: async (id: string) => ({ id, status: async () => statusFor(id) }),
+  };
+}
+
 async function signWebhookPayload(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret),
     { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -398,6 +433,388 @@ describe('Edge operator passthrough publication', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('allows a stale unstarted latest pointer only after complete membership and terminal Workflow reads', async () => {
+    for (const terminalStatus of ['complete', 'errored', 'terminated'] as const) {
+      const mock = createTestEnv();
+      await configureAppKeys(mock.env);
+      const priorRunId = `run_stale_pending_latest_${terminalStatus}`;
+      await seedUnstartedPriorRun(mock, priorRunId);
+      setWorkflowStatus(mock, () => ({ status: terminalStatus }));
+
+      const gate = (mock.env as any).REPO_GATE.get((mock.env as any).REPO_GATE.idFromName(`${OWNER}/${REPO}`));
+      await gate.fetch('http://do/acquire', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId: `run_active_other_pr_${terminalStatus}`, headSha: HEAD_A, prNumber: 99 }),
+      });
+      const membership = await (await gate.fetch('http://do/active-run/42')).json() as any;
+      assert.deepEqual(membership, {
+        activeRunId: null,
+        activeRunIds: [],
+        activeRunIdsComplete: true,
+        latestRunId: priorRunId,
+        queuedRunIds: [],
+      });
+
+      const receipt = await publishOperatorPassthroughForTarget(mock.env,
+        { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+      assert.equal(receipt.status, 'succeeded', terminalStatus);
+      assert.equal(receipt.reason, 'operator_global_passthrough', terminalStatus);
+      assert.equal(receipt.reviewStarted, false, terminalStatus);
+      assert.equal(receipt.expectedLanes, 0, terminalStatus);
+      assert.equal(receipt.completedLanes, 0, terminalStatus);
+      assert.equal(receipt.publicationState, 'published', terminalStatus);
+      assert.equal(receipt.mergeEligible, true, terminalStatus);
+      assert.equal(mock.counts.creates, 2, terminalStatus);
+    }
+  });
+
+  it('blocks a live Workflow held between ReviewRunDO init and RepoGate acquire, including after resume', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const priorRunId = 'run_workflow_before_repo_gate_acquire';
+    await seedUnstartedPriorRun(mock, priorRunId);
+    let workflowStatus: 'queued' | 'running' | 'paused' | 'waiting' | 'waitingForPause' = 'running';
+    let membershipReads = 0;
+    const originalGate = (mock.env as any).REPO_GATE;
+    (mock.env as any).REPO_GATE = {
+      idFromName: originalGate.idFromName,
+      get(id: string) {
+        const gate = originalGate.get(id);
+        return {
+          fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+            if (String(input) === 'http://do/active-run/42') membershipReads += 1;
+            return gate.fetch(input, init);
+          },
+        };
+      },
+    };
+    setWorkflowStatus(mock, () => ({ status: workflowStatus }));
+
+    const betweenInitAndAcquire = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+    assert.equal(betweenInitAndAcquire.status, 'unavailable', 'a running Workflow must remain live before RepoGate acquire');
+    assert.equal(betweenInitAndAcquire.errorCode, 'prior_review_active');
+    assert.equal(betweenInitAndAcquire.mergeEligible, false);
+    assert.equal(membershipReads, 2, 'both complete membership snapshots are empty before the live status blocks stale classification');
+    assert.equal(mock.counts.creates, 0);
+
+    workflowStatus = 'paused';
+    membershipReads = 0;
+    const held = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+    assert.equal(held.status, 'unavailable');
+    assert.equal(held.errorCode, 'prior_review_active');
+    assert.equal(held.mergeEligible, false);
+    assert.equal(membershipReads, 2);
+
+    workflowStatus = 'running';
+    membershipReads = 0;
+    const resumed = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+    assert.equal(resumed.status, 'unavailable');
+    assert.equal(resumed.errorCode, 'prior_review_active');
+    assert.equal(resumed.mergeEligible, false);
+    assert.equal(membershipReads, 2);
+    assert.equal(mock.counts.creates, 0);
+
+    for (const queuedOrWaitingStatus of ['queued', 'waiting', 'waitingForPause'] as const) {
+      workflowStatus = queuedOrWaitingStatus;
+      membershipReads = 0;
+      const receipt = await publishOperatorPassthroughForTarget(mock.env,
+        { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+      assert.equal(receipt.status, 'unavailable', queuedOrWaitingStatus);
+      assert.equal(receipt.errorCode, 'prior_review_active', queuedOrWaitingStatus);
+      assert.equal(receipt.mergeEligible, false, queuedOrWaitingStatus);
+      assert.equal(membershipReads, 2, queuedOrWaitingStatus);
+      assert.equal(mock.counts.creates, 0, queuedOrWaitingStatus);
+    }
+  });
+
+  it('fails closed on unknown or unreadable exact Workflow status, including generic get errors', async () => {
+    for (const failure of [
+      'unknown_status', 'retrying_status', 'get_error', 'status_error', 'binding_missing', 'instance_mismatch',
+    ] as const) {
+      const mock = createTestEnv();
+      await configureAppKeys(mock.env);
+      const priorRunId = `run_workflow_read_${failure}`;
+      await seedUnstartedPriorRun(mock, priorRunId);
+      if (failure === 'unknown_status') {
+        setWorkflowStatus(mock, () => ({ status: 'unknown' }));
+      } else if (failure === 'retrying_status') {
+        setWorkflowStatus(mock, () => ({ status: 'retrying' }));
+      } else if (failure === 'get_error') {
+        (mock.env as any).REVIEW_JOB_WORKFLOW = {
+          get: async () => { throw new Error('Workflow instance not found'); },
+        };
+      } else if (failure === 'binding_missing') {
+        delete (mock.env as any).REVIEW_JOB_WORKFLOW;
+      } else if (failure === 'instance_mismatch') {
+        (mock.env as any).REVIEW_JOB_WORKFLOW = {
+          get: async (id: string) => ({ id: `${id}_other`, status: async () => ({ status: 'complete' }) }),
+        };
+      } else {
+        (mock.env as any).REVIEW_JOB_WORKFLOW = {
+          get: async (id: string) => ({ id, status: async () => { throw new Error('status transport failed'); } }),
+        };
+      }
+
+      const receipt = await publishOperatorPassthroughForTarget(mock.env,
+        { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+      assert.equal(receipt.status, 'unavailable', failure);
+      assert.equal(receipt.errorCode, 'prior_workflow_state_unavailable', failure);
+      assert.equal(receipt.mergeEligible, false, failure);
+      assert.equal(mock.counts.creates, 0, failure);
+    }
+  });
+
+  it('rechecks Workflow status before final publication success', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const priorRunId = 'run_workflow_restarts_before_publication_recheck';
+    await seedUnstartedPriorRun(mock, priorRunId);
+    let workflowStatusReads = 0;
+    setWorkflowStatus(mock, () => ({ status: workflowStatusReads++ === 0 ? 'complete' : 'running' }));
+
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.equal(receipt.status, 'unavailable');
+    assert.equal(receipt.errorCode, 'prior_review_active');
+    assert.equal(receipt.mergeEligible, false);
+    assert.equal(workflowStatusReads, 2,
+      'admission and final receipt readback must each read the exact Workflow instance');
+    assert.equal(mock.counts.creates, 2, 'the live Workflow is caught by the final publication recheck');
+  });
+
+  it('fails closed when an unstarted pending latest run has a mismatched source identity', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const priorRunId = 'run_workflow_identity_mismatch';
+    await seedUnstartedPriorRun(mock, priorRunId);
+    setWorkflowStatus(mock, () => ({ status: 'complete' }));
+    const original = (mock.env as any).REVIEW_RUN;
+    (mock.env as any).REVIEW_RUN = {
+      idFromName: original.idFromName,
+      get(id: string) {
+        const run = original.get(id);
+        return {
+          fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+            if (id === priorRunId && String(input) === 'http://do/source-identity') {
+              const identity = await run.fetch(input, init);
+              const value = await identity.json() as any;
+              return jsonResponse({ ...value, prNumber: 99 });
+            }
+            return run.fetch(input, init);
+          },
+        };
+      },
+    };
+
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.equal(receipt.status, 'unavailable');
+    assert.equal(receipt.errorCode, 'prior_do_identity_mismatch');
+    assert.equal(receipt.mergeEligible, false);
+    assert.equal(mock.counts.creates, 0);
+  });
+
+  it('blocks a stale latest pointer when another same-PR active slot survives release of the newer run', async () => {
+    const mock = createTestEnv();
+    (mock.env as any).MAX_CONCURRENT_JOBS = '2';
+    await configureAppKeys(mock.env);
+    const olderRunId = 'run_older_same_pr_active';
+    const newerRunId = 'run_newer_same_pr_released';
+    await seedUnstartedPriorRun(mock, olderRunId);
+
+    const gate = (mock.env as any).REPO_GATE.get((mock.env as any).REPO_GATE.idFromName(`${OWNER}/${REPO}`));
+    await gate.fetch('http://do/acquire', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId: olderRunId, headSha: HEAD_B, prNumber: 42 }),
+    });
+    await seedUnstartedPriorRun(mock, newerRunId);
+    await gate.fetch('http://do/acquire', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId: newerRunId, headSha: HEAD_B, prNumber: 42 }),
+    });
+    await gate.fetch('http://do/release', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId: newerRunId }),
+    });
+
+    const membership = await (await gate.fetch('http://do/active-run/42')).json() as any;
+    assert.equal(membership.activeRunId, null);
+    assert.deepEqual(membership.activeRunIds, [olderRunId]);
+    assert.equal(membership.activeRunIdsComplete, true);
+    assert.equal(membership.latestRunId, newerRunId);
+
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.equal(receipt.status, 'unavailable');
+    assert.equal(receipt.errorCode, 'prior_review_active');
+    assert.equal(receipt.mergeEligible, false);
+    assert.equal(mock.counts.creates, 0);
+  });
+
+  it('keeps a genuinely active pending latest run blocking passthrough publication', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const priorRunId = 'run_active_pending_latest';
+    await seedUnstartedPriorRun(mock, priorRunId);
+    const gate = (mock.env as any).REPO_GATE.get((mock.env as any).REPO_GATE.idFromName(`${OWNER}/${REPO}`));
+    await gate.fetch('http://do/acquire', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId: priorRunId, headSha: HEAD_B, prNumber: 42 }),
+    });
+
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.equal(receipt.status, 'unavailable');
+    assert.equal(receipt.errorCode, 'prior_review_active');
+    assert.equal(receipt.mergeEligible, false);
+    assert.equal(mock.counts.creates, 0);
+  });
+
+  it('keeps a genuinely queued pending latest run blocking passthrough publication', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const priorRunId = 'run_queued_pending_latest';
+    await seedUnstartedPriorRun(mock, priorRunId);
+    const gate = (mock.env as any).REPO_GATE.get((mock.env as any).REPO_GATE.idFromName(`${OWNER}/${REPO}`));
+    await gate.fetch('http://do/acquire', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId: 'run_other_pr_slot', headSha: HEAD_A, prNumber: 99 }),
+    });
+    await gate.fetch('http://do/acquire', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId: priorRunId, headSha: HEAD_B, prNumber: 42 }),
+    });
+
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.equal(receipt.status, 'unavailable');
+    assert.equal(receipt.errorCode, 'prior_review_active');
+    assert.equal(receipt.mergeEligible, false);
+    assert.equal(mock.counts.creates, 0);
+  });
+
+  it('fails closed when active and queued membership is missing or unreadable', async () => {
+    for (const fault of ['http_failure', 'missing_queue_membership', 'incomplete_active_membership'] as const) {
+      const mock = createTestEnv();
+      await configureAppKeys(mock.env);
+      const priorRunId = `run_membership_${fault}`;
+      await seedUnstartedPriorRun(mock, priorRunId);
+      const original = (mock.env as any).REPO_GATE;
+      (mock.env as any).REPO_GATE = {
+        idFromName: original.idFromName,
+        get(id: string) {
+          const gate = original.get(id);
+          return {
+            fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+              if (String(input) === 'http://do/active-run/42') {
+                if (fault === 'http_failure') return jsonResponse({ message: 'private diagnostic' }, 503);
+                if (fault === 'incomplete_active_membership') return jsonResponse({
+                  activeRunId: null,
+                  activeRunIds: ['run_unverified_active_membership'],
+                  activeRunIdsComplete: false,
+                  latestRunId: priorRunId,
+                  queuedRunIds: [],
+                });
+                return jsonResponse({ activeRunId: null, latestRunId: priorRunId });
+              }
+              return gate.fetch(input, init);
+            },
+          };
+        },
+      };
+
+      const receipt = await publishOperatorPassthroughForTarget(mock.env,
+        { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+      assert.equal(receipt.status, 'unavailable', fault);
+      assert.equal(receipt.errorCode, 'prior_queue_state_unavailable', fault);
+      assert.equal(receipt.mergeEligible, false, fault);
+      assert.equal(mock.counts.creates, 0, fault);
+    }
+  });
+
+  it('fails closed when a pending latest run status or identity readback fails', async () => {
+    for (const failedPath of ['http://do/status', 'http://do/source-identity']) {
+      const mock = createTestEnv();
+      await configureAppKeys(mock.env);
+      const priorRunId = `run_readback_${failedPath.endsWith('/status') ? 'status' : 'identity'}`;
+      await seedUnstartedPriorRun(mock, priorRunId);
+      const original = (mock.env as any).REVIEW_RUN;
+      (mock.env as any).REVIEW_RUN = {
+        idFromName: original.idFromName,
+        get(id: string) {
+          const run = original.get(id);
+          return {
+            fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+              if (id === priorRunId && String(input) === failedPath) {
+                return jsonResponse({ message: 'private diagnostic' }, 503);
+              }
+              return run.fetch(input, init);
+            },
+          };
+        },
+      };
+
+      const receipt = await publishOperatorPassthroughForTarget(mock.env,
+        { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+      assert.equal(receipt.status, 'unavailable', failedPath);
+      assert.equal(receipt.errorCode, 'prior_do_unavailable', failedPath);
+      assert.equal(receipt.mergeEligible, false, failedPath);
+      assert.equal(mock.counts.creates, 0, failedPath);
+    }
+  });
+
+  it('blocks a stale-pending classification when the RepoGate membership changes during readback', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const priorRunId = 'run_pending_membership_race';
+    await seedUnstartedPriorRun(mock, priorRunId);
+    const original = (mock.env as any).REPO_GATE;
+    let membershipReads = 0;
+    (mock.env as any).REPO_GATE = {
+      idFromName: original.idFromName,
+      get(id: string) {
+        const gate = original.get(id);
+        return {
+          fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+            if (String(input) === 'http://do/active-run/42') {
+              membershipReads += 1;
+              const snapshot = await gate.fetch(input, init);
+              if (membershipReads === 1) {
+                await gate.fetch('http://do/acquire', {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ runId: priorRunId, headSha: HEAD_B, prNumber: 42 }),
+                });
+              }
+              return snapshot;
+            }
+            return gate.fetch(input, init);
+          },
+        };
+      },
+    };
+
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.equal(membershipReads, 2);
+    assert.equal(receipt.status, 'unavailable');
+    assert.equal(receipt.errorCode, 'prior_review_active');
+    assert.equal(receipt.mergeEligible, false);
+    assert.equal(mock.counts.creates, 0);
   });
 
   it('rejects a same-external-ID check created by the wrong GitHub App', async () => {
