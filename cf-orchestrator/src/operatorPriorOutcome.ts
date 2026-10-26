@@ -73,6 +73,8 @@ interface PriorOutcomeOptions {
 
 interface RepoGatePrRunState {
   activeRunId: string | null;
+  activeRunIds: string[];
+  activeRunIdsComplete: true;
   latestRunId: string | null;
   queuedRunIds: string[];
 }
@@ -87,10 +89,17 @@ async function readRepoGatePrRunState(env: Env, spec: ReviewRunSpec): Promise<Re
     if (!response.ok) reject('prior_queue_state_unavailable');
     const value = await response.json() as any;
     const validActiveRunId = value?.activeRunId === null || RUN_ID_PATTERN.test(value?.activeRunId);
+    const activeRunIds = value?.activeRunIds;
+    const validActiveRunIds = Array.isArray(activeRunIds)
+      && activeRunIds.every((runId: unknown) => typeof runId === 'string' && RUN_ID_PATTERN.test(runId))
+      && new Set(activeRunIds).size === activeRunIds.length;
     const validLatestRunId = value?.latestRunId === null || value?.latestRunId === '__EVICTED__'
       || RUN_ID_PATTERN.test(value?.latestRunId);
     const queuedRunIds = value?.queuedRunIds;
-    if (!value || typeof value !== 'object' || !validActiveRunId || !validLatestRunId
+    if (!value || typeof value !== 'object' || !validActiveRunId || !validActiveRunIds
+      || value.activeRunIdsComplete !== true
+      || (value.activeRunId !== null && !activeRunIds.includes(value.activeRunId))
+      || !validLatestRunId
       || !Array.isArray(queuedRunIds) || queuedRunIds.some((runId: unknown) =>
         typeof runId !== 'string' || !RUN_ID_PATTERN.test(runId))
       || new Set(queuedRunIds).size !== queuedRunIds.length) {
@@ -98,6 +107,8 @@ async function readRepoGatePrRunState(env: Env, spec: ReviewRunSpec): Promise<Re
     }
     return {
       activeRunId: value.activeRunId,
+      activeRunIds,
+      activeRunIdsComplete: true,
       latestRunId: value.latestRunId,
       queuedRunIds,
     };
@@ -109,6 +120,9 @@ async function readRepoGatePrRunState(env: Env, spec: ReviewRunSpec): Promise<Re
 
 function sameRepoGatePrRunState(left: RepoGatePrRunState, right: RepoGatePrRunState): boolean {
   return left.activeRunId === right.activeRunId
+    && left.activeRunIdsComplete === right.activeRunIdsComplete
+    && left.activeRunIds.length === right.activeRunIds.length
+    && left.activeRunIds.every((runId) => right.activeRunIds.includes(runId))
     && left.latestRunId === right.latestRunId
     && left.queuedRunIds.length === right.queuedRunIds.length
     && left.queuedRunIds.every((runId, index) => runId === right.queuedRunIds[index]);
@@ -250,8 +264,9 @@ async function latestPriorRunForPr(
   candidateSourceRunId?: string | null
 ): Promise<string | null> {
   const state = await readRepoGatePrRunState(env, spec);
-  if (state.activeRunId && !isIgnoredCurrentRun(state.activeRunId, spec, sourceRunId)) {
-    await assertRegisteredPriorRunIsLive(env, state.activeRunId);
+  for (const activeRunId of state.activeRunIds) {
+    if (isIgnoredCurrentRun(activeRunId, spec, sourceRunId)) continue;
+    await assertRegisteredPriorRunIsLive(env, activeRunId);
     reject('prior_review_active');
   }
   for (const queuedRunId of state.queuedRunIds) {
@@ -269,7 +284,7 @@ async function latestPriorRunForPr(
 
   const prior = await readDoStatus(env, latestRunId);
   if (prior.phase === 'Pending') {
-    if (state.activeRunId === latestRunId || state.queuedRunIds.includes(latestRunId)) {
+    if (state.activeRunIds.includes(latestRunId) || state.queuedRunIds.includes(latestRunId)) {
       reject('prior_review_active');
     }
     await assertUnstartedPendingPriorIdentity(env, spec, latestRunId, prior);
@@ -277,11 +292,12 @@ async function latestPriorRunForPr(
     // The first complete membership read showed an unstarted pointer without a
     // slot or queue entry. Re-read both state owners before treating it as stale.
     const confirmedMembership = await readRepoGatePrRunState(env, spec);
-    if (confirmedMembership.activeRunId === latestRunId || confirmedMembership.queuedRunIds.includes(latestRunId)) {
+    if (confirmedMembership.activeRunIds.includes(latestRunId) || confirmedMembership.queuedRunIds.includes(latestRunId)) {
       reject('prior_review_active');
     }
-    if (confirmedMembership.activeRunId && !isIgnoredCurrentRun(confirmedMembership.activeRunId, spec, sourceRunId)) {
-      await assertRegisteredPriorRunIsLive(env, confirmedMembership.activeRunId);
+    for (const activeRunId of confirmedMembership.activeRunIds) {
+      if (isIgnoredCurrentRun(activeRunId, spec, sourceRunId)) continue;
+      await assertRegisteredPriorRunIsLive(env, activeRunId);
       reject('prior_review_active');
     }
     for (const queuedRunId of confirmedMembership.queuedRunIds) {
@@ -296,7 +312,7 @@ async function latestPriorRunForPr(
     return null;
   }
   if (prior.phase === 'Running') {
-    reject(state.activeRunId === latestRunId || state.queuedRunIds.includes(latestRunId)
+    reject(state.activeRunIds.includes(latestRunId) || state.queuedRunIds.includes(latestRunId)
       ? 'prior_review_active' : 'prior_outcome_unknown');
   }
   if (prior.phase !== 'Completed' && prior.phase !== 'Failed' && prior.phase !== 'Cancelled') reject('prior_outcome_unknown');

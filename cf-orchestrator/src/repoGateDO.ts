@@ -38,7 +38,7 @@ export class RepoGateDO {
   private maxConcurrency: number = 1;
   private queue: PendingQueueItem[] = [];
   private activeRunsByPr: Map<number, string> = new Map();
-  private prByRunId: Map<string, number> = new Map();
+  private prByRunId: Map<string, number | null> = new Map();
   private evictedRunIds: Set<string> = new Set();
   private latestRunIdByPr: Map<number, string> = new Map();
   private prRunsSeen: Map<number, Set<string>> = new Map();
@@ -72,6 +72,28 @@ export class RepoGateDO {
             this.activeRunsByPr.set(pr, rId);
             this.prByRunId.set(rId, pr);
           }
+        }
+      }
+      const storedPrByRunId = await this.state.storage.get<[string, number | null][]>('prByRunId');
+      if (storedPrByRunId) {
+        this.prByRunId = new Map();
+        const seen = new Set<string>();
+        const invalid = new Set<string>();
+        for (const entry of storedPrByRunId) {
+          if (!Array.isArray(entry) || entry.length !== 2) continue;
+          const [runId, prNumber] = entry;
+          if (typeof runId !== 'string' || !this.activeJobs.has(runId)) continue;
+          if (seen.has(runId)) {
+            this.prByRunId.delete(runId);
+            invalid.add(runId);
+            continue;
+          }
+          seen.add(runId);
+          if (prNumber !== null && (!Number.isSafeInteger(prNumber) || prNumber <= 0)) {
+            invalid.add(runId);
+            continue;
+          }
+          if (!invalid.has(runId)) this.prByRunId.set(runId, prNumber);
         }
       }
       const storedEvicted = await this.state.storage.get<string[]>('evictedRunIds');
@@ -119,6 +141,11 @@ export class RepoGateDO {
     // 1. If run is already active, return granted idempotently
     if (this.activeJobs.has(runId)) {
       if (prNumber !== undefined) {
+        const priorPrNumber = this.prByRunId.get(runId);
+        if (typeof priorPrNumber === 'number' && priorPrNumber !== prNumber
+          && this.activeRunsByPr.get(priorPrNumber) === runId) {
+          this.activeRunsByPr.delete(priorPrNumber);
+        }
         this.activeRunsByPr.set(prNumber, runId);
         this.prByRunId.set(runId, prNumber);
         this.latestRunIdByPr.set(prNumber, runId);
@@ -127,6 +154,7 @@ export class RepoGateDO {
         }
         this.prRunsSeen.get(prNumber)!.add(runId);
         await this.state.storage.put('activeRunsByPr', Array.from(this.activeRunsByPr.entries()));
+        await this.state.storage.put('prByRunId', Array.from(this.prByRunId.entries()));
         await this.state.storage.put('latestRunIdByPr', Array.from(this.latestRunIdByPr.entries()));
         await this.state.storage.put(
           'prRunsSeen',
@@ -161,9 +189,9 @@ export class RepoGateDO {
     if (this.activeJobs.size < this.maxConcurrency) {
       this.queue = this.queue.filter((item) => item.runId !== runId);
       this.activeJobs.add(runId);
+      this.prByRunId.set(runId, prNumber ?? null);
       if (prNumber !== undefined) {
         this.activeRunsByPr.set(prNumber, runId);
-        this.prByRunId.set(runId, prNumber);
         this.latestRunIdByPr.set(prNumber, runId);
         if (!this.prRunsSeen.has(prNumber)) {
           this.prRunsSeen.set(prNumber, new Set());
@@ -232,8 +260,9 @@ export class RepoGateDO {
     }
 
     const prNumber = this.prByRunId.get(runId);
-    if (prNumber !== undefined) {
-      this.prByRunId.delete(runId);
+    const hadPrMapping = this.prByRunId.has(runId);
+    this.prByRunId.delete(runId);
+    if (hadPrMapping && typeof prNumber === 'number') {
       if (this.activeRunsByPr.get(prNumber) === runId) {
         this.activeRunsByPr.delete(prNumber);
       }
@@ -249,10 +278,10 @@ export class RepoGateDO {
     if (this.queue.length > 0 && this.activeJobs.size < this.maxConcurrency) {
       const next = this.queue.shift()!;
       this.activeJobs.add(next.runId);
+      this.prByRunId.set(next.runId, next.prNumber ?? null);
       nextRunId = next.runId;
       if (next.prNumber !== undefined) {
         this.activeRunsByPr.set(next.prNumber, next.runId);
-        this.prByRunId.set(next.runId, next.prNumber);
         this.latestRunIdByPr.set(next.prNumber, next.runId);
       }
     }
@@ -333,6 +362,7 @@ export class RepoGateDO {
       this.state.storage.put('activeJobs', Array.from(this.activeJobs)),
       this.state.storage.put('queue', this.queue),
       this.state.storage.put('activeRunsByPr', Array.from(this.activeRunsByPr.entries())),
+      this.state.storage.put('prByRunId', Array.from(this.prByRunId.entries())),
       this.state.storage.put('evictedRunIds', Array.from(this.evictedRunIds)),
       this.state.storage.put('latestRunIdByPr', Array.from(this.latestRunIdByPr.entries())),
       this.state.storage.put(
@@ -414,13 +444,18 @@ export class RepoGateDO {
       if (Number.isNaN(prNumber)) {
         return Response.json({ error: 'invalid_pr_number' }, { status: 400 });
       }
+      await this.ensureInitialized();
       const activeRunId = this.getActiveRun(prNumber);
       const latestRunId = this.latestRunIdByPr.get(prNumber);
+      const activeRunIds = Array.from(this.activeJobs).filter((runId) => this.prByRunId.get(runId) === prNumber);
+      const activeRunIdsComplete = Array.from(this.activeJobs).every((runId) => this.prByRunId.has(runId));
       const queuedRunIds = this.queue
         .filter((item) => item.prNumber === prNumber)
         .map((item) => item.runId);
       return Response.json({
         activeRunId: activeRunId ?? null,
+        activeRunIds,
+        activeRunIdsComplete,
         latestRunId: latestRunId ?? null,
         queuedRunIds,
       });

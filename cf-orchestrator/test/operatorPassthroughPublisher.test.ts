@@ -433,9 +433,15 @@ describe('Edge operator passthrough publication', () => {
     await seedUnstartedPriorRun(mock, priorRunId);
 
     const gate = (mock.env as any).REPO_GATE.get((mock.env as any).REPO_GATE.idFromName(`${OWNER}/${REPO}`));
+    await gate.fetch('http://do/acquire', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId: 'run_active_other_pr', headSha: HEAD_A, prNumber: 99 }),
+    });
     const membership = await (await gate.fetch('http://do/active-run/42')).json() as any;
     assert.deepEqual(membership, {
       activeRunId: null,
+      activeRunIds: [],
+      activeRunIdsComplete: true,
       latestRunId: priorRunId,
       queuedRunIds: [],
     });
@@ -451,6 +457,44 @@ describe('Edge operator passthrough publication', () => {
     assert.equal(receipt.publicationState, 'published');
     assert.equal(receipt.mergeEligible, true);
     assert.equal(mock.counts.creates, 2);
+  });
+
+  it('blocks a stale latest pointer when another same-PR active slot survives release of the newer run', async () => {
+    const mock = createTestEnv();
+    (mock.env as any).MAX_CONCURRENT_JOBS = '2';
+    await configureAppKeys(mock.env);
+    const olderRunId = 'run_older_same_pr_active';
+    const newerRunId = 'run_newer_same_pr_released';
+    await seedUnstartedPriorRun(mock, olderRunId);
+
+    const gate = (mock.env as any).REPO_GATE.get((mock.env as any).REPO_GATE.idFromName(`${OWNER}/${REPO}`));
+    await gate.fetch('http://do/acquire', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId: olderRunId, headSha: HEAD_B, prNumber: 42 }),
+    });
+    await seedUnstartedPriorRun(mock, newerRunId);
+    await gate.fetch('http://do/acquire', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId: newerRunId, headSha: HEAD_B, prNumber: 42 }),
+    });
+    await gate.fetch('http://do/release', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ runId: newerRunId }),
+    });
+
+    const membership = await (await gate.fetch('http://do/active-run/42')).json() as any;
+    assert.equal(membership.activeRunId, null);
+    assert.deepEqual(membership.activeRunIds, [olderRunId]);
+    assert.equal(membership.activeRunIdsComplete, true);
+    assert.equal(membership.latestRunId, newerRunId);
+
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.equal(receipt.status, 'unavailable');
+    assert.equal(receipt.errorCode, 'prior_review_active');
+    assert.equal(receipt.mergeEligible, false);
+    assert.equal(mock.counts.creates, 0);
   });
 
   it('keeps a genuinely active pending latest run blocking passthrough publication', async () => {
@@ -498,7 +542,7 @@ describe('Edge operator passthrough publication', () => {
   });
 
   it('fails closed when active and queued membership is missing or unreadable', async () => {
-    for (const fault of ['http_failure', 'missing_queue_membership'] as const) {
+    for (const fault of ['http_failure', 'missing_queue_membership', 'incomplete_active_membership'] as const) {
       const mock = createTestEnv();
       await configureAppKeys(mock.env);
       const priorRunId = `run_membership_${fault}`;
@@ -512,6 +556,13 @@ describe('Edge operator passthrough publication', () => {
             fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
               if (String(input) === 'http://do/active-run/42') {
                 if (fault === 'http_failure') return jsonResponse({ message: 'private diagnostic' }, 503);
+                if (fault === 'incomplete_active_membership') return jsonResponse({
+                  activeRunId: null,
+                  activeRunIds: ['run_unverified_active_membership'],
+                  activeRunIdsComplete: false,
+                  latestRunId: priorRunId,
+                  queuedRunIds: [],
+                });
                 return jsonResponse({ activeRunId: null, latestRunId: priorRunId });
               }
               return gate.fetch(input, init);
