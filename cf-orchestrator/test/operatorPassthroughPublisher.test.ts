@@ -46,6 +46,14 @@ interface MockCheck {
 
 interface GithubMockOptions {
   target?: { owner: string; repo: string; repositoryId: number; prNumber?: number; headSha?: string; baseSha?: string };
+  additionalPulls?: Array<{
+    prNumber: number;
+    headSha: string;
+    baseSha: string;
+    baseRef?: string;
+    state?: 'open' | 'closed';
+    draft?: boolean;
+  }>;
   legacyRepositoryIdentities?: Array<{ repositoryId: number; owner: string; repo: string }>;
   privateRepositoryIdentities?: string;
   wrongAppOnCreate?: boolean;
@@ -66,11 +74,11 @@ interface GithubMockOptions {
   cancelOnReviewRead?: number;
 }
 
-function policyDocument(): string {
+function policyDocument(repository = `${OWNER}/${REPO}`): string {
   return JSON.stringify({
     schema: 'synthetic-owner.review-policy.v1',
     review_yeti: {
-      repository: `${OWNER}/${REPO}`,
+      repository,
       personas: 'architecture,security,documentation',
       budget: { max_investigation_turns: 20 },
     },
@@ -89,6 +97,18 @@ function createTestEnv(options: GithubMockOptions = {}) {
   const targetHead = target.headSha || HEAD_A;
   const targetBase = target.baseSha || BASE_A;
   const targetPrNumber = target.prNumber || 42;
+  const pullTargets = new Map<number, {
+    headSha: string; baseSha: string; baseRef: string; state: 'open' | 'closed'; draft: boolean;
+  }>([[targetPrNumber, { headSha: targetHead, baseSha: targetBase, baseRef: 'main', state: 'open', draft: false }]]);
+  for (const pull of options.additionalPulls || []) {
+    pullTargets.set(pull.prNumber, {
+      headSha: pull.headSha,
+      baseSha: pull.baseSha,
+      baseRef: pull.baseRef || 'main',
+      state: pull.state || 'open',
+      draft: pull.draft || false,
+    });
+  }
   const reviewHistory = [...(options.reviewHistory || (options.priorChangesRequested
     ? [{ id: 1, user: { id: 101 }, state: 'CHANGES_REQUESTED', submitted_at: '2026-10-10T00:00:00Z', commit_id: targetHead }]
     : []))];
@@ -218,31 +238,42 @@ function createTestEnv(options: GithubMockOptions = {}) {
         owner: { login: target.owner },
       });
     }
-    if (method === 'GET' && path === `/repos/${target.owner}/${target.repo}/pulls/${targetPrNumber}/reviews`) {
-      counts.reviewReads += 1;
-      if (cancelOnReviewRead === counts.reviewReads) {
-        cancelOnReviewRead = undefined;
-        await cancelActivePublications();
+    const pullPathPrefix = `/repos/${target.owner}/${target.repo}/pulls/`;
+    if (method === 'GET' && path.startsWith(pullPathPrefix)) {
+      const pullPath = path.slice(pullPathPrefix.length);
+      const reviewsMatch = /^([1-9][0-9]*)\/reviews$/u.exec(pullPath);
+      if (reviewsMatch) {
+        const prNumber = Number(reviewsMatch[1]);
+        if (!pullTargets.has(prNumber)) return jsonResponse({ message: 'Not Found' }, 404);
+        counts.reviewReads += 1;
+        if (prNumber === targetPrNumber && cancelOnReviewRead === counts.reviewReads) {
+          cancelOnReviewRead = undefined;
+          await cancelActivePublications();
+        }
+        return jsonResponse(reviewHistory);
       }
-      return jsonResponse(reviewHistory);
+      const pullMatch = /^([1-9][0-9]*)$/u.exec(pullPath);
+      if (pullMatch) {
+        const prNumber = Number(pullMatch[1]);
+        const currentPull = pullTargets.get(prNumber);
+        if (!currentPull) return jsonResponse({ message: 'Not Found' }, 404);
+        if (prNumber === targetPrNumber) headRead += 1;
+        return jsonResponse({
+          number: prNumber,
+          state: currentPull.state,
+          draft: currentPull.draft,
+          head: { sha: options.changeHeadOnSecondRead && prNumber === targetPrNumber && headRead > 1 ? HEAD_B : currentPull.headSha },
+          base: {
+            sha: options.changeHeadOnSecondRead && prNumber === targetPrNumber && headRead > 1 ? BASE_B : currentPull.baseSha,
+            ref: currentPull.baseRef,
+            repo: { id: target.repositoryId },
+          },
+        });
+      }
     }
     if (method === 'GET' && path === `/repos/${target.owner}/${target.repo}/commits/${targetHead}/check-runs`) {
       const currentChecks = [...checks.values()].filter((check) => check.head_sha === targetHead);
       return jsonResponse({ total_count: currentChecks.length, check_runs: currentChecks });
-    }
-    if (method === 'GET' && path === `/repos/${target.owner}/${target.repo}/pulls/${targetPrNumber}`) {
-      headRead += 1;
-      return jsonResponse({
-        number: targetPrNumber,
-        state: 'open',
-        draft: false,
-        head: { sha: options.changeHeadOnSecondRead && headRead > 1 ? HEAD_B : targetHead },
-        base: {
-          sha: options.changeHeadOnSecondRead && headRead > 1 ? BASE_B : targetBase,
-          ref: 'main',
-          repo: { id: target.repositoryId },
-        },
-      });
     }
     if (method === 'GET' && path === `/repos/${POLICY_OWNER}/${POLICY_REPO}`) {
       return jsonResponse({ id: POLICY_REPOSITORY_ID, full_name: `${POLICY_OWNER}/${POLICY_REPO}`, default_branch: 'main' });
@@ -254,7 +285,7 @@ function createTestEnv(options: GithubMockOptions = {}) {
       return jsonResponse({ sha });
     }
     if (method === 'GET' && path === `/repos/${POLICY_OWNER}/${POLICY_REPO}/contents/policy/review-yeti.json`) {
-      const content = Buffer.from(policyDocument(), 'utf8').toString('base64');
+      const content = Buffer.from(policyDocument(`${target.owner}/${target.repo}`), 'utf8').toString('base64');
       return jsonResponse({ path: 'policy/review-yeti.json', encoding: 'base64', content });
     }
 
@@ -320,6 +351,11 @@ function createTestEnv(options: GithubMockOptions = {}) {
 
   return {
     env, fetchFn, checks, publications, counts, requests, reviewHistory,
+    setPullState: (prNumber: number, state: 'open' | 'closed') => {
+      const pull = pullTargets.get(prNumber);
+      if (!pull) throw new Error(`unknown test pull request ${prNumber}`);
+      pull.state = state;
+    },
     setPrivateOnRepositoryRead: (read: number | undefined) => { privateOnRead = read; },
     setPolicySha: (sha: string | undefined) => { currentPolicySha = sha; },
     setCheckReadFailureStatus: (status: number | undefined) => { checkReadFailureStatus = status; },
@@ -433,6 +469,88 @@ describe('Edge operator passthrough publication', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('does not let a valid closed sibling-PR op2 pair on the same head block the current PR', async () => {
+    const target = {
+      owner: 'example-org', repo: 'review-repo', repositoryId: 123456,
+      prNumber: 41, headSha: HEAD_A, baseSha: BASE_A,
+    };
+    const mock = createTestEnv({
+      target,
+      additionalPulls: [{ prNumber: 42, headSha: HEAD_A, baseSha: BASE_A }],
+    });
+    await configureAppKeys(mock.env);
+
+    const sibling = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: target.owner, repo: target.repo, prNumber: 41 }, { fetchFn: mock.fetchFn });
+    assert.ok(sibling.status === 'succeeded', JSON.stringify({ sibling, requests: mock.requests }));
+    assert.equal(sibling.appId, 4385771);
+    mock.setPullState(41, 'closed');
+
+    const current = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: target.owner, repo: target.repo, prNumber: 42 }, { fetchFn: mock.fetchFn },
+      { headSha: HEAD_A, baseSha: BASE_A });
+
+    assert.ok(current.status === 'succeeded', JSON.stringify({ current, requests: mock.requests }));
+    assert.equal(current.prNumber, 42);
+    assert.equal(current.appId, 4385771);
+    assert.equal(current.headSha, sibling.headSha);
+    assert.notEqual(current.publicationId, sibling.publicationId);
+    assert.notEqual(current.runId, sibling.runId);
+    assert.equal(mock.checks.size, 4);
+    assert.equal(mock.counts.creates, 4);
+    assert.ok(current.checks?.worker.summary.includes('Pull request: #42'));
+    assert.ok(sibling.checks?.worker.summary.includes('Pull request: #41'));
+  });
+
+  it('fails closed when a same-head sibling op2 check no longer matches its durable receipt', async () => {
+    const target = {
+      owner: 'example-org', repo: 'review-repo', repositoryId: 123456,
+      prNumber: 41, headSha: HEAD_A, baseSha: BASE_A,
+    };
+    const mock = createTestEnv({
+      target,
+      additionalPulls: [{ prNumber: 42, headSha: HEAD_A, baseSha: BASE_A }],
+    });
+    await configureAppKeys(mock.env);
+
+    const sibling = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: target.owner, repo: target.repo, prNumber: 41 }, { fetchFn: mock.fetchFn });
+    assert.ok(sibling.status === 'succeeded');
+    mock.setPullState(41, 'closed');
+    const worker = [...mock.checks.values()].find((check) => check.name === 'Review Yeti')!;
+    worker.output.summary += '\nPull request: #42';
+
+    const current = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: target.owner, repo: target.repo, prNumber: 42 }, { fetchFn: mock.fetchFn },
+      { headSha: HEAD_A, baseSha: BASE_A });
+
+    assert.equal(current.status, 'unavailable');
+    assert.equal(current.errorCode, 'prior_check_identity_unverified');
+    assert.equal(mock.counts.creates, 2);
+  });
+
+  it('keeps same-PR op2 evidence in the prior-outcome path when the base changes', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const prior = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+    assert.ok(prior.status === 'succeeded');
+
+    const currentRunId = 'run_current_base_revision';
+    const currentSpec = {
+      runId: currentRunId, owner: OWNER, repo: REPO, prNumber: 42,
+      headSha: HEAD_A, baseSha: BASE_B, installationId: 11,
+    };
+    const current = (mock.env as any).REVIEW_RUN.get(currentRunId);
+    const initialized = await current.fetch('http://do/init', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(currentSpec),
+    });
+    assert.equal(initialized.status, 200);
+
+    await assert.rejects(assertNoBlockingPriorOutcome(mock.env, currentSpec,
+      'ghs_target_scoped', prior.appId!, mock.fetchFn), /prior_do_identity_mismatch/);
   });
 
   it('allows a stale unstarted latest pointer only after complete membership and terminal Workflow reads', async () => {

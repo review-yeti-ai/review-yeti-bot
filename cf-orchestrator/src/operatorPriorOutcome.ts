@@ -1,6 +1,14 @@
 import type { Env, ReviewRunSpec } from './types.js';
 import { deriveGateExternalId, deriveWorkerExternalId, REVIEW_GATE_CHECK_NAME, REVIEW_WORKER_CHECK_NAME } from './github/index.js';
 import { reviewRunSpecDigest } from './reviewRunIdentity.js';
+import type { OperatorPassthroughCheckReceipt, OperatorPassthroughIdentity, OperatorPassthroughState } from './operatorPassthroughTypes.js';
+import {
+  OPERATOR_PASSTHROUGH_EXTERNAL_SUFFIX,
+  OPERATOR_PASSTHROUGH_GATE_TITLE,
+  OPERATOR_PASSTHROUGH_REVIEW_TITLE,
+  operatorPassthroughCheckSummary,
+  operatorPassthroughPublicationId,
+} from './operatorPassthroughCheckContract.js';
 
 const PRE_DISPATCH_CONFIG_ERROR = 'Step config for "dispatch-container" is in a invalid format. See https://developers.cloudflare.com/workflows/build/sleeping-and-retrying/';
 const SAFE_SUCCESS_VERDICTS = new Set(['SHIP', 'success']);
@@ -85,6 +93,175 @@ interface RepoGatePrRunState {
 }
 
 const RUN_ID_PATTERN = /^run_[A-Za-z0-9_-]{1,128}$/u;
+const SHA_PATTERN = /^[a-f0-9]{40}$/iu;
+const DIGEST_PATTERN = /^[a-f0-9]{64}$/u;
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function exactKeys(value: unknown, keys: string[]): value is Record<string, any> {
+  if (!isRecord(value)) return false;
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function safeGithubName(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_.-]{1,100}$/u.test(value) && value !== '.' && value !== '..';
+}
+
+function validPolicySource(value: unknown): value is OperatorPassthroughIdentity['policySource'] {
+  return exactKeys(value, ['repositoryId', 'owner', 'repo', 'ref', 'path', 'sha', 'contentDigest'])
+    && Number.isSafeInteger(value.repositoryId) && value.repositoryId > 0
+    && safeGithubName(value.owner) && safeGithubName(value.repo)
+    && typeof value.ref === 'string' && /^[A-Za-z0-9_./-]{1,256}$/u.test(value.ref)
+    && typeof value.path === 'string' && value.path.length > 0 && value.path.length <= 512
+    && !value.path.startsWith('/') && !value.path.split('/').some((part: string) => !part || part === '.' || part === '..')
+    && typeof value.sha === 'string' && SHA_PATTERN.test(value.sha)
+    && typeof value.contentDigest === 'string' && DIGEST_PATTERN.test(value.contentDigest);
+}
+
+function samePolicySource(left: unknown, right: OperatorPassthroughIdentity['policySource']): boolean {
+  return validPolicySource(left)
+    && left.repositoryId === right.repositoryId && left.owner === right.owner && left.repo === right.repo
+    && left.ref === right.ref && left.path === right.path && left.sha === right.sha
+    && left.contentDigest === right.contentDigest;
+}
+
+function validIdentityForTarget(
+  value: unknown,
+  spec: ReviewRunSpec,
+  appId: number
+): value is OperatorPassthroughIdentity {
+  return exactKeys(value, ['version', 'repositoryId', 'owner', 'repo', 'prNumber', 'headSha', 'baseSha', 'baseRef',
+    'isPrivate', 'appId', 'policyDigest', 'policySource']) && value.version === 'OperatorPassthroughIdentity.v2'
+    && Number.isSafeInteger(value.repositoryId) && value.repositoryId > 0
+    && safeGithubName(value.owner) && value.owner.toLowerCase() === spec.owner.toLowerCase()
+    && safeGithubName(value.repo) && value.repo.toLowerCase() === spec.repo.toLowerCase()
+    && Number.isSafeInteger(value.prNumber) && value.prNumber > 0
+    && typeof value.headSha === 'string' && value.headSha.toLowerCase() === spec.headSha.toLowerCase()
+    && typeof value.baseSha === 'string' && SHA_PATTERN.test(value.baseSha)
+    && typeof value.baseRef === 'string' && /^[A-Za-z0-9_./-]{1,256}$/u.test(value.baseRef)
+    && typeof value.isPrivate === 'boolean'
+    && value.appId === appId
+    && typeof value.policyDigest === 'string' && DIGEST_PATTERN.test(value.policyDigest)
+    && validPolicySource(value.policySource);
+}
+
+function readbackCheckMatches(
+  check: any,
+  expected: OperatorPassthroughCheckReceipt,
+  name: string,
+  externalId: string,
+  identity: OperatorPassthroughIdentity,
+  title: string,
+  summary: string
+): boolean {
+  return isRecord(check) && Number.isSafeInteger(Number(check.id)) && Number(check.id) > 0
+    && Number(check.id) === expected.id && Number(check.app?.id) === identity.appId
+    && check.name === name && check.external_id === externalId
+    && typeof check.head_sha === 'string' && check.head_sha.toLowerCase() === identity.headSha.toLowerCase()
+    && check.status === 'completed' && check.conclusion === 'success'
+    && check.output?.title === title && check.output?.summary === summary
+    && check.output?.annotations_count === 0
+    && expected.appId === identity.appId && expected.name === name && expected.externalId === externalId
+    && expected.headSha.toLowerCase() === identity.headSha.toLowerCase()
+    && expected.status === 'completed' && expected.conclusion === 'success'
+    && expected.annotationsCount === 0 && expected.title === title && expected.summary === summary;
+}
+
+async function readSiblingOperatorPassthroughState(env: Env, runId: string): Promise<OperatorPassthroughState> {
+  try {
+    const stub = env.REVIEW_RUN.get(env.REVIEW_RUN.idFromName(runId));
+    const response = await stub.fetch('http://do/operator-passthrough/read');
+    if (!response.ok) reject('prior_do_unavailable');
+    const payload = await response.json() as any;
+    if (!payload || !isRecord(payload.state)) reject('prior_check_identity_unverified');
+    return payload.state as OperatorPassthroughState;
+  } catch (error) {
+    if (error instanceof Error && /^prior_[a-z_]+$/u.test(error.message)) throw error;
+    reject('prior_do_unavailable');
+  }
+}
+
+/**
+ * A check pair on the same commit may be ignored only when its exact op2
+ * publication receipt proves it belongs to a different PR in this repository.
+ */
+async function isVerifiedSiblingPassthroughPair(
+  env: Env,
+  spec: ReviewRunSpec,
+  appId: number,
+  runId: string,
+  worker: any,
+  gate: any
+): Promise<boolean> {
+  const state = await readSiblingOperatorPassthroughState(env, runId);
+  const identity = state?.identity;
+  if (!validIdentityForTarget(identity, spec, appId)) reject('prior_check_identity_unverified');
+  // Current-PR rows remain in the ordinary prior-outcome path, even if their
+  // base changed and the associated run can no longer be read as current.
+  if (identity.prNumber === spec.prNumber) return false;
+  const publicationId = await operatorPassthroughPublicationId(identity);
+  const expectedRunId = `run_${publicationId.slice(0, 32)}`;
+  if (state.version !== 'OperatorPassthroughState.v2' || state.runId !== runId
+    || state.publicationId !== publicationId || expectedRunId !== runId
+    || state.cancelRequested !== false || state.priorOutcomeChecked !== true
+    || !Array.isArray(state.priorControlRunIds)
+    || state.priorControlRunIds.some((priorId) => typeof priorId !== 'string' || !RUN_ID_PATTERN.test(priorId))
+    || new Set(state.priorControlRunIds).size !== state.priorControlRunIds.length) {
+    reject('prior_check_identity_unverified');
+  }
+
+  const receipt = state.receipt;
+  if (!receipt || receipt.version !== 'OperatorPassthroughReceipt.v2' || receipt.status !== 'succeeded'
+    || receipt.reason !== 'operator_global_passthrough' || receipt.runId !== runId
+    || receipt.publicationId !== publicationId || receipt.repositoryId !== identity.repositoryId
+    || receipt.owner !== identity.owner || receipt.repo !== identity.repo
+    || receipt.prNumber !== identity.prNumber || receipt.headSha !== identity.headSha
+    || receipt.baseSha !== identity.baseSha || receipt.baseRef !== identity.baseRef
+    || receipt.appId !== identity.appId || receipt.policyDigest !== identity.policyDigest
+    || !samePolicySource(receipt.policySource, identity.policySource)
+    || receipt.reviewStarted !== false || receipt.expectedLanes !== 0 || receipt.completedLanes !== 0
+    || receipt.candidateState !== 'current' || receipt.verdict !== 'SHIP'
+    || receipt.publicationState !== 'published' || receipt.publicationReceiptAvailable !== true
+    || receipt.publicationIdempotent !== true || receipt.mergeEligible !== true
+    || receipt.findingsCount !== 0 || typeof receipt.auditDigest !== 'string' || !DIGEST_PATTERN.test(receipt.auditDigest)
+    || receipt.workerCheckId === receipt.gateCheckId
+    || !Array.isArray(receipt.priorControlRunIds)
+    || JSON.stringify(receipt.priorControlRunIds) !== JSON.stringify(state.priorControlRunIds)) {
+    reject('prior_check_identity_unverified');
+  }
+
+  const reviewStage = state.stages?.review;
+  const gateStage = state.stages?.gate;
+  const workerReceipt = receipt.checks?.worker;
+  const gateReceipt = receipt.checks?.gate;
+  if (!reviewStage || !gateStage || reviewStage.creationState !== 'created' || reviewStage.patchState !== 'completed'
+    || gateStage.creationState !== 'created' || gateStage.patchState !== 'completed'
+    || reviewStage.checkId !== receipt.workerCheckId || gateStage.checkId !== receipt.gateCheckId
+    || !workerReceipt || !gateReceipt || workerReceipt.id !== receipt.workerCheckId || gateReceipt.id !== receipt.gateCheckId) {
+    reject('prior_check_pair_incomplete');
+  }
+
+  const workerExternalId = `${deriveWorkerExternalId(runId, 1)}${OPERATOR_PASSTHROUGH_EXTERNAL_SUFFIX}`;
+  const gateExternalId = `${await deriveGateExternalId({
+    owner: identity.owner,
+    repo: identity.repo,
+    headSha: identity.headSha,
+    runId,
+    executionAttempt: 1,
+  })}${OPERATOR_PASSTHROUGH_EXTERNAL_SUFFIX}`;
+  const summary = operatorPassthroughCheckSummary(identity, runId, publicationId, receipt.auditDigest);
+  if (!readbackCheckMatches(worker, workerReceipt, REVIEW_WORKER_CHECK_NAME, workerExternalId,
+    identity, OPERATOR_PASSTHROUGH_REVIEW_TITLE, summary)
+    || !readbackCheckMatches(gate, gateReceipt, REVIEW_GATE_CHECK_NAME, gateExternalId,
+      identity, OPERATOR_PASSTHROUGH_GATE_TITLE, summary)) {
+    reject('prior_check_identity_unverified');
+  }
+  return true;
+}
 
 async function readRepoGatePrRunState(env: Env, spec: ReviewRunSpec): Promise<RepoGatePrRunState> {
   try {
@@ -435,9 +612,9 @@ export async function assertNoBlockingPriorOutcome(
   const workers = checks.filter((check: any) => check.name === REVIEW_WORKER_CHECK_NAME);
   const gates = checks.filter((check: any) => check.name === REVIEW_GATE_CHECK_NAME);
   if (workers.length !== gates.length) reject('prior_check_pair_incomplete');
-  if (latestPriorRunId && !workers.some((worker: any) => String(worker.external_id || '').startsWith(`${latestPriorRunId}:a`))) reject('prior_check_pair_incomplete');
   const usedGates = new Set<number>();
   const allowedTransportRunIds: string[] = [];
+  const verifiedSiblingCheckIds = new Set<number>();
   for (const worker of workers) {
     const match = String(worker.external_id || '').match(/^(run_[A-Za-z0-9_-]{1,128}):a([1-9][0-9]*)(:review-mode=passthrough:op2)?$/u);
     if (!match) reject('prior_check_identity_unverified');
@@ -459,6 +636,13 @@ export async function assertNoBlockingPriorOutcome(
       reject('prior_check_identity_unverified');
     }
 
+    if (passthroughSuffix === OPERATOR_PASSTHROUGH_EXTERNAL_SUFFIX
+      && await isVerifiedSiblingPassthroughPair(env, spec, appId, runId, worker, gate)) {
+      verifiedSiblingCheckIds.add(Number(worker.id));
+      verifiedSiblingCheckIds.add(Number(gate.id));
+      continue;
+    }
+
     if (worker.conclusion === 'success' && gate.conclusion === 'success') {
       const status = await priorDoStatus(env, spec, runId);
       const receipt = status.terminalReceiptSummary;
@@ -473,5 +657,8 @@ export async function assertNoBlockingPriorOutcome(
     reject('prior_semantic_block');
   }
   if (usedGates.size !== gates.length) reject('prior_check_pair_incomplete');
+  const currentPullRequestWorkers = workers.filter((worker: any) => !verifiedSiblingCheckIds.has(Number(worker.id)));
+  if (latestPriorRunId && !currentPullRequestWorkers.some((worker: any) =>
+    String(worker.external_id || '').startsWith(`${latestPriorRunId}:a`))) reject('prior_check_pair_incomplete');
   return allowedTransportRunIds;
 }

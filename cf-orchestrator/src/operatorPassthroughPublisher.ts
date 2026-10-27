@@ -23,6 +23,14 @@ import type {
   OperatorPassthroughTarget,
 } from './operatorPassthroughTypes.js';
 import {
+  OPERATOR_PASSTHROUGH_EXTERNAL_SUFFIX,
+  OPERATOR_PASSTHROUGH_GATE_TITLE,
+  OPERATOR_PASSTHROUGH_REVIEW_TITLE,
+  OPERATOR_PASSTHROUGH_SUMMARY_SENTENCE,
+  operatorPassthroughPublicationId,
+  operatorPassthroughCheckSummary,
+} from './operatorPassthroughCheckContract.js';
+import {
   AUTHORITATIVE_REVIEW_APP_ID,
   PUBLIC_REVIEW_APP_ID,
   isPublicReviewRepository,
@@ -35,10 +43,8 @@ const POLICY_MAX_BYTES = 256 * 1024;
 const NAME_RE = /^[A-Za-z0-9_.-]{1,100}$/u;
 const SHA_RE = /^[a-f0-9]{40}$/iu;
 const DIGEST_RE = /^[a-f0-9]{64}$/u;
-const REVIEW_TITLE = 'Review Yeti: SHIP (passthrough: no review performed)';
-const GATE_TITLE = 'Review Yeti Gate: SHIP (passthrough: no review performed)';
-const PASSTHROUGH_EXTERNAL_SUFFIX = ':review-mode=passthrough:op2';
-const SUMMARY_SENTENCE = 'review-mode=passthrough. Operator SHIP disposition; no semantic review was run; zero lanes were started.';
+const REVIEW_TITLE = OPERATOR_PASSTHROUGH_REVIEW_TITLE;
+const GATE_TITLE = OPERATOR_PASSTHROUGH_GATE_TITLE;
 
 type Stage = 'review' | 'gate';
 type ErrorCode =
@@ -583,7 +589,7 @@ async function policyRevisionIsCurrent(
 }
 
 async function shaIdentity(identity: OperatorPassthroughIdentity): Promise<{ publicationId: string; runId: string }> {
-  const publicationId = await digest(stableJson(identity));
+  const publicationId = await operatorPassthroughPublicationId(identity);
   return { publicationId, runId: `run_${publicationId.slice(0, 32)}` };
 }
 
@@ -634,25 +640,10 @@ function checkName(stage: Stage): typeof REVIEW_WORKER_CHECK_NAME | typeof REVIE
   return stage === 'review' ? REVIEW_WORKER_CHECK_NAME : REVIEW_GATE_CHECK_NAME;
 }
 
-function checkSummary(identity: OperatorPassthroughIdentity, runId: string, publicationId: string, auditDigest: string): string {
-  return [
-    SUMMARY_SENTENCE,
-    `Publication ID: ${publicationId}`,
-    `Audit digest: ${auditDigest}`,
-    `Repository: ${identity.owner}/${identity.repo} (ID ${identity.repositoryId})`,
-    `Pull request: #${identity.prNumber}`,
-    `Head: ${identity.headSha}`,
-    `Base: ${identity.baseSha} (${identity.baseRef})`,
-    `Current policy digest: ${identity.policyDigest}`,
-    `Policy source: ${identity.policySource.owner}/${identity.policySource.repo}@${identity.policySource.sha}:${identity.policySource.path}`,
-    `Review run identity: ${runId}`,
-  ].join('\n');
-}
-
 async function externalIds(identity: OperatorPassthroughIdentity, runId: string): Promise<{ worker: string; gate: string }> {
   return {
-    worker: `${await checkExternalId('review', runId, identity)}${PASSTHROUGH_EXTERNAL_SUFFIX}`,
-    gate: `${await checkExternalId('gate', runId, identity)}${PASSTHROUGH_EXTERNAL_SUFFIX}`,
+    worker: `${await checkExternalId('review', runId, identity)}${OPERATOR_PASSTHROUGH_EXTERNAL_SUFFIX}`,
+    gate: `${await checkExternalId('gate', runId, identity)}${OPERATOR_PASSTHROUGH_EXTERNAL_SUFFIX}`,
   };
 }
 
@@ -685,7 +676,7 @@ function checkIdentityMatches(
   if (!Number.isSafeInteger(annotationsCount) || annotationsCount < 0 || annotationsCount > 0) {
     unavailable('check_summary_unverified', checkReadDiagnostic(stage, identity, Number(check.id), 'summary_mismatch'));
   }
-  if (!summaryText.includes(SUMMARY_SENTENCE) || !summaryText.includes(`Current policy digest: ${identity.policyDigest}`)
+  if (!summaryText.includes(OPERATOR_PASSTHROUGH_SUMMARY_SENTENCE) || !summaryText.includes(`Current policy digest: ${identity.policyDigest}`)
     || !summaryText.includes(`Head: ${identity.headSha}`) || !summaryText.includes(`Base: ${identity.baseSha}`)) {
     unavailable('check_summary_unverified', checkReadDiagnostic(stage, identity, Number(check.id), 'summary_mismatch'));
   }
@@ -1068,7 +1059,7 @@ async function verifyCheckPair(
     unavailable('check_readback_unavailable', checkReadDiagnostic(stage, identity, checkId, 'receipt_incomplete', null,
       stage === 'review' ? worker.appId : gate.appId, true));
   }
-  const expectedSummary = checkSummary(identity, runId, publicationId, auditDigest);
+  const expectedSummary = operatorPassthroughCheckSummary(identity, runId, publicationId, auditDigest);
   if (worker.summary !== expectedSummary || gate.summary !== expectedSummary) {
     const stage = worker.summary !== expectedSummary ? 'review' : 'gate';
     const check = stage === 'review' ? worker : gate;
@@ -1108,7 +1099,7 @@ async function loadExistingCheck(
   }
   if (mutation.action !== 'create') unavailable('check_readback_unavailable');
 
-  const summary = checkSummary(identity, runId, publicationId, auditDigest);
+  const summary = operatorPassthroughCheckSummary(identity, runId, publicationId, auditDigest);
   const response = await context.fetch(`https://api.github.com/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/check-runs`, {
     method: 'POST',
     headers: { ...githubHeaders(token), 'Content-Type': 'application/json' },
@@ -1155,7 +1146,7 @@ async function completeCheck(
   token: string,
   context: DeadlineContext
 ): Promise<void> {
-  const expectedSummary = checkSummary(identity, runId, publicationId, auditDigest);
+  const expectedSummary = operatorPassthroughCheckSummary(identity, runId, publicationId, auditDigest);
   const current = await getCheckById(check.id, stage, identity, externalId, auditDigest, token, context);
   if (current.status === 'completed') {
     if (current.conclusion !== 'success' || current.title !== checkTitle(stage) || current.summary !== expectedSummary
