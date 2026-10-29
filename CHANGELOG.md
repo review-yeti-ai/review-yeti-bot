@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.136.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.136.0...v1.136.1) (2026-10-29)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** require Cloudflare Access or bearer auth across portal and dashboard APIs ([#1530](https://github.com/review-yeti-ai/review-yeti-bot/issues/1530)) ([c230ea8](https://github.com/review-yeti-ai/review-yeti-bot/commit/c230ea860c5ae6193b2a469aadff5bbf3a880547))
+* **cf-orchestrator:** validate pending prior membership [no-linear] ([#1528](https://github.com/review-yeti-ai/review-yeti-bot/issues/1528)) ([c1064cd](https://github.com/review-yeti-ai/review-yeti-bot/commit/c1064cda3fab9c468029b6a3661ef46672314794))
+* ignore verified sibling passthrough outcomes ([#1529](https://github.com/review-yeti-ai/review-yeti-bot/issues/1529)) ([d35eae8](https://github.com/review-yeti-ai/review-yeti-bot/commit/d35eae8aaff2bfa1ef2baa78e786daa4c2905578))
+* **merge-group:** mint the App token when GITHUB_TOKEN is absent ([#1527](https://github.com/review-yeti-ai/review-yeti-bot/issues/1527)) ([94e94ef](https://github.com/review-yeti-ai/review-yeti-bot/commit/94e94efb4b0fc901e9af43527347b5c80362ed0b))
+* **merge-group:** publish the v2 queue external id ([#1525](https://github.com/review-yeti-ai/review-yeti-bot/issues/1525)) ([50300e6](https://github.com/review-yeti-ai/review-yeti-bot/commit/50300e6c77600bb906b1497f24d3e43205d17b67))
+
 ## [1.136.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.135.0...v1.136.0) (2026-10-20)
 
 
