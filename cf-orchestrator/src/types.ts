@@ -90,6 +90,12 @@ export interface Env {
   REVIEW_YETI_MCP_AUTH_TOKEN?: string;
   /** Allows public MCP discovery/read operations; it never authenticates the operator health route. */
   PUBLIC_READ_MCP?: string;
+  /** Require Cloudflare Access JWT or bearer token on all UI and dashboard/memory/analytics/reviews APIs. */
+  REQUIRE_CF_ACCESS?: string;
+  /** Cloudflare Access team domain (e.g. `<team>.cloudflareaccess.com`) for RS256 JWKS verification. */
+  ACCESS_TEAM_DOMAIN?: string;
+  /** Cloudflare Access Application Audience (AUD) tag(s), comma-separated. */
+  ACCESS_AUD?: string;
   REVIEW_YETI_ATTESTATION_SECRET?: string;
   GITHUB_TOKEN?: string;
   OPERATOR_GLOBAL_PASSTHROUGH?: string;

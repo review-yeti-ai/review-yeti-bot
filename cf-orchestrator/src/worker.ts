@@ -9,10 +9,90 @@ import { handleDashboardApi } from './api/dashboardRoutes.js';
 import { handleActionDispatch } from './api/actionDispatchRoute.js';
 import { readOperatorPassthroughByRunId } from './operatorPassthroughPublisher.js';
 import { isPilotRepository } from './pilotRepository.js';
+import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 
 export { RepoGateDO, ReviewRunDO, ReviewJobWorkflow, handleMergeGroupAttestation };
 export { defaultMcpRouter, handleDashboardApi, handleActionDispatch };
 export { isPilotRepository };
+
+const cfAccessJwksCache = new Map<string, JWTVerifyGetKey>();
+
+function normalizeAccessTeamDomain(raw: string): string {
+  const trimmed = raw.trim().replace(/^https?:\/\//iu, '').replace(/\/+$/u, '');
+  if (!trimmed || !/^[a-zA-Z0-9.-]+$/u.test(trimmed)) {
+    throw new Error('Invalid ACCESS_TEAM_DOMAIN');
+  }
+  return trimmed.includes('.') ? trimmed : `${trimmed}.cloudflareaccess.com`;
+}
+
+function getCfAccessJWKS(teamDomain: string): JWTVerifyGetKey {
+  let jwks = cfAccessJwksCache.get(teamDomain);
+  if (!jwks) {
+    jwks = createRemoteJWKSet(new URL(`https://${teamDomain}/cdn-cgi/access/certs`), {
+      cooldownDuration: 30_000,
+      cacheMaxAge: 10 * 60_000,
+      timeoutDuration: 5_000,
+    });
+    cfAccessJwksCache.set(teamDomain, jwks);
+  }
+  return jwks;
+}
+
+export interface VerifyAccessOptions {
+  keySet?: JWTVerifyGetKey;
+}
+
+/**
+ * Validates that an incoming request to human-facing UI or dashboard/memory/analytics
+ * endpoints carries either:
+ *   1. A valid bearer / x-api-key token matching `env.REVIEW_YETI_MCP_AUTH_TOKEN` (constant-time), OR
+ *   2. A cryptographically verified `Cf-Access-Jwt-Assertion` RS256 JWT matching
+ *      `env.ACCESS_TEAM_DOMAIN` and `env.ACCESS_AUD`.
+ *
+ * Raw identity headers (`Cf-Access-Authenticated-User-Email`, `CF-Access-Client-Id`)
+ * are never trusted without cryptographic JWT signature verification.
+ */
+export async function isAuthorizedAccess(
+  request: Request,
+  env: Env,
+  options: VerifyAccessOptions = {}
+): Promise<boolean> {
+  const configuredToken = (env.REVIEW_YETI_MCP_AUTH_TOKEN || '').trim();
+  const authHeader = request.headers.get('Authorization') || '';
+  const bearerMatch = /^Bearer\s+([^\s]+)$/iu.exec(authHeader);
+  const suppliedToken = bearerMatch?.[1] || (request.headers.get('x-api-key') || '').trim();
+  if (configuredToken && suppliedToken && constantTimeEquals(suppliedToken, configuredToken)) {
+    return true;
+  }
+
+  const cfJwt = (request.headers.get('Cf-Access-Jwt-Assertion') || '').trim();
+  const rawTeamDomain = (env.ACCESS_TEAM_DOMAIN || '').trim();
+  const rawAud = (env.ACCESS_AUD || '').trim();
+  if (!cfJwt || !rawTeamDomain || !rawAud) {
+    return false;
+  }
+
+  try {
+    const teamDomain = normalizeAccessTeamDomain(rawTeamDomain);
+    const audiences = rawAud
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (audiences.length === 0) {
+      return false;
+    }
+    const keySet = options.keySet || getCfAccessJWKS(teamDomain);
+    await jwtVerify(cfJwt, keySet, {
+      issuer: `https://${teamDomain}`,
+      audience: audiences,
+      algorithms: ['RS256'],
+      clockTolerance: 5,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Validates incoming GitHub webhook HMAC-SHA256 signature against secret using Web Crypto API.
@@ -236,6 +316,15 @@ export default {
 
       // Live Swarm Command Center shortcut / alias: /l redirects directly to /
       if (url.pathname === '/l' || url.pathname === '/live-swarm') {
+        if (env.REQUIRE_CF_ACCESS === 'true' && !(await isAuthorizedAccess(request, env))) {
+          return new Response('Forbidden: Cloudflare Access authentication required', {
+            status: 403,
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+              'Cache-Control': 'no-store',
+            },
+          });
+        }
         return Response.redirect(new URL('/', request.url).toString(), 302);
       }
 
@@ -308,9 +397,22 @@ export default {
       }
 
       // Review Yeti Dashboard & Analytics REST API (Edge)
-      const dashboardResponse = await handleDashboardApi(request, env);
-      if (dashboardResponse) {
-        return dashboardResponse;
+      if (url.pathname !== '/api/webhooks/github') {
+        if (
+          env.REQUIRE_CF_ACCESS === 'true' &&
+          request.method !== 'OPTIONS' &&
+          (url.pathname.startsWith('/api/') || url.pathname === '/version') &&
+          !(await isAuthorizedAccess(request, env))
+        ) {
+          return Response.json(
+            { error: 'Forbidden: Cloudflare Access authentication required' },
+            { status: 403, headers: { 'Cache-Control': 'no-store' } }
+          );
+        }
+        const dashboardResponse = await handleDashboardApi(request, env);
+        if (dashboardResponse) {
+          return dashboardResponse;
+        }
       }
 
       // Webhook Ingest: /api/webhooks/github
@@ -664,6 +766,15 @@ export default {
 
       // 8. Fallback to Static Portal Assets (Next.js Dashboard)
       if (env.ASSETS) {
+        if (env.REQUIRE_CF_ACCESS === 'true' && !(await isAuthorizedAccess(request, env))) {
+          return new Response('Forbidden: Cloudflare Access authentication required', {
+            status: 403,
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+              'Cache-Control': 'no-store',
+            },
+          });
+        }
         return await env.ASSETS.fetch(request);
       }
 
