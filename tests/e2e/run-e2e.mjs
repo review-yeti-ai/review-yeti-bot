@@ -6,7 +6,7 @@
  * Tiers:
  * - Tier 1: Feature Coverage (existence, structure, and validity of workflows, configs, personas, chart, docs)
  * - Tier 2: Boundary & Corner Cases (Zod schema validation, empty fields, negative configs, helm lint)
- * - Tier 3: Cross-Feature Combinations (helm template matrix: doks, eks, local; runAsNonRoot, RBAC, ingress)
+ * - Tier 3: Cross-Feature Combinations (helm template matrix: eks, local; runAsNonRoot, RBAC, ingress)
  * - Tier 4: Real-World Scenarios (catalog link integrity, code blocks, anonymity grep audit)
  */
 
@@ -73,7 +73,7 @@ console.log(bold(cyan('     Review Yeti 4-Tier E2E Test Suite Runner')));
 console.log(bold(cyan('============================================================\n')));
 
 const hasHelmChart = fs.existsSync(repoPath('charts/review-yeti/Chart.yaml'));
-const hasCloudValues = fs.existsSync(repoPath('examples/k8s/values-doks.yaml'));
+const hasCloudValues = fs.existsSync(repoPath('examples/k8s/values-eks.yaml'));
 const hasHelmGuide = fs.existsSync(repoPath('docs/HELM_GUIDE.md'));
 const hasTroubleshooting = fs.existsSync(repoPath('docs/TROUBLESHOOTING.md'));
 
@@ -86,7 +86,7 @@ console.log(bold('\n--- Tier 1: Feature Coverage & Structural Integrity ---'));
 const workflows = [
   { file: 'standalone-action.yml', check: (doc) => doc.on?.pull_request && doc.permissions?.contents === 'read' && doc.permissions?.['pull-requests'] === 'write' },
   { file: 'github-app-action.yml', check: (doc) => doc.permissions?.checks === 'write' && JSON.stringify(doc).includes('create-github-app-token') },
-  { file: 'kubernetes-dispatch.yml', check: (doc) => doc.permissions?.['id-token'] === 'write' && JSON.stringify(doc).includes('doks') },
+  { file: 'edge-dispatch.yml', check: (doc) => doc.permissions?.['id-token'] === 'write' && JSON.stringify(doc).includes('edge') },
   { file: 'reusable-hub.yml', check: (doc) => doc.on?.workflow_call && doc.on?.workflow_dispatch },
   { file: 'consumer-caller.yml', check: (doc) => doc.jobs?.review?.uses?.includes('reusable-hub.yml') && doc.jobs?.review?.secrets === 'inherit' },
   { file: 'incremental-review.yml', check: (doc) => doc.permissions?.actions === 'read' && JSON.stringify(doc).includes('incremental-review') },
@@ -258,13 +258,6 @@ if (hasHelmChart) {
 
   if (hasCloudValues) {
     try {
-      const doksTmpl = execSync('helm template review-yeti charts/review-yeti -f examples/k8s/values-doks.yaml', { cwd: REPO_ROOT, encoding: 'utf-8' });
-      if (doksTmpl.includes('service.beta.kubernetes.io/do-loadbalancer')) {
-        record('Tier 3', 'DOKS cloud values: DO LoadBalancer annotations rendered', 'PASS');
-      } else {
-        record('Tier 3', 'DOKS cloud values: DO LoadBalancer', 'FAIL', 'Annotation missing');
-      }
-
       const eksTmpl = execSync('helm template review-yeti charts/review-yeti -f examples/k8s/values-eks.yaml', { cwd: REPO_ROOT, encoding: 'utf-8' });
       if (eksTmpl.includes('alb.ingress.kubernetes.io')) {
         record('Tier 3', 'EKS cloud values: AWS ALB Ingress annotations rendered', 'PASS');
@@ -282,7 +275,7 @@ if (hasHelmChart) {
       record('Tier 3', 'Cloud values helm template matrix', 'FAIL', e.message);
     }
   } else {
-    record('Tier 3', 'Cloud values matrix (values-doks, values-eks, values-local)', 'SKIP', 'Pending Milestone 2');
+    record('Tier 3', 'Cloud values matrix (values-eks, values-local)', 'SKIP', 'Pending Milestone 2');
   }
 } else {
   record('Tier 3', 'Helm multi-cloud template matrix', 'SKIP', 'Pending Milestone 2');

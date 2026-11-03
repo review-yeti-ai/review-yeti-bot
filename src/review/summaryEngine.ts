@@ -155,7 +155,7 @@ export function formatAdversarialMatrix(
       .map((m) => `\`${m}\``)
       .join(', ');
   } else {
-    modelListStr = '`gpt-5.6-sol`';
+    modelListStr = '`configured-model`';
   }
 
   const lines: string[] = [
@@ -298,4 +298,74 @@ export function generatePRSummary(
     adversarialMatrix,
   ].join('\n');
 }
+
+export const PR_SUMMARY_START_MARKER = '<!-- review-yeti:summary:start -->';
+export const PR_SUMMARY_END_MARKER = '<!-- review-yeti:summary:end -->';
+
+/**
+ * Generates a concise, high-signal PR summary block designed for in-place insertion
+ * into the pull request description body (2-3 sentence overview + compact bulleted walkthrough).
+ */
+export function generateConcisePRSummary(diff: string, findings: PersonaFinding[] = []): string {
+  const safeFindings = (findings || []).filter(Boolean);
+  const moduleMap = parseDiffModules(diff);
+  const totalFiles = Array.from(moduleMap.values()).reduce((sum, m) => sum + m.files.length, 0);
+  const totalModules = moduleMap.size;
+
+  const overview =
+    totalFiles === 0
+      ? `Updates repository configuration and metadata.${safeFindings.length > 0 ? ` Flagged ${safeFindings.length} actionable issue(s) inline.` : ''}`
+      : `Modifies ${totalFiles} file(s) across ${totalModules} module(s).${safeFindings.length > 0 ? ` Flagged ${safeFindings.length} actionable issue(s) inline.` : ' No blocking issues detected.'}`;
+
+  const bullets: string[] = [];
+  for (const [moduleName, entry] of moduleMap.entries()) {
+    const displayModule = moduleName && moduleName.trim().length > 0 ? moduleName : 'root';
+    const fileList = entry.files
+      .map((f) => f.split('/').pop() || f)
+      .filter((f) => f && f.trim().length > 0)
+      .slice(0, 6)
+      .join(', ');
+    bullets.push(`- **\`${displayModule}\`**: ${fileList || `${entry.files.length} file(s)`}`);
+  }
+
+  return [
+    PR_SUMMARY_START_MARKER,
+    '### Summary by Review Yeti',
+    '',
+    overview,
+    ...(bullets.length > 0 ? ['', ...bullets] : []),
+    PR_SUMMARY_END_MARKER,
+  ].join('\n');
+}
+
+/**
+ * Updates or appends the Review Yeti summary block in-place inside a PR description
+ * without altering any user-authored text outside the markers.
+ */
+export function upsertPRDescriptionSummary(
+  existingBody: string | null | undefined,
+  summaryMarkdown: string
+): string {
+  const block = summaryMarkdown.includes(PR_SUMMARY_START_MARKER)
+    ? summaryMarkdown.trim()
+    : [PR_SUMMARY_START_MARKER, summaryMarkdown.trim(), PR_SUMMARY_END_MARKER].join('\n');
+
+  const base = typeof existingBody === 'string' ? existingBody : '';
+  const startIdx = base.indexOf(PR_SUMMARY_START_MARKER);
+  const endIdx = base.indexOf(PR_SUMMARY_END_MARKER);
+
+  if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+    const before = base.slice(0, startIdx).replace(/\s+$/, '');
+    const after = base.slice(endIdx + PR_SUMMARY_END_MARKER.length).replace(/^\s+/, '');
+    const parts = [before, block, after].filter((p) => p.length > 0);
+    return parts.join('\n\n');
+  }
+
+  const trimmedBase = base.trim();
+  if (!trimmedBase) {
+    return block;
+  }
+  return `${trimmedBase}\n\n${block}`;
+}
+
 

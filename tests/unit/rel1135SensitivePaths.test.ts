@@ -73,7 +73,7 @@ describe('one security-sensitive predicate', () => {
     ['deploy_keys/id_ed25519', 'secret_material'],
     ['CMakeLists.txt', 'build_script'],
     // Formerly only in the budget's own CI/IaC list.
-    ['clusters/doks/app/values.yaml', 'iac'],
+    ['clusters/prod/app/values.yaml', 'iac'],
     ['Chart.yaml', 'iac'],
     // Already in the canonical list (kept).
     ['scripts/release.sh', 'build_script'],

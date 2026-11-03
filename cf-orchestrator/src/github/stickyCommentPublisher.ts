@@ -7,6 +7,10 @@
  */
 
 import { type RunnerCostDetails, formatRunnerCostMarkdown } from '../runners/runnerCost.js';
+import {
+  OPERATOR_PASSTHROUGH_MODE_MARKER,
+  OPERATOR_PASSTHROUGH_ZERO_LANES_MARKER,
+} from '../auth/passthrough.js';
 
 export const STICKY_OVERVIEW_MARKER = '<!-- ct-review-bot:overview:v1 -->';
 export const ALT_STICKY_OVERVIEW_MARKER = '<!-- review-yeti:overview:v1 -->';
@@ -43,6 +47,7 @@ export interface StickyCommentOptions {
   dashboardOrigin?: string;
   jobId?: string;
   fetchFn?: typeof fetch;
+  passthroughMode?: boolean;
 }
 
 export interface StickyCommentResult {
@@ -66,6 +71,7 @@ export function formatStickyCommentMarkdown(options: {
   runnerCost?: RunnerCostDetails;
   dashboardOrigin?: string;
   jobId?: string;
+  passthroughMode?: boolean;
 }): string {
   const {
     owner,
@@ -78,16 +84,20 @@ export function formatStickyCommentMarkdown(options: {
     runnerCost,
     dashboardOrigin = 'https://review-bot.example.com',
     jobId = `job_${owner}_${repo}_pr${prNumber}_${headSha.slice(0, 7)}`,
+    passthroughMode,
   } = options;
 
-  const isSuccess = verdict === 'success';
-  const isNeutral = verdict === 'neutral';
+  const isPassthrough = Boolean(passthroughMode);
+  const isSuccess = isPassthrough || verdict === 'success';
+  const isNeutral = !isPassthrough && verdict === 'neutral';
 
-  const verdictBadge = isSuccess
-    ? '### 🚦 Review Yeti Verdict: **SHIP** (Passed)'
-    : isNeutral
-      ? '### ⚠️ Review Yeti Verdict: **NEUTRAL** (Advisory)'
-      : '### 🛑 Review Yeti Verdict: **BLOCK** (Changes Requested)';
+  const verdictBadge = isPassthrough
+    ? '### 🚦 Review Yeti Verdict: **SHIP** (Passthrough Mode)'
+    : isSuccess
+      ? '### 🚦 Review Yeti Verdict: **SHIP** (Passed)'
+      : isNeutral
+        ? '### ⚠️ Review Yeti Verdict: **NEUTRAL** (Advisory)'
+        : '### 🛑 Review Yeti Verdict: **BLOCK** (Changes Requested)';
 
   const shortSha = headSha.slice(0, 8);
   const sections: string[] = [
@@ -95,8 +105,13 @@ export function formatStickyCommentMarkdown(options: {
     `Evaluated pull request commit [\`${shortSha}\`](https://github.com/${owner}/${repo}/commit/${headSha}).`,
   ];
 
-  // Findings Breakdown Table
-  if (findings.length > 0) {
+  if (isPassthrough) {
+    sections.push(
+      'Review Yeti is currently operating in **Passthrough Mode** by operator configuration.\n' +
+      `${OPERATOR_PASSTHROUGH_ZERO_LANES_MARKER} (${OPERATOR_PASSTHROUGH_MODE_MARKER})\n\n` +
+      '✅ **Policy Guardrails Satisfied:** Pull request is approved for merge.'
+    );
+  } else if (findings.length > 0) {
     const rows: string[] = [
       '### 📝 Findings & Recommendations',
       '',

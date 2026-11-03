@@ -49,8 +49,8 @@ describe.skipIf(!helmAvailable() || !existsSync(chartDir))('review-yeti chart Do
     expect(rendered).toContain('kind: DopplerSecret');
     expect(rendered).toContain('project: "example-project"');
     expect(rendered).toContain('config: "example-config"');
-    // The operator must keep re-reading Doppler: the gateway credential is a
-    // Bifrost virtual key that can be revoked upstream, and a one-shot copy goes
+    // The operator must keep re-reading Doppler: the gateway credential can be
+    // revoked upstream, and a one-shot copy goes
     // stale silently (the cluster copy was already found revoked once while the
     // GitHub copy still worked, so nothing observed the rot).
     expect(rendered).toMatch(/resyncSeconds:\s*\d+/u);
@@ -92,11 +92,11 @@ describe('review-yeti chart publishing transport', () => {
 
   it('passes the transport to the operator when configured', () => {
     const rendered = render(
-      '--set', 'publishing.gatewayBaseUrl=https://gateway.example.invalid/v1',
+      '--set', 'publishing.gatewayBaseUrl=https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1',
       '--set', 'publishing.model=ollama/glm-5.3-flash',
     );
     expect(rendered).toContain('REVIEW_YETI_GATEWAY_BASE_URL');
-    expect(rendered).toContain('https://gateway.example.invalid/v1');
+    expect(rendered).toContain('https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1');
     expect(rendered).toContain('ollama/glm-5.3-flash');
   });
 
@@ -105,7 +105,7 @@ describe('review-yeti chart publishing transport', () => {
     // and it must line up with the DopplerSecret this chart projects.
     const rendered = render();
     expect(rendered).toContain('review-yeti-gateway-credentials');
-    expect(rendered).toContain('REVIEW_YETI_BIFROST_API_KEY');
+    expect(rendered).toContain('CLOUDFLARE_AIG_RUN_TOKEN');
   });
 }, 60_000);
 

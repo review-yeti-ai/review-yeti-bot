@@ -27,8 +27,8 @@ func TestBuildPVCIsPRScopedReusableAndUnowned(t *testing.T) {
 	if len(pvc.Finalizers) != 1 || pvc.Finalizers[0] != workspace.ProtectionFinalizer {
 		t.Fatalf("workspace protection finalizer missing: %v", pvc.Finalizers)
 	}
-	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != workspace.StorageClassName {
-		t.Fatalf("storage class = %v", pvc.Spec.StorageClassName)
+	if pvc.Spec.StorageClassName != nil {
+		t.Fatalf("storage class = %q, want unset so the cluster default applies", *pvc.Spec.StorageClassName)
 	}
 	if len(pvc.Spec.AccessModes) != 1 || pvc.Spec.AccessModes[0] != corev1.ReadWriteOnce {
 		t.Fatalf("access modes = %v, want ReadWriteOnce", pvc.Spec.AccessModes)
@@ -41,6 +41,32 @@ func TestBuildPVCIsPRScopedReusableAndUnowned(t *testing.T) {
 	}
 	if err := workspace.ValidatePVC(pvc, "ct-review-system", 123, 42); err != nil {
 		t.Fatalf("valid PVC rejected: %v", err)
+	}
+}
+
+func TestBuildPVCAppliesExplicitlyConfiguredStorageClass(t *testing.T) {
+	t.Setenv(workspace.StorageClassEnv, " workspace-fast ")
+	pvc, err := workspace.BuildPVC("ct-review-system", 123, 42, time.Now())
+	if err != nil {
+		t.Fatalf("build PVC: %v", err)
+	}
+	if pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "workspace-fast" {
+		t.Fatalf("storage class = %v, want workspace-fast", pvc.Spec.StorageClassName)
+	}
+	if err := workspace.ValidatePVC(pvc, "ct-review-system", 123, 42); err != nil {
+		t.Fatalf("valid PVC rejected: %v", err)
+	}
+}
+
+func TestValidatePVCAcceptsClusterDefaultedStorageClassWhenUnconfigured(t *testing.T) {
+	pvc, err := workspace.BuildPVC("ct-review-system", 123, 42, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaulted := "cluster-default"
+	pvc.Spec.StorageClassName = &defaulted
+	if err := workspace.ValidatePVC(pvc, "ct-review-system", 123, 42); err != nil {
+		t.Fatalf("PVC with an API-server assigned class rejected: %v", err)
 	}
 }
 
@@ -89,6 +115,7 @@ func TestValidatePVCRejectsNil(t *testing.T) {
 }
 
 func TestValidatePVCRejectsIdentityStorageAndOwnershipExpansion(t *testing.T) {
+	t.Setenv(workspace.StorageClassEnv, "workspace-fast")
 	base, err := workspace.BuildPVC("ct-review-system", 123, 42, time.Now())
 	if err != nil {
 		t.Fatal(err)

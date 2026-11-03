@@ -4,6 +4,7 @@ import { summarizeReviewBudgetSavings } from '../../src/telemetry/reviewBudgetSa
 import type { ReviewBudgetLaneDisclosure } from '../../src/types/reviewBudget';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 import { logger } from '../../src/utils/logger';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * REL-1138: W5 budget packing could not be measured -- the budget log line counted files by
@@ -116,8 +117,8 @@ function env(): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: 'b'.repeat(40),
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-    OPENAI_API_KEY: 'vk-test',
+    ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
     GH_TOKEN: 'ghs_test',
   };
 }

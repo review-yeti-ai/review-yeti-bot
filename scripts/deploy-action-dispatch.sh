@@ -52,7 +52,7 @@ trap cleanup EXIT
 # so require the operator to say which one they mean.
 if [[ -z "${ACTION_DISPATCH_ALLOW_APP_GATE:-}" ]]; then
   echo "deploy-action-dispatch: set ACTION_DISPATCH_ALLOW_APP_GATE=true|false explicitly." >&2
-  echo "  true  -- admission accepts app-gate dispatches; the DOKS lane publishes reviews" >&2
+  echo "  true  -- admission accepts app-gate dispatches; the Kubernetes execution lane publishes reviews" >&2
   echo "  false -- app-gate dispatches are refused; receipt-only lanes are unaffected" >&2
   exit 2
 fi

@@ -7,60 +7,38 @@ import {
 } from './e2eHarness.js';
 import { ReviewJobWorkflow } from '../../src/reviewJobWorkflow.js';
 import { CloudflareContainerRunner, MockContainerRunner } from '../../src/runners/containerRunner.js';
-import { DigitalOceanAgentRunner } from '../../src/runners/digitalOceanAgentRunner.js';
 import { parseToolingConfigYaml, resolveToolConnection } from '../../src/tunnel/toolTunnelDefinition.js';
 import type { ReviewRunSpec } from '../../src/types.js';
 
 describe('Tier 3: Cross-Feature Interactions', () => {
   const SECRET = 'test_webhook_secret_key_interactions';
 
-  it('X1: Ingress Dual-Dispatch Fanout + Debounce Queue Ingress interact seamlessly', async () => {
-    let fanoutUrl = '';
-    let fanoutPayload: any = null;
+  it('X1: Debounce Queue Ingress enqueues synchronize events with a 60s delay', async () => {
+    const harness = createE2EEnvironment({
+      githubWebhookSecret: SECRET,
+      pilotRepositories: 'all',
+    });
 
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: any, init?: any) => {
-      fanoutUrl = String(url);
-      fanoutPayload = JSON.parse(init?.body as string);
-      return new Response('ok', { status: 200 });
-    }) as any;
+    const payload = createWebhookPayload('synchronize', {
+      owner: 'review-yeti-ai',
+      repo: 'review-yeti-bot',
+      prNumber: 50,
+      headSha: 'headsha_sync_001',
+    });
 
-    try {
-      const fallbackUrl = 'https://doks-production.internal/webhooks';
-      const harness = createE2EEnvironment({
-        githubWebhookSecret: SECRET,
-        doksFallbackUrl: fallbackUrl,
-        pilotRepositories: 'all',
-      });
+    const rawBody = JSON.stringify(payload);
+    const sig = await signWebhookPayload(SECRET, rawBody);
 
-      const payload = createWebhookPayload('synchronize', {
-        owner: 'review-yeti-ai',
-        repo: 'review-yeti-bot',
-        prNumber: 50,
-        headSha: 'headsha_sync_001',
-      });
+    const res = await harness.dispatchWebhook(payload, { 'X-Hub-Signature-256': sig }, rawBody);
+    assert.equal(res.status, 200);
+    const json = (await res.json()) as any;
+    assert.equal(json.status, 'queued_debounced');
+    assert.equal(json.delaySeconds, 60);
 
-      const rawBody = JSON.stringify(payload);
-      const sig = await signWebhookPayload(SECRET, rawBody);
-
-      const res = await harness.dispatchWebhook(payload, { 'X-Hub-Signature-256': sig }, rawBody);
-      assert.equal(res.status, 200);
-      const json = (await res.json()) as any;
-      assert.equal(json.status, 'queued_debounced');
-      assert.equal(json.delaySeconds, 60);
-
-      // Verify fanout occurred asynchronously with identical payload
-      assert.equal(fanoutUrl, fallbackUrl);
-      assert.equal(fanoutPayload.action, 'synchronize');
-      assert.equal(fanoutPayload.pull_request.head.sha, 'headsha_sync_001');
-
-      // Verify queue received the debounced item
-      assert.equal(harness.queuedDebounceMessages.length, 1);
-      assert.equal(harness.queuedDebounceMessages[0].message.headSha, 'headsha_sync_001');
-      assert.equal(harness.queuedDebounceMessages[0].options?.delaySeconds, 60);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+    // Verify queue received the debounced item
+    assert.equal(harness.queuedDebounceMessages.length, 1);
+    assert.equal(harness.queuedDebounceMessages[0].message.headSha, 'headsha_sync_001');
+    assert.equal(harness.queuedDebounceMessages[0].options?.delaySeconds, 60);
   });
 
   it('X2: Debounce Ingress ➔ Queue Consumer ➔ Full Workflow Execution completes pipeline', async () => {
@@ -225,7 +203,7 @@ tools:
     assert.equal(t4.tunnelMode, 'cloudflare'); // auto with internal endpoint selects cloudflare mode
   });
 
-  it('X5: Dual-Runner Execution Plane: Workflow executes polymorphically with CF and DO runners', async () => {
+  it('X5: Execution Plane: Workflow dispatches through the Cloudflare container runner', async () => {
     const harness = createE2EEnvironment();
 
     // Runner A: CloudflareContainerRunner with mock edge container binding
@@ -257,40 +235,6 @@ tools:
     assert.equal(resA.status, 'succeeded');
     assert.equal(cfDispatchedSpec.env.PARALLEL_CHECK_NAME, 'Review Yeti (Cloudflare Canary)');
     assert.equal(cfDispatchedSpec.env.RUN_ID, 'run_cf_poly');
-
-    // Runner B: DigitalOceanAgentRunner with mock HTTP fetch
-    let doSessionCreated: any = null;
-    const mockDoFetch: typeof fetch = async (url, init) => {
-      doSessionCreated = JSON.parse(init?.body as string);
-      return new Response(
-        JSON.stringify({
-          session_id: 'job-run_do_poly',
-          status: 'succeeded',
-          exit_code: 0,
-          receipt: { version: 'ReviewYetiReceiptOnly.v1', status: 'succeeded', runId: 'run_do_poly' },
-        }),
-        { status: 200 }
-      );
-    };
-    const doRunner = new DigitalOceanAgentRunner({
-      apiToken: 'do_token_poly',
-      fetchImpl: mockDoFetch,
-    });
-
-    const specB: ReviewRunSpec = {
-      runId: 'run_do_poly',
-      owner: 'review-yeti-ai',
-      repo: 'review-yeti-bot',
-      prNumber: 72,
-      headSha: 'head_poly_do',
-      baseSha: 'base_poly_do',
-      installationId: 102,
-    };
-
-    const { result: resB } = await harness.executeFullWorkflow(specB, doRunner);
-    assert.equal(resB.status, 'succeeded');
-    assert.equal(doSessionCreated.environment.PARALLEL_CHECK_NAME, 'Review Yeti (Cloudflare Canary)');
-    assert.equal(doSessionCreated.environment.RUN_ID, 'run_do_poly');
   });
 
   it('X6: FIFO Concurrency Contention & Compensating Saga Release unblocks queued run', async () => {

@@ -19,3 +19,4 @@ export * from './getAnalyticsDashboard';
 export * from './purgeCache';
 export * from './getCheckpointMetrics';
 export * from './getCompactionAnalytics';
+export * from './apiParityTools';

@@ -120,6 +120,12 @@ export interface PlatformSettings {
   defaultModelOverrides: Record<string, string>;
   defaultMaxTurns?: number;
   defaultEffort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  detectionMode?: 'fast' | 'balanced' | 'deep';
+  minSeverity?: 'low' | 'medium' | 'high' | 'critical';
+  prSummarySync?: boolean;
+  autoApproveCleanPRs?: boolean;
+  minBlockingSeverity?: 'low' | 'medium' | 'high' | 'critical';
+  organizationPolicyRepo?: string;
   personaSettings?: Record<string, PersonaSetting>;
   providerConfigs?: Record<string, ProviderConfigRecord>;
   modelRegistry?: Record<string, ModelRegistryItem>;
@@ -131,6 +137,9 @@ export interface PlatformSettings {
   providerCostCaps: {
     monthlyBudgetUSD: number;
     dailyBudgetUSD: number;
+    perReviewCapUSD?: number;
+    perPrCapUSD?: number;
+    checkRunPerPrCapUSD?: number;
     alertThresholdPercent: number;
     actionOnCapBreach: 'fail_closed' | 'disable_optional';
   };

@@ -8,6 +8,7 @@ import {
   WORKER_POD_NAME_ENV,
   WORKER_POD_NAMESPACE_ENV,
 } from '../../src/cli/workerLogLocator';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 // REL-1038: every published Review Yeti check names the LogsQL query for its
 // own worker Pod, so a failed run stays diagnosable after the Pod is collected.
@@ -31,8 +32,8 @@ function env(overrides: Record<string, string | undefined> = {}): NodeJS.Process
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-    OPENAI_API_KEY: 'vk-test',
+    ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
     GH_TOKEN: 'ghs_test',
     [WORKER_POD_NAME_ENV]: POD,
     [WORKER_POD_NAMESPACE_ENV]: 'ct-review-system',

@@ -2,11 +2,11 @@
  * runnerCost.ts
  *
  * Compute cost calculation and formatting for Review Yeti managed runners
- * (DigitalOcean Managed Agents / Firecracker microVMs and Cloudflare Containers).
+ * (Cloudflare Containers).
  */
 
 export interface RunnerCostDetails {
-  runnerType: 'digitalocean' | 'cloudflare' | 'doks' | string;
+  runnerType: 'cloudflare' | string;
   runnerName: string;
   durationMs: number;
   vcpus: number;
@@ -23,19 +23,14 @@ export interface CalculateRunnerCostOptions {
   durationMs: number;
   vcpus?: number;
   memoryMb?: number;
-  runnerType?: 'digitalocean' | 'cloudflare' | 'doks' | string;
+  runnerType?: 'cloudflare' | string;
 }
 
 /**
  * Standard active compute rates:
- * - DigitalOcean Managed Agents (Firecracker microVM):
- *     Base: $0.0648 / hour for 2 vCPU + 2048 MB ($0.000018 / sec)
- *     Per vCPU: $0.000008 / sec; Per 1024MB RAM: $0.000001 / sec
  * - Cloudflare Containers (Edge OCI sandbox):
  *     Base: $0.0540 / hour for 2 vCPU + 2048 MB ($0.000015 / sec)
  *     Per vCPU: $0.0000065 / sec; Per 1024MB RAM: $0.000001 / sec
- * - DOKS (Kubernetes dedicated node pool amortization):
- *     Amortized base: $0.1800 / hour ($0.000050 / sec)
  */
 export interface RunnerRateTier {
   vcpuRatePerSec: number;
@@ -43,30 +38,18 @@ export interface RunnerRateTier {
 }
 
 const HOURLY_RATES: Record<string, RunnerRateTier> = {
-  digitalocean: {
-    vcpuRatePerSec: 0.000008,
-    ramGbRatePerSec: 0.000001,
-  },
   cloudflare: {
     vcpuRatePerSec: 0.0000065,
     ramGbRatePerSec: 0.000001,
   },
-  doks: {
-    vcpuRatePerSec: 0.000020,
-    ramGbRatePerSec: 0.000005,
-  },
 };
 
 const BASE_HOURLY_RATES: Record<string, number> = {
-  digitalocean: 0.0648, // 2 vCPU + 2048 MB standard baseline
   cloudflare: 0.0540,   // 2 vCPU + 2048 MB standard baseline
-  doks: 0.1800,         // amortized cluster node pool baseline
 };
 
 const RUNNER_NAMES: Record<string, string> = {
-  digitalocean: 'DigitalOcean Managed Agents (Firecracker microVM)',
   cloudflare: 'Cloudflare Containers (Edge OCI Sandbox)',
-  doks: 'DOKS Legacy Kubernetes Worker Pod',
 };
 
 /**
@@ -104,10 +87,10 @@ export function calculateRunnerCost(options: CalculateRunnerCostOptions): Runner
   const durationMs = Math.max(0, options.durationMs || 0);
   const vcpus = options.vcpus ?? 2;
   const memoryMb = options.memoryMb ?? 2048;
-  const runnerType = (options.runnerType || 'digitalocean').toLowerCase();
+  const runnerType = (options.runnerType || 'cloudflare').toLowerCase();
 
   const isKnownRunner = Boolean(HOURLY_RATES[runnerType]);
-  const rateConfig = HOURLY_RATES[runnerType] || HOURLY_RATES.digitalocean;
+  const rateConfig = HOURLY_RATES[runnerType] || HOURLY_RATES.cloudflare;
   const runnerName = RUNNER_NAMES[runnerType] || `Managed Runner (${runnerType})`;
 
   // Minimum billable time: 1000ms (1 second)

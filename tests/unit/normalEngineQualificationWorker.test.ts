@@ -61,6 +61,7 @@ const VALID_ENV: NodeJS.ProcessEnv = {
   REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH: 'policy/review-yeti.json',
   REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256: 'b'.repeat(64),
 };
+const CLOUDFLARE_TEST_ROUTE = 'https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1';
 
 function providerCapturePersistenceStub() {
   return vi.fn(async (_capture: unknown, binding: NormalEngineProviderCaptureBinding) => ({
@@ -213,8 +214,8 @@ function providerFailureEnvironment(): { env: NodeJS.ProcessEnv; baseUrl: string
   } });
   const source = { repositoryId: 73099, repository: 'synthetic/policy-target', sha: 'a'.repeat(40),
     path: 'policy/review-yeti.json', contentDigest: createHash('sha256').update(policyContent).digest('hex') };
-  const baseUrl = 'https://gateway.example.invalid/v1';
-  const model = 'pr-reviewer';
+  const baseUrl = CLOUDFLARE_TEST_ROUTE;
+  const model = 'qualification-test-model';
   const prepared = preparePublishingPolicy({ source, content: policyContent }, { baseUrl, model },
     { owner: 'synthetic', repo: 'policy-target' });
   const env: NodeJS.ProcessEnv = {
@@ -233,11 +234,11 @@ function providerFailureEnvironment(): { env: NodeJS.ProcessEnv; baseUrl: string
     REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH: source.path,
     REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256: source.contentDigest,
     REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: 'synthetic/policy-target',
-    OPENAI_BASE_URL: baseUrl,
+    CLOUDFLARE_AIG_BASE_URL: baseUrl,
     REVIEW_MODEL: model,
   };
-  Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: false,
-    get() { throw new Error('provisioned Bifrost key must not be read by provider-failure arm'); } });
+  Object.defineProperty(env, 'CLOUDFLARE_AIG_RUN_TOKEN', { configurable: true, enumerable: false,
+    get() { throw new Error('provisioned Run token must not be read by provider-failure arm'); } });
   return { env, baseUrl, model };
 }
 
@@ -249,7 +250,7 @@ describe('normal engine qualification source and capture', () => {
     } });
     const source = { repositoryId: 73099, repository: 'synthetic/policy-target', sha: 'a'.repeat(40),
       path: 'policy/review-yeti.json', contentDigest: createHash('sha256').update(policyContent).digest('hex') };
-    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'qualification-primary' };
+    const transport = { baseUrl: CLOUDFLARE_TEST_ROUTE, model: 'qualification-primary' };
     const prepared = preparePublishingPolicy({ source, content: policyContent }, transport,
       { owner: 'synthetic', repo: 'policy-target' });
     const env: NodeJS.ProcessEnv = { ...VALID_ENV,
@@ -266,7 +267,7 @@ describe('normal engine qualification source and capture', () => {
       REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH: source.path,
       REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256: source.contentDigest,
       REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: 'synthetic/policy-target',
-      OPENAI_BASE_URL: transport.baseUrl, OPENAI_API_KEY: 'qualification-test-key', REVIEW_MODEL: transport.model,
+      CLOUDFLARE_AIG_BASE_URL: transport.baseUrl, CLOUDFLARE_AIG_RUN_TOKEN: 'qualification-test-key', REVIEW_MODEL: transport.model,
     };
     let publisherCalls = 0;
     const fetcher = vi.fn(async () => { throw new Error('source preflight must not call the model'); });
@@ -298,7 +299,7 @@ describe('normal engine qualification source and capture', () => {
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUN_ID = 'nq_abcdef0123456789abcdef0123456789';
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_CASE_ID = 'ws5-r2-c004';
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'preflight-source-coverage-control';
-    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+    Object.defineProperty(env, 'CLOUDFLARE_AIG_RUN_TOKEN', { configurable: true, enumerable: true, writable: true,
       value: 'qualification-test-key' });
     const coveragePath = normalEngineQualificationCoverageControlPathForCase('ws5-r2-c004');
     expect(coveragePath).toBe('src/queue/selector.ts');
@@ -341,7 +342,7 @@ describe('normal engine qualification source and capture', () => {
 
   it('treats required v2 history transport failure as incomplete before task planning and all model calls', async () => {
     const { env } = providerFailureEnvironment();
-    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+    Object.defineProperty(env, 'CLOUDFLARE_AIG_RUN_TOKEN', { configurable: true, enumerable: true, writable: true,
       value: 'qualification-test-key' });
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUN_ID = 'nq_abcdef0123456789abcdef0123456789';
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_CASE_ID = 'ws5-current-1dd-v2-sequence-b';
@@ -374,7 +375,7 @@ describe('normal engine qualification source and capture', () => {
 
   it('treats required v3 history transport failure as incomplete before source diff planning and all model calls', async () => {
     const { env } = providerFailureEnvironment();
-    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+    Object.defineProperty(env, 'CLOUDFLARE_AIG_RUN_TOKEN', { configurable: true, enumerable: true, writable: true,
       value: 'qualification-test-key' });
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUN_ID = 'nq_abcdef0123456789abcdef0123456789';
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_CASE_ID = 'ws5-r2-c003';
@@ -661,7 +662,7 @@ describe('normal engine qualification source and capture', () => {
     } });
     const source = { repositoryId: 73099, repository: 'synthetic/policy-target', sha: 'a'.repeat(40),
       path: 'policy/review-yeti.json', contentDigest: createHash('sha256').update(policyContent).digest('hex') };
-    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'qualification-primary' };
+    const transport = { baseUrl: CLOUDFLARE_TEST_ROUTE, model: 'qualification-primary' };
     const prepared = preparePublishingPolicy({ source, content: policyContent }, transport,
       { owner: 'synthetic', repo: 'policy-target' });
     const caseEnv: NodeJS.ProcessEnv = { ...VALID_ENV,
@@ -679,7 +680,7 @@ describe('normal engine qualification source and capture', () => {
       REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH: source.path,
       REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256: source.contentDigest,
       REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: 'synthetic/policy-target',
-      OPENAI_BASE_URL: transport.baseUrl, OPENAI_API_KEY: 'qualification-test-key', REVIEW_MODEL: transport.model,
+      CLOUDFLARE_AIG_BASE_URL: transport.baseUrl, CLOUDFLARE_AIG_RUN_TOKEN: 'qualification-test-key', REVIEW_MODEL: transport.model,
     };
     const request = parseNormalEngineQualificationRequest(caseEnv);
     const sourceInput = buildNormalEngineQualificationSourceInput(request);
@@ -752,7 +753,7 @@ describe('normal engine qualification source and capture', () => {
     } });
     const source = { repositoryId: 73099, repository: 'synthetic/policy-target', sha: 'a'.repeat(40),
       path: 'policy/review-yeti.json', contentDigest: createHash('sha256').update(policyContent).digest('hex') };
-    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'qualification-primary' };
+    const transport = { baseUrl: CLOUDFLARE_TEST_ROUTE, model: 'qualification-primary' };
     const prepared = preparePublishingPolicy({ source, content: policyContent }, transport,
       { owner: 'synthetic', repo: 'policy-target' });
     const caseEnv: NodeJS.ProcessEnv = { ...VALID_ENV,
@@ -770,7 +771,7 @@ describe('normal engine qualification source and capture', () => {
       REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_PATH: source.path,
       REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_SOURCE_SHA256: source.contentDigest,
       REVIEW_NORMAL_ENGINE_QUALIFICATION_POLICY_TARGET: 'synthetic/policy-target',
-      OPENAI_BASE_URL: transport.baseUrl, OPENAI_API_KEY: 'qualification-test-key', REVIEW_MODEL: transport.model,
+      CLOUDFLARE_AIG_BASE_URL: transport.baseUrl, CLOUDFLARE_AIG_RUN_TOKEN: 'qualification-test-key', REVIEW_MODEL: transport.model,
     };
     const request = parseNormalEngineQualificationRequest(caseEnv);
     const sourceInput = buildNormalEngineQualificationSourceInput(request);
@@ -926,7 +927,7 @@ describe('normal engine qualification source and capture', () => {
       expect(fileStat.mode & 0o777).toBe(0o600);
       expect(JSON.parse(body)).toMatchObject({ schemaVersion: 'NormalEngineProviderCapture.v1',
         runId: request.runId, phase: request.phase, caseId: request.fixture.caseId, requests: [] });
-      expect(body).not.toMatch(/OPENAI_API_KEY|authorization|prompt|responseBody|hidden.reasoning/iu);
+      expect(body).not.toMatch(/CLOUDFLARE_AIG_RUN_TOKEN|cf-aig-authorization|prompt|responseBody|hidden.reasoning/iu);
       expect(replay).toMatchObject({ sha256: first.sha256, idempotent: true });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -1055,14 +1056,14 @@ describe('normal engine qualification source and capture', () => {
     }
   }, 15_000);
 
-  it('sends only the in-memory invalid sentinel for the Bifrost authentication control', async () => {
+  it('sends only the in-memory invalid sentinel for the Cloudflare Run-token authentication control', async () => {
     const { env, model } = providerFailureEnvironment();
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_CASE_ID = 'ws5-r2-c001';
     const authorizationHeaders: string[] = [];
     let physicalRequests = 0;
     const fetchImplementation: FetchImplementation = async (_input, init) => {
       physicalRequests += 1;
-      authorizationHeaders.push(new Headers(init?.headers).get('authorization') || '');
+      authorizationHeaders.push(new Headers(init?.headers).get('cf-aig-authorization') || '');
       return new Response(JSON.stringify({ error: { message: 'unauthorized' } }), {
         status: 401, headers: { 'content-type': 'application/json' },
       });
@@ -1073,10 +1074,10 @@ describe('normal engine qualification source and capture', () => {
       verifyRuntimeManifest: async () => VALID_ENV.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256!,
       providerFetchImplementation: fetchImplementation,
       runPublishingWorker: async (_workerEnv, workerDeps) => {
-        expect(_workerEnv.OPENAI_API_KEY).toBe('qualification-invalid-bifrost-inference-key');
+        expect(_workerEnv.CLOUDFLARE_AIG_RUN_TOKEN).toBe('qualification-invalid-gateway-run-token');
         await workerDeps.client!.complete({ model, messages: [{ role: 'user', content: 'synthetic fixture probe' }],
           timeoutMs: 1_000, maxRetries: 0 });
-        throw new Error('expected Bifrost authentication rejection');
+        throw new Error('expected Cloudflare Run-token authentication rejection');
       },
       persistProviderIdentifiers: async (rows) => {
         privateIdentifierRows = rows;
@@ -1089,7 +1090,7 @@ describe('normal engine qualification source and capture', () => {
     } as NormalEngineQualificationWorkerDependencies);
 
     expect(physicalRequests).toBe(1);
-    expect(authorizationHeaders).toEqual(['Bearer qualification-invalid-bifrost-inference-key']);
+    expect(authorizationHeaders).toEqual(['Bearer qualification-invalid-gateway-run-token']);
     expect(privateIdentifierRows).toEqual([expect.objectContaining({
       callerRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
       bifrostLogRequestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
@@ -1101,7 +1102,7 @@ describe('normal engine qualification source and capture', () => {
     expect(unauthorizedCapture.requests[0]?.httpStatus.value).toBe(401);
     expect(result).toMatchObject({ arm: 'provider-failure', terminal: { status: 'incomplete' },
       provider: { calls: [{ httpStatus: 401, fetchFailureClass: 'http_error', contentPersisted: false }] } });
-    expect(JSON.stringify(result)).not.toContain('qualification-invalid-bifrost-inference-key');
+    expect(JSON.stringify(result)).not.toContain('qualification-invalid-gateway-run-token');
   });
 
   it.each(['COMPOSED_ENGINE_MAX_TURNS', 'COMPOSED_ENGINE_MAX_FINDINGS', 'REVIEW_YETI_MAX_FINDINGS',
@@ -1126,13 +1127,13 @@ describe('normal engine qualification source and capture', () => {
     const { env, model } = providerFailureEnvironment();
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_CASE_ID = 'ws5-r2-c001';
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'resource-exhaustion';
-    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+    Object.defineProperty(env, 'CLOUDFLARE_AIG_RUN_TOKEN', { configurable: true, enumerable: true, writable: true,
       value: 'qualification-test-key' });
     const authorizationHeaders: string[] = [];
     let physicalRequests = 0;
     const fetchImplementation: FetchImplementation = async (_input, init) => {
       physicalRequests += 1;
-      authorizationHeaders.push(new Headers(init?.headers).get('authorization') || '');
+      authorizationHeaders.push(new Headers(init?.headers).get('cf-aig-authorization') || '');
       return new Response(JSON.stringify({ id: 'synthetic-resource-arm', model,
         choices: [{ message: { role: 'assistant', content: '{}' }, finish_reason: 'stop' }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), {
@@ -1183,7 +1184,7 @@ describe('normal engine qualification source and capture', () => {
   it('does not qualify an exhaustion arm whose first HTTP 200 cannot be decoded as a completion', async () => {
     const { env, model } = providerFailureEnvironment();
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'resource-exhaustion';
-    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+    Object.defineProperty(env, 'CLOUDFLARE_AIG_RUN_TOKEN', { configurable: true, enumerable: true, writable: true,
       value: 'qualification-test-key' });
     let physicalRequests = 0;
     const result = await runNormalEngineQualificationCase(env, {
@@ -1218,7 +1219,7 @@ describe('normal engine qualification source and capture', () => {
   it('does not follow a redirect inside the one-physical-request resource envelope', async () => {
     const { env, model } = providerFailureEnvironment();
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'resource-exhaustion';
-    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+    Object.defineProperty(env, 'CLOUDFLARE_AIG_RUN_TOKEN', { configurable: true, enumerable: true, writable: true,
       value: 'qualification-test-key' });
     let delegatedFetches = 0;
     let redirectPolicy: RequestRedirect | undefined;
@@ -1255,7 +1256,7 @@ describe('normal engine qualification source and capture', () => {
   it('fails the resource control when no physical request reaches the declared cap', async () => {
     const { env } = providerFailureEnvironment();
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'resource-exhaustion';
-    Object.defineProperty(env, 'OPENAI_API_KEY', { configurable: true, enumerable: true, writable: true,
+    Object.defineProperty(env, 'CLOUDFLARE_AIG_RUN_TOKEN', { configurable: true, enumerable: true, writable: true,
       value: 'qualification-test-key' });
     const result = await runNormalEngineQualificationCase(env, {
       verifyRuntimeManifest: async () => VALID_ENV.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256!,
@@ -1294,7 +1295,7 @@ describe('normal engine qualification source and capture', () => {
     let authorization = '';
     const fetchImplementation: FetchImplementation = async (_input, init) => {
       physicalRequests += 1;
-      authorization = new Headers(init?.headers).get('authorization') || '';
+      authorization = new Headers(init?.headers).get('cf-aig-authorization') || '';
       return new Response(JSON.stringify({ id: 'synthetic', model,
         choices: [{ message: { role: 'assistant', content: '{}' }, finish_reason: 'stop' }],
         usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), {
@@ -1320,7 +1321,7 @@ describe('normal engine qualification source and capture', () => {
     } as NormalEngineQualificationWorkerDependencies);
 
     expect(physicalRequests).toBe(1);
-    expect(authorization).toBe('Bearer qualification-invalid-bifrost-inference-key');
+    expect(authorization).toBe('Bearer qualification-invalid-gateway-run-token');
     const acceptedCapture = persistedCapture.mock.calls[0]?.[0] as { requests: Array<Record<string, any>> };
     expect(acceptedCapture.requests).toHaveLength(1);
     expect(acceptedCapture.requests[0]).toMatchObject({ physicalOrdinal: 1, status: 'response_received' });
@@ -1335,8 +1336,8 @@ describe('normal engine qualification source and capture', () => {
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_ARM = 'adjudicator-recheck';
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_CONFIG_VARIANT = 'configured-disputed-blocker-adjudicator-v1';
     env.REVIEW_NORMAL_ENGINE_QUALIFICATION_HISTORY_RUN_ID = 'nq_0123456789abcdef0123456789abcdef';
-    delete env.OPENAI_API_KEY;
-    env.OPENAI_API_KEY = 'unit-test-no-call';
+    delete env.CLOUDFLARE_AIG_RUN_TOKEN;
+    env.CLOUDFLARE_AIG_RUN_TOKEN = 'unit-test-no-call';
     const runPublishingWorker = vi.fn();
     const result = await runNormalEngineQualificationCase(env, {
       verifyRuntimeManifest: async () => VALID_ENV.REVIEW_NORMAL_ENGINE_QUALIFICATION_RUNTIME_MANIFEST_SHA256!,

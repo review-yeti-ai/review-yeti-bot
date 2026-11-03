@@ -6,8 +6,8 @@ import { describe, expect, it } from 'vitest';
 import yaml from 'js-yaml';
 
 const root = path.resolve(__dirname, '../..');
-const dispatcherImage = `registry.digitalocean.com/exampleorg/ct-review-bot@sha256:${'a'.repeat(64)}`;
-const workerImage = `registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:${'b'.repeat(64)}`;
+const dispatcherImage = `ghcr.io/review-yeti-ai/review-yeti-bot@sha256:${'a'.repeat(64)}`;
+const workerImage = `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'b'.repeat(64)}`;
 
 function documents(): Array<Record<string, any>> {
   const source = fs.readFileSync(path.join(root, 'k8s/review-job-dispatcher.yaml.tpl'), 'utf8')
@@ -305,25 +305,15 @@ describe('zero-replica review job dispatcher deployment', () => {
     expect(result.rendered).not.toContain('${');
   });
 
-  it('executes the guarded zero-replica render for trusted ghcr.io immutable images', () => {
-    const ghcrDispatcherImage = `ghcr.io/review-yeti-ai/review-yeti-bot@sha256:${'c'.repeat(64)}`;
-    const ghcrWorkerImage = `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'d'.repeat(64)}`;
-    const result = runDeployScript({
-      CT_REVIEW_JOB_DISPATCHER_IMAGE: ghcrDispatcherImage,
-      CT_REVIEW_WORKER_IMAGE: ghcrWorkerImage,
-    });
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.rendered).toContain(`image: ${ghcrDispatcherImage}`);
-    expect(result.rendered).toContain(`REVIEW_JOB_WORKER_IMAGE: "${ghcrWorkerImage}"`);
-  });
-
   it.each([
-    ['mutable dispatcher tag', { CT_REVIEW_JOB_DISPATCHER_IMAGE: 'registry.digitalocean.com/exampleorg/ct-review-bot:latest' }],
+    ['mutable dispatcher tag', { CT_REVIEW_JOB_DISPATCHER_IMAGE: 'ghcr.io/review-yeti-ai/review-yeti-bot:latest' }],
     ['untrusted dispatcher repository', { CT_REVIEW_JOB_DISPATCHER_IMAGE: `attacker.example/ct-review-bot@sha256:${'a'.repeat(64)}` }],
-    ['uppercase dispatcher digest', { CT_REVIEW_JOB_DISPATCHER_IMAGE: `registry.digitalocean.com/exampleorg/ct-review-bot@sha256:${'A'.repeat(64)}` }],
-    ['short dispatcher digest', { CT_REVIEW_JOB_DISPATCHER_IMAGE: `registry.digitalocean.com/exampleorg/ct-review-bot@sha256:${'a'.repeat(63)}` }],
-    ['mutable worker tag', { CT_REVIEW_WORKER_IMAGE: 'registry.digitalocean.com/exampleorg/review-yeti-worker:latest' }],
+    ['uppercase dispatcher digest', { CT_REVIEW_JOB_DISPATCHER_IMAGE: `ghcr.io/review-yeti-ai/review-yeti-bot@sha256:${'A'.repeat(64)}` }],
+    ['short dispatcher digest', { CT_REVIEW_JOB_DISPATCHER_IMAGE: `ghcr.io/review-yeti-ai/review-yeti-bot@sha256:${'a'.repeat(63)}` }],
+    ['mutable worker tag', { CT_REVIEW_WORKER_IMAGE: 'ghcr.io/review-yeti-ai/review-yeti-worker:latest' }],
     ['untrusted worker repository', { CT_REVIEW_WORKER_IMAGE: `attacker.example/review-yeti-worker@sha256:${'b'.repeat(64)}` }],
+    ['DigitalOcean registry dispatcher', { CT_REVIEW_JOB_DISPATCHER_IMAGE: `registry.digitalocean.com/example/review-yeti-bot@sha256:${'a'.repeat(64)}` }],
+    ['DigitalOcean registry worker', { CT_REVIEW_WORKER_IMAGE: `registry.digitalocean.com/example/review-yeti-worker@sha256:${'b'.repeat(64)}` }],
   ])('refuses %s before any Kubernetes apply', (_name, overrides) => {
     const result = runDeployScript(overrides);
     expect(result.status).toBe(2);

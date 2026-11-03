@@ -17,6 +17,7 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import { logger } from '../../src/utils/logger';
+import { TEST_CLOUDFLARE_AIG_BASE_URL, TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * REL-1092 (plan docs/superpowers/specs/2026-09-23-review-content-shrinking-and-jev-triage.md,
@@ -33,7 +34,7 @@ import { logger } from '../../src/utils/logger';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
-const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'k', model: 'review-model' };
+const transport = { baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL, apiKey: 'k', model: 'review-model' };
 const roster = (personas: string) => resolveWorkerConfig({ REVIEW_PERSONAS: personas }, transport);
 const JSON_OUTPUT = { responseFormat: { type: 'json_object' as const } };
 const smallPatch = '@@ -1 +1 @@\n-a\n+b\n';
@@ -273,7 +274,7 @@ function workerEnv(): NodeJS.ProcessEnv {
     REVIEW_REPO: 'exampleorg/example-meta', REVIEW_REPOSITORY_ID: '1339040553',
     REVIEW_POLICY_DIGEST: 'c'.repeat(64), REVIEW_CONFIG_DIGEST: 'd'.repeat(64), REVIEW_EXECUTION_ATTEMPT: '1',
     REVIEW_PR_NUMBER: '2795', REVIEW_HEAD_SHA: HEAD, REVIEW_BASE_SHA: BASE, REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1', OPENAI_API_KEY: 'vk-test', GH_TOKEN: 'ghs_test',
+    ...TEST_CLOUDFLARE_AIG_SETTINGS,  GH_TOKEN: 'ghs_test',
   };
 }
 
@@ -416,7 +417,7 @@ describe('REL-1092: the service acknowledges the worker completion (no ack misma
       REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest, REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
       REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport: preparedTransport }),
       REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
-      REVIEW_MODEL: preparedTransport.model, OPENAI_BASE_URL: preparedTransport.baseUrl, OPENAI_API_KEY: 'vk_fake',
+      REVIEW_MODEL: preparedTransport.model, ...TEST_CLOUDFLARE_AIG_SETTINGS,
       GH_TOKEN: 'ghs_fake', GITHUB_PUBLISH_TOKEN: 'ghs_fake', REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
     }, deps);
 

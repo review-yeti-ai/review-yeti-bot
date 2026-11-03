@@ -226,6 +226,7 @@ export interface ReviewModelClient {
 export interface OpenRouterClientOptions {
   baseUrl?: string;
   apiKey?: string;
+  authorizationHeaderName?: 'authorization' | 'cf-aig-authorization';
   fetchImplementation?: FetchImplementation;
   /** @deprecated Use fetchImplementation. */
   fetchImpl?: FetchImplementation;
@@ -306,7 +307,7 @@ export function buildOpenRouterChatRequest(request: OpenRouterRequest): Record<s
     ...(request.models !== undefined ? { models: request.models.map(normalizeOpenRouterModel) } : {}),
     messages: request.flattenContentBlocks ? flattenMessageContent(request.messages) : request.messages,
     stream,
-    // REL-1105: OpenAI-spec gateways (the LiteLLM optimizer in front of Bifrost) put `usage` on a
+    // REL-1105: OpenAI-compatible gateways may put `usage` on a
     // streamed completion only when the client asks for it. Without this every review reports 0
     // tokens. Never sent on non-streaming requests, where OpenAI rejects it.
     ...(stream ? { stream_options: { include_usage: true } } : {}),
@@ -438,8 +439,8 @@ export function normalizeOpenRouterModel(model: string): string {
     // Deliberately NO bare 'glm-5.3-flash' entry. This table is applied to every request
     // regardless of which gateway the client points at, so a bare id mapped here is rewritten
     // for non-OpenRouter transports too. `glm-5.3-flash` is now the default synthetic model and
-    // is the literal id opencode and bifrost expect; aliasing it to `z-ai/glm-5.3-flash` made
-    // those transports answer `HTTP 401: Model z-ai/glm-5.3-flash is not supported`. Namespaced
+    // is the literal id other compatible transports expect; aliasing it to
+    // `z-ai/glm-5.3-flash` made those transports answer `HTTP 401: Model z-ai/glm-5.3-flash is not supported`. Namespaced
     // ids are safe to map because they are never what a non-OpenRouter gateway is asked for.
     // (The pre-existing bare 'glm-5.2' entry below has the same hazard; it is left as-is because
     // nothing defaults to it any more, but it should not be copied.)
@@ -1691,54 +1692,10 @@ function normalizeSdkResponse(response: any, rawUsage?: any): any {
   };
 }
 
-/**
- * REL-1115: Review Yeti takes no MCP tools from the gateway.
- *
- * Bifrost injects every MCP tool the calling virtual key is granted into each
- * completion. Through the litellm optimizer, Review Yeti's calls briefly ran
- * under a shared key with 880 tools: a median of ~208k prompt tokens per call,
- * against 16k before. The review-yeti key itself holds four MCP grants, and in
- * 1,202 pre-optimizer calls no MCP tool was ever called. An EMPTY
- * `x-bf-mcp-include-tools` narrows the key's grant to no tool (Bifrost
- * governance can only narrow a grant, never widen it). On the live gateway the
- * same tiny prompt cost 37 prompt tokens with it and ~197k without. The review
- * lane's own function tools travel in the request body and are unaffected.
- *
- * It is set after caller metadata, so metadata cannot re-open injection. Other
- * gateways ignore an unknown x- header.
- */
-export const GATEWAY_MCP_INCLUDE_TOOLS_HEADER = 'x-bf-mcp-include-tools';
-export const GATEWAY_MCP_INCLUDE_TOOLS_NONE = '';
-
-/**
- * Gateway request-policy headers Review Yeti pins on every model call, on both
- * the SDK and streaming paths. This table is the single source of truth.
- *
- * REL-1134 (operator decision 2026-09-25, final): Review Yeti does not opt out
- * of Bifrost's response cache, so no x-bf-cache-* header belongs here. It goes
- * through the cache and Headroom/Laya compaction like every other caller. The
- * gateway cache runs in direct-only mode (dimension 1, no embedding provider).
- * A hit needs an exact hash match on provider, model, cache key, the full
- * request (system prompt included) and its params. It is not a similarity
- * match, so a hit only replays a completion for a byte-identical request. The
- * gateway side is exampleorg/example-infra#868.
- */
-export const GATEWAY_POLICY_HEADERS: Readonly<Record<string, string>> = Object.freeze({
-  [GATEWAY_MCP_INCLUDE_TOOLS_HEADER]: GATEWAY_MCP_INCLUDE_TOOLS_NONE,
-});
-
-/** Pin the policy headers on a plain header record, first removing any case variant set by the caller. */
-function applyGatewayPolicyHeaders(headers: Record<string, string>): void {
-  const policy = new Set(Object.keys(GATEWAY_POLICY_HEADERS));
-  for (const name of Object.keys(headers)) {
-    if (policy.has(name.toLowerCase())) delete headers[name];
-  }
-  Object.assign(headers, GATEWAY_POLICY_HEADERS);
-}
-
 async function createOpenRouterSdkClient(options: {
   baseUrl: string;
   apiKey: string;
+  authorizationHeaderName: 'authorization' | 'cf-aig-authorization';
   fetchImplementation: FetchImplementation;
   onGenerationId?: (value: string) => void;
   onRetryAfter?: (value: RetryAfter | undefined) => void;
@@ -1749,7 +1706,15 @@ async function createOpenRouterSdkClient(options: {
     fetcher: async (sdkRequest: Request) => {
       const body = sdkRequest.body ? await sdkRequest.clone().text() : undefined;
       const headers = new Headers(sdkRequest.headers);
-      for (const [name, value] of Object.entries(GATEWAY_POLICY_HEADERS)) headers.set(name, value);
+      headers.delete('authorization');
+      headers.delete('cf-aig-authorization');
+      headers.set(options.authorizationHeaderName, `Bearer ${options.apiKey}`);
+      if (options.authorizationHeaderName === 'cf-aig-authorization') {
+        for (const name of Array.from(headers.keys())) {
+          const lower = name.toLowerCase();
+          if (lower.startsWith('x-openrouter-') || lower.startsWith('x-bf-')) headers.delete(name);
+        }
+      }
       let response = await options.fetchImplementation(sdkRequest.url, {
         method: sdkRequest.method,
         headers,
@@ -1916,14 +1881,9 @@ export function isTransientGatewayError(error: unknown): boolean {
 /**
  * Name the upstream that actually answered.
  *
- * This client is OpenAI-compatible and is pointed at both OpenRouter and the
- * Bifrost gateway; Bifrost in turn routes to whatever provider its virtual key
- * resolves to (ollama, gemini, ...). Hardcoding "OpenRouter" into every failure
- * message is actively misleading: on 2026-09-17 it sent an outage investigation
- * at an OpenRouter balance while the real blocker was Ollama out of credits.
- *
- * Prefer the provider Bifrost reports in `extra_fields.routing_info`, then fall
- * back to the configured host.
+ * The response may carry provider routing information; prefer it when present
+ * and otherwise identify the configured host. This avoids labeling every
+ * compatible transport as OpenRouter.
  */
 function extractRoutingInfo(candidate: any): any {
   return candidate?.extra_fields?.routing_info
@@ -1950,10 +1910,11 @@ export function upstreamLabel(baseUrl: string, parsedBody?: unknown): string {
   }
 }
 
-/** OpenAI-compatible model boundary pinned to OpenRouter for review execution. */
+/** OpenAI-compatible model boundary used by configured review transports. */
 export class OpenRouterClient implements ReviewModelClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
+  private readonly authorizationHeaderName: 'authorization' | 'cf-aig-authorization';
   private readonly fetchImplementation: FetchImplementation;
   private readonly now: () => number;
   readonly maxRetries: number;
@@ -1965,6 +1926,10 @@ export class OpenRouterClient implements ReviewModelClient {
   constructor(options: OpenRouterClientOptions = {}) {
     this.baseUrl = (options.baseUrl || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
     this.apiKey = options.apiKey || process.env.OPENROUTER_API_KEY || '';
+    this.authorizationHeaderName = options.authorizationHeaderName || 'authorization';
+    if (!['authorization', 'cf-aig-authorization'].includes(this.authorizationHeaderName)) {
+      throw new TypeError('unsupported gateway authentication header');
+    }
     this.fetchImplementation = options.fetchImplementation || options.fetchImpl || ((input, init) => globalThis.fetch(input, init));
     this.now = options.now || Date.now;
     this.maxRetries = options.maxRetries !== undefined
@@ -1982,7 +1947,7 @@ export class OpenRouterClient implements ReviewModelClient {
 
   private async completeInternal(request: OpenRouterRequest): Promise<OpenRouterResponse> {
     if (!this.apiKey.trim()) {
-      throw new OpenRouterConnectionError('OPENROUTER_API_KEY is required; review execution has no offline model fallback');
+      throw new OpenRouterConnectionError('model gateway credential is required; review execution has no offline model fallback');
     }
     if (!Number.isFinite(request.timeoutMs) || request.timeoutMs <= 0) {
       throw new TypeError(`OpenRouter request requires a positive timeoutMs; received ${String(request.timeoutMs)}`);
@@ -2116,18 +2081,29 @@ export class OpenRouterClient implements ReviewModelClient {
           throw new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
         }
         const headers: Record<string, string> = {
-          'authorization': `Bearer ${this.apiKey}`,
           'content-type': 'application/json',
           'accept': 'text/event-stream',
           'user-agent': 'speakeasy-sdk/typescript 1.2.80 2.914.0 1.0.0 @openrouter/sdk',
-          'x-openrouter-metadata': 'enabled',
         };
         if (request.metadata && typeof request.metadata === 'object') {
           for (const [k, v] of Object.entries(request.metadata)) {
             if (typeof v === 'string') headers[k] = v;
           }
         }
-        applyGatewayPolicyHeaders(headers);
+        for (const name of Object.keys(headers)) {
+          if (name.toLowerCase() === 'authorization' || name.toLowerCase() === 'cf-aig-authorization') delete headers[name];
+        }
+        headers[this.authorizationHeaderName] = `Bearer ${this.apiKey}`;
+        if (this.authorizationHeaderName === 'cf-aig-authorization') {
+          for (const name of Object.keys(headers)) {
+            const lower = name.toLowerCase();
+            if (lower.startsWith('x-openrouter-') || lower.startsWith('x-bf-')) {
+              delete headers[name];
+            }
+          }
+        } else {
+          headers['x-openrouter-metadata'] = 'enabled';
+        }
         const body = JSON.stringify(buildOpenRouterChatRequest({ ...request, stream: true }));
         let response = await raceWithAbort(
           fetchForAttempt(`${this.baseUrl}/chat/completions`, {
@@ -2256,6 +2232,7 @@ export class OpenRouterClient implements ReviewModelClient {
           createOpenRouterSdkClient({
             baseUrl: this.baseUrl,
             apiKey: this.apiKey,
+            authorizationHeaderName: this.authorizationHeaderName,
             fetchImplementation: fetchForAttempt,
             onGenerationId: (value) => { generationId = value; },
             onRetryAfter: (value) => { sdkRetryAfter = value; },

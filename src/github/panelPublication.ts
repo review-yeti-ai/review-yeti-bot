@@ -4,6 +4,7 @@ import { ACTIONABLE_SEVERITIES as SHARED_ACTIONABLE_SEVERITIES, INLINE_SEVERITIE
 import type { PublicationChangedFile } from '../review/findingPublication';
 import type { PanelFinding, PersonaLaneResult } from '../panel/panelEngine';
 import type { PublishInlineCommentRequest } from './commentPublisher';
+import { meetsMinimumSeverity } from '../config/schema';
 
 export const PERSONA_ISSUE_MARKER_PREFIX = '<!-- ct-review-persona';
 export const FINAL_REVIEW_MARKER_PREFIX = '<!-- ct-review-final';
@@ -19,6 +20,7 @@ export type FindingWithPersona = PanelFinding & { persona: string };
 export interface DedupeOptions {
   max?: number;
   severities?: Iterable<string>;
+  minSeverity?: string;
 }
 
 function normalizeTitle(title: string): string {
@@ -59,6 +61,7 @@ export function dedupeActionableFindings(
   for (const raw of findings) {
     const severity = String(raw.severity || 'P2').toUpperCase();
     if (!allowed.has(severity)) continue;
+    if (options.minSeverity && !meetsMinimumSeverity(severity, options.minSeverity)) continue;
     if (!raw.path || !Number.isFinite(Number(raw.line)) || Number(raw.line) < 1) continue;
 
     const finding: FindingWithPersona = {
@@ -185,12 +188,16 @@ export function buildFinalInlineComments(options: {
   findings: FindingWithPersona[];
   changedFiles?: PublicationChangedFile[];
   max?: number;
+  minSeverity?: string;
   owner?: string;
   repo?: string;
   prNumber?: number;
   commitSha?: string;
 }): PublishInlineCommentRequest[] {
-  const deduped = dedupeActionableFindings(options.findings, { max: options.max });
+  const deduped = dedupeActionableFindings(options.findings, {
+    max: options.max,
+    ...(options.minSeverity ? { minSeverity: options.minSeverity } : {}),
+  });
   const changedFiles = options.changedFiles ?? deduped.map(finding => ({ path: finding.path }));
   const plan = planFindingPublication(deduped, changedFiles);
   // Keep App-only display metadata alongside the canonical publication result. Index both

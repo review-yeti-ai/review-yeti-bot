@@ -43,7 +43,7 @@ describe('Review Yeti E2E Test Suite', () => {
   // fileParallelism on, where the spawn competes with the other workers. `helm lint` timing out
   // at 5000ms is what reddened main at 67fb09e.
   const HELM_TIMEOUT_MS = 60_000;
-  const hasCloudValues = fs.existsSync(repoPath('examples/k8s/values-doks.yaml'));
+  const hasCloudValues = fs.existsSync(repoPath('examples/k8s/values-eks.yaml'));
   const hasHelmGuide = fs.existsSync(repoPath('docs/HELM_GUIDE.md'));
   const hasTroubleshooting = fs.existsSync(repoPath('docs/TROUBLESHOOTING.md'));
 
@@ -103,9 +103,9 @@ describe('Review Yeti E2E Test Suite', () => {
         expect(actionStep.with?.['github-token']).toMatch(/steps\.(app-token|.+)\.outputs\.token/);
       });
 
-      it('Feature 3: kubernetes-dispatch.yml sets id-token: write and execution-backend: doks', () => {
-        const filePath = repoPath('examples/workflows/kubernetes-dispatch.yml');
-        expect(fs.existsSync(filePath), 'kubernetes-dispatch.yml must exist').toBe(true);
+      it('Feature 3: edge-dispatch.yml sets id-token: write and execution-backend: edge', () => {
+        const filePath = repoPath('examples/workflows/edge-dispatch.yml');
+        expect(fs.existsSync(filePath), 'edge-dispatch.yml must exist').toBe(true);
 
         const content = fs.readFileSync(filePath, 'utf-8');
         const doc = yaml.load(content) as Record<string, any>;
@@ -117,8 +117,8 @@ describe('Review Yeti E2E Test Suite', () => {
         expect(steps).toBeDefined();
         const dispatchStep = steps.find((s) => s.uses && s.uses.includes('review-yeti-bot'));
         expect(dispatchStep).toBeDefined();
-        expect(dispatchStep.with?.['execution-backend']).toBe('doks');
-        expect(dispatchStep.with?.['doks-dispatch-url']).toBeDefined();
+        expect(dispatchStep.with?.['execution-backend']).toBe('edge');
+        expect(dispatchStep.with?.['dispatch-url']).toBeDefined();
       });
 
       it('Feature 4: reusable-hub.yml defines workflow_call and workflow_dispatch interfaces', () => {
@@ -270,7 +270,7 @@ describe('Review Yeti E2E Test Suite', () => {
         const content = fs.readFileSync(filePath, 'utf-8');
         expect(content).toContain('standalone-action.yml');
         expect(content).toContain('github-app-action.yml');
-        expect(content).toContain('kubernetes-dispatch.yml');
+        expect(content).toContain('edge-dispatch.yml');
         expect(content).toContain('reusable-hub.yml');
         expect(content).toContain('consumer-caller.yml');
         expect(content).toContain('incremental-review.yml');
@@ -548,18 +548,12 @@ enabled: true
       expect(opSec?.runAsNonRoot).toBe(true);
     }, HELM_TIMEOUT_MS);
 
-    it.skipIf(!canRunHelm || !hasCloudValues)('renders DOKS cloud values with DO Block Storage CSI and DO LoadBalancer Ingress', () => {
-      const output = execSync('helm template review-yeti charts/review-yeti -f examples/k8s/values-doks.yaml', {
+    it.skipIf(!canRunHelm || !hasCloudValues)('renders cloud values with a namespace-scoped operator Role and no ClusterRole', () => {
+      const output = execSync('helm template review-yeti charts/review-yeti -f examples/k8s/values-eks.yaml', {
         cwd: REPO_ROOT,
         encoding: 'utf-8',
       });
       const docs = yaml.loadAll(output).filter((d) => d && typeof d === 'object') as Record<string, any>[];
-
-      // Ingress check
-      const ingress = docs.find((d) => d.kind === 'Ingress');
-      expect(ingress).toBeDefined();
-      expect(ingress?.spec?.ingressClassName).toBe('nginx');
-      expect(JSON.stringify(ingress?.metadata?.annotations)).toContain('service.beta.kubernetes.io/do-loadbalancer');
 
       // Operator Role check (namespace-scoped, no nodes, no Secret mutation).
       // The operator reads only the exact run Secret for authenticated receipt
@@ -679,13 +673,7 @@ enabled: true
       } catch (err: any) {
         result = '';
       }
-      // REL-1097: the chart CRD is a byte-identical copy of the controller-gen
-      // output (pinned by tests/unit/chartCrdGenerated.test.ts), whose
-      // workerImage pattern admits the production worker registry. That one
-      // generated line is the only permitted mention; anything else still fails.
-      const permitted = /^charts\/review-yeti\/files\/review-yeti\.ai_prreviewjobs\.yaml:\d+:\s*pattern: .*registry\\\.digitalocean\\\.com\/exampleorg\/review-yeti-worker\)@sha256/u;
-      const leaks = result.trim().split('\n').filter((line) => line && !permitted.test(line));
-      expect(leaks, 'charts/ must have 0 exampleorg mentions').toEqual([]);
+      expect(result.trim(), 'charts/ must have 0 exampleorg mentions').toBe('');
     });
 
     it.skipIf(!hasHelmGuide || !hasTroubleshooting)('Feature 25: zero "exampleorg" occurrences in newly authored docs', () => {
@@ -703,7 +691,7 @@ enabled: true
       const m1Files = [
         'examples/workflows/standalone-action.yml',
         'examples/workflows/github-app-action.yml',
-        'examples/workflows/kubernetes-dispatch.yml',
+        'examples/workflows/edge-dispatch.yml',
         'examples/workflows/reusable-hub.yml',
         'examples/workflows/consumer-caller.yml',
         'examples/workflows/incremental-review.yml',

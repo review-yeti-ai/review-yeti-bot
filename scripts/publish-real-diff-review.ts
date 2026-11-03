@@ -235,7 +235,7 @@ async function executeRealDiffReview(owner: string, repo: string, prNumber: numb
     '    autonumber',
     '    actor Developer',
     '    participant GitHub as GitHub Webhook',
-    '    participant Bot as ct-review-bot (DOKS)',
+    '    participant Bot as ct-review-bot (Kubernetes)',
     '    participant Quorum as Persona Panel',
     '    ',
     '    Developer->>GitHub: Git Push (PR #1438)',

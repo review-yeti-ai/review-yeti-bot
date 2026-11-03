@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { parseAndValidateConfig } from '../../src/config/configLoader';
 import { actionDispatchRequestSchema } from '../../src/review/actionDispatch';
-import { buildDispatchRequest } from '../../scripts/dispatch-doks-action.mjs';
+import { buildDispatchRequest } from '../../scripts/dispatch-review-action.mjs';
 
 // Unit test suite verifying hierarchical passthrough of skills, knowledge, metrics,
-// and retry analysis configurations across .ct-review.yaml, Action inputs, and DOKS dispatch.
+// and retry analysis configurations across .ct-review.yaml, Action inputs, and review dispatch.
 describe('configuration passthrough for skills, knowledge, metrics, and retry analysis', () => {
   it('preserves top-level skills, knowledge, metrics, and retry_analysis from YAML', () => {
     const yaml = `
@@ -189,7 +189,7 @@ reviewers:
       GITHUB_RUN_ID: '987654',
       GITHUB_RUN_ATTEMPT: '1',
       GITHUB_EVENT_NAME: 'pull_request_target',
-      DOKS_PUBLISH_MODE: 'app-gate',
+      DISPATCH_PUBLISH_MODE: 'app-gate',
       PERSONAS: 'security,performance',
       SKILLS: '["cisco-xcc", "jtapi-expert"]',
       KNOWLEDGE: 'knowledge/review-learnings/',
@@ -217,7 +217,7 @@ reviewers:
       GITHUB_RUN_ID: '987654',
       GITHUB_RUN_ATTEMPT: '1',
       GITHUB_EVENT_NAME: 'pull_request_target',
-      DOKS_PUBLISH_MODE: 'app-gate',
+      DISPATCH_PUBLISH_MODE: 'app-gate',
       POLICY_SKILLS: 'fallback-skill',
       POLICY_KNOWLEDGE: 'fallback-knowledge',
       POLICY_METRICS: 'fallback-metrics',
@@ -243,7 +243,7 @@ reviewers:
       GITHUB_RUN_ID: '987654',
       GITHUB_RUN_ATTEMPT: '1',
       GITHUB_EVENT_NAME: 'pull_request_target',
-      DOKS_PUBLISH_MODE: 'app-gate',
+      DISPATCH_PUBLISH_MODE: 'app-gate',
       SKILLS: 'primary-skill',
       POLICY_SKILLS: 'fallback-skill',
       KNOWLEDGE: 'primary-knowledge',
@@ -266,7 +266,7 @@ reviewers:
       GITHUB_RUN_ID: '987654',
       GITHUB_RUN_ATTEMPT: '1',
       GITHUB_EVENT_NAME: 'pull_request_target',
-      DOKS_PUBLISH_MODE: 'app-gate',
+      DISPATCH_PUBLISH_MODE: 'app-gate',
     };
 
     // 1. Valid object parsed and explicit input overrides POLICY_JSON key
@@ -311,7 +311,7 @@ reviewers:
       GITHUB_RUN_ID: '987654',
       GITHUB_RUN_ATTEMPT: '1',
       GITHUB_EVENT_NAME: 'pull_request_target',
-      DOKS_PUBLISH_MODE: 'app-gate',
+      DISPATCH_PUBLISH_MODE: 'app-gate',
     };
 
     const request = buildDispatchRequest(env);

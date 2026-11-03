@@ -200,7 +200,7 @@ export const getAnalyticsDashboardTool: McpToolHandler = {
       `| **Block Rate (P0)** | **${kpi.blockRatePercent}%** | < 10% critical safety gate |\n` +
       `| **Average Turn Duration** | **${formatDuration(kpi.avgReviewDurationMs)}** | < 30s target |\n` +
       `| **R2 Workspace Cache Hit Rate** | **${kpi.r2CacheHitRatePercent}%** | > 90% (sub-1.5s unpack) |\n` +
-      `| **Total Cloud Compute Spend** | **${formatCostUsd(kpi.totalSpendUSD)} USD** | > 85% savings vs DOKS |\n` +
+      `| **Total Cloud Compute Spend** | **${formatCostUsd(kpi.totalSpendUSD)} USD** | Budget-tracked |\n` +
       `| **Total Tokens Consumed** | **${(kpi.totalTokens / 1_000_000).toFixed(2)}M tokens** | Efficient diff targeting |\n\n` +
       `#### 🚨 Top Rule Violations\n` +
       dashboard.topViolatedRules

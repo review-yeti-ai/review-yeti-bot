@@ -11,7 +11,7 @@ examples/
 ├── workflows/                         # GitHub Actions workflow templates
 │   ├── standalone-action.yml          # Single-repo standalone action using OpenRouter/DeepSeek
 │   ├── github-app-action.yml          # Authenticated via GitHub App token for native Check Runs
-│   ├── kubernetes-dispatch.yml        # Asynchronous dispatch shim (< 10s runner time) offloading to K8s
+│   ├── edge-dispatch.yml              # Asynchronous dispatch shim (< 10s runner time) offloading to the Cloudflare edge
 │   ├── reusable-hub.yml               # Central reusable workflow (workflow_call + workflow_dispatch)
 │   ├── consumer-caller.yml            # Minimal 5-line caller workflow for consumer repositories
 │   └── incremental-review.yml         # Incremental review evaluating only repair deltas
@@ -80,7 +80,7 @@ Open or update any pull request in your repository. The Review Yeti panel will a
 | :--- | :--- | :--- | :--- | :--- |
 | [`standalone-action.yml`](workflows/standalone-action.yml) | Standard single-repository setup executing reviews directly on GitHub runners. | `pull_request: [opened, synchronize, reopened]` | ~1–3 min | `contents: read`, `pull-requests: write`<br>`OPENROUTER_API_KEY` |
 | [`github-app-action.yml`](workflows/github-app-action.yml) | Enterprise repositories requiring native Check Runs and distinct bot branding. | `pull_request: [opened, synchronize, reopened]` | ~1–3 min | `contents: read`, `pull-requests: write`, `checks: write`, `statuses: write`<br>`REVIEW_YETI_APP_ID`, `REVIEW_YETI_APP_PRIVATE_KEY`, `OPENROUTER_API_KEY` |
-| [`kubernetes-dispatch.yml`](workflows/kubernetes-dispatch.yml) | High-volume enterprises offloading LLM execution to self-hosted Kubernetes clusters. | `pull_request: [opened, synchronize, reopened]` | **< 10 sec** | `id-token: write` (OIDC), `contents: read`, `pull-requests: read`<br>`REVIEW_YETI_DISPATCH_URL` variable |
+| [`edge-dispatch.yml`](workflows/edge-dispatch.yml) | High-volume enterprises offloading LLM execution to the Cloudflare edge. | `pull_request: [opened, synchronize, reopened]` | **< 10 sec** | `id-token: write` (OIDC), `contents: read`, `pull-requests: read`<br>`REVIEW_YETI_DISPATCH_URL` variable |
 | [`reusable-hub.yml`](workflows/reusable-hub.yml) | Centralized workflow for organizations to manage AI review policies and models centrally. | `workflow_call`, `workflow_dispatch` | ~1–3 min | Inherited or caller-defined permissions<br>`OPENROUTER_API_KEY`, optional `REVIEW_BOT_GITHUB_TOKEN` |
 | [`consumer-caller.yml`](workflows/consumer-caller.yml) | Minimal 5-line caller workflow that connects repositories to an organization's central hub. | `pull_request` | N/A (calls hub) | `secrets: inherit` |
 | [`incremental-review.yml`](workflows/incremental-review.yml) | Fast, cost-efficient reviews on PR updates by evaluating only repair deltas since the prior push. | `pull_request: [opened, synchronize]` | ~30–60 sec | `contents: read`, `pull-requests: write`, `actions: read`<br>`OPENROUTER_API_KEY` |
@@ -126,8 +126,8 @@ To prevent malicious pull requests from tampering with review instructions or di
 - **Default `GITHUB_TOKEN`**: Sufficient for standalone reviews. Comments are published under the `github-actions[bot]` identity.
 - **GitHub App Token**: Recommended for enterprise teams. Enables native Check Runs, distinct bot avatar branding, organization-wide secret management, and avoids triggering secondary workflow loops.
 
-### 3. Asynchronous Kubernetes Dispatch Shim
+### 3. Asynchronous Edge Dispatch Shim
 For organizations concerned about GitHub Actions runner billing or runner concurrency limits:
-- The `kubernetes-dispatch.yml` workflow exchanges a short-lived GitHub Actions OIDC token with the Review Yeti Kubernetes Dispatcher.
+- The `edge-dispatch.yml` workflow exchanges a short-lived GitHub Actions OIDC token with the Review Yeti Cloudflare edge.
 - The dispatch shim exits in **under 10 seconds**, setting the GitHub PR check run to `PENDING`.
-- Self-hosted ephemeral Kubernetes worker pods execute the LLM panel asynchronously and publish results directly back to GitHub via GitHub App credentials.
+- Ephemeral Cloudflare Container runners execute the LLM panel asynchronously and publish results back to GitHub via GitHub App credentials.

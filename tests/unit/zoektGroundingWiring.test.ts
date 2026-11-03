@@ -4,6 +4,7 @@ import { mergeZoektToolConfig } from '../../src/panel/panelEngine';
 import * as zoektGroundingModule from '../../src/mcp/zoektGrounding';
 import { initTelemetry, getRecentSpans, clearSpans } from '../../src/telemetry';
 import { logger } from '../../src/utils/logger';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -23,8 +24,8 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-    OPENAI_API_KEY: 'vk-test',
+    ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
     GH_TOKEN: 'ghs_test',
     ZOEKT_GROUNDING_ENABLED: 'true',
     ...overrides,

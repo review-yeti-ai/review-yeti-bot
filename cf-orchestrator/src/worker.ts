@@ -7,23 +7,91 @@ import { purgeExpiredR2WorkspaceCaches } from './runners/r2WorkspaceCache.js';
 import { defaultMcpRouter, constantTimeEquals } from './mcp/mcpRouter.js';
 import { handleDashboardApi } from './api/dashboardRoutes.js';
 import { handleActionDispatch } from './api/actionDispatchRoute.js';
+import { readOperatorPassthroughByRunId } from './operatorPassthroughPublisher.js';
+import { isPilotRepository } from './pilotRepository.js';
+import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 
 export { RepoGateDO, ReviewRunDO, ReviewJobWorkflow, handleMergeGroupAttestation };
 export { defaultMcpRouter, handleDashboardApi, handleActionDispatch };
+export { isPilotRepository };
+
+const cfAccessJwksCache = new Map<string, JWTVerifyGetKey>();
+
+function normalizeAccessTeamDomain(raw: string): string {
+  const trimmed = raw.trim().replace(/^https?:\/\//iu, '').replace(/\/+$/u, '');
+  if (!trimmed || !/^[a-zA-Z0-9.-]+$/u.test(trimmed)) {
+    throw new Error('Invalid ACCESS_TEAM_DOMAIN');
+  }
+  return trimmed.includes('.') ? trimmed : `${trimmed}.cloudflareaccess.com`;
+}
+
+function getCfAccessJWKS(teamDomain: string): JWTVerifyGetKey {
+  let jwks = cfAccessJwksCache.get(teamDomain);
+  if (!jwks) {
+    jwks = createRemoteJWKSet(new URL(`https://${teamDomain}/cdn-cgi/access/certs`), {
+      cooldownDuration: 30_000,
+      cacheMaxAge: 10 * 60_000,
+      timeoutDuration: 5_000,
+    });
+    cfAccessJwksCache.set(teamDomain, jwks);
+  }
+  return jwks;
+}
+
+export interface VerifyAccessOptions {
+  keySet?: JWTVerifyGetKey;
+}
 
 /**
- * Validates whether a given repository full name is included in the pilot scope.
- * Supports comma-separated lists and wildcard 'all'. Case-insensitive and defensive.
+ * Validates that an incoming request to human-facing UI or dashboard/memory/analytics
+ * endpoints carries either:
+ *   1. A valid bearer / x-api-key token matching `env.REVIEW_YETI_MCP_AUTH_TOKEN` (constant-time), OR
+ *   2. A cryptographically verified `Cf-Access-Jwt-Assertion` RS256 JWT matching
+ *      `env.ACCESS_TEAM_DOMAIN` and `env.ACCESS_AUD`.
+ *
+ * Raw identity headers (`Cf-Access-Authenticated-User-Email`, `CF-Access-Client-Id`)
+ * are never trusted without cryptographic JWT signature verification.
  */
-export function isPilotRepository(repoFullName: string, pilotList?: string): boolean {
-  if (!repoFullName || typeof repoFullName !== 'string') return false;
-  if (!pilotList || pilotList.trim() === '') return false;
-  if (pilotList.trim().toLowerCase() === 'all') return true;
-  const pilots = pilotList
-    .split(',')
-    .map((p) => p.trim().toLowerCase())
-    .filter(Boolean);
-  return pilots.includes(repoFullName.toLowerCase());
+export async function isAuthorizedAccess(
+  request: Request,
+  env: Env,
+  options: VerifyAccessOptions = {}
+): Promise<boolean> {
+  const configuredToken = (env.REVIEW_YETI_MCP_AUTH_TOKEN || '').trim();
+  const authHeader = request.headers.get('Authorization') || '';
+  const bearerMatch = /^Bearer\s+([^\s]+)$/iu.exec(authHeader);
+  const suppliedToken = bearerMatch?.[1] || (request.headers.get('x-api-key') || '').trim();
+  if (configuredToken && suppliedToken && constantTimeEquals(suppliedToken, configuredToken)) {
+    return true;
+  }
+
+  const cfJwt = (request.headers.get('Cf-Access-Jwt-Assertion') || '').trim();
+  const rawTeamDomain = (env.ACCESS_TEAM_DOMAIN || '').trim();
+  const rawAud = (env.ACCESS_AUD || '').trim();
+  if (!cfJwt || !rawTeamDomain || !rawAud) {
+    return false;
+  }
+
+  try {
+    const teamDomain = normalizeAccessTeamDomain(rawTeamDomain);
+    const audiences = rawAud
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (audiences.length === 0) {
+      return false;
+    }
+    const keySet = options.keySet || getCfAccessJWKS(teamDomain);
+    await jwtVerify(cfJwt, keySet, {
+      issuer: `https://${teamDomain}`,
+      audience: audiences,
+      algorithms: ['RS256'],
+      clockTolerance: 5,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -227,12 +295,36 @@ export default {
         return Response.json({
           status: 'ok',
           environment: env.ENVIRONMENT,
-          parallelMode: env.PARALLEL_MODE,
         });
+      }
+
+      // Operator connection check is authenticated independently of public MCP discovery.
+      if (url.pathname === '/api/mcp/auth' || url.pathname === '/mcp/auth') {
+        if (request.method !== 'GET') {
+          return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } });
+        }
+
+        const configuredToken = (env.REVIEW_YETI_MCP_AUTH_TOKEN || '').trim();
+        const bearer = /^Bearer\s+([^\s]+)$/iu.exec(request.headers.get('Authorization') || '');
+        const suppliedToken = bearer?.[1] || '';
+        if (!configuredToken || !suppliedToken || !constantTimeEquals(suppliedToken, configuredToken)) {
+          return Response.json({ error: 'Unauthorized' }, { status: 401 });
+        }
+
+        return Response.json({ authenticated: true, service: 'review-yeti', transport: 'cloudflare' });
       }
 
       // Live Swarm Command Center shortcut / alias: /l redirects directly to /
       if (url.pathname === '/l' || url.pathname === '/live-swarm') {
+        if (env.REQUIRE_CF_ACCESS === 'true' && !(await isAuthorizedAccess(request, env))) {
+          return new Response('Forbidden: Cloudflare Access authentication required', {
+            status: 403,
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+              'Cache-Control': 'no-store',
+            },
+          });
+        }
         return Response.redirect(new URL('/', request.url).toString(), 302);
       }
 
@@ -245,7 +337,13 @@ export default {
         }
         const runDOId = env.REVIEW_RUN.idFromName(runId);
         const runDO = env.REVIEW_RUN.get(runDOId);
-        return await runDO.fetch('http://do/status');
+        const response = await runDO.fetch('http://do/status');
+        if (!response.ok) return response;
+        const status = await response.json() as Record<string, unknown>;
+        const passthrough = await readOperatorPassthroughByRunId(env, runId);
+        return Response.json(passthrough
+          ? { ...status, operatorPassthrough: passthrough, mergeEligible: passthrough.mergeEligible }
+          : status);
       }
 
       // GitHub Actions OIDC Action Dispatch: /api/dispatch/action, /action, /api/qualification/dispatch/action
@@ -299,9 +397,22 @@ export default {
       }
 
       // Review Yeti Dashboard & Analytics REST API (Edge)
-      const dashboardResponse = await handleDashboardApi(request, env);
-      if (dashboardResponse) {
-        return dashboardResponse;
+      if (url.pathname !== '/api/webhooks/github') {
+        if (
+          env.REQUIRE_CF_ACCESS === 'true' &&
+          request.method !== 'OPTIONS' &&
+          (url.pathname.startsWith('/api/') || url.pathname === '/version') &&
+          !(await isAuthorizedAccess(request, env))
+        ) {
+          return Response.json(
+            { error: 'Forbidden: Cloudflare Access authentication required' },
+            { status: 403, headers: { 'Cache-Control': 'no-store' } }
+          );
+        }
+        const dashboardResponse = await handleDashboardApi(request, env);
+        if (dashboardResponse) {
+          return dashboardResponse;
+        }
       }
 
       // Webhook Ingest: /api/webhooks/github
@@ -321,23 +432,6 @@ export default {
         const valid = await verifyGitHubSignature(env.GITHUB_WEBHOOK_SECRET, signature, rawBody);
         if (!valid) {
           return new Response('Unauthorized: Invalid HMAC signature', { status: 401 });
-        }
-
-        // 2. Parallel Mode Non-Blocking Fanout to DOKS Ingress
-        // Only active when PARALLEL_MODE is enabled ('true') and DOKS_FALLBACK_URL is configured.
-        // When PARALLEL_MODE is 'false' or DOKS_FALLBACK_URL is unset, dual-dispatch is completely disabled.
-        if (env.PARALLEL_MODE !== 'false' && env.DOKS_FALLBACK_URL) {
-          const fanoutPromise = fetch(env.DOKS_FALLBACK_URL, {
-            method: 'POST',
-            headers: request.headers,
-            body: rawBody,
-          }).catch((err) => {
-            console.error('DOKS fanout error:', err);
-          });
-
-          if (ctx && typeof ctx.waitUntil === 'function') {
-            ctx.waitUntil(fanoutPromise);
-          }
         }
 
         let payload: any;
@@ -472,6 +566,24 @@ export default {
               baseSha: pr.base?.sha || '',
               installationId: payload.installation?.id ?? 0,
             };
+
+            // In passthrough mode, bypass the 60s debounce queue and trigger the workflow immediately
+            if (env.OPERATOR_GLOBAL_PASSTHROUGH === 'true') {
+              if (env.REVIEW_JOB_WORKFLOW && typeof env.REVIEW_JOB_WORKFLOW.create === 'function') {
+                await env.REVIEW_JOB_WORKFLOW.create({
+                  id: runId,
+                  params: spec,
+                });
+              }
+
+              return Response.json({
+                status: 'dispatched_immediate',
+                runId,
+                passthrough: true,
+                supersededRunId,
+                supersededRunIds: Array.from(runsToCancel),
+              });
+            }
 
             const debounceItem: DebounceMessagePayload = {
               ...spec,
@@ -654,6 +766,15 @@ export default {
 
       // 8. Fallback to Static Portal Assets (Next.js Dashboard)
       if (env.ASSETS) {
+        if (env.REQUIRE_CF_ACCESS === 'true' && !(await isAuthorizedAccess(request, env))) {
+          return new Response('Forbidden: Cloudflare Access authentication required', {
+            status: 403,
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+              'Cache-Control': 'no-store',
+            },
+          });
+        }
         return await env.ASSETS.fetch(request);
       }
 
@@ -701,4 +822,3 @@ export default {
     }
   },
 };
-

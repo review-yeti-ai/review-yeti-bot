@@ -109,7 +109,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       expect(res.status).toBe(200);
       expect(res.body.result).toBeDefined();
-      expect(res.body.result.tools).toHaveLength(20);
+      expect(res.body.result.tools).toHaveLength(28);
 
       const toolNames = res.body.result.tools.map((t: any) => t.name);
       expect(toolNames).toEqual([
@@ -133,6 +133,14 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         'purge_cache',
         'get_checkpoint_metrics',
         'get_compaction_analytics',
+        'get_onboarding_status',
+        'configure_onboarding',
+        'list_repositories',
+        'update_repository_settings',
+        'get_platform_settings',
+        'update_platform_settings',
+        'get_usage_analytics',
+        'manage_memory_graph',
       ]);
     });
 

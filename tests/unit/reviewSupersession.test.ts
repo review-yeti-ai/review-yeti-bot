@@ -23,6 +23,7 @@ import {
 import { HttpWorkerCompletionAdapter, WorkerCompletionHttpError } from '../../src/review/workerCompletion';
 import { logger } from '../../src/utils/logger';
 import { PanelCancellationError } from '../../src/panel/panelEngine';
+import { TEST_CLOUDFLARE_AIG_BASE_URL, TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -46,8 +47,8 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_HEAD_SHA: HEAD,
     REVIEW_BASE_SHA: BASE,
     REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-    OPENAI_API_KEY: 'vk-test',
+    ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
     GH_TOKEN: 'ghs_test',
     ...overrides,
   };
@@ -212,7 +213,7 @@ describe('publishing worker: head moved before the review (pre_review)', () => {
     // cancellation(); the worker still delivers its result so the service, not
     // the worker, decides. Uses the real prepared-config fixture shape.
     const { preparePublishingPolicy } = await import('../../src/review/preparedPublishingPolicy');
-    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+    const transport = { baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL, model: 'prepared-review-model' };
     const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
       personas: 'security,testing', budget: { max_investigation_turns: 1 } } });
     const prepared = preparePublishingPolicy({ content, source: {

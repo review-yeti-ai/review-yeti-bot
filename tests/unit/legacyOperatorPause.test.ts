@@ -35,8 +35,8 @@ function stubPauseIdentityEnv(options: { identities?: string; privateKey?: strin
   vi.stubEnv('GITHUB_APP_WEBHOOK_ADMISSION_ENABLED', 'false');
   vi.stubEnv('GITHUB_APP_WEBHOOK_REPOSITORY_IDS', '1234');
   vi.stubEnv('GITHUB_APP_WEBHOOK_OWNER_IDS', '5678');
-  for (const name of ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'REVIEW_MODEL', 'OPENROUTER_API_KEY',
-    'OPENROUTER_BASE_URL', 'BIFROST_BASE_URL']) vi.stubEnv(name, '');
+  for (const name of ['CLOUDFLARE_AIG_RUN_TOKEN', 'CLOUDFLARE_AIG_BASE_URL', 'CLOUDFLARE_AIG_API_TOKEN',
+    'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'REVIEW_MODEL', 'OPENROUTER_API_KEY', 'OPENROUTER_BASE_URL']) vi.stubEnv(name, '');
 }
 
 function openedPullRequest(repositoryId = 1234): Record<string, unknown> {

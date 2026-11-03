@@ -5,6 +5,20 @@ import { DopplerSecretManager } from './dopplerSecretManager';
 import { CustomMcpServerConfig, dashboardStore } from '../persistence/dashboardStore';
 import { logger } from '../utils/logger';
 
+function isRetiredBifrostServer(server: Partial<CustomMcpServerConfig>): boolean {
+  return server.id === 'bifrost-gateway' || /bifrost/iu.test(`${server.name || ''} ${server.url || ''}`);
+}
+
+function isCurrentCtMcpUrl(candidate: string): boolean {
+  try {
+    const url = new URL(candidate);
+    return url.protocol === 'https:' && Boolean(url.hostname) && !url.username && !url.password
+      && !url.search && !url.hash && !/bifrost/iu.test(candidate);
+  } catch {
+    return false;
+  }
+}
+
 async function execStdioRpc(
   command: string,
   args: string[] = [],
@@ -137,7 +151,7 @@ export class McpFleetManager {
   private initDefaultServers(): void {
     const savedServers = dashboardStore.getMcpServers();
     for (const server of savedServers) {
-      this.servers.set(server.id, server);
+      if (!isRetiredBifrostServer(server)) this.servers.set(server.id, server);
     }
 
     if (!this.servers.has('builtin-context7')) {
@@ -182,25 +196,22 @@ export class McpFleetManager {
       this.servers.set(builtinProductlane.id, builtinProductlane);
     }
 
-    // Register Bifrost MCP Gateway (ct-mcp) by default
-    const bifrostUrl =
-      process.env.BIFROST_MCP_URL ||
-      process.env.CT_MCP_URL ||
-      'http://bifrost.internal.invalid:8080/mcp';
-
-    if (!this.servers.has('bifrost-gateway')) {
-      const bifrost: CustomMcpServerConfig = {
-        id: 'bifrost-gateway',
-        name: 'Bifrost MCP Gateway (ct-mcp)',
+    // The current CT MCP route is supplied by deployment configuration. No
+    // retired gateway URL or private endpoint is shipped as a source default.
+    const ctMcpUrl = process.env.CT_MCP_URL?.trim();
+    if (ctMcpUrl && isCurrentCtMcpUrl(ctMcpUrl) && !this.servers.has('ct-mcp')) {
+      const ctMcp: CustomMcpServerConfig = {
+        id: 'ct-mcp',
+        name: 'Configured MCP Router',
         transport: 'http',
-        url: bifrostUrl,
+        url: ctMcpUrl,
         enabled: true,
         status: 'online',
         toolsCount: 7,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      this.servers.set(bifrost.id, bifrost);
+      this.servers.set(ctMcp.id, ctMcp);
     }
 
     // Register built-in tool definitions
@@ -274,14 +285,16 @@ export class McpFleetManager {
       },
     ];
 
-    for (const tool of defaultFleetTools) {
-      if (!this.toolRegistry.has(tool.name)) {
-        this.toolRegistry.set(tool.name, {
-          serverId: 'bifrost-gateway',
-          name: tool.name,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
-        });
+    if (this.servers.has('ct-mcp')) {
+      for (const tool of defaultFleetTools) {
+        if (!this.toolRegistry.has(tool.name)) {
+          this.toolRegistry.set(tool.name, {
+            serverId: 'ct-mcp',
+            name: tool.name,
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+          });
+        }
       }
     }
   }
@@ -290,7 +303,7 @@ export class McpFleetManager {
     const saved = dashboardStore.getMcpServers();
     const map = new Map<string, CustomMcpServerConfig>();
     for (const s of saved) {
-      map.set(s.id, s);
+      if (!isRetiredBifrostServer(s)) map.set(s.id, s);
     }
     for (const [id, s] of this.servers.entries()) {
       if (!map.has(id)) {
@@ -302,26 +315,18 @@ export class McpFleetManager {
 
   public getServer(id: string): CustomMcpServerConfig | undefined {
     if (id === 'ct-mcp') {
-      return (
-        this.servers.get('ct-mcp') ||
-        this.servers.get('bifrost-gateway') ||
-        dashboardStore.getMcpServer('ct-mcp') ||
-        dashboardStore.getMcpServer('bifrost-gateway')
-      );
+      const server = this.servers.get('ct-mcp') || dashboardStore.getMcpServer('ct-mcp');
+      return server && !isRetiredBifrostServer(server) && isCurrentCtMcpUrl(server.url || '') ? server : undefined;
     }
-    return this.servers.get(id) || dashboardStore.getMcpServer(id);
+    const server = this.servers.get(id) || dashboardStore.getMcpServer(id);
+    return server && !isRetiredBifrostServer(server) ? server : undefined;
   }
 
-  private async resolveBifrostApiKey(): Promise<string> {
-    let key =
-      process.env.REVIEW_YETI_BIFROST_API_KEY ||
-      process.env.CT_LLM_GATEWAY_API_KEY ||
-      process.env.BIFROST_API_KEY ||
-      process.env.CT_MCP_KEY ||
-      '';
+  private async resolveCtMcpApiKey(): Promise<string> {
+    let key = process.env.CT_MCP_KEY || '';
     if (!key && this.dopplerManager) {
       try {
-        key = (await this.dopplerManager.getSecret('REVIEW_YETI_BIFROST_API_KEY')) || '';
+        key = (await this.dopplerManager.getSecret('CT_MCP_KEY')) || '';
       } catch (_) {}
     }
     return key;
@@ -333,12 +338,8 @@ export class McpFleetManager {
       'Accept': 'application/json, text/event-stream',
     };
 
-    if (
-      server.id === 'bifrost-gateway' ||
-      server.id === 'ct-mcp' ||
-      (server.name && (server.name.includes('Bifrost') || server.name.includes('ct-mcp')))
-    ) {
-      const apiKey = await this.resolveBifrostApiKey();
+    if (server.id === 'ct-mcp') {
+      const apiKey = await this.resolveCtMcpApiKey();
       if (apiKey) {
         headers['Authorization'] = `Bearer ${apiKey}`;
         headers['x-api-key'] = apiKey;
@@ -373,8 +374,8 @@ export class McpFleetManager {
   public getRegisteredToolDetails(): Array<{ name: string; description?: string; serverId: string; inputSchema?: any }> {
     const list = Array.from(this.toolRegistry.values());
     return list.sort((a, b) => {
-      const aIsGateway = a.serverId === 'bifrost-gateway' || a.serverId === 'ct-mcp';
-      const bIsGateway = b.serverId === 'bifrost-gateway' || b.serverId === 'ct-mcp';
+      const aIsGateway = a.serverId === 'ct-mcp';
+      const bIsGateway = b.serverId === 'ct-mcp';
       if (aIsGateway && !bIsGateway) return 1;
       if (!aIsGateway && bIsGateway) return -1;
       return 0;
@@ -382,6 +383,7 @@ export class McpFleetManager {
   }
 
   public async registerServer(config: CustomMcpServerConfig): Promise<void> {
+    if (isRetiredBifrostServer(config)) throw new Error('retired Bifrost MCP servers are unsupported');
     this.servers.set(config.id, config);
     dashboardStore.addMcpServer(config);
     if (config.enabled) {
@@ -394,6 +396,10 @@ export class McpFleetManager {
     patch: Partial<CustomMcpServerConfig>,
     options: { skipDiscovery?: boolean } = {}
   ): Promise<CustomMcpServerConfig | undefined> {
+    if (id === 'bifrost-gateway') return undefined;
+    const existing = this.servers.get(id) || dashboardStore.getMcpServer(id);
+    if (existing && isRetiredBifrostServer({ ...existing, ...patch })) return undefined;
+    if (isRetiredBifrostServer(patch)) return undefined;
     const updatedInStore = dashboardStore.updateMcpServer(id, patch);
     const currentInMemory = this.servers.get(id);
 

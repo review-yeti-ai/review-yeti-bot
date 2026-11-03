@@ -36,7 +36,7 @@ export const CONTROL_PLANE_CPU_REQUEST_M = 775;
 export const CONTROL_PLANE_MEMORY_REQUEST_MI = 1088;
 
 export const MAX_PREPARED_REVIEW_BYTES = 256 * 1024; // 256KB
-export const DROOLET_CSI_VOLUME_LIMIT = 15;
+export const NODE_CSI_VOLUME_LIMIT = 15;
 
 export interface K8sResourceRequirements {
   limits?: {
@@ -444,11 +444,11 @@ describe('Review Yeti Concurrency Scaling & Streaming Continuation E2E (R1–R6)
         expect(pvcVolumes).toHaveLength(0);
       });
 
-      it('TEST_T1_F2_03: Zero DigitalOcean CSI Limit Pressure — Asserts zero attachable-volumes-dobs slots consumed against 15-volume Droplet limit', () => {
+      it('TEST_T1_F2_03: Zero Block-Storage CSI Limit Pressure — Asserts zero attachable-volume slots consumed against the per-node CSI volume limit', () => {
         const pod = createValidWorkerPodSpec('run-203', 'continuation');
         const blockVolumesCount = pod.volumes.filter((v) => v.persistentVolumeClaim).length;
         expect(blockVolumesCount).toBe(0);
-        expect(blockVolumesCount).toBeLessThan(DROOLET_CSI_VOLUME_LIMIT);
+        expect(blockVolumesCount).toBeLessThan(NODE_CSI_VOLUME_LIMIT);
       });
 
       it('TEST_T1_F2_04: Container Isolation Invariance — Confirms independent review runs execute in private sandboxes with zero shared storage', () => {
@@ -776,7 +776,7 @@ describe('Review Yeti Concurrency Scaling & Streaming Continuation E2E (R1–R6)
           volumes: [
             {
               name: 'workspace-volume',
-              persistentVolumeClaim: { claimName: 'do-block-storage-pvc' },
+              persistentVolumeClaim: { claimName: 'workspace-pvc' },
             },
           ],
         });
@@ -1053,13 +1053,13 @@ describe('Review Yeti Concurrency Scaling & Streaming Continuation E2E (R1–R6)
         expect(sim.getWorkerActiveConsumption().workerPods).toBe(10);
       });
 
-      it('TEST_T2_F6_02: DOKS Droplet Memory Ceiling Enforcement — 20 active reviews + control plane remain strictly under 16GB DOKS node ceiling', () => {
-        const doksDropletMemoryMi = 16 * 1024; // 16GB
+      it('TEST_T2_F6_02: Node Memory Ceiling Enforcement — 20 active reviews + control plane remain strictly under 16GB node ceiling', () => {
+        const nodeMemoryMi = 16 * 1024; // 16GB
         const quota20 = deriveResourceQuota(20);
         const totalAllocatedMemMi = parseMemMi(quota20['limits.memory']);
         // Control plane 3072 + 21 * 256 = 8448Mi < 16384Mi
         expect(totalAllocatedMemMi).toBe(8448);
-        expect(totalAllocatedMemMi).toBeLessThan(doksDropletMemoryMi);
+        expect(totalAllocatedMemMi).toBeLessThan(nodeMemoryMi);
       });
 
       it('TEST_T2_F6_03: Thundering Herd Webhook Burst (N=20) — 20 simultaneous webhooks admitted without rate-limiter crash or memory spike', () => {
@@ -1171,7 +1171,7 @@ describe('Review Yeti Concurrency Scaling & Streaming Continuation E2E (R1–R6)
       expect(prepPod.name).not.toBe(contPod.name);
     });
 
-    it('TEST_T3_PAIR_06: Worker Rightsizing + 20-Run Concurrency Envelope (F1 + F6) — 20 concurrent jobs stay strictly under total DOKS quota ceiling', () => {
+    it('TEST_T3_PAIR_06: Worker Rightsizing + 20-Run Concurrency Envelope (F1 + F6) — 20 concurrent jobs stay strictly under total quota ceiling', () => {
       const quota20 = deriveResourceQuota(20);
       const totalMemLimitMi = parseMemMi(quota20['limits.memory']);
       const totalCpuReqM = parseCpuM(quota20['requests.cpu']);
@@ -1278,7 +1278,7 @@ describe('Review Yeti Concurrency Scaling & Streaming Continuation E2E (R1–R6)
       expect(sim.getWorkerActiveConsumption().workerPods).toBe(0);
     });
 
-    it('TEST_T4_SCENARIO_03: Scale-to-Limit: 20 Concurrent Active Reviews under DOKS Memory Envelope — 20 active reviews running simultaneously without hitting ResourceQuota limit', () => {
+    it('TEST_T4_SCENARIO_03: Scale-to-Limit: 20 Concurrent Active Reviews under the Node Memory Envelope — 20 active reviews running simultaneously without hitting ResourceQuota limit', () => {
       const quota20 = deriveResourceQuota(20);
       const sim = new ClusterResourceQuotaSimulator(quota20);
       const multiplexer = new StreamingMultiplexerSimulator();

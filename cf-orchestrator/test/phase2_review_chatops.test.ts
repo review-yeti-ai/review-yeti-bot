@@ -134,23 +134,23 @@ describe('Phase 2: PR Review Experience & ChatOps Ingress Suite', () => {
         summaryMarkdown: '## Review Yeti: SHIP\n\nAll security and quality invariants verified.',
         findings: [],
         runnerCost: {
-          runnerType: 'digitalocean',
-          runnerName: 'DigitalOcean Managed Agents (Firecracker microVM)',
+          runnerType: 'cloudflare',
+          runnerName: 'Cloudflare Containers (Edge OCI Sandbox)',
           durationMs: 24800,
           vcpus: 2,
           memoryMb: 2048,
-          costUsd: 0.000446,
-          formattedCost: '$0.000446 USD',
+          costUsd: 0.000372,
+          formattedCost: '$0.000372 USD',
           formattedRuntime: '24.8s (24,800 ms)',
-          rateHourlyUsd: 0.0648,
+          rateHourlyUsd: 0.054,
         },
       });
 
       assert.equal(payload.event, 'APPROVE');
       assert.ok(payload.body.includes('### 💰 Managed Runner Execution & Cost'));
-      assert.ok(payload.body.includes('**Runner:** DigitalOcean Managed Agents (Firecracker microVM) (2 vCPU / 2048 MB)'));
+      assert.ok(payload.body.includes('**Runner:** Cloudflare Containers (Edge OCI Sandbox) (2 vCPU / 2048 MB)'));
       assert.ok(payload.body.includes('**Total Runtime:** 24.8s (24,800 ms)'));
-      assert.ok(payload.body.includes('**Runner Cost:** **$0.000446 USD**'));
+      assert.ok(payload.body.includes('**Runner Cost:** **$0.000372 USD**'));
     });
 
     it('publishes review to GitHub REST API via mock fetch', async () => {

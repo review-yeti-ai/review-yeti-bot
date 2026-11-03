@@ -32,7 +32,7 @@ const projection: PRReviewJobProjection = {
     policyDigest: 'c'.repeat(64),
     configDigest: 'd'.repeat(64),
     publicationMode: 'disabled',
-    workerImage: `registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:${'e'.repeat(64)}`,
+    workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`,
     runSecretName: `ct-review-run-${'1'.repeat(32)}`,
   },
 };

@@ -21,19 +21,20 @@ const STANDARD_ENV: Record<string, string> = {
   GITHUB_APP_ID: '4385771',
   GITHUB_APP_PRIVATE_KEY: '-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----',
   GITHUB_WEBHOOK_SECRET: 'test-webhook-secret',
-  OPENAI_API_KEY: 'sk-bf-standard-key',
-  OPENAI_BASE_URL: 'https://gateway.internal/v1',
+  CLOUDFLARE_AIG_RUN_TOKEN: 'test-run-token',
+  CLOUDFLARE_AIG_BASE_URL: 'https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1',
 };
 
-/** Stub the standard settings, clearing the legacy spellings the harness sets. */
+/** Stub the Cloudflare settings, clearing retired and generic spellings the harness may set. */
 function stubStandardEnv(overrides: Record<string, string> = {}): void {
   for (const [name, value] of Object.entries(STANDARD_ENV)) vi.stubEnv(name, value);
   // Clear legacy spellings so a pass proves the STANDARD path works, not a fallback.
   vi.stubEnv('WEBHOOK_SECRET', '');
   vi.stubEnv('OPENROUTER_API_KEY', '');
   vi.stubEnv('OPENROUTER_REVIEW_FLEET_KEY', '');
-  vi.stubEnv('BIFROST_VIRTUAL_KEY', '');
-  vi.stubEnv('REVIEW_YETI_BIFROST_API_KEY', '');
+  vi.stubEnv('OPENAI_API_KEY', '');
+  vi.stubEnv('OPENAI_BASE_URL', '');
+  vi.stubEnv('CLOUDFLARE_AIG_API_TOKEN', '');
   for (const [name, value] of Object.entries(overrides)) vi.stubEnv(name, value);
 }
 
@@ -151,9 +152,8 @@ describe('the three /ready contracts are distinguishable', () => {
 
     // The app's NOT-ready verdict too: the matrix previously covered only its 200,
     // so a mapping that always returned 200 for the app passed (REL-1069 review).
-    stubStandardEnv({ OPENAI_BASE_URL: '' });
+    stubStandardEnv({ CLOUDFLARE_AIG_BASE_URL: '' });
     vi.stubEnv('REVIEW_YETI_GATEWAY_BASE_URL', '');
-    vi.stubEnv('BIFROST_BASE_URL', '');
     vi.stubEnv('OPENROUTER_BASE_URL', '');
     const appNotReady = await request(createApp()).get('/ready');
     expect(appNotReady.status).toBe(503);

@@ -80,7 +80,6 @@ describe('Review Yeti MCP Tools Implementation', () => {
   it('review_yeti_get_cloudflare_status returns edge DO concurrency and R2 cache report', async () => {
     const mockEnv = {
       ENVIRONMENT: 'production',
-      PARALLEL_MODE: 'true',
       REPO_GATE: {
         idFromName: () => 'gate_1',
         get: () => ({
@@ -100,48 +99,42 @@ describe('Review Yeti MCP Tools Implementation', () => {
     assert.ok(res.content[0].text?.includes('RepoGate Concurrency'));
     assert.ok(res.content[0].text?.includes('**2 / 5**'));
     assert.ok(res.content[0].text?.includes('1-Hour (3,600s) Aggressive TTL'));
-    assert.ok(res.content[0].text?.includes('MATCHING'));
 
     const parsed = JSON.parse(res.content[1].text!);
     assert.equal(parsed.repoGate.activeSlotsUsed, 2);
-    assert.equal(parsed.shadowParity.status, 'MATCHING');
-    assert.equal(parsed.shadowParity.dataSource, 'baseline_sample_telemetry');
+    assert.equal(parsed.shadowParity, undefined);
     assert.equal(parsed.dataSource, 'live_edge_telemetry');
     assert.equal(parsed.computePlane.activeRunner, 'cloudflare');
     assert.equal(parsed.computePlane.defaultRunner, 'cloudflare');
-    assert.deepEqual(parsed.computePlane.supportedRunners, ['cloudflare', 'digitalocean']);
-    assert.deepEqual(parsed.computePlane.aliases, { digitalocean: ['mars', 'do'] });
+    assert.deepEqual(parsed.computePlane.supportedRunners, ['cloudflare']);
+    assert.equal(parsed.computePlane.aliases, undefined);
   });
 
-  it('review_yeti_get_billable_runtime_report calculates compute costs and savings vs DOKS', async () => {
+  it('review_yeti_get_billable_runtime_report calculates compute costs', async () => {
     const res = await getBillableRuntimeReportTool.execute({ timeframeDays: 30 }, {});
     const parsed = JSON.parse(res.content[1].text!);
 
     assert.ok(parsed.summary.totalRuns > 0);
     assert.ok(parsed.summary.totalBillableSeconds > 0);
     assert.ok(parsed.summary.totalComputeCostUSD > 0);
-    assert.ok(parsed.summary.netSavingsUSD > 0);
-    assert.ok(parsed.summary.savingsPercent > 50);
+    assert.equal(parsed.summary.netSavingsUSD, undefined);
+    assert.equal(parsed.summary.savingsPercent, undefined);
 
-    assert.ok(res.content[0].text?.includes('DigitalOcean Managed Agents'));
-    assert.ok(res.content[0].text?.includes('Cost Efficiency vs DOKS Kubernetes Baseline'));
-    assert.ok(res.content[0].text?.includes('Net Cloudflare Edge Cost Savings'));
+    assert.ok(res.content[0].text?.includes('Cloudflare Containers'));
+    assert.ok(!res.content[0].text?.includes('DigitalOcean'));
   });
 
-  it('review_yeti_get_billable_runtime_report handles zero matching runs without false savings', async () => {
-    const res = await getBillableRuntimeReportTool.execute({ runnerType: 'doks' }, {});
+  it('review_yeti_get_billable_runtime_report handles zero matching runs', async () => {
+    const res = await getBillableRuntimeReportTool.execute({ repo: 'no-such-repo' }, {});
     const parsed = JSON.parse(res.content[1].text!);
 
     assert.equal(parsed.summary.totalRuns, 0);
     assert.equal(parsed.summary.totalBillableSeconds, 0);
     assert.equal(parsed.summary.totalComputeCostUSD, 0);
-    assert.equal(parsed.summary.estimatedDoksBaselineCostUSD, 0);
-    assert.equal(parsed.summary.netSavingsUSD, 0);
-    assert.equal(parsed.summary.savingsPercent, 0);
   });
 
   it('review_yeti_get_runtime_metrics computes p50, p75, p90, p95, p99 and scales with windowHours', async () => {
-    const res24 = await getRuntimeMetricsTool.execute({ windowHours: 24, comparisonMode: true }, {});
+    const res24 = await getRuntimeMetricsTool.execute({ windowHours: 24 }, {});
     const parsed24 = JSON.parse(res24.content[1].text!);
 
     const p24 = parsed24.percentilesWallLatencyMs;
@@ -153,7 +146,6 @@ describe('Review Yeti MCP Tools Implementation', () => {
     assert.ok(p24.max >= p24.p99);
 
     assert.ok(parsed24.stageBreakdownMs.r2CacheHydration < 1500, 'R2 cache hydration must be sub-1.5s');
-    assert.ok(parsed24.comparisonVsDoks.speedupRatio > 1.0, 'Cloudflare must be faster than DOKS baseline');
     assert.ok(res24.content[0].text?.includes('p50 (Median)'));
 
     // Dynamic window scaling verification
@@ -199,28 +191,19 @@ describe('Review Yeti MCP Tools Implementation', () => {
     assert.ok(validRes.content[0].text?.includes('Review Yeti Job Dispatched'));
     assert.ok(validRes.content[0].text?.includes('Unallocated'));
 
-    // Env-driven runner selection when args.runner is omitted
-    const envDoRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296 }, { env: { RUNNER_TYPE: 'digitalocean' } });
-    const envDoParsed = JSON.parse(envDoRes.content[1].text!);
-    assert.equal(envDoParsed.ok, true);
-    assert.equal(envDoParsed.runner, 'digitalocean');
+    // Retired runner names (and a stale env RUNNER_TYPE) are rejected fail-closed
+    for (const retired of ['digitalocean', 'mars', 'do']) {
+      const retiredRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296, runner: retired }, {});
+      assert.equal(retiredRes.isError, true);
+      assert.ok(retiredRes.content[0].text?.includes(`Invalid runner "${retired}"`));
+    }
+    const staleEnvRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296 }, { env: { RUNNER_TYPE: 'digitalocean' } });
+    assert.equal(staleEnvRes.isError, true);
+    assert.ok(staleEnvRes.content[0].text?.includes('Invalid runner "digitalocean"'));
 
-    // Explicit runner selection: DigitalOcean Managed Agents option
-    const doRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296, runner: 'digitalocean' }, {});
-    const doParsed = JSON.parse(doRes.content[1].text!);
-    assert.equal(doParsed.ok, true);
-    assert.equal(doParsed.runner, 'digitalocean');
-
-    // Alias runner selection: 'mars' and 'do' normalize to 'digitalocean'
-    const marsRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296, runner: 'mars' }, {});
-    const marsParsed = JSON.parse(marsRes.content[1].text!);
-    assert.equal(marsParsed.ok, true);
-    assert.equal(marsParsed.runner, 'digitalocean');
-
-    const aliasDoRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296, runner: 'do' }, {});
-    const aliasDoParsed = JSON.parse(aliasDoRes.content[1].text!);
-    assert.equal(aliasDoParsed.ok, true);
-    assert.equal(aliasDoParsed.runner, 'digitalocean');
+    // Env-driven cloudflare selection when args.runner is omitted
+    const envCfRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296 }, { env: { RUNNER_TYPE: 'cloudflare' } });
+    assert.equal(JSON.parse(envCfRes.content[1].text!).runner, 'cloudflare');
 
     // Invalid runner value is rejected fail-closed
     const invalidRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296, runner: 'invalid_compute_engine' }, {});
@@ -290,6 +273,32 @@ describe('Review Yeti MCP Tools Implementation', () => {
     const wfErrRes = await triggerReviewTool.execute({ repo: 'example-api', prNumber: 5296 }, { env: mockFailingWorkflowEnv });
     assert.equal(wfErrRes.isError, true);
     assert.ok(wfErrRes.content[0].text?.includes('Cloudflare Workflow quota exceeded'));
+  });
+
+  it('builds tracking URLs only from a configured operator status base and omits the placeholder', async () => {
+    const workflow = { create: async () => ({ id: 'created' }) };
+    const unconfigured = await triggerReviewTool.execute(
+      { owner: 'exampleorg', repo: 'sample-repo', prNumber: 42 },
+      { env: { REVIEW_JOB_WORKFLOW: workflow } } as any,
+    );
+    const noUrl = JSON.parse(unconfigured.content[1].text!);
+    assert.equal(noUrl.trackingUrl, null);
+    assert.equal(unconfigured.content[0].text?.includes('example.workers.dev'), false);
+    assert.equal(unconfigured.content[0].text?.includes('Status Tracking Endpoint'), false);
+
+    const configured = await triggerReviewTool.execute(
+      { owner: 'exampleorg', repo: 'sample-repo', prNumber: 42 },
+      { env: {
+        REVIEW_JOB_WORKFLOW: workflow,
+        DISPATCH_STATUS_BASE_URL: 'https://operator.example.net/gateway/review-yeti/',
+      } } as any,
+    );
+    const withUrl = JSON.parse(configured.content[1].text!);
+    assert.equal(
+      withUrl.trackingUrl,
+      `https://operator.example.net/gateway/review-yeti/api/dispatch/runs/${encodeURIComponent(withUrl.runId)}/status`,
+    );
+    assert.equal(configured.content[0].text?.includes('example.workers.dev'), false);
   });
 
   it('review_yeti_cancel_review triggers cancellation and evicts queued runs', async () => {

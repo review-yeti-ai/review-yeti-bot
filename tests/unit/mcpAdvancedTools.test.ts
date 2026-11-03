@@ -52,6 +52,14 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
     'purge_cache',
     'get_checkpoint_metrics',
     'get_compaction_analytics',
+    'get_onboarding_status',
+    'configure_onboarding',
+    'list_repositories',
+    'update_repository_settings',
+    'get_platform_settings',
+    'update_platform_settings',
+    'get_usage_analytics',
+    'manage_memory_graph',
   ];
 
   function createMockCaller(options: {

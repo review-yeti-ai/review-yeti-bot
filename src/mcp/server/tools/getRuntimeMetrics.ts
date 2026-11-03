@@ -22,7 +22,6 @@ export const getRuntimeMetricsDefinition: ToolDefinition = {
     properties: {
       repo: { type: 'string', description: 'Repository name filter' },
       window_hours: { type: 'number', description: 'Evaluation window in hours (default: 24)' },
-      comparison_mode: { type: 'boolean', description: 'Include DOKS comparison metrics (default: true)' },
     },
     additionalProperties: false,
   },
@@ -37,7 +36,7 @@ export function createGetRuntimeMetricsTool() {
       if (!parsed.success) {
         throw new Error(`Invalid arguments: ${parsed.error.issues.map((i) => i.message).join(', ')}`);
       }
-      const { repo, window_hours = 24, comparison_mode = true } = parsed.data;
+      const { repo, window_hours = 24 } = parsed.data;
 
       const samplePool = [
         { latencyMs: 14200, ageHours: 0.5 },
@@ -94,14 +93,6 @@ export function createGetRuntimeMetricsTool() {
           runner_execution: avg - 11685,
           github_publishing: 700,
         },
-        comparison_vs_doks: comparison_mode
-          ? {
-              doks_avg_ms: Math.round(avg * 1.22),
-              cf_avg_ms: avg,
-              speedup_ratio: 1.22,
-              latency_reduction_percent: 18.0,
-            }
-          : undefined,
       });
     },
   };

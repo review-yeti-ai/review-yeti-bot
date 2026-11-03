@@ -6,7 +6,7 @@ import {
 } from '../../src/k8s/reviewJobDispatcherRuntime';
 import { DEFAULT_DELEGATED_FAILURE_POLL_MS, MIN_DELEGATED_FAILURE_POLL_MS } from '../../src/k8s/delegatedFailureReader';
 
-const workerImage = `registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:${'e'.repeat(64)}`;
+const workerImage = `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`;
 
 describe('reviewJobDispatcherConfigFromEnv', () => {
   it('accepts only an explicitly enabled, digest-pinned queue consumer', () => {

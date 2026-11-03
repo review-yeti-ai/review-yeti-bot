@@ -443,7 +443,7 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
 
       await waitFor(() => {
         expect(screen.getByText('Detected Tech Stack:')).toBeInTheDocument();
-        expect(screen.getByText('DigitalOcean K8s')).toBeInTheDocument();
+        expect(screen.getByText('Kubernetes')).toBeInTheDocument();
       });
     });
 

@@ -3,6 +3,7 @@ import { ReviewRunDO } from '../src/reviewRunDO.js';
 
 export class MockDurableObjectStorage {
   private store: Map<string, any> = new Map();
+  private transactionTail: Promise<void> = Promise.resolve();
 
   async get<T>(key: string): Promise<T | undefined> {
     return this.store.get(key);
@@ -18,6 +19,18 @@ export class MockDurableObjectStorage {
 
   async list(): Promise<Map<string, any>> {
     return new Map(this.store);
+  }
+
+  async transaction<T>(callback: (transaction: MockDurableObjectStorage) => Promise<T>): Promise<T> {
+    let release!: () => void;
+    const prior = this.transactionTail;
+    this.transactionTail = new Promise<void>((resolve) => { release = resolve; });
+    await prior;
+    try {
+      return await callback(this);
+    } finally {
+      release();
+    }
   }
 }
 
@@ -66,5 +79,6 @@ export function createMockEnv(): any {
     },
     PARALLEL_CHECK_NAME: 'Review Yeti (Cloudflare Canary)',
     DEFAULT_WORKER_IMAGE: 'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
+    OPERATOR_GLOBAL_PASSTHROUGH: 'false',
   };
 }

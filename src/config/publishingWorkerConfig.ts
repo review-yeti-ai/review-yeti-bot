@@ -1,6 +1,6 @@
 import { createDefaultV3Config, isTriggerActionAllowed, type TriggerActionOptions } from './configLoader';
 import { disputedBlockerAdjudicatorSchema, effectiveReviewConfigReceiptSchema, composedEngineConfigSchema,
-  type ComposedEngineConfig, type CtReviewConfigV3,
+  resolveDetectionModeSettings, type DetectionMode, type ComposedEngineConfig, type CtReviewConfigV3,
   type DisputedBlockerAdjudicator, type ProviderId, type ReviewEngineName } from './schema';
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, type CompiledDomainIndex } from '../pipeline/domainIndex';
@@ -30,6 +30,8 @@ export const PUBLISHING_MAX_TURNS = 15;
 export const PUBLISHING_IDLE_TIMEOUT_SECONDS = 180;
 /** Evidence phase only. The admitted lifecycle reserves another five minutes for closeout. */
 export const PUBLISHING_OVERALL_TIMEOUT_SECONDS = 1200;
+/** Canonical Neuralwatt standard-tier model route for the app-gate publishing lane. */
+export const NEURALWATT_FLASH_ROUTE_MODEL = 'dynamic/nw-flash' as const;
 const INACTIVE_CONFIDENCE_THRESHOLD_REASON = 'The publishing worker does not consume confidence_threshold; a self-reported score cannot reduce evidence requirements or change blocker eligibility.';
 
 let cachedCompiledIndex: CompiledDomainIndex | null = null;
@@ -307,15 +309,22 @@ function normalizeComposedOverrides(value: unknown): ComposedEngineConfig {
 
 const SUPPORTED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
-function resolveBifrostEffort(policy: Record<string, any> | undefined): { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'; requested?: string } {
+function resolveBifrostEffort(
+  policy: Record<string, any> | undefined,
+  model: string,
+): { effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max'; requested?: string } {
+  const requiredEffort = model === NEURALWATT_FLASH_ROUTE_MODEL ? 'low' : undefined;
   const transports: unknown = policy?.transports;
-  if (transports === undefined) return { effort: 'medium' };
+  if (transports === undefined) return { effort: requiredEffort ?? 'medium' };
   if (!Array.isArray(transports)) throw new Error('central transports must be an array');
   const enabled = transports.filter((item) => item && typeof item === 'object' && item.name === 'bifrost' && item.enabled === true);
   if (enabled.length !== 1) throw new Error('central policy must enable exactly one Bifrost transport');
   const requested = enabled[0].reasoning_effort;
   if (typeof requested !== 'string' || !SUPPORTED_EFFORTS.has(requested)) {
     throw new Error('unsupported Bifrost reasoning_effort');
+  }
+  if (requiredEffort && requested !== requiredEffort) {
+    throw new Error(`Neuralwatt ${model} requires reasoning_effort ${requiredEffort}`);
   }
   return { effort: requested as 'low' | 'medium' | 'high' | 'xhigh' | 'max', requested };
 }
@@ -355,19 +364,28 @@ export function resolveWorkerConfig(
   let severityPolicy: 'review-yeti-severity.v2' | undefined;
   let requestedProfile: 'chill' | 'balanced' | 'assertive' = baseConfig.profile;
   let requestedBifrostEffort: string | undefined;
-  let bifrostEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' = 'medium';
+  let bifrostEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' =
+    transport.model === NEURALWATT_FLASH_ROUTE_MODEL ? 'low' : 'medium';
   let requestedConfidenceThreshold: number | null = null;
   let effectiveConfidenceThreshold = baseConfig.confidence_threshold
     ?? baseConfig.reviews?.confidence_threshold ?? baseConfig.dials?.confidence_threshold ?? 70;
   let configuredMcpServers: string[] = [];
   let composed: ComposedEngineConfig = {};
   let disputedBlockerAdjudicator: DisputedBlockerAdjudicator | undefined;
+  let requestedMode: DetectionMode | undefined;
 
   if (env.REVIEW_YETI_POLICY_JSON) {
     try {
       const raw = JSON.parse(env.REVIEW_YETI_POLICY_JSON);
       policy = raw.review_yeti || raw;
       if (!policy || typeof policy !== 'object' || Array.isArray(policy)) throw new Error('review_yeti policy must be an object');
+      if (policy.mode !== undefined) {
+        if (!['fast', 'balanced', 'deep'].includes(policy.mode)) throw new Error('unsupported review mode');
+        requestedMode = policy.mode as DetectionMode;
+        const modeDefaults = resolveDetectionModeSettings(requestedMode);
+        requestedProfile = modeDefaults.profile;
+        maxInvestigationTurns = modeDefaults.maxInvestigationTurns;
+      }
       if (policy.budget?.max_investigation_turns) {
         maxInvestigationTurns = Number(policy.budget.max_investigation_turns);
       }
@@ -400,7 +418,7 @@ export function resolveWorkerConfig(
       const confidenceThreshold = resolveInactiveConfidenceThreshold(policy, effectiveConfidenceThreshold);
       requestedConfidenceThreshold = confidenceThreshold.requested;
       effectiveConfidenceThreshold = confidenceThreshold.effective;
-      const bifrost = resolveBifrostEffort(policy);
+      const bifrost = resolveBifrostEffort(policy, transport.model);
       bifrostEffort = bifrost.effort;
       requestedBifrostEffort = bifrost.requested;
       configuredMcpServers = enabledMcpServerIds(policy);
@@ -421,6 +439,15 @@ export function resolveWorkerConfig(
     }
   }
 
+  if (!requestedMode && env.REVIEW_MODE && ['fast', 'balanced', 'deep'].includes(env.REVIEW_MODE)) {
+    requestedMode = env.REVIEW_MODE as DetectionMode;
+    const modeDefaults = resolveDetectionModeSettings(requestedMode);
+    if (!policy?.profile) requestedProfile = modeDefaults.profile;
+    if (!policy?.budget?.max_investigation_turns && !env.MAX_INVESTIGATION_TURNS) {
+      maxInvestigationTurns = modeDefaults.maxInvestigationTurns;
+    }
+  }
+
   if (personasList.length === 0 && env.REVIEW_PERSONAS) {
     personasList = env.REVIEW_PERSONAS.split(',').map((p) => p.trim()).filter(Boolean);
   }
@@ -433,10 +460,17 @@ export function resolveWorkerConfig(
   }
 
   const default6 = ['security', 'performance', 'architecture', 'testing', 'dependencies', 'licensing'];
-  const effectivePersonaNames = personasList.length > 0 ? personasList : default6;
+  const effectivePersonaNames =
+    personasList.length > 0
+      ? personasList
+      : requestedMode
+      ? resolveDetectionModeSettings(requestedMode).personas
+      : default6;
   const groundedVerificationCapability = groundedVerificationCapabilityForRuntime(GROUNDED_VERIFICATION_VERSION);
 
   const personaMap: Record<string, { id: string; required: boolean; charter: string }> = {
+    'correctness': { id: 'correctness-lane', required: false, charter: 'builtin:correctness' },
+    'correctness-lane': { id: 'correctness-lane', required: false, charter: 'builtin:correctness' },
     'security': { id: 'sec-lane', required: true, charter: 'builtin:security' },
     'sec-lane': { id: 'sec-lane', required: true, charter: 'builtin:security' },
     'performance': { id: 'perf-lane', required: false, charter: 'builtin:performance' },
@@ -582,7 +616,9 @@ export function resolveWorkerConfig(
     reviewer_effort: bifrostEffort,
     reviewers: {
       execution: 'personas',
-      fallback: 'ordered',
+      // The single Cloudflare dynamic route owns its configured fallback graph.
+      // Do not let the worker try another provider or transport for this model.
+      fallback: transport.model === NEURALWATT_FLASH_ROUTE_MODEL ? 'none' : 'ordered',
       overall_timeout_s: PUBLISHING_OVERALL_TIMEOUT_SECONDS,
       providers: [
         {

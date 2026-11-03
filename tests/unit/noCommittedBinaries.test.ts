@@ -58,7 +58,7 @@ describe('no compiled artefacts are tracked (public repository)', () => {
  * fixtures in the first place.
  *
  * The product's own Kubernetes support -- charts/review-yeti, the operator,
- * docs/KUBERNETES_MODE.md -- is deliberately public and stays.
+ * docs/KUBERNETES_REVIEW_OPERATIONS.md -- is deliberately public and stays.
  */
 describe('no private deployment lives in this public product repository', () => {
   it('tracks no path naming a private instance', () => {

@@ -13,7 +13,7 @@ describe('Review Yeti MCP Worker Route Integration (/api/mcp)', () => {
     assert.ok(res.headers.get('Access-Control-Allow-Origin'));
     const data = (await res.json()) as any;
     assert.equal(data.name, 'review-yeti-cf-orchestrator');
-    assert.equal(data.toolsCount, 12);
+    assert.equal(data.toolsCount, 20);
     assert.ok(Array.isArray(data.tools));
   });
 
@@ -51,7 +51,6 @@ describe('Review Yeti MCP Worker Route Integration (/api/mcp)', () => {
   it('POST /api/mcp dispatches "tools/call" for review_yeti_get_cloudflare_status', async () => {
     const mockEnv = {
       ENVIRONMENT: 'production',
-      PARALLEL_MODE: 'true',
       REVIEW_YETI_MCP_AUTH_TOKEN: 'mcp_integration_token_123',
     };
 
@@ -194,7 +193,6 @@ describe('Review Yeti MCP Worker Route Integration (/api/mcp)', () => {
   it('allows public read-only tools and blocks mutating tools when PUBLIC_READ_MCP="true"', async () => {
     const publicEnv = {
       ENVIRONMENT: 'production',
-      PARALLEL_MODE: 'true',
       PUBLIC_READ_MCP: 'true',
     };
 
@@ -258,6 +256,6 @@ describe('Review Yeti MCP Worker Route Integration (/api/mcp)', () => {
     assert.equal(res.status, 200);
     const data = (await res.json()) as any;
     assert.equal(data.name, 'review-yeti-cf-orchestrator');
-    assert.equal(data.toolsCount, 12);
+    assert.equal(data.toolsCount, 20);
   });
 });

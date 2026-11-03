@@ -24,6 +24,7 @@ import { parseWorkerReviewEvidence, publishedFindingSeverity, workerReviewEviden
 import { logger } from '../../src/utils/logger';
 import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
 import { groundedFixtureClient, groundedFixtureProvider, type GroundedFixtureSourceSnapshot } from '../support/groundedReviewFixture';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * REL-1084 (pilot, non-authoritative repos): review-yeti-bot and example-meta publish their own Review
@@ -133,7 +134,7 @@ async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
     NODE_ENV: 'test', REVIEW_PUBLICATION_MODE: 'app-gate', REVIEW_RUN_ID: PRIOR_RUN, REVIEW_REPO: 'acme/app',
     REVIEW_REPOSITORY_ID: String(REPO_ID), REVIEW_POLICY_DIGEST: POLICY, REVIEW_CONFIG_DIGEST: CONFIG,
     REVIEW_EXECUTION_ATTEMPT: '1', REVIEW_PR_NUMBER: '7', REVIEW_HEAD_SHA: PRIOR_HEAD, REVIEW_BASE_SHA: BASE,
-    REVIEW_MODEL: 'ollama/glm-5.3-flash', OPENAI_BASE_URL: 'https://gateway.example.invalid/v1', OPENAI_API_KEY: 'vk-test',
+    REVIEW_MODEL: 'ollama/glm-5.3-flash', ...TEST_CLOUDFLARE_AIG_SETTINGS,
     GH_TOKEN: 'ghs_test', REVIEW_YETI_INCREMENTAL: 'acme/app', REVIEW_YETI_VERDICT_CACHE: 'acme/app',
   };
   // Stands in for the model engine only: every lane covers every file. It applies the

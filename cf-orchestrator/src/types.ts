@@ -59,10 +59,8 @@ export interface Env {
 
   // Variables
   ENVIRONMENT: string;
-  PARALLEL_MODE: string;
   PARALLEL_CHECK_NAME: string;
   PILOT_REPOSITORIES: string;
-  DOKS_FALLBACK_URL?: string;
   /** Deployment-owned operator origin for optional dispatch status callbacks. */
   DISPATCH_STATUS_BASE_URL?: string;
   /** Base host of the operator run-status API; deployments bind the real internal operator host here. */
@@ -75,19 +73,44 @@ export interface Env {
   MAX_CONCURRENT_JOBS?: string;
   DEBOUNCE_WINDOW_SECONDS?: string;
   PARALLEL_FILE_CONCURRENCY?: string;
-  RUNNER_TYPE?: string; // 'cloudflare' (default) | 'digitalocean' | 'mars' | 'do'
-  DO_API_TOKEN?: string;
-  DO_AGENT_ID?: string;
-  DO_BASE_URL?: string;
+  RUNNER_TYPE?: string; // 'cloudflare' (default and only supported value; anything else fails closed)
   GITHUB_WEBHOOK_SECRET?: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_INSTALLATION_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
+  /** Same dedicated public-target App binding used by Node's authoritative review service. */
+  REVIEW_YETI_PUBLIC_TARGET_APP_ID?: string;
+  REVIEW_YETI_PUBLIC_TARGET_APP_PRIVATE_KEY?: string;
+  /** Existing deployer-provisioned Worker binding containing exact paused-publication repository identities. */
+  OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES?: string;
+  /** Optional Cloudflare Worker secret-text manifest for additional exact paused-publication identities. */
+  OPERATOR_PASSTHROUGH_PRIVATE_REPOSITORY_IDENTITIES?: string;
+  /** Existing deployer-provisioned Worker binding containing the protected policy source identity. */
+  OPERATOR_PASSTHROUGH_POLICY_SOURCE?: string;
   REVIEW_YETI_MCP_AUTH_TOKEN?: string;
+  /** Allows public MCP discovery/read operations; it never authenticates the operator health route. */
+  PUBLIC_READ_MCP?: string;
+  /** Require Cloudflare Access JWT or bearer token on all UI and dashboard/memory/analytics/reviews APIs. */
+  REQUIRE_CF_ACCESS?: string;
+  /** Cloudflare Access team domain (e.g. `<team>.cloudflareaccess.com`) for RS256 JWKS verification. */
+  ACCESS_TEAM_DOMAIN?: string;
+  /** Cloudflare Access Application Audience (AUD) tag(s), comma-separated. */
+  ACCESS_AUD?: string;
+  REVIEW_YETI_ATTESTATION_SECRET?: string;
   GITHUB_TOKEN?: string;
   OPERATOR_GLOBAL_PASSTHROUGH?: string;
+  REVIEW_YETI_PASSTHROUGH?: string;
+  PASSTHROUGH_MODE?: string;
   ACTION_DISPATCH_ALLOW_APP_GATE?: string;
 }
+
+export {
+  isPassthroughMode,
+  OPERATOR_PASSTHROUGH_REVIEW_TITLE,
+  OPERATOR_PASSTHROUGH_GATE_TITLE,
+  OPERATOR_PASSTHROUGH_MODE_MARKER,
+  OPERATOR_PASSTHROUGH_ZERO_LANES_MARKER,
+} from './auth/passthrough.js';
 
 export type ReviewStage =
   | 'admission'

@@ -187,6 +187,7 @@ describe('Review Yeti Edge MCP Mutating Tools & SSE Transport', () => {
             },
           }),
         },
+        REVIEW_YETI_ATTESTATION_SECRET: 'test-secret-123',
       };
 
       const res = await defaultMcpRouter.handleRpc(
@@ -410,7 +411,7 @@ describe('Review Yeti Edge MCP Mutating Tools & SSE Transport', () => {
       assert.equal(data[0].id, 'b-1');
       assert.deepEqual(data[0].result, {});
       assert.equal(data[1].id, 'b-2');
-      assert.equal(data[1].result.tools.length, 12);
+      assert.equal(data[1].result.tools.length, 20);
     });
   });
 });

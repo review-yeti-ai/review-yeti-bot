@@ -76,7 +76,7 @@ The flag is `REVIEW_YETI_JEV_SHADOW` on the worker. It is off by default.
 
 To revert, unset the flag.
 
-In DOKS the Go operator builds the worker Pod env (`k8s-operator/pkg/job/job.go`, REL-1086). Two operator settings control this feature, and both are unset by default:
+In Kubernetes the Go operator builds the worker Pod env (`k8s-operator/pkg/job/job.go`, REL-1086). Two operator settings control this feature, and both are unset by default:
 
 - `REVIEW_YETI_JEV_SHADOW` is passed to app-gate workers exactly as set. It must not contain spaces, so write an allow-list as `a/b,c/d`.
 - `REVIEW_YETI_JEV_SECRET_NAME` names one Secret. The operator copies its four `TYPESAFE_*` keys into the worker as optional secret references. If the Secret is missing, all four are absent and the triage logs `unconfigured`.

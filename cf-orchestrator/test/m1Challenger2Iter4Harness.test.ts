@@ -47,10 +47,8 @@ function createHarness(): TestHarness {
 
   const env: any = {
     ENVIRONMENT: 'test',
-    PARALLEL_MODE: 'shadow',
     PILOT_REPOSITORIES: 'exampleorg/review-yeti,exampleorg/test-repo',
     GITHUB_WEBHOOK_SECRET: 'test-secret-iter4',
-    DOKS_FALLBACK_URL: undefined,
 
     REPO_GATE: {
       idFromName: (name: string) => name.toLowerCase(),
@@ -398,7 +396,6 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
 
       const harnessEnv: any = {
         ENVIRONMENT: 'test',
-        PARALLEL_MODE: 'shadow',
         PILOT_REPOSITORIES: repoFullName,
         GITHUB_WEBHOOK_SECRET: secret,
         REPO_GATE: {
@@ -669,7 +666,6 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
       let gate = new RepoGateDO(sharedStorage as any, {} as any);
       const harnessEnv: any = {
         ENVIRONMENT: 'test',
-        PARALLEL_MODE: 'shadow',
         PILOT_REPOSITORIES: repoFullName,
         GITHUB_WEBHOOK_SECRET: secret,
         REPO_GATE: {
@@ -762,7 +758,6 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
 
       const harnessEnv: any = {
         ENVIRONMENT: 'test',
-        PARALLEL_MODE: 'shadow',
         PILOT_REPOSITORIES: repoFullName,
         GITHUB_WEBHOOK_SECRET: secret,
         REPO_GATE: {

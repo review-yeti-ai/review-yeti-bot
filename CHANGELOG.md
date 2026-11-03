@@ -1,5 +1,86 @@
 # Changelog
 
+## [1.136.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.135.0...v1.136.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** support reviewyeti bin alias, --diff-file, --output, and owner/repo#pr references ([#1522](https://github.com/review-yeti-ai/review-yeti-bot/issues/1522)) ([1f7e48e](https://github.com/review-yeti-ai/review-yeti-bot/commit/1f7e48e807927a0ba2e9267ca602bd5ae4e688ac))
+
+## [1.135.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.134.0...v1.135.0) (2026-10-20)
+
+
+### Features
+
+* **mcp:** achieve full API-to-MCP parity across Node and Cloudflare Edge for onboarding, repo/platform settings, usage analytics & memory ([#1520](https://github.com/review-yeti-ai/review-yeti-bot/issues/1520)) ([2c36b63](https://github.com/review-yeti-ai/review-yeti-bot/commit/2c36b63f80f7e018c4e0b9ced6561bc863897c46))
+
+## [1.134.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.133.0...v1.134.0) (2026-10-20)
+
+
+### Features
+
+* **cli:** add gh-connected PR status/review commands, auto LLM gateway client & local Check Run Agent evaluation ([#1518](https://github.com/review-yeti-ai/review-yeti-bot/issues/1518)) ([14bca84](https://github.com/review-yeti-ai/review-yeti-bot/commit/14bca843be2b80387e7553cd0ae9b0fc6bea6b21))
+
+## [1.133.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.132.0...v1.133.0) (2026-10-20)
+
+
+### Features
+
+* **ux:** wire real APIs, ApexCharts v4, Check Run Agents, Approvability & implicit PR learning ([#1516](https://github.com/review-yeti-ai/review-yeti-bot/issues/1516)) ([337f3a4](https://github.com/review-yeti-ai/review-yeti-bot/commit/337f3a4268eff1148ee32c99472be87f989d4b00))
+
+## [1.132.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.131.0...v1.132.0) (2026-10-19)
+
+
+### Features
+
+* **ui:** distill dashboard SPA around detection mode and recent PR reviews ([#1514](https://github.com/review-yeti-ai/review-yeti-bot/issues/1514)) ([725f52b](https://github.com/review-yeti-ai/review-yeti-bot/commit/725f52b2f930e2e8babf5c13ae9192777a775d59))
+
+## [1.131.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.130.2...v1.131.0) (2026-10-19)
+
+
+### Features
+
+* **ux:** simplify review configuration, detection modes, and local CLI review ([#1512](https://github.com/review-yeti-ai/review-yeti-bot/issues/1512)) ([7ab0674](https://github.com/review-yeti-ai/review-yeti-bot/commit/7ab067427f053f870b441e1cdafa61717f02e436))
+
+## [1.130.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.130.1...v1.130.2) (2026-10-19)
+
+
+### Bug Fixes
+
+* route Yeti publishing through Cloudflare dynamic model ([#1510](https://github.com/review-yeti-ai/review-yeti-bot/issues/1510)) ([6ababd6](https://github.com/review-yeti-ai/review-yeti-bot/commit/6ababd6d5c68b06937817ad04b67ec12b0640809))
+
+## [1.130.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.130.0...v1.130.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* retire DOKS dispatch compatibility ([#1507](https://github.com/review-yeti-ai/review-yeti-bot/issues/1507)) ([1ae6932](https://github.com/review-yeti-ai/review-yeti-bot/commit/1ae6932bf9caccf40115808d9b738c29fe2fcc8c))
+
+## [1.130.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.129.2...v1.130.0) (2026-10-17)
+
+
+### Features
+
+* **action:** neutral edge dispatch contract, remove DOKS fallback ([#1504](https://github.com/review-yeti-ai/review-yeti-bot/issues/1504)) ([837986a](https://github.com/review-yeti-ai/review-yeti-bot/commit/837986a0c62cf0f4bb81a24094cb25948ddd4475))
+
+## [1.129.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.129.1...v1.129.2) (2026-10-16)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** expose read-only passthrough diagnostics ([#1499](https://github.com/review-yeti-ai/review-yeti-bot/issues/1499)) ([eab2d2a](https://github.com/review-yeti-ai/review-yeti-bot/commit/eab2d2a584b0eb46aed8170ea8ddd2211c51b5fa))
+* **cf-orchestrator:** publish open pass SHIP verdicts in passthrough mode [no-linear] ([#1490](https://github.com/review-yeti-ai/review-yeti-bot/issues/1490)) ([ef6b4d8](https://github.com/review-yeti-ai/review-yeti-bot/commit/ef6b4d8a255e67ec93396b1067be239adefea15f))
+* **cf-orchestrator:** support private paused-publication enrollment [skip release] ([#1498](https://github.com/review-yeti-ai/review-yeti-bot/issues/1498)) ([27c58dc](https://github.com/review-yeti-ai/review-yeti-bot/commit/27c58dcd55b4b02c2b691d6cac50ac590116efd3))
+* **mcp:** verify operator auth and sync deployment credentials ([#1501](https://github.com/review-yeti-ai/review-yeti-bot/issues/1501)) ([4476088](https://github.com/review-yeti-ai/review-yeti-bot/commit/447608861b1eb2af355d8cbb458e4bf8b745e73d))
+* **REL-1698:** require current authority for paused Edge SHIP ([#1492](https://github.com/review-yeti-ai/review-yeti-bot/issues/1492)) ([3b34f81](https://github.com/review-yeti-ai/review-yeti-bot/commit/3b34f815dace5453adcd7e1e85236c3fb5b36e0d))
+
+## [1.129.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.129.0...v1.129.1) (2026-10-09)
+
+
+### Bug Fixes
+
+* **ci:** remove invalid --domain flag from wrangler deploy [no-linear] ([#1484](https://github.com/review-yeti-ai/review-yeti-bot/issues/1484)) ([de1d50d](https://github.com/review-yeti-ai/review-yeti-bot/commit/de1d50d8c17a7272569de15c868bb137084a5d76))
+
 ## [1.129.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.128.0...v1.129.0) (2026-10-09)
 
 

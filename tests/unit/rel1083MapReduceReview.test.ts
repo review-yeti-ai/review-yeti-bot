@@ -62,6 +62,7 @@ import {
   type MapReduceLanePlan,
   type ReduceRequest,
 } from '../../src/review/mapReduceReview';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * REL-1083 (plan 2026-09-23 section 4 W6): map-reduce review for huge diffs
@@ -1168,8 +1169,8 @@ describe('publishing worker wiring', () => {
       REVIEW_HEAD_SHA: HEAD,
       REVIEW_BASE_SHA: BASE,
       REVIEW_MODEL: 'ollama/glm-5.3-flash',
-      OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-      OPENAI_API_KEY: 'vk-test',
+      ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
       GH_TOKEN: 'ghs_test',
       ...overrides,
     };

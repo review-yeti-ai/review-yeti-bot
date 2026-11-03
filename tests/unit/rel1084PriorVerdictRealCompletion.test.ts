@@ -27,6 +27,7 @@ import type { WorkerReviewCompletionAdapter } from '../../src/review/workerRevie
 import { logger } from '../../src/utils/logger';
 import { gateRecordFor, resolvedThreadsFor } from '../support/priorGateRecord';
 import { groundedFixtureClient, groundedFixtureProvider, type GroundedFixtureSourceSnapshot } from '../support/groundedReviewFixture';
+import { TEST_CLOUDFLARE_AIG_BASE_URL, TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * REL-1084 / REL-1085 production finding: the authoritative worker's completion never sets the
@@ -54,7 +55,7 @@ const NEXT_RUN = `run_${'c'.repeat(32)}`;
 const REPO_ID = 123;
 const START = Date.parse('2026-09-24T10:00:00.000Z');
 const TOKEN = 'ghs_fake_prior_verdict';
-const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+const transport = { baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL, model: 'prepared-review-model' };
 
 const PATHS = ['src/changed.ts', 'src/same.ts', 'src/stable.ts'];
 const ACCESS_CONTROL_FUNCTIONS: Record<string, string> = {
@@ -150,7 +151,7 @@ async function realPriorCompletion(options: { findings?: Record<string, LaneFind
     REVIEW_PR_NUMBER: '42', REVIEW_HEAD_SHA: PRIOR_HEAD, REVIEW_BASE_SHA: BASE, REVIEW_EXECUTION_ATTEMPT: '1',
     REVIEW_POLICY_DIGEST: policy.policy.effectivePolicyDigest, REVIEW_CONFIG_DIGEST: policy.policy.effectiveConfigDigest,
     REVIEW_PREPARED_CONFIG_JSON: JSON.stringify(envelope), REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion',
-    REVIEW_MODEL: transport.model, OPENAI_BASE_URL: transport.baseUrl, OPENAI_API_KEY: 'vk_fake',
+    REVIEW_MODEL: transport.model, ...TEST_CLOUDFLARE_AIG_SETTINGS,
     GH_TOKEN: TOKEN, GITHUB_PUBLISH_TOKEN: TOKEN, REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
     REVIEW_YETI_INCREMENTAL: 'example/project', REVIEW_YETI_VERDICT_CACHE: 'example/project',
   };

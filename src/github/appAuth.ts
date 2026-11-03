@@ -244,7 +244,7 @@ export async function getGitHubAppRepositoryReadToken(
  * Mints a short-lived installation token constrained to one repository and the
  * single write permission a publishing review worker needs.
  *
- * REL-586: the DOKS publishing lane must not hold the App private key -- that pod
+ * REL-586: the Kubernetes publishing lane must not hold the App private key -- that pod
  * parses untrusted pull-request diffs and executes model output, so an App key
  * there would let a compromised worker mint tokens for every installation. The
  * control plane mints from the App we already have installed and hands the worker

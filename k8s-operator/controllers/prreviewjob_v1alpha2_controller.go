@@ -2083,7 +2083,7 @@ func managedWorkerEnvMatches(review *reviewv1alpha2.PRReviewJob, env []corev1.En
 		}
 		secretRefs := 0
 		for _, variable := range env {
-			// REL-1069: the builder emits the standard OPENAI_API_KEY name. This
+			// REL-1069: the builder emits the dedicated Cloudflare Run-token name. This
 			// validator compares the env the builder produces, so the two must move
 			// together -- a mismatch makes the reconciler reject (and DELETE) the
 			// Job it just created. The ref is optional because no per-run secret

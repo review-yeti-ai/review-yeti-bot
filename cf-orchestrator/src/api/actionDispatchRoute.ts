@@ -1,4 +1,5 @@
 import type { Env, ReviewRunSpec } from '../types.js';
+import { publishOperatorPassthroughForTarget } from '../operatorPassthroughPublisher.js';
 import {
   verifyGitHubActionsOidc,
   assertActionDispatchMatchesClaims,
@@ -282,36 +283,51 @@ export async function handleActionDispatch(
   // 7. Operator Global Passthrough Mode
   const passthroughEnabled = env.OPERATOR_GLOBAL_PASSTHROUGH === 'true';
   if (passthroughEnabled) {
+    const publication = await publishOperatorPassthroughForTarget(env, {
+      owner: dispatch.owner,
+      repo: dispatch.repo,
+      prNumber: dispatch.prNumber,
+    }, {}, { headSha: dispatch.headSha, baseSha: dispatch.baseSha });
+    const isPublished = publication.status === 'succeeded' && publication.mergeEligible === true
+      && publication.publicationReceiptAvailable === true;
+    const mergeEligible = isPublished;
     const passthroughReceipt = {
       version: 'ActionDispatchPassthrough.v1',
       status: 'passthrough',
       reason: 'operator_global_passthrough',
-      reviewStarted: false,
-      candidateState: 'current',
-      verdict: 'SHIP',
-      expectedLanes: 0,
-      completedLanes: 0,
-      publicationId: null,
-      auditDigest: null,
-      publicationState: 'unavailable',
-      publicationReceiptAvailable: null,
-      reviewCheckId: null,
-      gateCheckId: null,
-      mergeEligible: false,
-      message:
-        'Operator pause preserves logical SHIP with zero review lanes. Protected merge eligibility is false.',
+      reviewStarted: publication.reviewStarted,
+      candidateState: publication.candidateState,
+      verdict: publication.verdict,
+      expectedLanes: publication.expectedLanes,
+      completedLanes: publication.completedLanes,
+      publicationId: isPublished ? publication.publicationId : null,
+      auditDigest: isPublished ? publication.auditDigest : null,
+      publicationState: isPublished ? 'published' : 'unavailable',
+      publicationReceiptAvailable: publication.publicationReceiptAvailable,
+      reviewCheckId: isPublished ? publication.workerCheckId : null,
+      gateCheckId: isPublished ? publication.gateCheckId : null,
+      mergeEligible,
+      message: isPublished
+        ? 'Operator pause published a current, durable App check pair. No semantic review ran; zero lanes were started.'
+        : 'Operator pause publication is unavailable. No semantic review ran; protected merge eligibility is false.',
       deliveryId: dispatch.deliveryId,
       eventName: dispatch.caller.eventName,
-      repositoryId: dispatch.repositoryId,
-      owner: dispatch.owner,
-      repo: dispatch.repo,
-      prNumber: dispatch.prNumber,
-      headSha: dispatch.headSha,
-      baseSha: dispatch.baseSha,
+      repositoryId: publication.repositoryId,
+      owner: publication.owner,
+      repo: publication.repo,
+      prNumber: publication.prNumber,
+      headSha: publication.headSha,
+      baseSha: publication.baseSha,
+      appId: publication.appId,
+      policyDigest: publication.policyDigest,
+      runId: publication.runId,
+      errorCode: isPublished ? undefined : publication.errorCode,
       callerKind,
     } as const;
 
-    return Response.json(passthroughReceipt, { status: 200 });
+    return isPublished
+      ? Response.json(passthroughReceipt, { status: 200 })
+      : Response.json(passthroughReceipt, { status: 503 });
   }
 
   // 8. Normal Review Yeti Admission
@@ -341,21 +357,6 @@ export async function handleActionDispatch(
       id: runId,
       params: spec,
     });
-  }
-
-  // 9. Parallel Mode Fanout to DOKS Ingress (if active)
-  if (env.PARALLEL_MODE !== 'false' && env.DOKS_FALLBACK_URL) {
-    const fanoutPromise = fetch(`${env.DOKS_FALLBACK_URL}/api/dispatch/action`, {
-      method: 'POST',
-      headers: request.headers,
-      body: rawBody,
-    }).catch((err) => {
-      console.error('DOKS action dispatch fanout error:', err);
-    });
-
-    if (ctx && typeof ctx.waitUntil === 'function') {
-      ctx.waitUntil(fanoutPromise);
-    }
   }
 
   // Return canonical ActionDispatchAccepted.v1 receipt

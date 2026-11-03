@@ -28,7 +28,7 @@ verify_review_runtime_image_provenance() (
     return 2
   fi
 
-  if [[ ! "$image" =~ ^(ghcr\.io/review-yeti-ai/(review-yeti-bot|review-yeti-operator|review-yeti-worker)|registry\.digitalocean\.com/exampleorg/(ct-review-bot|review-yeti-operator|review-yeti-worker))@sha256:[0-9a-f]{64}$ ]]; then
+  if [[ ! "$image" =~ ^(ghcr\.io/review-yeti-ai/(review-yeti-bot|review-yeti-operator|review-yeti-worker))@sha256:[0-9a-f]{64}$ ]]; then
     printf '%s\n' 'review-runtime-image-provenance: expected a trusted repository with an exact lowercase sha256 digest' >&2
     return 2
   fi

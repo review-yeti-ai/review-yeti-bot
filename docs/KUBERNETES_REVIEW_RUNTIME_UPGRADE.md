@@ -93,9 +93,9 @@ and does not weaken dormant installer guards.
 The production `REVIEW_JOB_WORKER_IMAGE` key is a separate GitOps-owned input,
 not a component Deployment image. Use `scripts/advance-review-worker.sh` to
 verify source-tag provenance and inspect its read-only plan. When the plan says
-`gitops-update-required`, change
-`clusters/doks-nyc1/apps/ct-review-system/cm-ct-review-job-dispatcher.yaml` in
-`exampleorg/example-infra`, land the protected PR, and prove the exact
+`gitops-update-required`, change the `REVIEW_JOB_WORKER_IMAGE` key of the
+`ct-review-job-dispatcher` ConfigMap in the GitOps repository that owns the
+cluster, land the protected PR, and prove the exact
 merge SHA is Flux's Ready `lastAppliedRevision`. Then generate a fresh plan;
 the helper may perform only restart/no-op attestation after the key converges.
 It exits before intent/receipt creation or Kubernetes mutation while the

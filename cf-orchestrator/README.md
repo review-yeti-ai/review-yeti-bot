@@ -2,9 +2,30 @@
 
 A serverless, Kubernetes-free orchestration engine for **Review Yeti**, built on **Cloudflare Workers**, **SQLite Durable Objects**, **Cloudflare Workflows**, **Cloudflare Queues**, and **Cloudflare Containers / Firecracker MicroVMs**.
 
-> **Current Production Status**: **Live in Production Shadow Mode**  
 > **Live Edge Endpoint**: [`https://review-yeti-cf-orchestrator.example.workers.dev`](https://review-yeti-cf-orchestrator.example.workers.dev)  
-> **Production Parity Mode**: Active (`PARALLEL_MODE = "true"`). Legacy DOKS operator remains 100% active and authoritative (posting `"Review Yeti"`). Cloudflare operates concurrently in shadow validation mode (posting `"Review Yeti (Cloudflare Canary)"` and PR reviews with 1-click inline suggestions).
+> The Worker is the authoritative Review Yeti orchestrator: it posts the `"Review Yeti"` check and PR reviews with 1-click inline suggestions.
+
+For the Doppler-to-Worker MCP credential projection and authenticated operator connection check,
+see [Cloudflare MCP operator connection](../docs/CLOUDFLARE_MCP_OPERATOR_CONNECTION.md).
+
+## Paused publication enrollment configuration
+
+Paused publication reads the existing Worker bindings below. They hold the exact repository enrollment and
+protected policy-source manifests; the values are deployment-owned and intentionally omitted from tracked
+Wrangler source:
+
+- `OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES`
+- `OPERATOR_PASSTHROUGH_POLICY_SOURCE`
+
+For an existing Worker, both bindings must remain provisioned for paused publication to work. Keep `keep_vars = true`
+enabled when deploying this source so remotely managed variables omitted from the tracked `[vars]` block are retained.
+The tracked configuration does not declare these bindings as Wrangler-required secrets. Runtime fails closed if
+either binding is absent or invalid. This source change does not verify live binding readback or manifest contents.
+
+For a fresh Worker or environment without these bindings, provision both names on the intended Worker before
+enabling paused publication. Use the approved deployment source and protected operator input through the Cloudflare
+dashboard or `wrangler secret bulk`; verify the binding setup through the deployment process before use. `keep_vars`
+does not provision values for a new Worker.
 
 ---
 
@@ -17,23 +38,16 @@ flowchart TD
         CHATOPS_EVENT["Issue Comment ChatOps<br/>(@review-yeti re-review | deep-scan | explain)"]
     end
 
-    subgraph PROXY["Cloudflare Edge Ingress & Dual-Dispatch"]
+    subgraph PROXY["Cloudflare Edge Ingress"]
         WORKER["Ingress Worker (src/worker.ts)<br/>HMAC SHA-256 Verification"]
-        DOKS_DISPATCH["Async Fanout to DOKS<br/>review-bot.example.com"]
         DEBOUNCE_QUEUE["Cloudflare Queue<br/>10s Debounce Window"]
-    end
-
-    subgraph DOKS_PROD["Legacy DOKS Production Operator (Active)"]
-        DOKS_CTRL["Go Operator Controller & Outbox"]
-        DOKS_JOB["batchv1.Job Worker Pod & PVC"]
-        DOKS_CHECK["Authoritative GitHub Check:<br/>'Review Yeti'"]
     end
 
     subgraph CF_CONTROL["Cloudflare Edge Control Plane"]
         REPO_GATE["RepoGateDO (SQLite Durable Object)<br/>FIFO Concurrency Semaphore (Cap: 5)"]
         REVIEW_RUN["ReviewRunDO (SQLite Durable Object)<br/>Fencing Epochs & 2-Tier Cancellation"]
         WORKFLOW["ReviewJobWorkflow (WorkflowEntrypoint)<br/>Multi-Step Saga Coordinator"]
-        HYPERDRIVE["Hyperdrive Pooler -> PostgreSQL<br/>Audit & Parity Ledger"]
+        HYPERDRIVE["Hyperdrive Pooler -> PostgreSQL<br/>Audit Ledger"]
     end
 
     subgraph DIFF_HARNESS["DeepSeek-Style Diff Task Harness"]
@@ -42,23 +56,19 @@ flowchart TD
         GROUNDING["On-Demand Tools<br/>(zoektLookup, grepFile)"]
     end
 
-    subgraph RUNNERS["Execution Plane (Dual-Runner Abstraction)"]
-        DO_RUNNER["DigitalOcean MARS Runner<br/>(Firecracker MicroVMs, Agent-Aware Billing)"]
+    subgraph RUNNERS["Execution Plane"]
         CF_RUNNER["Cloudflare Container Runner<br/>(Edge-Colocated OCI Sandboxes)"]
         R2_CACHE[("Cloudflare R2 Workspace Cache<br/>(.tar.zst with 1-Hour Lifecycle Rule)")]
     end
 
     subgraph PUBLISHING["GitHub Publishing Plane (Phase 2)"]
-        CANARY_CHECK["GitHub Checks API<br/>'Review Yeti (Cloudflare Canary)'"]
+        REVIEW_CHECK["GitHub Checks API<br/>'Review Yeti'"]
         INLINE_REVIEWS["GitHub PR Reviews API<br/>1-Click Inline ```suggestion``` Blocks<br/>(APPROVE | REQUEST_CHANGES | COMMENT)"]
     end
 
     %% Ingress Flow
     PR_EVENT --> WORKER
     CHATOPS_EVENT --> WORKER
-    WORKER -.->|Async Fallback Fanout| DOKS_DISPATCH
-    DOKS_DISPATCH --> DOKS_CTRL --> DOKS_JOB --> DOKS_CHECK
-
     %% Cloudflare Pipeline Flow
     WORKER -->|Synchronize Push| DEBOUNCE_QUEUE
     WORKER -->|Immediate / ChatOps| REPO_GATE
@@ -72,33 +82,21 @@ flowchart TD
     TRIAGE --> ACTIVE_LEDGER
     ACTIVE_LEDGER --> GROUNDING
 
-    WORKFLOW -->|Step 3: Dispatch Worker| DO_RUNNER
-    WORKFLOW -.->|Alternative Runner| CF_RUNNER
-    DO_RUNNER <-->|Sub-300ms Unpack / Pack| R2_CACHE
-    DO_RUNNER --> GROUNDING
+    WORKFLOW -->|Step 3: Dispatch Worker| CF_RUNNER
+    CF_RUNNER <-->|Sub-300ms Unpack / Pack| R2_CACHE
+    CF_RUNNER --> GROUNDING
 
     %% Two-Tier Cancellation Flow
-    REVIEW_RUN -.->|Push Abort Signal| DO_RUNNER
-    DO_RUNNER -.->|Pull Polling /api/dispatch/runs/:id/status| REVIEW_RUN
+    REVIEW_RUN -.->|Push Abort Signal| CF_RUNNER
+    CF_RUNNER -.->|Pull Polling /api/dispatch/runs/:id/status| REVIEW_RUN
 
     %% Output Flow
-    DO_RUNNER -->|Step 4: Post Canary Check| CANARY_CHECK
-    DO_RUNNER -->|Step 5: Publish Inline Reviews| INLINE_REVIEWS
-    DO_RUNNER -->|Step 6: Terminal Receipt| WORKFLOW
+    CF_RUNNER -->|Step 4: Post Review Check| REVIEW_CHECK
+    CF_RUNNER -->|Step 5: Publish Inline Reviews| INLINE_REVIEWS
+    CF_RUNNER -->|Step 6: Terminal Receipt| WORKFLOW
     WORKFLOW -->|Step 7: Record Audit Receipt| HYPERDRIVE
     WORKFLOW -->|Step 8: Saga Release Slot| REPO_GATE
 ```
-
----
-
-## Why Migrate from DOKS to Cloudflare?
-
-| Metric | DOKS Kubernetes Service | Cloudflare Edge + Containers | Advantage |
-|---|---|---|---|
-| **Base Idle Cost** | **$130 – $210 / month** (3–5 idle nodes, block storage PVCs, load balancers) | **$5 – $20 / month** (Workers Paid + active-CPU container billing) | **~85–90% cost reduction** (Zero idle cost) |
-| **Operational Maintenance** | High: Node pool scaling, Kubernetes upgrades, CNI/Cilium updates, Helm/Flux drift, CRD migrations | Minimal: Managed serverless edge; no nodes, clusters, or volume mounts | **Cloudflare** |
-| **Startup Latency** | Warm pod: ~1s; Cold node scale: 45s – 90s | Container start: ~2s – 4s; Edge webhook response: <50ms | **Cloudflare** |
-| **Storage Reliability** | PVCs prone to stuck multi-zone volume attachments and orphan disk leaks | Cloudflare R2 streaming zstd cache (~500ms hydration) with auto-TTL | **Cloudflare** |
 
 ---
 
@@ -186,7 +184,7 @@ Manages per-repository concurrency limits (`MAX_CONCURRENT_JOBS = 5`):
 - Exposes endpoints for active run lookup, queue eviction, and tombstone tracking.
 
 ### 2. `ReviewRunDO` (SQLite Durable Object)
-The single-run coordinator replacing `PRReviewJob` CRDs and Kubernetes `coordinationv1.Lease`:
+The single-run coordinator:
 - **Atomic Fencing Epochs**: Epoch increments prevent stale workers or split-brain runners from submitting findings or holding locks.
 - **Two-Tier In-Flight Cancellation**:
   - *Push Path*: When a PR is closed, converted to draft, or a newer commit arrives, `ReviewRunDO.requestCancellation()` transitions phase to `Cancelled` and signals container termination.
@@ -207,12 +205,11 @@ A durable, multi-step execution pipeline extending `WorkflowEntrypoint`:
 ```
 packages/cf-orchestrator/
 ├── src/
-│   ├── worker.ts                  # Webhook ingress, HMAC verification, 10s debounce, ChatOps & dual-dispatch
+│   ├── worker.ts                  # Webhook ingress, HMAC verification, 10s debounce & ChatOps
 │   ├── repoGateDO.ts              # SQLite Durable Object: Concurrency semaphore (Cap: 5) & FIFO queue
 │   ├── reviewRunDO.ts             # SQLite Durable Object: Fencing lease, heartbeats & 2-tier cancellation
 │   ├── reviewJobWorkflow.ts       # Cloudflare Workflow: Multi-step durable coordinator extending WorkflowEntrypoint
 │   ├── reviewPublisher.ts         # Phase 2: 1-click inline ```suggestion``` reviews (APPROVE/REQUEST_CHANGES/COMMENT)
-│   ├── compareOrchestratorRuns.ts # Parity assertion logic, SHA-256 fingerprinting & CI ledger
 │   ├── types.ts                   # Types and Cloudflare environment bindings
 │   ├── diffHarness/               # DeepSeek-style diff task harness & context compactor
 │   │   ├── diffTriage.ts          # Tiered triage (high-risk singular, medium cluster, lumped simple batch)
@@ -224,79 +221,57 @@ packages/cf-orchestrator/
 │   │   └── tunnelConfig.ts        # Multi-transport resolver (Direct, Cloudflare Tunnel, Tailscale)
 │   └── runners/
 │       ├── containerRunner.ts     # Container runner abstraction & Cloudflare Containers runner
-│       ├── digitalOceanAgentRunner.ts # DO Managed Agents runner (Firecracker microVMs)
 │       └── r2WorkspaceCache.ts    # Programmatic R2 .tar.zst cache hydration & verification
 ├── scripts/
-│   ├── restore-r2-cache.sh        # Sub-300ms R2 cache unpack replacing K8s PVCs
+│   ├── restore-r2-cache.sh        # Sub-300ms R2 cache unpack
 │   └── stage-r2-cache.sh          # Stage .git & .zoekt index shards back to Cloudflare R2
-├── test/                          # Comprehensive test suite: 893 tests across 211 suites (100% pass)
-│   ├── e2e/                       # 74 Opaque-box E2E integration tests (Tiers 1–4)
-│   ├── phase2_review_chatops.test.ts # Phase 2: 10 tests for suggestions, verdicts & ChatOps parsing
+├── test/                          # Unit, contract, adversarial and end-to-end test suites
+│   ├── e2e/                       # Opaque-box E2E integration tests (Tiers 1–4)
+│   ├── phase2_review_chatops.test.ts # Phase 2: suggestions, verdicts & ChatOps parsing
 │   ├── diffTaskHarness.test.ts    # DeepSeek task harness, triage, and context compactor tests
-│   ├── adversarial_control_plane.test.ts  # Tier 5: 40 Edge control plane stress tests
-│   ├── adversarial_runners_parity.test.ts # Tier 5: 53 Runner & parity stress tests
-│   └── adversarial_hardening.test.ts      # Tier 5: 22 Final hardening tests
+│   ├── adversarial_control_plane.test.ts  # Tier 5: Edge control plane stress tests
+│   ├── adversarial_runners.test.ts        # Tier 5: Runner & R2 cache stress tests
+│   └── adversarial_hardening.test.ts      # Tier 5: Final hardening tests
 └── wrangler.toml                  # Cloudflare DO, Workflow, Queue, R2, Hyperdrive, and Concurrency config
 ```
 
 ---
 
-## Continuous Integration & Parity Testing
+## Continuous Integration
 
-The orchestrator is fully integrated into GitHub Actions via `.github/workflows/review-yeti-cf-orchestrator-ci.yaml`:
+The orchestrator is integrated into GitHub Actions via `.github/workflows/cf-orchestrator-ci.yaml`:
 
-- **Automatic Triggering**: Runs on every pull request and push touching `packages/cf-orchestrator/**` or `scripts/ci/**`.
+- **Automatic Triggering**: Runs on every pull request and push touching `cf-orchestrator/**` or `src/**`.
 - **Complete Verification Pipeline**:
   - Compiles TypeScript (`npm run build`).
-  - Executes all 819 unit, contract, and adversarial tests (`npm test`).
-  - Executes the 74-test E2E integration suite (`npm run test:e2e`).
-  - Total: **893 tests across 211 suites (100% pass rate)**.
-  - Verifies the CI parity CLI tool (`scripts/ci/compare-orchestrator-runs.js`).
+  - Executes the unit, contract, and adversarial tests (`npm test`).
+  - Executes the E2E integration suite (`npm run test:e2e`).
+- **Deploy**: A push to `main` deploys the Worker to the Cloudflare edge.
 
 ---
 
-## Operational Status: Non-Destructive Parallel Parity
+## Configuration Reference
 
-> [!IMPORTANT]
-> **DOKS Invariant**: The legacy Kubernetes operator deployment (`ct-review-yeti-operator`) is running and active in production. It continues to post the primary authoritative `"Review Yeti"` checks on GitHub pull requests. **Do not scale down DOKS, terminate node pools, or delete PVCs** during the ongoing shadow validation phase.
-
-### Live Configuration Reference
 ```toml
 # wrangler.toml
 [vars]
 ENVIRONMENT = "production"
-PARALLEL_MODE = "true"
-PARALLEL_CHECK_NAME = "Review Yeti (Cloudflare Canary)"
-DOKS_FALLBACK_URL = "https://review-bot.example.com/api/webhooks/github"
+PARALLEL_CHECK_NAME = "Review Yeti"
 MAX_CONCURRENT_JOBS = "5"
-DEBOUNCE_WINDOW_SECONDS = "10"
-PILOT_REPOSITORIES = "exampleorg/example-workspace,all"
+DEBOUNCE_WINDOW_SECONDS = "60"
+PILOT_REPOSITORIES = "all"
+RUNNER_TYPE = "cloudflare"
 ```
-
-### Future Production Cutover Runbook (Post-Parity Validation)
-Once shadow parity is verified across 100+ consecutive real-world PR reviews:
-1. Promote Check Name in `wrangler.toml`:
-   ```toml
-   PARALLEL_CHECK_NAME = "Review Yeti"
-   DOKS_FALLBACK_URL = "" # Cease fanout
-   ```
-2. Redeploy Worker: `npm run deploy`
-3. Scale Down DOKS:
-   ```bash
-   kubectl scale deployment ct-review-yeti-operator -n review-yeti --replicas=0
-   kubectl delete pvc -l app=ct-review-yeti -n review-yeti
-   ```
-4. Reclaim dedicated DOKS node pool.
 
 ---
 
 ## Quick Commands
 
 ```bash
-# Run unit & contract tests (819 tests across 197 suites)
+# Run unit & contract tests
 npm test
 
-# Run End-to-End integration suite (74 tests across 14 suites)
+# Run End-to-End integration suite
 npm run test:e2e
 
 # Build TypeScript

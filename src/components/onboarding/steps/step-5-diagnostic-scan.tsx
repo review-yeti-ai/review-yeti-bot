@@ -46,17 +46,13 @@ export function Step5DiagnosticScan({ onRunDiagnostic }: Step5DiagnosticScanProp
     setResult(null);
 
     try {
-      await new Promise((r) => setTimeout(r, 600));
       setProgress(45);
       setCurrentStage('2/3: Measuring TTFT & Model Latencies...');
-
-      await new Promise((r) => setTimeout(r, 800));
       setProgress(80);
       setCurrentStage('3/3: Evaluating Swarm Subagent Task Verification...');
 
       const scanRes = await onRunDiagnostic();
 
-      await new Promise((r) => setTimeout(r, 400));
       setProgress(100);
       setCurrentStage('Scan Complete');
       setResult(scanRes);

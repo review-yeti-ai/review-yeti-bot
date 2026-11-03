@@ -507,9 +507,8 @@ jobs:
       - name: Prove the baked image has the two packages and not Next.js
         run: node scripts/verify-legacy-runtime-image.mjs --image review-yeti-legacy-runtime:ci
 
-  # OSS image publish. GHCR only: no Docker Hub, no DigitalOcean registry,
-  # and no kubectl/doctl. exampleorg's cluster stays disconnected until a
-  # later, explicit pull from these digests.
+  # OSS image publish. GHCR only, with no cluster credentials. Clusters stay
+  # disconnected until a later, explicit pull from these digests.
   #
   # example-api docker-backend-release pattern: native linux/amd64 and
   # native linux/arm64 on matching runners, then imagetools merge.
@@ -808,7 +807,7 @@ jobs:
           set -euo pipefail
           # Production rolls when exampleorg/example-infra pins these
           # index digests. This public workflow only proves the indexes exist
-          # and contain both platforms. It does not kubectl or doctl.
+          # and contain both platforms. It holds no cluster credentials.
           index_digest() {
             local pkg="$1"
             local token digest body

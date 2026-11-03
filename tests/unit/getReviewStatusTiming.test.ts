@@ -194,7 +194,7 @@ describe('get_review_status timing: every query branch selects the timing column
   });
 });
 
-describe('get_review_status timing: durable DOKS projection', () => {
+describe('get_review_status timing: durable Kubernetes projection', () => {
   it('reports a projected worker as active after the dispatcher lease is released', async () => {
     const { data } = await runTimingCase(baseRow({
       run_status: 'queued',

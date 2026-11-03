@@ -1,9 +1,10 @@
 import { WorkflowEntrypoint, type WorkflowStep, type WorkflowEvent } from 'cloudflare:workers';
 export type { WorkflowStep, WorkflowEvent };
 import type { Env, ReviewRunSpec } from './types.js';
+import { isPassthroughMode } from './types.js';
 import { type ContainerRunner, CloudflareContainerRunner } from './runners/containerRunner.js';
-import { DigitalOceanAgentRunner } from './runners/digitalOceanAgentRunner.js';
 import type { RunnerCostDetails } from './runners/runnerCost.js';
+import { publishOperatorPassthrough } from './operatorPassthroughPublisher.js';
 import {
   buildGitHubReviewPayload,
   createPendingChecks,
@@ -36,8 +37,17 @@ export async function mintScopedGitHubToken(
 ): Promise<{ token: string; digest: string; expiresAt: number }> {
   const { runId, installationId, owner, repo } = spec;
 
+  // If explicit GITHUB_TOKEN is available, use it directly
+  if (env.GITHUB_TOKEN) {
+    return {
+      token: env.GITHUB_TOKEN,
+      digest: `sha256:token_${runId}`,
+      expiresAt: Date.now() + 3600_000,
+    };
+  }
+
   // If real GitHub App credentials are configured, mint RS256 JWT & authentic token
-  if (env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY) {
+  if ((env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY) || env.AUTH_CACHE) {
     try {
       const token = await getInstallationToken(env, owner, repo, installationId);
       if (token) {
@@ -113,35 +123,24 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
       return this.injectedRunner;
     }
 
-    const resolvedType = (targetRunner || this.env?.RUNNER_TYPE || 'cloudflare').toLowerCase().trim();
-    const normalizedKey = resolvedType === 'mars' || resolvedType === 'do' ? 'digitalocean' : resolvedType;
+    const resolvedType = (targetRunner || this.env?.RUNNER_TYPE || 'cloudflare').toLowerCase().trim() || 'cloudflare';
+    if (resolvedType !== 'cloudflare') {
+      // Fail closed: Cloudflare Containers is the only supported runner. A stale value
+      // (for example a retired runner name) must never silently select another path.
+      throw new Error(
+        `Unsupported RUNNER_TYPE "${resolvedType}": only "cloudflare" is supported. Remove or reset the RUNNER_TYPE variable.`
+      );
+    }
+    const normalizedKey = resolvedType;
 
     if (this.runnerCache.has(normalizedKey)) {
       return this.runnerCache.get(normalizedKey)!;
     }
 
-    let runner: ContainerRunner;
-    if (normalizedKey === 'digitalocean') {
-      runner = new DigitalOceanAgentRunner({
-        apiToken: this.env?.DO_API_TOKEN,
-        agentId: this.env?.DO_AGENT_ID,
-        baseUrl: this.env?.DO_BASE_URL,
-      });
-    } else {
-      let doFallback: ContainerRunner | undefined;
-      if (this.env?.DO_API_TOKEN) {
-        doFallback = new DigitalOceanAgentRunner({
-          apiToken: this.env.DO_API_TOKEN,
-          agentId: this.env.DO_AGENT_ID,
-          baseUrl: this.env.DO_BASE_URL,
-        });
-      }
-      runner = new CloudflareContainerRunner({
-        containersBinding: this.env?.CONTAINERS,
-        allowStubFallback: this.env?.ENVIRONMENT !== 'production',
-        fallbackRunner: doFallback,
-      });
-    }
+    const runner: ContainerRunner = new CloudflareContainerRunner({
+      containersBinding: this.env?.CONTAINERS,
+      allowStubFallback: this.env?.ENVIRONMENT !== 'production',
+    });
 
     this.runnerCache.set(normalizedKey, runner);
     return runner;
@@ -152,6 +151,16 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
     const spec = event.payload;
     const { runId, owner, repo, prNumber, headSha, baseSha } = spec;
     const repoKey = `${owner}/${repo}`.toLowerCase();
+    const pauseMode = this.env.OPERATOR_GLOBAL_PASSTHROUGH !== undefined
+      ? this.env.OPERATOR_GLOBAL_PASSTHROUGH
+      : (isPassthroughMode(this.env) ? 'true' : undefined);
+    if (pauseMode !== 'false') {
+      const config = { timeout: '2 minutes', retries: { limit: 0, delay: '1 second' } };
+      const stepName = pauseMode === 'true' ? 'operator-passthrough-publication' : 'operator-passthrough-config-unavailable';
+      return await step.do(stepName, config, async () =>
+        publishOperatorPassthrough(this.env, spec)
+      );
+    }
 
     // Step 1: Mint scoped GitHub token (checks:write only)
     const tokenInfo = await step.do('mint-scoped-token', async () => {
@@ -309,7 +318,7 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
       try {
         containerOutcome = await step.do(
           'dispatch-container',
-          { timeout: '25 minutes', retries: { limit: 0 } },
+          { timeout: '25 minutes', retries: { limit: 0, delay: '1 second' } },
           async () => {
             const workerImage = spec.workerImage || this.env.DEFAULT_WORKER_IMAGE;
             // The operator endpoint is deployment-owned, not a tenant-specific

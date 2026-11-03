@@ -20,7 +20,7 @@
       "json": "{\"version\":\"PreparedReviewExecution.v1\",\"config\":$CONFIG,\"transport\":{\"baseUrl\":\"https://gateway.example.invalid/v1\",\"model\":\"review-model\"},\"qualificationRuntimeImageDigest\":\"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}",
       "envelopeAccepted": true,
       "typescriptAccepted": true,
-      "workerImage": "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      "workerImage": "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     },
     {
       "name": "formatted envelope",

@@ -1,4 +1,5 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult } from '../types.js';
+import { readOperatorPassthroughForTarget } from '../../operatorPassthroughPublisher.js';
 
 export interface AttestPrGateOutput {
   attested: boolean;
@@ -71,6 +72,61 @@ export const attestPrGateTool: McpToolHandler = {
           {
             type: 'text',
             text: 'Error: "repo", "pr_number", and "head_sha" are required parameters.',
+          },
+        ],
+      };
+    }
+
+    // Paused SHIP is attestable only from the shared current durable publication.
+    if (env.OPERATOR_GLOBAL_PASSTHROUGH === 'true') {
+      const timestamp = new Date().toISOString();
+      const receipt = await readOperatorPassthroughForTarget(env, { owner, repo, prNumber }, { headSha });
+      const secret = typeof env.REVIEW_YETI_ATTESTATION_SECRET === 'string'
+        ? env.REVIEW_YETI_ATTESTATION_SECRET.trim() : '';
+      const blockers: string[] = [];
+      if (receipt.status !== 'succeeded' || !receipt.mergeEligible || !receipt.publicationReceiptAvailable) {
+        const errorCode = 'errorCode' in receipt ? receipt.errorCode : 'unverified';
+        blockers.push(`Current durable passthrough publication is unavailable (${errorCode}).`);
+      }
+      if (!secret) blockers.push('Service-owned gate attestation signing key is unavailable.');
+      const isPassed = blockers.length === 0;
+      const attestedHead = receipt.headSha || headSha;
+      const attestationToken = isPassed
+        ? await computeGateAttestationHmac(secret,
+          `${receipt.owner}/${receipt.repo}#${receipt.prNumber}@${attestedHead}:${receipt.baseSha}:${receipt.policyDigest}:${receipt.publicationId}:${receipt.auditDigest}:${timestamp}`)
+        : '';
+
+      const output: AttestPrGateOutput = {
+        attested: isPassed,
+        head_sha: attestedHead,
+        gate_status: isPassed ? 'PASSED' : 'BLOCKED',
+        blockers,
+        attestation_token: attestationToken,
+        timestamp,
+      };
+
+      const lines = [
+        `### Review Yeti Gate Attestation: ${isPassed ? '✅ PASSED' : '❌ BLOCKED'} (Operator Passthrough)`,
+        `- **Repository:** ${receipt.owner || owner}/${receipt.repo || repo}`,
+        `- **Pull Request:** #${receipt.prNumber || prNumber}`,
+        `- **Head Commit:** \`${attestedHead}\``,
+        `- **Attested:** ${isPassed ? 'Yes' : 'No'}`,
+        `- **Timestamp:** ${timestamp}`,
+        `- **Attestation Token:** ${attestationToken ? `\`${attestationToken}\`` : 'Unavailable'}`,
+        '',
+        'No semantic review ran; zero lanes were started.',
+        ...blockers.map((blocker) => `- **Blocker:** ${blocker}`),
+      ];
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: lines.join('\n'),
+          },
+          {
+            type: 'text',
+            text: JSON.stringify(output, null, 2),
           },
         ],
       };
@@ -172,15 +228,14 @@ export const attestPrGateTool: McpToolHandler = {
     }
 
     // 4. Evaluate Attestation Decision & Sign HMAC-SHA256 Token
+    const secret = typeof env.REVIEW_YETI_ATTESTATION_SECRET === 'string'
+      ? env.REVIEW_YETI_ATTESTATION_SECRET.trim() : '';
+    if (!secret) blockers.push('Service-owned gate attestation signing key is unavailable.');
     const isPassed = blockers.length === 0;
     const timestamp = new Date().toISOString();
     let attestationToken = '';
 
     if (isPassed) {
-      const secret =
-        env.REVIEW_YETI_ATTESTATION_SECRET ||
-        process.env?.REVIEW_YETI_ATTESTATION_SECRET ||
-        'review-yeti-gate-attestation-secret';
       attestationToken = await computeGateAttestationHmac(
         secret,
         `${owner}/${repo}#${prNumber}@${headSha}:${timestamp}`

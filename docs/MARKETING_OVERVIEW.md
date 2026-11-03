@@ -30,7 +30,7 @@ By replacing proprietary third-party indexing fees with an **In-House $0-SaaS AS
 | **Secret Security Routing** | ✅ **Doppler 4-tier secret manager** | ❌ Plaintext env vars | ❌ Static API keys |
 | **Diagram Generation** | ✅ **Automated Mermaid sequence & flowcharts** | ✅ Basic diagrams | ❌ None |
 | **Config Schema Alignment** | ✅ **1:1 `.coderabbit.yaml` & `.ct-review.yaml` drop-in** | N/A (Proprietary) | ❌ Proprietary |
-| **Deployment Model** | ✅ **Self-Hosted Kubernetes (DOKS / On-Prem)** | ❌ Closed SaaS cloud | ❌ Closed SaaS cloud |
+| **Deployment Model** | ✅ **Self-Hosted Kubernetes (On-Prem / Cloud)** | ❌ Closed SaaS cloud | ❌ Closed SaaS cloud |
 
 ---
 

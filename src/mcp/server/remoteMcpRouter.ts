@@ -47,6 +47,14 @@ import {
   createPurgeCacheTool,
   createGetCheckpointMetricsTool,
   createGetCompactionAnalyticsTool,
+  createGetOnboardingStatusTool,
+  createConfigureOnboardingTool,
+  createListRepositoriesTool,
+  createUpdateRepositorySettingsTool,
+  createGetPlatformSettingsTool,
+  createUpdatePlatformSettingsTool,
+  createGetUsageAnalyticsTool,
+  createManageMemoryGraphTool,
   type PreflightDiffReviewDependencies,
   type ExplainFindingDependencies,
   type GenerateFixDiffDependencies,
@@ -232,6 +240,14 @@ export function createDefaultToolRegistry(options?: {
   registry.registerTool(createPurgeCacheTool({ cfOrchestratorUrl: options?.cfOrchestratorUrl }));
   registry.registerTool(createGetCheckpointMetricsTool());
   registry.registerTool(createGetCompactionAnalyticsTool());
+  registry.registerTool(createGetOnboardingStatusTool());
+  registry.registerTool(createConfigureOnboardingTool());
+  registry.registerTool(createListRepositoriesTool());
+  registry.registerTool(createUpdateRepositorySettingsTool());
+  registry.registerTool(createGetPlatformSettingsTool());
+  registry.registerTool(createUpdatePlatformSettingsTool());
+  registry.registerTool(createGetUsageAnalyticsTool());
+  registry.registerTool(createManageMemoryGraphTool());
 
   return registry;
 }

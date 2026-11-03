@@ -137,19 +137,22 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
   // GROUP 1: McpFleetManager White-Box Hardening
   // ===========================================================================
   describe('Group 1: McpFleetManager White-Box Hardening', () => {
-    it('TC-T5-FLT-01: resolves Bifrost gateway headers with API key resolution hierarchy', async () => {
-      const origKey = process.env.REVIEW_YETI_BIFROST_API_KEY;
-      const origGatewayKey = process.env.CT_LLM_GATEWAY_API_KEY;
-      const origBifrostKey = process.env.BIFROST_API_KEY;
+    it('TC-T5-FLT-01: sends only the dedicated MCP key and ignores retired gateway keys', async () => {
+      const names = ['CT_MCP_KEY', 'REVIEW_YETI_BIFROST_API_KEY', 'CT_LLM_GATEWAY_API_KEY', 'BIFROST_API_KEY'];
+      const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+      const manager = mcpFleetManager as unknown as {
+        dopplerManager: { getSecret: (name: string) => Promise<string | undefined> };
+      };
+      const originalGetSecret = manager.dopplerManager.getSecret;
+      const requestedSecrets: string[] = [];
+      manager.dopplerManager.getSecret = async (name) => {
+        requestedSecrets.push(name);
+        return '';
+      };
 
       try {
-        // Test primary key resolution
-        process.env.REVIEW_YETI_BIFROST_API_KEY = 'primary-secret-key-1';
-        delete process.env.CT_LLM_GATEWAY_API_KEY;
-        delete process.env.BIFROST_API_KEY;
-
         let capturedHeaders: Record<string, string> = {};
-        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+        vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
           capturedHeaders = (init?.headers || {}) as Record<string, string>;
           return new Response(
             JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: '{"ok":true}' }] } }),
@@ -157,26 +160,35 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
           );
         });
 
-        const res1 = await mcpFleetManager.executeTool('ct_impact', { target: 'routes' });
-        expect(res1.success).toBe(true);
-        expect(capturedHeaders['Authorization']).toBe('Bearer primary-secret-key-1');
-        expect(capturedHeaders['x-api-key']).toBe('primary-secret-key-1');
+        process.env.CT_MCP_KEY = 'dedicated-mcp-key-1';
+        process.env.REVIEW_YETI_BIFROST_API_KEY = 'retired-model-gateway-key';
+        process.env.CT_LLM_GATEWAY_API_KEY = 'retired-shared-gateway-key';
+        process.env.BIFROST_API_KEY = 'retired-bifrost-key';
 
-        // Test fallback to CT_LLM_GATEWAY_API_KEY
-        delete process.env.REVIEW_YETI_BIFROST_API_KEY;
-        process.env.CT_LLM_GATEWAY_API_KEY = 'fallback-gateway-key-2';
+        const first = await mcpFleetManager.executeTool('ct_impact', { target: 'routes' });
+        expect(first.success).toBe(true);
+        expect(capturedHeaders['Authorization']).toBe('Bearer dedicated-mcp-key-1');
+        expect(capturedHeaders['x-api-key']).toBe('dedicated-mcp-key-1');
+        expect(requestedSecrets).toEqual([]);
 
-        const res2 = await mcpFleetManager.executeTool('ct_impact', { target: 'routes' });
-        expect(res2.success).toBe(true);
-        expect(capturedHeaders['Authorization']).toBe('Bearer fallback-gateway-key-2');
-        expect(capturedHeaders['x-api-key']).toBe('fallback-gateway-key-2');
+        process.env.CT_MCP_KEY = 'dedicated-mcp-key-2';
+        const second = await mcpFleetManager.executeTool('ct_impact', { target: 'routes' });
+        expect(second.success).toBe(true);
+        expect(capturedHeaders['Authorization']).toBe('Bearer dedicated-mcp-key-2');
+        expect(capturedHeaders['x-api-key']).toBe('dedicated-mcp-key-2');
+
+        delete process.env.CT_MCP_KEY;
+        const noDedicatedKey = await mcpFleetManager.executeTool('ct_impact', { target: 'routes' });
+        expect(noDedicatedKey.success).toBe(true);
+        expect(capturedHeaders).not.toHaveProperty('Authorization');
+        expect(capturedHeaders).not.toHaveProperty('x-api-key');
+        expect(requestedSecrets).toEqual(['CT_MCP_KEY']);
       } finally {
-        if (origKey !== undefined) process.env.REVIEW_YETI_BIFROST_API_KEY = origKey;
-        else delete process.env.REVIEW_YETI_BIFROST_API_KEY;
-        if (origGatewayKey !== undefined) process.env.CT_LLM_GATEWAY_API_KEY = origGatewayKey;
-        else delete process.env.CT_LLM_GATEWAY_API_KEY;
-        if (origBifrostKey !== undefined) process.env.BIFROST_API_KEY = origBifrostKey;
-        else delete process.env.BIFROST_API_KEY;
+        manager.dopplerManager.getSecret = originalGetSecret;
+        for (const name of names) {
+          if (saved[name] === undefined) delete process.env[name];
+          else process.env[name] = saved[name];
+        }
       }
     });
 
@@ -368,7 +380,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
 
     it('TC-T5-FLT-08: healthCheckAll evaluates online, offline, degraded, and disabled servers concurrently', async () => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
-        if (String(url).includes('bifrost')) {
+        if (String(url).startsWith('https://mcp.example.invalid/router/mcp')) {
           return new Response(
             JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools: [{ name: 'health' }] } }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -390,7 +402,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
       });
 
       const healthResults = await mcpFleetManager.healthCheckAll();
-      expect(healthResults['bifrost-gateway']).toBe('online');
+      expect(healthResults['ct-mcp']).toBe('online');
       expect(healthResults[tempDisabledId]).toBe('offline');
 
       await mcpFleetManager.unregisterServer(tempDisabledId);

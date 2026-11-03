@@ -85,10 +85,7 @@ check() {
 for trusted_repo in \
   ghcr.io/review-yeti-ai/review-yeti-bot \
   ghcr.io/review-yeti-ai/review-yeti-operator \
-  ghcr.io/review-yeti-ai/review-yeti-worker \
-  registry.digitalocean.com/exampleorg/ct-review-bot \
-  registry.digitalocean.com/exampleorg/review-yeti-operator \
-  registry.digitalocean.com/exampleorg/review-yeti-worker; do
+  ghcr.io/review-yeti-ai/review-yeti-worker; do
   check "matching $trusted_repo" 0 1 match "$trusted_repo@$PROVENANCE_TEST_DIGEST" "$sha"
 done
 
@@ -112,7 +109,12 @@ for bad_image in \
   "ghcr.io/review-yeti-ai/unknown@$PROVENANCE_TEST_DIGEST" \
   "ghcr.io/review-yeti-ai/review-yeti-bot/extra@$PROVENANCE_TEST_DIGEST" \
   "ghcr.io.evil/review-yeti-ai/review-yeti-bot@$PROVENANCE_TEST_DIGEST" \
-  "registry.digitalocean.com/exampleorg/review-yeti-bot@$PROVENANCE_TEST_DIGEST"; do
+  "registry.digitalocean.com/exampleorg/review-yeti-bot@$PROVENANCE_TEST_DIGEST" \
+  "registry.digitalocean.com/exampleorg/ct-review-bot@$PROVENANCE_TEST_DIGEST" \
+  "registry.digitalocean.com/exampleorg/review-yeti-operator@$PROVENANCE_TEST_DIGEST" \
+  "registry.digitalocean.com/exampleorg/review-yeti-worker@$PROVENANCE_TEST_DIGEST" \
+  "registry.digitalocean.com/review-yeti-ai/review-yeti-worker@$PROVENANCE_TEST_DIGEST" \
+  "ghcr.io.digitaloceanspaces.com/review-yeti-ai/review-yeti-worker@$PROVENANCE_TEST_DIGEST"; do
   check 'malformed or untrusted image' 2 0 match "$bad_image" "$sha"
 done
 

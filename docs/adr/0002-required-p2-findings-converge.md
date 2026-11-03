@@ -100,7 +100,7 @@ repository protection; and a prior resolution clearing a current verified P0/P1.
 - V1 heads retain required-P2 convergence behavior. V2 heads block only on verified P0/P1 findings
   and incomplete trusted coverage; P2/P3/NIT stay advisory.
 - V2 full receipts retain every finding even when the rendered summary shows only five advisories.
-- Scope: the DOKS worker's raw check and the service Gate, which are the production merge contract.
+- Scope: the Kubernetes worker's raw check and the service Gate, which are the production merge contract.
   Two other runtimes have no access to the bot's thread state and are deliberately not changed,
   because blocking on P2 there without convergence is exactly the alternative rejected above: the
   legacy GitHub Action pipeline (`.github/workflows/pipelines/review-pipeline.js`, the `local`

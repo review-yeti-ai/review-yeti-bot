@@ -1,7 +1,7 @@
 /**
  * Single source of truth for the review terminal deadline window.
  *
- * The DOKS execution lane admits a review with `terminalDeadline = receivedAt
+ * The Kubernetes execution lane admits a review with `terminalDeadline = receivedAt
  * + configured window` (25 minutes by default, bounded at 15-60 minutes for
  * rollout compatibility), then
  * hands the worker Job only the *remainder* of that window

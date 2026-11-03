@@ -7,7 +7,6 @@ import { SAMPLE_REPO_CDR } from '../src/sampleRepositories.js';
 function createMockEnv(): Env {
   return {
     ENVIRONMENT: 'production',
-    PARALLEL_MODE: 'true',
     PILOT_REPOSITORIES: 'all',
   } as unknown as Env;
 }

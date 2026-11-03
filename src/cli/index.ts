@@ -13,9 +13,24 @@ import {
   InitWizardOptions,
   InitWizardResult,
 } from './initWizard';
+import {
+  runLocalReview,
+  LocalReviewOptions,
+  LocalReviewResult,
+} from './localReview';
+import {
+  runGhPrStatus,
+  runGhPrReview,
+  parsePrReference,
+  GhPrStatusOptions,
+  GhPrRemoteReviewOptions,
+} from './ghConnectedCli';
+import { DetectionMode, MinimumSeverity } from '../config/schema';
 
 export * from './preCommit';
 export * from './initWizard';
+export * from './localReview';
+export * from './ghConnectedCli';
 
 const VERSION = '1.28.6';
 
@@ -29,11 +44,34 @@ USAGE:
   npx review-yeti <command> [options]
 
 COMMANDS:
+  review               Run local or PR code review with detection modes (fast | balanced | deep)
+  pr [number]          Inspect live GitHub PR status, Check Run Agents, Approvability & inline findings via gh
+  status [number]      Alias for "pr" — inspect live GitHub PR review status and open findings
   init                 Run 30-second GitHub App onboarding setup wizard
   pre-commit           Evaluate staged git changes (git diff --cached) for P0/P1 issues
   install-hook         Install Review Yeti as a git pre-commit hook
   --version, -v        Show CLI version
   --help, -h           Show this help message
+
+OPTIONS (review):
+  --mode <mode>        Detection mode: fast | balanced | deep (default: balanced)
+  --min-severity <s>   Minimum severity: low | medium | high | critical
+  --base <ref>         Compare against base git ref (e.g. origin/main)
+  --head <ref>         Target head git ref (default: HEAD)
+  --pr <number>        Fetch and review a remote GitHub Pull Request via gh / GitHub API
+  --repo <owner/repo>  Target GitHub repository when using --pr
+  --publish            Publish review verdict & .reviewyeti/checks/*.md Check Runs back to GitHub
+  --isolate            Run inside an isolated temporary git worktree
+  --raw                Stream newline-delimited JSONL findings for coding agents
+  --json               Output machine-readable JSON evaluation report
+  --strict             Exit non-zero on P1 issues in addition to P0 issues
+
+OPTIONS (pr / status):
+  --pr <number>        Pull Request number (defaults to current branch's open PR via gh pr view)
+  --repo <owner/repo>  Target GitHub repository (defaults to git origin remote)
+  --raw                Stream newline-delimited JSONL PR findings for coding agents
+  --json               Output machine-readable JSON PR status report
+  --quiet, -q          Suppress non-essential console logs
 
 OPTIONS (init):
   --port <number>      Port for local callback listener (default: 3333)
@@ -60,6 +98,8 @@ OPTIONS (install-hook):
   --dir <path>         Target repository root directory
 
 EXAMPLES:
+  $ npx review-yeti review --mode fast --raw
+  $ npx review-yeti review --base origin/main --isolate
   $ npx review-yeti init
   $ npx review-yeti init --org my-org --no-browser
   $ npx review-yeti init --dry-run --json
@@ -95,6 +135,121 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<nu
   if (command === '--version' || command === '-v' || command === 'version') {
     printVersion();
     return 0;
+  }
+
+  if (command === 'review') {
+    const getFlagValue = (flagName: string): string | undefined => {
+      const idx = flags.indexOf(flagName);
+      if (idx !== -1 && flags[idx + 1] && !flags[idx + 1].startsWith('-')) {
+        return flags[idx + 1];
+      }
+      return undefined;
+    };
+
+    const modeVal = getFlagValue('--mode') as DetectionMode | undefined;
+    const minSeverityVal = getFlagValue('--min-severity') as MinimumSeverity | undefined;
+    const diffPathArg = getFlagValue('--diff') || getFlagValue('--diff-file');
+    const outputFormat = getFlagValue('--output');
+    let diffContent: string | undefined;
+    if (diffPathArg) {
+      const resolvedDiffPath = path.resolve(process.cwd(), diffPathArg);
+      if (!fs.existsSync(resolvedDiffPath)) {
+        console.error(`Error: Diff file not found: ${resolvedDiffPath}`);
+        return 1;
+      }
+      diffContent = fs.readFileSync(resolvedDiffPath, 'utf-8');
+    }
+
+    const reviewOptions: LocalReviewOptions = {
+      mode: modeVal && ['fast', 'balanced', 'deep'].includes(modeVal) ? modeVal : undefined,
+      minSeverity: minSeverityVal,
+      base: getFlagValue('--base'),
+      head: getFlagValue('--head'),
+      isolate: flags.includes('--isolate'),
+      raw: flags.includes('--raw') || outputFormat === 'jsonl',
+      json: flags.includes('--json') || outputFormat === 'json' || outputFormat === 'sarif',
+      strict: flags.includes('--strict'),
+      noColor: flags.includes('--no-color'),
+      quiet: flags.includes('--quiet') || flags.includes('-q'),
+      diff: diffContent,
+      model: getFlagValue('--model'),
+    };
+
+    const prFlagVal = getFlagValue('--pr');
+    if (prFlagVal || flags.includes('--publish')) {
+      const parsedPr = parsePrReference(prFlagVal);
+      const remoteOptions: GhPrRemoteReviewOptions = {
+        ...reviewOptions,
+        repo: getFlagValue('--repo') || parsedPr.repo,
+        prNumber: parsedPr.prNumber,
+        publish: flags.includes('--publish'),
+      };
+      try {
+        const remoteResult = await runGhPrReview(remoteOptions);
+        return remoteResult.exitCode;
+      } catch (err: any) {
+        console.error(`❌ Error running PR review: ${err?.message || err}`);
+        return 1;
+      }
+    }
+
+    const result = await runLocalReview(reviewOptions);
+    return result.exitCode;
+  }
+
+  if (command === 'pr' || command === 'status') {
+    const getFlagValue = (flagName: string): string | undefined => {
+      const idx = flags.indexOf(flagName);
+      if (idx !== -1 && flags[idx + 1] && !flags[idx + 1].startsWith('-')) {
+        return flags[idx + 1];
+      }
+      return undefined;
+    };
+
+    const positionalPr = flags.find((f) => /^(\d+|[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+#\d+|https?:\/\/github\.com\/.+\/pull\/\d+)$/u.test(f));
+    const prFlagVal = getFlagValue('--pr') || positionalPr;
+    const parsedPr = parsePrReference(prFlagVal);
+
+    const outputFormat = getFlagValue('--output');
+    if (flags[0] === 'review') {
+      const modeVal = getFlagValue('--mode') as DetectionMode | undefined;
+      const minSeverityVal = getFlagValue('--min-severity') as MinimumSeverity | undefined;
+      try {
+        const remoteResult = await runGhPrReview({
+          repo: getFlagValue('--repo') || parsedPr.repo,
+          prNumber: parsedPr.prNumber,
+          publish: flags.includes('--publish'),
+          mode: modeVal && ['fast', 'balanced', 'deep'].includes(modeVal) ? modeVal : undefined,
+          minSeverity: minSeverityVal,
+          raw: flags.includes('--raw'),
+          json: flags.includes('--json'),
+          strict: flags.includes('--strict'),
+          noColor: flags.includes('--no-color'),
+          quiet: flags.includes('--quiet') || flags.includes('-q'),
+          model: getFlagValue('--model'),
+        });
+        return remoteResult.exitCode;
+      } catch (err: any) {
+        console.error(`❌ Error running PR review: ${err?.message || err}`);
+        return 1;
+      }
+    }
+
+    const statusOptions: GhPrStatusOptions = {
+      repo: getFlagValue('--repo') || parsedPr.repo,
+      prNumber: parsedPr.prNumber,
+      raw: flags.includes('--raw') || outputFormat === 'jsonl',
+      json: flags.includes('--json') || outputFormat === 'json' || outputFormat === 'sarif',
+      quiet: flags.includes('--quiet') || flags.includes('-q'),
+    };
+
+    try {
+      const statusResult = await runGhPrStatus(statusOptions);
+      return statusResult.exitCode;
+    } catch (err: any) {
+      console.error(`❌ Error fetching GitHub PR status: ${err?.message || err}`);
+      return 1;
+    }
   }
 
   if (command === 'init') {
@@ -144,7 +299,7 @@ export async function runCli(args: string[] = process.argv.slice(2)): Promise<nu
       quiet: flags.includes('--quiet') || flags.includes('-q'),
     };
 
-    const diffIndex = flags.indexOf('--diff');
+    const diffIndex = flags.indexOf('--diff') !== -1 ? flags.indexOf('--diff') : flags.indexOf('--diff-file');
     if (diffIndex !== -1 && flags[diffIndex + 1]) {
       const diffFilePath = path.resolve(process.cwd(), flags[diffIndex + 1]);
       if (fs.existsSync(diffFilePath)) {

@@ -20,6 +20,7 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { sha256 } from '../../src/review/reviewCore';
 import { MAX_FILE_PATCH_CHARS } from '../../src/pipeline/hunkFilter';
 import { PATCH_UNAVAILABLE_MARKER } from '../../src/review/patchAvailability';
+import { TEST_CLOUDFLARE_AIG_BASE_URL, TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 /**
  * REL-1141 (child of REL-1077). Found live on 1.92.9:
@@ -50,7 +51,7 @@ const NEW_PACKAGES = [
 
 const HEAD = '6a143677aa3f6b4329791eec6a0a54cd33b4dc71';
 const BASE = 'd390b73c4ffce005b6af7dc4cf1d0673fd8e47d8';
-const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'k', model: 'review-model' };
+const transport = { baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL, apiKey: 'k', model: 'review-model' };
 const roster = (personas = 'architecture,security,documentation') => resolveWorkerConfig({ REVIEW_PERSONAS: personas }, transport);
 const rosterWithLockfileCap = (personas = 'security', maxReviewedLockfilePatchChars = 65_536) => resolveWorkerConfig({
   REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
@@ -508,7 +509,7 @@ describe('REL-1141: the trusted completion side derives the same lanes and cover
     } });
     return preparePublishingPolicy({ content, source: { repositoryId: 456, repository: 'example/central-policy',
       sha: 'c'.repeat(40), path: 'policy/review.json', contentDigest: sha256(content) } },
-    { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' });
+    { baseUrl: TEST_CLOUDFLARE_AIG_BASE_URL, model: 'review-model' });
   }
   function context(personas: string, changedFiles: Array<{ path: string; patch: string }>, maxReviewedLockfilePatchChars?: number) {
     const stored = prepared(personas, maxReviewedLockfilePatchChars);
@@ -600,7 +601,7 @@ function workerEnv(): NodeJS.ProcessEnv {
     REVIEW_REPO: 'exampleorg/openclaw-linear-plugin', REVIEW_REPOSITORY_ID: '1339040553',
     REVIEW_POLICY_DIGEST: 'c'.repeat(64), REVIEW_CONFIG_DIGEST: 'd'.repeat(64), REVIEW_EXECUTION_ATTEMPT: '1',
     REVIEW_PR_NUMBER: '30', REVIEW_HEAD_SHA: HEAD, REVIEW_BASE_SHA: BASE, REVIEW_MODEL: 'ollama/glm-5.3-flash',
-    OPENAI_BASE_URL: 'https://gateway.example.invalid/v1', OPENAI_API_KEY: 'vk-test', GH_TOKEN: 'ghs_test',
+    ...TEST_CLOUDFLARE_AIG_SETTINGS,  GH_TOKEN: 'ghs_test',
   };
 }
 

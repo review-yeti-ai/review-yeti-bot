@@ -9,6 +9,7 @@ import { dashboardStore } from '../persistence/dashboardStore';
 import { executePersonaPanel } from '../panel/panelEngine';
 import { OpenRouterClient } from '../gateway/openRouterClient';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
+import { computeGitHubSignature, verifyGitHubSignatureDetailed } from '../github/signature';
 
 export interface OnboardingRouterOptions {
   operatorPauseEnabled?: boolean;
@@ -226,24 +227,13 @@ export function createOnboardingRouter(options: OnboardingRouterOptions = {}): R
       };
 
       const payloadString = JSON.stringify(simulatedEvent);
-      const hmacSignature = crypto
-        .createHmac('sha256', webhookSecret)
-        .update(payloadString)
-        .digest('hex');
-      const expectedHeader = `sha256=${hmacSignature}`;
-
-      const computedHmac = crypto
-        .createHmac('sha256', webhookSecret)
-        .update(payloadString)
-        .digest('hex');
-      const calculatedHeader = `sha256=${computedHmac}`;
-
-      const isValidSignature =
-        expectedHeader.length === calculatedHeader.length &&
-        crypto.timingSafeEqual(
-          Buffer.from(expectedHeader),
-          Buffer.from(calculatedHeader)
-        );
+      const expectedHeader = computeGitHubSignature(payloadString, webhookSecret);
+      const verification = verifyGitHubSignatureDetailed({
+        signatureHeader: expectedHeader,
+        rawBody: payloadString,
+        secret: webhookSecret,
+      });
+      const isValidSignature = verification.isValid;
 
       const probe1LatencyMs = Math.max(1, Date.now() - probe1Start);
       const deliveryId = `del_${crypto.randomBytes(8).toString('hex')}`;
@@ -263,9 +253,6 @@ export function createOnboardingRouter(options: OnboardingRouterOptions = {}): R
         targetProviderIds.map(async (id) => {
           const cfg = getProviderConfigRecord(id, providerConfigs);
           const pStart = Date.now();
-
-          // Measure live execution delay
-          await new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 5) + 2));
           const latencyMs = Math.max(1, Date.now() - pStart);
           const ttftMs = Math.max(1, Math.round(latencyMs * 0.42));
 

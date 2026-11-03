@@ -18,7 +18,7 @@ const APP_ID = 4_385_771;
 const QUALIFICATION_RUNTIME_IMAGE_DIGEST = `sha256:${'a'.repeat(64)}`;
 const QUALIFICATION_DISPATCH_ORIGIN_SHA256 = 'b'.repeat(64);
 
-describe('isolated qualification DOKS admission', () => {
+describe('isolated qualification admission', () => {
   async function harness(callerKind: 'central' | 'direct', qualificationInstance = true,
     preparedRuntimeDigest: string | null = QUALIFICATION_RUNTIME_IMAGE_DIGEST,
     preparedOriginDigest: string | null = QUALIFICATION_DISPATCH_ORIGIN_SHA256,

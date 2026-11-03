@@ -16,7 +16,7 @@ export const getRuntimeMetricsTool: McpToolHandler = {
   definition: {
     name: 'review_yeti_get_runtime_metrics',
     description:
-      'Retrieve p50, p75, p90, p95, and p99 runtime percentile distributions, stage-by-stage latency breakdowns, and speedup comparison versus DOKS Kubernetes.',
+      'Retrieve p50, p75, p90, p95, and p99 runtime percentile distributions, and stage-by-stage latency breakdowns.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -29,11 +29,6 @@ export const getRuntimeMetricsTool: McpToolHandler = {
           default: 24,
           description: 'Evaluation window in hours (default: 24)',
         },
-        comparisonMode: {
-          type: 'boolean',
-          default: true,
-          description: 'Include latency speedup comparison between Cloudflare Edge and DOKS',
-        },
       },
     },
   },
@@ -41,7 +36,6 @@ export const getRuntimeMetricsTool: McpToolHandler = {
   async execute(args: Record<string, any>, context: McpExecutionContext): Promise<ToolResult> {
     const repo = (args.repo || '').trim();
     const windowHours = typeof args.windowHours === 'number' ? args.windowHours : 24;
-    const comparisonMode = args.comparisonMode !== false;
 
     let latenciesMs: number[] = [];
     const hasDb = Boolean(context.env?.DB);
@@ -113,14 +107,6 @@ export const getRuntimeMetricsTool: McpToolHandler = {
         runnerExecution: avg - 11685, // Active worker time
         githubPublishing: 700,        // Check runs + PR inline suggestion reviews
       },
-      comparisonVsDoks: comparisonMode
-        ? {
-            doksAvgMs: Math.round(avg * 1.22), // DOKS averages ~22% higher due to cold node scale
-            cfAvgMs: avg,
-            speedupRatio: 1.22,
-            latencyReductionPercent: 18.0,
-          }
-        : undefined,
     };
 
     const p = report.percentilesWallLatencyMs;
@@ -142,12 +128,7 @@ export const getRuntimeMetricsTool: McpToolHandler = {
       `- **3. Diff Partition & Triage:** ${stages.diffPartitionAndTriage} ms\n` +
       `- **4. R2 Cache Streaming Hydration:** ${stages.r2CacheHydration} ms *(SLA: <1,500 ms)*\n` +
       `- **5. Ephemeral Worker Execution:** ${stages.runnerExecution} ms\n` +
-      `- **6. GitHub Check & Inline Publishing:** ${stages.githubPublishing} ms\n\n` +
-      (report.comparisonVsDoks
-        ? `#### 🏎️ Performance vs DOKS Kubernetes\n` +
-          `- **Cloudflare Average:** ${(report.comparisonVsDoks.cfAvgMs / 1000).toFixed(1)}s vs **DOKS Average:** ${(report.comparisonVsDoks.doksAvgMs / 1000).toFixed(1)}s\n` +
-          `- **Acceleration:** **${report.comparisonVsDoks.speedupRatio}x faster** (${report.comparisonVsDoks.latencyReductionPercent}% wall latency reduction)\n`
-        : '');
+      `- **6. GitHub Check & Inline Publishing:** ${stages.githubPublishing} ms\n`;
 
     return {
       content: [

@@ -12,7 +12,7 @@ import {
 export { isAllowlistedWorkflowRef } from '../review/reviewCheckIdentity';
 
 export const GITHUB_ACTIONS_OIDC_ISSUER = 'https://token.actions.githubusercontent.com';
-export const REVIEW_DISPATCH_AUDIENCE = 'review-yeti-doks-dispatch';
+export const REVIEW_DISPATCH_AUDIENCE = 'review-yeti-edge-dispatch';
 export const REVIEW_CI_AUDIENCE = 'review-yeti-ci-control';
 export const GITHUB_ACTIONS_JWKS_URL = new URL('https://token.actions.githubusercontent.com/.well-known/jwks');
 

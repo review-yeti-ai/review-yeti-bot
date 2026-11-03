@@ -171,7 +171,7 @@ Requested team: Full multi-agent team (parallel work streams across dispatcher, 
 
 ## 2026-09-27T21:52:53Z
 
-Implement the new agentic harness improvements from recent `example-meta` commits (API-3330 and API-3333) into the DOKS runner lifecycle across both the TypeScript dispatcher and Go Kubernetes operator.
+Implement the new agentic harness improvements from recent `example-meta` commits (API-3330 and API-3333) into the Kubernetes runner lifecycle across both the TypeScript dispatcher and Go Kubernetes operator.
 
 Working directory: /Users/jasonbarbee/work/review-yeti-bot
 Integrity mode: development
@@ -186,7 +186,7 @@ Reference material:
 ## Requirements
 
 ### R1. TypeScript Runner Contract & Fencing Lifecycle
-Extend `K8sJobRunner` and the DOKS job dispatch pipeline in `review-yeti-bot` to construct and emit valid `ct-agent-work-request.v1` envelopes for runner Jobs. The job manifest generator must inject `logical_child_id`, `fencing_epoch`, and child execution identities into the runner container environment and volume mounts. Upon pod completion, the runner must validate and produce conforming `ct-agent-execution-receipt.v1` structures.
+Extend `K8sJobRunner` and the Kubernetes job dispatch pipeline in `review-yeti-bot` to construct and emit valid `ct-agent-work-request.v1` envelopes for runner Jobs. The job manifest generator must inject `logical_child_id`, `fencing_epoch`, and child execution identities into the runner container environment and volume mounts. Upon pod completion, the runner must validate and produce conforming `ct-agent-execution-receipt.v1` structures.
 
 ### R2. Go Operator Fencing & Terminal Outcome Reconciliation
 Update the Go `PRReviewJob` v1alpha2 controller (`k8s-operator/controllers/prreviewjob_v1alpha2_controller.go` and `worker_termination.go`) to reconcile child execution state against the authoritative fencing epoch:

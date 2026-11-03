@@ -156,7 +156,7 @@ describe('Challenger 2: Ephemeral Storage Isolation & Universal emptyDir Suite',
         policyDigest: 'c'.repeat(64),
         configDigest: 'd'.repeat(64),
         publicationMode: 'disabled' as const,
-        workerImage: 'registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:' + 'e'.repeat(64),
+        workerImage: 'ghcr.io/review-yeti-ai/review-yeti-worker@sha256:' + 'e'.repeat(64),
         namespace: 'ct-review-system',
       };
 

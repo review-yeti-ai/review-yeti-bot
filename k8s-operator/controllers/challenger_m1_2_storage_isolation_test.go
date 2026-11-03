@@ -285,7 +285,7 @@ func TestChallengerConcurrentReviewsStrictStorageIsolation(t *testing.T) {
 				PolicyDigest:     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 				ConfigDigest:     "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 				PublicationMode:  "disabled",
-				WorkerImage:      "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+				WorkerImage:      "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 				RunnerMode:       "prebaked",
 				RunSecretName:    fmt.Sprintf("ct-review-run-%032x", i+1),
 			},

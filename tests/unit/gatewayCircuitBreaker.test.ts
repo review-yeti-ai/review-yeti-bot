@@ -9,6 +9,7 @@ import { DispatchCircuitBreaker } from '../../src/k8s/dispatchCircuitBreaker';
 import { requeueRecoverableIncompletePanelFailure } from '../../src/review/recoverablePanelRetry';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { ctReviewConfigV3Schema } from '../../src/config/schema';
+import { TEST_CLOUDFLARE_AIG_SETTINGS } from '../support/cloudflareGateway';
 
 describe('Milestone 5 (R5): Gateway Circuit Breaking & Outage Requeuing', () => {
   const originalEnv = { ...process.env };
@@ -354,8 +355,8 @@ describe('Milestone 5 (R5): Gateway Circuit Breaking & Outage Requeuing', () => 
         REVIEW_HEAD_SHA: 'a'.repeat(40),
         REVIEW_BASE_SHA: 'b'.repeat(40),
         REVIEW_MODEL: 'ollama/glm-5.3-flash',
-        OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
-        OPENAI_API_KEY: 'vk-test',
+        ...TEST_CLOUDFLARE_AIG_SETTINGS,
+
         GH_TOKEN: 'ghs_test',
         REVIEW_CHECK_ID: '9999',
       };

@@ -538,7 +538,7 @@ export class MockBifrostGateway {
       case 'health':
         return {
           success: true,
-          output: { status: 'OK', cluster: 'doks-nyc1', timestamp: new Date().toISOString() },
+          output: { status: 'OK', cluster: 'cluster-a', timestamp: new Date().toISOString() },
         };
       default:
         return {

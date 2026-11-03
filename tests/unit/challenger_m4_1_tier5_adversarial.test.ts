@@ -68,7 +68,7 @@ describe('Tier 5 White-Box Adversarial Challenge: TypeScript Runner & Contracts'
     generation: 2,
     executionId: 'exec-sec-pr42-e3b0c44-g2',
     tenantId: 'ct-prod',
-    environmentId: 'doks-qualification',
+    environmentId: 'qualification',
     workspaceId: 'factory-1',
   };
 

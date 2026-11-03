@@ -76,7 +76,7 @@ func v1alpha2Review(now time.Time) *reviewv1alpha2.PRReviewJob {
 			PolicyDigest:     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 			ConfigDigest:     "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 			PublicationMode:  "disabled",
-			WorkerImage:      "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			WorkerImage:      "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 			RunnerMode:       "generic",
 			RunSecretName:    "ct-review-run-11111111111111111111111111111111",
 		},
@@ -303,7 +303,7 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsPodLifecycleTiming(t *testing.T) {
 			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue, LastTransitionTime: scheduled}},
 			ContainerStatuses: []corev1.ContainerStatus{{
 				Name:    "reviewer-worker",
-				ImageID: "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+				ImageID: "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 				State:   corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: started}},
 			}},
 		},
@@ -368,7 +368,7 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsTerminatedPodProcessTiming(t *test
 			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue, LastTransitionTime: scheduled}},
 			ContainerStatuses: []corev1.ContainerStatus{{
 				Name:    "reviewer-worker",
-				ImageID: "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+				ImageID: "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 				State:   corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{StartedAt: started, FinishedAt: finished}},
 			}},
 		},
@@ -569,7 +569,7 @@ func TestPRReviewJobV1Alpha2ReconcilerReleasesLeaseWhenWorkerContractIsRejected(
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	scheme := v1alpha2Scheme(t)
 	review := v1alpha2Review(now)
-	review.Spec.WorkerImage = "registry.digitalocean.com/exampleorg/review-yeti-worker:latest"
+	review.Spec.WorkerImage = "ghcr.io/review-yeti-ai/review-yeti-worker:latest"
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
 	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
@@ -1415,10 +1415,10 @@ func TestPRReviewJobV1Alpha2ReconcilerKeepsItsOwnAppGateWorker(t *testing.T) {
 		Scheme: scheme,
 		Now:    func() time.Time { return now },
 		Publishing: job.PublishingConfig{
-			GatewayBaseURL:    "https://gateway.example.invalid/v1",
+			GatewayBaseURL:    "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1",
 			Model:             "ollama/glm-5.3-flash",
 			GatewaySecretName: "review-yeti-gateway-credentials",
-			GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+			GatewaySecretKey:  "CLOUDFLARE_AIG_RUN_TOKEN",
 			CompletionURL:     "https://dispatch.example.invalid/api/dispatch/completion",
 		},
 	}
@@ -1495,10 +1495,10 @@ func TestPRReviewJobV1Alpha2ReconcilerStopsTamperedAppGateWorkers(t *testing.T) 
 			reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
 				Client: kube, Scheme: scheme, Now: func() time.Time { return now },
 				Publishing: job.PublishingConfig{
-					GatewayBaseURL:    "https://gateway.example.invalid/v1",
+					GatewayBaseURL:    "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1",
 					Model:             "ollama/glm-5.3-flash",
 					GatewaySecretName: "review-yeti-gateway-credentials",
-					GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+					GatewaySecretKey:  "CLOUDFLARE_AIG_RUN_TOKEN",
 					CompletionURL:     "https://dispatch.example.invalid/api/dispatch/completion",
 				},
 			}
@@ -2102,10 +2102,10 @@ func TestPRReviewJobV1Alpha2_AlreadyExistsWorkerJobReconcilesAuthoritativeOutcom
 	}
 
 	publishingConfig := job.PublishingConfig{
-		GatewayBaseURL:    "https://gateway.example.invalid/v1",
+		GatewayBaseURL:    "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1",
 		Model:             "ollama/glm-5.3-flash",
 		GatewaySecretName: "review-yeti-gateway-credentials",
-		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		GatewaySecretKey:  "CLOUDFLARE_AIG_RUN_TOKEN",
 		CompletionURL:     server.URL + "/api/dispatch/completion",
 	}
 
@@ -2260,10 +2260,10 @@ func TestPRReviewJobV1Alpha2_StalledReceiptEndpointDoesNotBlockUnrelatedReconcil
 	}()
 
 	publishingConfig := job.PublishingConfig{
-		GatewayBaseURL:    "https://gateway.example.invalid/v1",
+		GatewayBaseURL:    "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1",
 		Model:             "ollama/glm-5.3-flash",
 		GatewaySecretName: "review-yeti-gateway-credentials",
-		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		GatewaySecretKey:  "CLOUDFLARE_AIG_RUN_TOKEN",
 		CompletionURL:     server.URL + "/api/dispatch/completion",
 	}
 
@@ -2447,10 +2447,10 @@ func TestPRReviewJobV1Alpha2_ReceiptEndpoint500And503FailSoftWithoutBlocking(t *
 	defer server.Close()
 
 	publishingConfig := job.PublishingConfig{
-		GatewayBaseURL:    "https://gateway.example.invalid/v1",
+		GatewayBaseURL:    "https://gateway.ai.cloudflare.com/v1/11111111111111111111111111111111/test/custom-example/v1",
 		Model:             "ollama/glm-5.3-flash",
 		GatewaySecretName: "review-yeti-gateway-credentials",
-		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		GatewaySecretKey:  "CLOUDFLARE_AIG_RUN_TOKEN",
 		CompletionURL:     server.URL + "/api/dispatch/completion",
 	}
 

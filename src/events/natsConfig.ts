@@ -181,7 +181,7 @@ function parseToken(env: NatsEnvironment): string {
 }
 
 /**
- * Parse the publisher's private DOKS configuration. Disabled is the safe
+ * Parse the publisher's private Kubernetes configuration. Disabled is the safe
  * default and intentionally does not require any transport or credential
  * settings. Enabled configuration is complete-or-invalid; callers must not
  * silently downgrade a malformed enabled process to an in-memory mode.
