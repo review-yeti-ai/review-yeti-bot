@@ -284,6 +284,13 @@ export type TriggerReviewOutput = {
   review_check_id: number | null;
   gate_check_id: number | null;
   merge_eligible: boolean;
+  publication_failure?: {
+    stage: 'record' | 'review' | 'gate' | 'receipt';
+    classification: 'candidate_check' | 'client_preparation' | 'check_reconciliation' | 'check_creation'
+      | 'check_update' | 'unknown_create' | 'preflight_timeout' | 'preflight_reset_unconfirmed'
+      | 'receipt_deadline' | 'identity_mismatch' | 'transport' | 'stale_claim'
+      | 'durable_record_unavailable' | 'receipt_readback';
+  };
   message: string;
 } & (
   { candidate_state: 'current'; head_sha: string }

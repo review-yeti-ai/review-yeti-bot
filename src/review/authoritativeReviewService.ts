@@ -18,9 +18,11 @@ import { OperatorPassthroughPublisher } from './operatorPassthroughPublisher';
 import { operatorPassthroughIdentity, OperatorPassthroughDeliveryIdentityConflictError,
   OperatorPassthroughOperationDeadlineExceededError, OperatorPassthroughPersistenceUnavailableError,
   awaitOperatorPassthroughOperation, validateOperatorPassthroughEvent, withOperatorPassthroughReceiptBudget,
+  OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS, OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS,
   type OperatorPassthroughAdmissionReceipt, type OperatorPassthroughAdmissionRequest,
   type OperatorPassthroughUnavailableRequest,
   type OperatorPassthroughPublicationRepository, type OperatorPassthroughPublicationSnapshot,
+  type OperatorPassthroughPublicationFailure,
   type OperatorPassthroughOperationScope,
   type OperatorPassthroughRecordResult, type OperatorPassthroughReconcileAdmission,
   type OperatorPassthroughReconcileCursor } from './operatorPassthrough';
@@ -31,11 +33,13 @@ const OPERATOR_PASSTHROUGH_CATCH_UP_BATCH_SIZE = 10;
 function unavailableOperatorPassthroughReceipt(publicationId: string | null, auditDigest: string | null,
   publicationReceiptAvailable: boolean | null,
   status: OperatorPassthroughAdmissionReceipt['status'] = 'accepted',
-  candidateState: OperatorPassthroughAdmissionReceipt['candidateState'] = 'current'): OperatorPassthroughAdmissionReceipt {
+  candidateState: OperatorPassthroughAdmissionReceipt['candidateState'] = 'current',
+  publicationFailure?: OperatorPassthroughPublicationFailure): OperatorPassthroughAdmissionReceipt {
   return {
     status, candidateState, verdict: 'SHIP', expectedLanes: 0, completedLanes: 0,
     publicationId, auditDigest, publicationState: 'unavailable', publicationReceiptAvailable,
     reviewCheckId: null, gateCheckId: null, mergeEligible: false,
+    ...(publicationFailure ? { publicationFailure } : {}),
     message: publicationReceiptAvailable === true
       ? `Operator pause authorizes SHIP with zero review lanes; the durable receipt is available for check-publication retry, but publication status is unavailable. Protected merge eligibility is false.`
       : `Operator pause authorizes SHIP with zero review lanes; official check publication is unavailable and durable publication retry could not be confirmed. Protected merge eligibility is false.`,
@@ -201,15 +205,31 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
         throw new Error('Operator passthrough candidate is outside authoritative admission');
       }
       validateOperatorPassthroughEvent(input.event);
+      if (input.scope && input.event.transport !== 'mcp') {
+        throw new Error('A caller-owned receipt scope is reserved for MCP passthrough');
+      }
       const expectedAppId = expectedAppIdFor(requested);
       let resolved;
-      try { resolved = await resolver.resolve(requested); }
+      try {
+        resolved = input.scope
+          ? await awaitOperatorPassthroughOperation(() => resolver.resolve(requested, input.scope!.signal), input.scope)
+          : await resolver.resolve(requested);
+      }
       catch (error) {
+        if (error instanceof OperatorPassthroughOperationDeadlineExceededError || input.scope?.signal.aborted) {
+          return unavailableOperatorPassthroughReceipt(null, null, null, 'unavailable', 'unavailable',
+            { stage: 'record', classification: 'receipt_deadline' });
+        }
         if (error instanceof AuthoritativeCandidateChangedError) throw error;
         if (!isPausedAuthorityReadUnavailable(error)) throw error;
         try {
-          await withOperatorPassthroughReceiptBudget((scope) =>
-            operatorRepository.assertDeliveryIdentity(input.event, scope));
+          if (input.scope) {
+            await awaitOperatorPassthroughOperation(
+              () => operatorRepository.assertDeliveryIdentity(input.event, input.scope), input.scope);
+          } else {
+            await withOperatorPassthroughReceiptBudget((scope) =>
+              operatorRepository.assertDeliveryIdentity(input.event, scope));
+          }
         }
         catch (identityError) {
           if (identityError instanceof OperatorPassthroughDeliveryIdentityConflictError) throw identityError;
@@ -218,6 +238,9 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
         }
         return unavailableOperatorPassthroughReceipt(null, null, null, 'unavailable', 'unavailable');
       }
+      if (input.reviewEngine !== undefined && resolved.prepared.config?.review_engine !== input.reviewEngine) {
+        throw new Error('Requested review_engine is not permitted by the authoritative policy');
+      }
       const candidate = { ...requested, policyDigest: resolved.prepared.policy.effectivePolicyDigest };
       const recordInput = { candidate, expectedAppId, event: input.event };
       // Keep caller/event and exact candidate validation outside the persistence
@@ -225,8 +248,11 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
       // bounded same-delivery retry or an unavailable logical-SHIP response.
       operatorPassthroughIdentity(recordInput);
       let recorded: OperatorPassthroughRecordResult | undefined;
+      let publicationFailure: OperatorPassthroughPublicationFailure | undefined;
+      const receiptBudgetMs = input.event.transport === 'mcp'
+        ? OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS : OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS;
       try {
-        return await withOperatorPassthroughReceiptBudget(async (scope) => {
+        const publishReceipt = async (scope: OperatorPassthroughOperationScope) => {
           try {
             recorded = await awaitOperatorPassthroughOperation(
               () => operatorRepository.record(recordInput, undefined, scope), scope);
@@ -243,7 +269,8 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
               // The initial exact-current resolution already authorized this
               // logical pause response. A later read failure cannot make a
               // timed-out admission eligible for a same-delivery retry.
-              return unavailableOperatorPassthroughReceipt(null, null, null);
+              return unavailableOperatorPassthroughReceipt(null, null, null, 'accepted', 'current',
+                { stage: 'record', classification: 'durable_record_unavailable' });
             }
             if (current.prepared.policy.effectivePolicyDigest !== candidate.policyDigest) {
               throw new AuthoritativeCandidateChangedError();
@@ -257,7 +284,8 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
             } catch (retryError) {
               if (retryError instanceof OperatorPassthroughDeliveryIdentityConflictError
                 || retryError instanceof OperatorPassthroughOperationDeadlineExceededError) throw retryError;
-              return unavailableOperatorPassthroughReceipt(null, null, null);
+              return unavailableOperatorPassthroughReceipt(null, null, null, 'accepted', 'current',
+                { stage: 'record', classification: 'durable_record_unavailable' });
             }
           }
           // Event transports get immediate bounded publication. The same
@@ -265,15 +293,18 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
           if (input.event.transport !== 'service-reconciler') {
             const firstPublication = await awaitOperatorPassthroughOperation(
               () => operatorPublisher.runOnce(recorded!.publicationId, scope), scope);
+            publicationFailure = firstPublication.failure;
             if (firstPublication.preflightResetUnconfirmed) {
               return unavailableOperatorPassthroughReceipt(recorded!.publicationId,
-                recorded!.auditDigest, true, recorded!.status);
+                recorded!.auditDigest, true, recorded!.status, 'current', publicationFailure);
             }
             const secondPublication = await awaitOperatorPassthroughOperation(
               () => operatorPublisher.runOnce(recorded!.publicationId, scope), scope);
+            publicationFailure = secondPublication.failure ?? publicationFailure;
+            if (secondPublication.status === 'published') publicationFailure = undefined;
             if (secondPublication.preflightResetUnconfirmed) {
               return unavailableOperatorPassthroughReceipt(recorded!.publicationId,
-                recorded!.auditDigest, true, recorded!.status);
+                recorded!.auditDigest, true, recorded!.status, 'current', publicationFailure);
             }
           }
           let publication: OperatorPassthroughPublicationSnapshot | null;
@@ -283,10 +314,12 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
           } catch (error) {
             if (error instanceof OperatorPassthroughOperationDeadlineExceededError) throw error;
             return unavailableOperatorPassthroughReceipt(recorded!.publicationId,
-              recorded!.auditDigest, true, recorded!.status);
+              recorded!.auditDigest, true, recorded!.status, 'current',
+              { stage: 'receipt', classification: 'receipt_readback' });
           }
           if (!publication) return unavailableOperatorPassthroughReceipt(recorded!.publicationId,
-            recorded!.auditDigest, true, recorded!.status);
+            recorded!.auditDigest, true, recorded!.status, 'current',
+            { stage: 'receipt', classification: 'receipt_readback' });
           if (publication.retirementReason === 'candidate-changed') throw new AuthoritativeCandidateChangedError();
           const publicationState = publication.retirementRequestedAt !== null
             ? publication.retiredAt !== null ? 'retired' as const : 'retiring' as const
@@ -297,15 +330,21 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
             publicationReceiptAvailable: true,
             reviewCheckId: publication.reviewCheckId, gateCheckId: publication.gateCheckId,
             mergeEligible: publication.readyForShip,
+            ...(publicationFailure ? { publicationFailure } : {}),
             message: publication.readyForShip
               ? 'Operator pause authorizes SHIP with zero review lanes; both official checks are durably published.'
               : 'Operator pause authorizes SHIP with zero review lanes; official check publication is pending and protected merge is not eligible.' };
-        });
+        };
+        return input.scope
+          ? await awaitOperatorPassthroughOperation(() => publishReceipt(input.scope!), input.scope)
+          : await withOperatorPassthroughReceiptBudget(publishReceipt, receiptBudgetMs);
       } catch (error) {
         if (!(error instanceof OperatorPassthroughOperationDeadlineExceededError)) throw error;
         return recorded
-          ? unavailableOperatorPassthroughReceipt(recorded.publicationId, recorded.auditDigest, true, recorded.status)
-          : unavailableOperatorPassthroughReceipt(null, null, null);
+          ? unavailableOperatorPassthroughReceipt(recorded.publicationId, recorded.auditDigest, true, recorded.status,
+            'current', publicationFailure ?? { stage: 'receipt', classification: 'receipt_deadline' })
+          : unavailableOperatorPassthroughReceipt(null, null, null, 'accepted', 'current',
+            { stage: 'record', classification: 'receipt_deadline' });
       }
     } : undefined;
   const resolveCompletion = createAuthoritativeCompletionContext({
