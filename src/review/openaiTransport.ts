@@ -11,12 +11,15 @@ export interface OpenAITransportConfig {
   apiKey: string;
   model: string;
   authorizationHeaderName: 'authorization' | 'cf-aig-authorization';
+  providerAuthorizationKey?: string;
 }
 
 export interface GatewaySettings {
   baseUrl: string;
   apiKey: string;
   authorizationHeaderName: 'authorization' | 'cf-aig-authorization';
+  /** Provider-native key for Authorization when the route is a Cloudflare custom-provider URL. */
+  providerAuthorizationKey?: string;
 }
 
 function value(env: NodeJS.ProcessEnv, name: string): string {
@@ -66,9 +69,43 @@ function firstValue(env: NodeJS.ProcessEnv, names: readonly string[]): string {
 export const GATEWAY_SETTING_NAMES = {
   cloudflareBaseUrl: 'CLOUDFLARE_AIG_BASE_URL',
   cloudflareRunToken: 'CLOUDFLARE_AIG_RUN_TOKEN',
-  baseUrl: ['OPENAI_BASE_URL', 'REVIEW_YETI_GATEWAY_BASE_URL', 'OPENROUTER_BASE_URL'],
+  cloudflareRunAuthorization: 'CF_AIG_AUTH',
+  baseUrl: ['OPENAI_BASE_URL', 'CT_LLM_GATEWAY_BASE_URL', 'BIFROST_BASE_URL', 'REVIEW_YETI_GATEWAY_BASE_URL', 'OPENROUTER_BASE_URL'],
   apiKey: ['OPENAI_API_KEY', 'OPENROUTER_REVIEW_FLEET_KEY', 'OPENROUTER_PR_REVIEW_API_KEY', 'OPENROUTER_API_KEY'],
 } as const;
+
+export const PROVIDER_GATEWAY_KEY_NAMES = [
+  'OPENAI_API_KEY',
+  'CT_LLM_GATEWAY_API_KEY',
+  'REVIEW_YETI_BIFROST_API_KEY',
+  'BIFROST_API_KEY',
+] as const;
+
+/** AI Gateway run token for cf-aig-authorization (raw token or CF_AIG_AUTH "Bearer …"). */
+export function readCloudflareRunToken(env: NodeJS.ProcessEnv): string {
+  const dedicated = value(env, GATEWAY_SETTING_NAMES.cloudflareRunToken);
+  if (dedicated) return dedicated;
+  const authorization = value(env, GATEWAY_SETTING_NAMES.cloudflareRunAuthorization);
+  if (!authorization) return '';
+  return authorization.replace(/^Bearer\s+/iu, '').trim();
+}
+
+function resolveProviderGatewayKey(env: NodeJS.ProcessEnv): string {
+  return firstValue(env, PROVIDER_GATEWAY_KEY_NAMES);
+}
+
+function resolveCloudflareBaseUrl(env: NodeJS.ProcessEnv): string {
+  const explicit = value(env, GATEWAY_SETTING_NAMES.cloudflareBaseUrl);
+  if (explicit) return explicit;
+  for (const name of GATEWAY_SETTING_NAMES.baseUrl) {
+    const candidate = value(env, name);
+    if (!candidate) continue;
+    if (isCloudflareCustomProviderBaseUrl(candidate) || isCloudflareCompatBaseUrl(candidate)) {
+      return candidate;
+    }
+  }
+  return '';
+}
 
 /**
  * Names of required gateway settings that are absent, primary name first.
@@ -87,8 +124,9 @@ export function missingGatewaySettings(env: NodeJS.ProcessEnv): string[] {
   // A refused pair reports as missing so a probe cannot advertise a lane whose
   // credential would be leaked. Callers needing the distinction use
   // resolveGatewaySettings directly.
-  const cloudflareConfigured = Boolean(value(env, GATEWAY_SETTING_NAMES.cloudflareBaseUrl)
-    || value(env, GATEWAY_SETTING_NAMES.cloudflareRunToken));
+  const cloudflareConfigured = Boolean(resolveCloudflareBaseUrl(env)
+    || readCloudflareRunToken(env)
+    || value(env, GATEWAY_SETTING_NAMES.cloudflareRunAuthorization));
   return cloudflareConfigured
     ? [GATEWAY_SETTING_NAMES.cloudflareBaseUrl, GATEWAY_SETTING_NAMES.cloudflareRunToken]
     : [GATEWAY_SETTING_NAMES.baseUrl[0], GATEWAY_SETTING_NAMES.apiKey[0]];
@@ -194,12 +232,13 @@ export type GatewayResolution =
   | { status: 'refused'; reason: string };
 
 export function resolveGatewaySettings(env: NodeJS.ProcessEnv): GatewayResolution {
-  const cloudflareBaseUrl = value(env, GATEWAY_SETTING_NAMES.cloudflareBaseUrl);
-  const cloudflareRunToken = value(env, GATEWAY_SETTING_NAMES.cloudflareRunToken);
+  const cloudflareBaseUrl = resolveCloudflareBaseUrl(env);
+  const cloudflareRunToken = readCloudflareRunToken(env);
+  const providerAuthorizationKey = resolveProviderGatewayKey(env);
   // Once either dedicated Cloudflare setting is present, never fall back to a
   // generic or legacy credential. This keeps a missing Run token from silently
   // selecting another service's key.
-  if (cloudflareBaseUrl || cloudflareRunToken) {
+  if (cloudflareBaseUrl || cloudflareRunToken || value(env, GATEWAY_SETTING_NAMES.cloudflareRunAuthorization)) {
     if (!cloudflareBaseUrl || !cloudflareRunToken) {
       return {
         status: 'missing',
@@ -212,8 +251,16 @@ export function resolveGatewaySettings(env: NodeJS.ProcessEnv): GatewayResolutio
     if (!isCloudflareCustomProviderBaseUrl(cloudflareBaseUrl) && !isCloudflareCompatBaseUrl(cloudflareBaseUrl)) {
       return { status: 'refused', reason: 'Cloudflare AI Gateway base URL is not a valid compat or custom-provider route' };
     }
-    return { status: 'ok', baseUrl: cloudflareBaseUrl, apiKey: cloudflareRunToken,
-      authorizationHeaderName: 'cf-aig-authorization' };
+    const settings: GatewaySettings & { status: 'ok' } = {
+      status: 'ok',
+      baseUrl: cloudflareBaseUrl,
+      apiKey: cloudflareRunToken,
+      authorizationHeaderName: 'cf-aig-authorization',
+    };
+    if (providerAuthorizationKey && isCloudflareCustomProviderBaseUrl(cloudflareBaseUrl)) {
+      settings.providerAuthorizationKey = providerAuthorizationKey;
+    }
+    return settings;
   }
   const baseUrl = resolveGatewayBaseUrl(env);
   const apiKey = resolveGatewayApiKey(env);
@@ -240,12 +287,13 @@ export function resolveGatewaySettings(env: NodeJS.ProcessEnv): GatewayResolutio
 
 /** Name-only check, used before the pairing rule can apply. */
 function missingNames(env: NodeJS.ProcessEnv): string[] {
-  const cloudflareConfigured = Boolean(value(env, GATEWAY_SETTING_NAMES.cloudflareBaseUrl)
-    || value(env, GATEWAY_SETTING_NAMES.cloudflareRunToken));
+  const cloudflareConfigured = Boolean(resolveCloudflareBaseUrl(env)
+    || readCloudflareRunToken(env)
+    || value(env, GATEWAY_SETTING_NAMES.cloudflareRunAuthorization));
   if (cloudflareConfigured) {
     return [
-      ...(!value(env, GATEWAY_SETTING_NAMES.cloudflareBaseUrl) ? [GATEWAY_SETTING_NAMES.cloudflareBaseUrl] : []),
-      ...(!value(env, GATEWAY_SETTING_NAMES.cloudflareRunToken) ? [GATEWAY_SETTING_NAMES.cloudflareRunToken] : []),
+      ...(!resolveCloudflareBaseUrl(env) ? [GATEWAY_SETTING_NAMES.cloudflareBaseUrl] : []),
+      ...(!readCloudflareRunToken(env) ? [GATEWAY_SETTING_NAMES.cloudflareRunToken] : []),
     ];
   }
   const missing: string[] = [];
@@ -265,6 +313,7 @@ export function requireGatewaySettings(env: NodeJS.ProcessEnv): GatewaySettings 
     baseUrl: resolution.baseUrl,
     apiKey: resolution.apiKey,
     authorizationHeaderName: resolution.authorizationHeaderName,
+    ...(resolution.providerAuthorizationKey ? { providerAuthorizationKey: resolution.providerAuthorizationKey } : {}),
   };
   if (resolution.status === 'refused') throw new Error(`gateway configuration refused: ${resolution.reason}`);
   throw new Error(`required environment variable ${resolution.missing.join('/')} is missing`);
@@ -312,7 +361,8 @@ export function openaiTransport(env: NodeJS.ProcessEnv): OpenAITransportConfig {
       || (isCloudflareCustomProviderBaseUrl(baseUrl) && dynamicRouteModel)) {
     throw invalidPublishingReviewContract();
   }
-  return { baseUrl, apiKey, model, authorizationHeaderName: resolution.authorizationHeaderName };
+  return { baseUrl, apiKey, model, authorizationHeaderName: resolution.authorizationHeaderName,
+    ...(resolution.providerAuthorizationKey ? { providerAuthorizationKey: resolution.providerAuthorizationKey } : {}) };
 }
 
 export function createOpenAIPublishingConfig(model: string): ReturnType<typeof createDefaultV3Config> {

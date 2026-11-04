@@ -2209,7 +2209,8 @@ export async function runPublishingReviewWorker(
 
     const modelClient = providerPublishingModelClient(boundedPublishingModelClient(
       deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey,
-        authorizationHeaderName: transport.authorizationHeaderName }),
+        authorizationHeaderName: transport.authorizationHeaderName,
+        ...(transport.providerAuthorizationKey ? { providerAuthorizationKey: transport.providerAuthorizationKey } : {}) }),
     ), env, deps.providerLease, now);
     const preparedComposedBudget = workerConfig.review_configuration_receipt?.effective.composed_budget;
     const preparedAttemptBudget = preparedComposedBudget?.provider_attempt_budget;

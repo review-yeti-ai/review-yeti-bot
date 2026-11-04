@@ -227,6 +227,7 @@ export interface OpenRouterClientOptions {
   baseUrl?: string;
   apiKey?: string;
   authorizationHeaderName?: 'authorization' | 'cf-aig-authorization';
+  providerAuthorizationKey?: string;
   fetchImplementation?: FetchImplementation;
   /** @deprecated Use fetchImplementation. */
   fetchImpl?: FetchImplementation;
@@ -1696,6 +1697,7 @@ async function createOpenRouterSdkClient(options: {
   baseUrl: string;
   apiKey: string;
   authorizationHeaderName: 'authorization' | 'cf-aig-authorization';
+  providerAuthorizationKey?: string;
   fetchImplementation: FetchImplementation;
   onGenerationId?: (value: string) => void;
   onRetryAfter?: (value: RetryAfter | undefined) => void;
@@ -1709,6 +1711,9 @@ async function createOpenRouterSdkClient(options: {
       headers.delete('authorization');
       headers.delete('cf-aig-authorization');
       headers.set(options.authorizationHeaderName, `Bearer ${options.apiKey}`);
+      if (options.providerAuthorizationKey) {
+        headers.set('authorization', `Bearer ${options.providerAuthorizationKey}`);
+      }
       if (options.authorizationHeaderName === 'cf-aig-authorization') {
         for (const name of Array.from(headers.keys())) {
           const lower = name.toLowerCase();
@@ -1915,6 +1920,7 @@ export class OpenRouterClient implements ReviewModelClient {
   private readonly baseUrl: string;
   private readonly apiKey: string;
   private readonly authorizationHeaderName: 'authorization' | 'cf-aig-authorization';
+  private readonly providerAuthorizationKey?: string;
   private readonly fetchImplementation: FetchImplementation;
   private readonly now: () => number;
   readonly maxRetries: number;
@@ -1927,6 +1933,7 @@ export class OpenRouterClient implements ReviewModelClient {
     this.baseUrl = (options.baseUrl || process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
     this.apiKey = options.apiKey || process.env.OPENROUTER_API_KEY || '';
     this.authorizationHeaderName = options.authorizationHeaderName || 'authorization';
+    this.providerAuthorizationKey = options.providerAuthorizationKey?.trim() || undefined;
     if (!['authorization', 'cf-aig-authorization'].includes(this.authorizationHeaderName)) {
       throw new TypeError('unsupported gateway authentication header');
     }
@@ -2094,6 +2101,9 @@ export class OpenRouterClient implements ReviewModelClient {
           if (name.toLowerCase() === 'authorization' || name.toLowerCase() === 'cf-aig-authorization') delete headers[name];
         }
         headers[this.authorizationHeaderName] = `Bearer ${this.apiKey}`;
+        if (this.providerAuthorizationKey) {
+          headers.authorization = `Bearer ${this.providerAuthorizationKey}`;
+        }
         if (this.authorizationHeaderName === 'cf-aig-authorization') {
           for (const name of Object.keys(headers)) {
             const lower = name.toLowerCase();
@@ -2233,6 +2243,7 @@ export class OpenRouterClient implements ReviewModelClient {
             baseUrl: this.baseUrl,
             apiKey: this.apiKey,
             authorizationHeaderName: this.authorizationHeaderName,
+            providerAuthorizationKey: this.providerAuthorizationKey,
             fetchImplementation: fetchForAttempt,
             onGenerationId: (value) => { generationId = value; },
             onRetryAfter: (value) => { sdkRetryAfter = value; },

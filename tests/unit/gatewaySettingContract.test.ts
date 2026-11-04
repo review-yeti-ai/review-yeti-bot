@@ -44,11 +44,11 @@ describe('gateway setting contract', () => {
     expect(resolveGatewaySettings(env)).toMatchObject({ status: 'refused' });
   });
 
-  it('rejects a generic key aimed at the Cloudflare Gateway host', () => {
+  it('treats a Cloudflare custom-provider OPENAI_BASE_URL as dedicated gateway config missing the run token', () => {
     const env = { OPENAI_API_KEY: 'generic-key', OPENAI_BASE_URL: cloudflareBaseUrl } as unknown as NodeJS.ProcessEnv;
     expect(resolveGatewaySettings(env)).toEqual({
-      status: 'refused',
-      reason: 'gateway destination requires its dedicated credential',
+      status: 'missing',
+      missing: ['CLOUDFLARE_AIG_RUN_TOKEN'],
     });
   });
 
@@ -71,13 +71,13 @@ describe('gateway setting contract', () => {
     });
   });
 
-  it('does not accept retired Bifrost-only names', () => {
+  it('does not accept retired Bifrost-only names without a generic api key', () => {
     const env = {
       BIFROST_BASE_URL: 'https://gateway.example.invalid/v1',
       REVIEW_YETI_BIFROST_API_KEY: 'retired-key',
       BIFROST_VIRTUAL_KEY: 'retired-key',
     } as unknown as NodeJS.ProcessEnv;
-    expect(missingGatewaySettings(env)).toEqual(['OPENAI_BASE_URL', 'OPENAI_API_KEY']);
+    expect(missingGatewaySettings(env)).toEqual(['OPENAI_API_KEY']);
   });
 
   it('reports only the dedicated Cloudflare setting missing when its base is configured', () => {

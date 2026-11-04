@@ -679,6 +679,22 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 					Key:                  input.Publishing.GatewaySecretKey,
 				}},
 			},
+			corev1.EnvVar{
+				Name: "OPENAI_API_KEY",
+				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: input.Publishing.GatewaySecretName},
+					Key:                  "OPENAI_API_KEY",
+					Optional:             &[]bool{true}[0],
+				}},
+			},
+			corev1.EnvVar{
+				Name: "CT_LLM_GATEWAY_API_KEY",
+				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: input.Publishing.GatewaySecretName},
+					Key:                  "CT_LLM_GATEWAY_API_KEY",
+					Optional:             &[]bool{true}[0],
+				}},
+			},
 			// The lane resolves its own installation from these two plus the admitted
 			// repository; the CRD carries no installation id to project.
 			// The worker never holds the App private key. TestBuildWorkerJobAcceptsApp

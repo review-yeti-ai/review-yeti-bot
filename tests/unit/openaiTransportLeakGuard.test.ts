@@ -54,6 +54,20 @@ describe('publishing transport admits only the dedicated Cloudflare Run route', 
     });
   });
 
+  it('pairs custom-provider routes with a provider Authorization key when configured', () => {
+    const env = {
+      OPENAI_BASE_URL: providerRoute,
+      CF_AIG_AUTH: 'Bearer test-run-token',
+      OPENAI_API_KEY: 'neuralwatt-provider-key',
+      REVIEW_MODEL: 'deepseek-ai/DeepSeek-V4.1-Flash',
+    } as unknown as NodeJS.ProcessEnv;
+    expect(openaiTransport(env)).toMatchObject({
+      baseUrl: providerRoute,
+      apiKey: 'test-run-token',
+      providerAuthorizationKey: 'neuralwatt-provider-key',
+    });
+  });
+
   it.each(['pr-reviewer', 'bifrost/pr-reviewer'])('refuses unresolved historical alias %s', (model) => {
     const env = { CLOUDFLARE_AIG_BASE_URL: route, CLOUDFLARE_AIG_RUN_TOKEN: 'test-run-token', REVIEW_MODEL: model } as unknown as NodeJS.ProcessEnv;
     expect(() => openaiTransport(env)).toThrow(invalidPublishingReviewContract().message);
