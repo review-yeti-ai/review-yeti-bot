@@ -997,6 +997,7 @@ export async function runNormalEngineQualificationCase(
     || (() => {
       const provider = new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey,
         authorizationHeaderName: transport.authorizationHeaderName, fetchImplementation: attestor.fetch,
+        ...(transport.providerAuthorizationKey ? { providerAuthorizationKey: transport.providerAuthorizationKey } : {}),
         ...(request.arm === 'provider-failure' || request.arm === 'resource-exhaustion' ? { maxRetries: 0 } : {}) });
       return { complete: (modelRequest: OpenRouterRequest, context?: GroundedVerifierRequestContextV1) =>
         attestor.run(modelRequest, () => provider.complete(modelRequest), {

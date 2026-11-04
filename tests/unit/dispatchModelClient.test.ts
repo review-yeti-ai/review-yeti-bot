@@ -33,6 +33,25 @@ describe('resolveModelClientFromEnv', () => {
     expect((client as any).authorizationHeaderName).toBe('cf-aig-authorization');
   });
 
+  it('accepts OPENAI_BASE_URL plus run token and provider key for custom-provider routes', () => {
+    const client = resolveModelClientFromEnv({
+      OPENAI_BASE_URL: route,
+      CLOUDFLARE_AIG_RUN_TOKEN: 'run-token',
+      OPENAI_API_KEY: 'provider-key',
+    });
+    expect(client).toBeInstanceOf(OpenRouterClient);
+    expect((client as any).providerAuthorizationKey).toBe('provider-key');
+  });
+
+  it('accepts CF_AIG_AUTH Bearer prefix for the run token', () => {
+    const client = resolveModelClientFromEnv({
+      CLOUDFLARE_AIG_BASE_URL: route,
+      CF_AIG_AUTH: 'Bearer run-token',
+    });
+    expect(client).toBeInstanceOf(OpenRouterClient);
+    expect((client as any).apiKey).toBe('run-token');
+  });
+
   it('does not borrow OpenRouter or generic keys for a partial Cloudflare configuration', () => {
     const client = resolveModelClientFromEnv({
       CLOUDFLARE_AIG_BASE_URL: route,
