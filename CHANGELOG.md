@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.136.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.136.1...v1.136.2) (2026-11-05)
+
+
+### Bug Fixes
+
+* **passthrough:** re-admit unpublished reservations for a new source run ([#1534](https://github.com/review-yeti-ai/review-yeti-bot/issues/1534)) ([c8f06ec](https://github.com/review-yeti-ai/review-yeti-bot/commit/c8f06ec2234a93cc5db8b70155ffe479fb7d7621))
+
 ## [1.136.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.136.0...v1.136.1) (2026-11-05)
 
 
