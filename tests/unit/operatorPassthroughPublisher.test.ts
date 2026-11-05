@@ -13,6 +13,7 @@ import {
   awaitOperatorPassthroughOperation,
   operatorPassthroughCheckMetadata,
   operatorPassthroughIdentityForCandidate,
+  OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS,
   OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS,
   OperatorPassthroughOperationDeadlineExceededError,
   OperatorPassthroughPreflightResetUnconfirmedError,
@@ -687,5 +688,77 @@ describe('OperatorPassthroughPublisher', () => {
     expect(JSON.stringify(result)).not.toContain(TOKEN);
     expect(api.fetchImplementation.mock.calls.map(([, init]) => init?.method)).toEqual(['GET', 'PATCH']);
     expect(f.retryPublication).toHaveBeenCalledWith(publication, 1_800_000_000_000, 5_000);
+  });
+
+  // REL-1669: token mint, reconcile, create and update each exceeded the former 1.5 s bound in production.
+  // Under the immediate receipt budget the same sequence must complete for both stages of one publication.
+  it('completes a slow token and Check Run publication inside the immediate receipt budget', async () => {
+    vi.useFakeTimers();
+    try {
+      const review = claim({ stage: 'review', mayCreate: true });
+      const gate = claim({ stage: 'gate', mayCreate: true, leaseToken: 'lease-token-gate' });
+      const f = repositoryFor([review, gate]);
+      const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+      const checkFor = (current: OperatorPassthroughPublicationClaim, status: 'in_progress' | 'completed') => ({
+        id: current.stage === 'review' ? 7_901 : 7_902,
+        name: checkNameFor(current.stage),
+        appId: APP_ID,
+        headSha: current.coordinates.headSha,
+        externalId: current.stage === 'review' ? current.reviewExternalId : current.gateExternalId,
+        status,
+        conclusion: status === 'completed' ? 'success' : null,
+      }) as ReviewGateCheck;
+      const clientFor = vi.fn(async (current: OperatorPassthroughPublicationClaim) => {
+        await delay(1_000);
+        return {
+          reconcileOperator: vi.fn(async () => { await delay(400); return null; }),
+          createOperatorPending: vi.fn(async () => { await delay(400); return checkFor(current, 'in_progress'); }),
+          updateOperatorExisting: vi.fn(async () => { await delay(400); return checkFor(current, 'completed'); }),
+        };
+      });
+      const publisher = publisherFor(f.repository, clientFor);
+      const scope = { deadlineAtMs: performance.now() + OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS,
+        signal: new AbortController().signal };
+
+      const first = publisher.runOnce(review.publicationId, scope);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(first).resolves.toMatchObject({ status: 'published', publicationId: review.publicationId });
+      const second = publisher.runOnce(gate.publicationId, scope);
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(second).resolves.toMatchObject({ status: 'published', publicationId: gate.publicationId });
+      expect(f.callbackResults.map((result) => ('kind' in result ? result.kind : 'bound'))).toEqual(['bound', 'bound']);
+      expect(f.publishLocked).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A pre-POST timeout is not an ambiguous create. It must never invoke the POST and must end as a
+  // resettable not-started result, so a later re-admission can create the pair exactly once.
+  it('never invokes a create after the pre-POST preflight budget and returns a resettable not-started result', async () => {
+    vi.useFakeTimers();
+    try {
+      const publication = claim({ mayCreate: true });
+      const f = repositoryFor([publication]);
+      const client = {
+        reconcileOperator: vi.fn(async () => null),
+        createOperatorPending: vi.fn(async () => { throw new Error('create must not run after the budget'); }),
+        updateOperatorExisting: vi.fn(),
+      };
+      const publisher = publisherFor(f.repository, () => new Promise<typeof client>((resolve) => {
+        setTimeout(() => resolve(client), 800);
+      }));
+      const scope = { deadlineAtMs: performance.now() + 1_000, signal: new AbortController().signal };
+      const pending = publisher.runOnce(publication.publicationId, scope);
+      await vi.advanceTimersByTimeAsync(900);
+
+      await expect(pending).resolves.toMatchObject({ status: 'retry',
+        failure: { stage: 'review', classification: 'preflight_timeout' } });
+      expect(f.callbackResults).toEqual([{ kind: 'not-started', retryDelayMs: 5_000 }]);
+      expect(client.createOperatorPending).not.toHaveBeenCalled();
+      expect(client.updateOperatorExisting).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

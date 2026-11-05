@@ -18,7 +18,7 @@ import { OperatorPassthroughPublisher } from './operatorPassthroughPublisher';
 import { operatorPassthroughIdentity, OperatorPassthroughDeliveryIdentityConflictError,
   OperatorPassthroughOperationDeadlineExceededError, OperatorPassthroughPersistenceUnavailableError,
   awaitOperatorPassthroughOperation, validateOperatorPassthroughEvent, withOperatorPassthroughReceiptBudget,
-  OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS, OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS,
+  OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS,
   type OperatorPassthroughAdmissionReceipt, type OperatorPassthroughAdmissionRequest,
   type OperatorPassthroughUnavailableRequest,
   type OperatorPassthroughPublicationRepository, type OperatorPassthroughPublicationSnapshot,
@@ -249,8 +249,9 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
       operatorPassthroughIdentity(recordInput);
       let recorded: OperatorPassthroughRecordResult | undefined;
       let publicationFailure: OperatorPassthroughPublicationFailure | undefined;
-      const receiptBudgetMs = input.event.transport === 'mcp'
-        ? OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS : OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS;
+      // REL-1669: GitHub App deliveries previously received the 1.5 s storage-read budget, which token mint and
+      // Check Run latency routinely exceeded. Every immediate publication now gets the finite 15 s budget.
+      const receiptBudgetMs = OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS;
       try {
         const publishReceipt = async (scope: OperatorPassthroughOperationScope) => {
           try {

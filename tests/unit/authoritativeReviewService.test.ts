@@ -559,7 +559,9 @@ describe('authoritative operator-pause admission responses', () => {
     expect(repository.record).not.toHaveBeenCalled();
   });
 
-  it('publishes delayed App token and Check Runs requests within budget, scoped to the new publication', async () => {
+  // REL-1669: a GitHub App delivery previously got the 1.5 s storage budget. Both transports must complete
+  // the same delayed token and Check Run sequence inside the immediate publication budget.
+  it.each(['mcp', 'github-app'] as const)('publishes delayed App token and Check Runs requests within budget for the %s transport, scoped to the new publication', async (transport) => {
     const f = fixture();
     const identity = operatorPassthroughIdentityForCandidate({
       repositoryId: candidate.repositoryId, owner: candidate.owner, repo: candidate.repo,
@@ -652,7 +654,9 @@ describe('authoritative operator-pause admission responses', () => {
     const service = createAuthoritativeReviewService({ ...f.options,
       operatorPassthroughRepository: repository, passthroughEnabled: true });
 
-    const pending = service.admission.recordOperatorPassthrough!(request());
+    const transportRequest = transport === 'mcp' ? request() : { ...request(), event: { transport: 'github-app' as const,
+      eventName: 'pull_request', deliveryId: 'github-app:pause-test', deliveryDigest: 'a'.repeat(64) } };
+    const pending = service.admission.recordOperatorPassthrough!(transportRequest);
     let settled = false;
     void pending.then(() => { settled = true; }, () => { settled = true; });
     for (let elapsed = 0; elapsed < OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS && !settled; elapsed += 500) {

@@ -7,6 +7,7 @@ import {
   OperatorPassthroughPreflightResetUnconfirmedError,
   assertOperatorPassthroughOperationActive,
   awaitOperatorPassthroughOperation,
+  operatorPassthroughCleanupScope,
   operatorPassthroughOperationRemainingMs,
   operatorPassthroughIdentity,
   operatorPassthroughIdentityForCandidate,
@@ -674,13 +675,16 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
           stage: claim.stage, mayCreate, retiring: publication.retirementRequestedAt !== null });
       let notStartedReset = false;
       if ('kind' in result) {
+        // REL-1669: the reset/finalize write runs under a fresh bounded cleanup scope. The receipt scope
+        // may already have spent its budget on the pre-POST preflight; a confirmed reset must not depend on it.
+        const finalizer = scope ? this.scopedClient(client, operatorPassthroughCleanupScope()) : db;
         if (!Number.isSafeInteger(result.retryDelayMs) || result.retryDelayMs < 1_000 || result.retryDelayMs > 300_000) {
           throw new Error('Invalid operator passthrough retry delay');
         }
         if (result.kind === 'not-started') {
           if (!mayCreate) throw new Error('Operator passthrough cannot reset an uncertain create');
           notStartedReset = true;
-          try { await db.query(`UPDATE review_operator_passthrough_publications SET
+          try { await finalizer.query(`UPDATE review_operator_passthrough_publications SET
             ${claim.stage === 'review' ? 'review_creation_state' : 'gate_creation_state'}='reserved',
             lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
             available_at=to_timestamp(($2::double precision+$3::double precision)/1000.0),last_error_class='client-preparation',updated_at=to_timestamp($2/1000.0)
@@ -688,14 +692,14 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
           catch { throw new OperatorPassthroughPreflightResetUnconfirmedError(); }
         } else if (result.kind === 'reconcile-pending') {
           if (selected.state !== 'creating' || selected.checkId !== null) throw new Error('Operator passthrough reconcile state is invalid');
-          await db.query(`UPDATE review_operator_passthrough_publications SET lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
+          await finalizer.query(`UPDATE review_operator_passthrough_publications SET lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
             available_at=to_timestamp(($2::double precision+$3::double precision)/1000.0),last_error_class='unknown-create',updated_at=to_timestamp($2/1000.0)
             WHERE publication_id=$1`, [claim.publicationId, now(), result.retryDelayMs]);
         } else {
           if (result.reason !== 'candidate-changed' || publication.retirementRequestedAt !== null) {
             throw new Error('Operator passthrough retirement transition is invalid');
           }
-          await db.query(`UPDATE review_operator_passthrough_publications SET
+          await finalizer.query(`UPDATE review_operator_passthrough_publications SET
             retirement_requested_at=to_timestamp($2/1000.0),retirement_reason='candidate-changed',
             review_creation_state=CASE WHEN review_creation_state='reserved'
               OR ($3 AND $4='review' AND review_creation_state='creating' AND review_check_id IS NULL)
@@ -719,7 +723,7 @@ export class PostgresOperatorPassthroughRepository implements OperatorPassthroug
             updated_at=to_timestamp($2/1000.0) WHERE publication_id=$1`,
           [claim.publicationId, now(), mayCreate, claim.stage, result.retryDelayMs]);
         }
-        try { await db.query('COMMIT'); }
+        try { await finalizer.query('COMMIT'); }
         catch {
           if (notStartedReset) throw new OperatorPassthroughPreflightResetUnconfirmedError();
           throw new Error('Operator passthrough retry transaction commit failed');

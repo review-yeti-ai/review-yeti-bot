@@ -100,14 +100,23 @@ export class OperatorPassthroughPublisher {
           const isParentDeadline = (error: unknown): boolean => error instanceof OperatorPassthroughOperationDeadlineExceededError
             || operatorPassthroughOperationExpired(scope);
           const isPreflightDeadline = (error: unknown): boolean => error instanceof OperatorPassthroughPreflightDeadlineExceededError;
-          assertOperatorPassthroughOperationActive(scope);
+          // REL-1669: `creating` is committed before any GitHub request. Until a POST is invoked, a deadline
+          // is not ambiguous, so it must end as not-started (confirmed reset to `reserved`) rather than leaving
+          // a `creating` row that can only reconcile and never create the pair.
+          const beforeCreateDeadline = (): ReturnType<typeof timeoutResult> => {
+            // A reconcile-only claim has no reserved create to reset; keep its terminal deadline semantics.
+            if (!current.mayCreate) throw new OperatorPassthroughOperationDeadlineExceededError();
+            safeFailure = failure(current.stage, 'receipt_deadline');
+            return timeoutResult();
+          };
+          if (operatorPassthroughOperationExpired(scope)) return beforeCreateDeadline();
           if (!current.retiring && this.options.candidateIsCurrent) {
             phase.value = 'candidate_check';
             let candidateIsCurrent: boolean;
             try {
               candidateIsCurrent = await preflight((child) => this.options.candidateIsCurrent!(current, child));
             } catch (error) {
-              if (isParentDeadline(error)) throw new OperatorPassthroughOperationDeadlineExceededError();
+              if (isParentDeadline(error)) return beforeCreateDeadline();
               safeFailure = failure(current.stage, isPreflightDeadline(error) ? 'preflight_timeout' : 'candidate_check');
               return timeoutResult();
             }
@@ -115,12 +124,12 @@ export class OperatorPassthroughPublisher {
               return { kind: 'retire-required', reason: 'candidate-changed', retryDelayMs: this.retryDelayMs };
             }
           }
-          assertOperatorPassthroughOperationActive(scope);
+          if (operatorPassthroughOperationExpired(scope)) return beforeCreateDeadline();
           phase.value = 'client_preparation';
           let client: Client;
           try { client = await preflight((child) => this.options.clientFor(current, child, scope)); }
           catch (error) {
-            if (isParentDeadline(error)) throw new OperatorPassthroughOperationDeadlineExceededError();
+            if (isParentDeadline(error)) return beforeCreateDeadline();
             safeFailure = failure(current.stage, isPreflightDeadline(error) ? 'preflight_timeout' : 'client_preparation');
             return timeoutResult();
           }
@@ -134,23 +143,34 @@ export class OperatorPassthroughPublisher {
             phase.value = 'check_reconciliation';
             try { check = await preflight((child) => client.reconcileOperator(coordinates, child?.signal)); }
             catch (error) {
-              if (isParentDeadline(error)) throw new OperatorPassthroughOperationDeadlineExceededError();
+              if (isParentDeadline(error)) return beforeCreateDeadline();
               safeFailure = failure(current.stage, isPreflightDeadline(error) ? 'preflight_timeout' : 'check_reconciliation');
               return timeoutResult();
             }
             if (!check) {
               // Once invoked, a timed-out create is ambiguous. The committed
               // `creating` claim remains and the next pass may only reconcile.
-              assertOperatorPassthroughOperationActive(scope);
+              if (operatorPassthroughOperationExpired(scope)) return beforeCreateDeadline();
               phase.value = 'check_creation';
-              check = await awaitOperatorPassthroughOperation(
-                () => client.createOperatorPending(coordinates, { status: 'in_progress' }), scope);
+              let createInvoked = false;
+              try {
+                check = await awaitOperatorPassthroughOperation(() => {
+                  createInvoked = true;
+                  return client.createOperatorPending(coordinates, { status: 'in_progress' });
+                }, scope);
+              } catch (error) {
+                // A deadline raised before the POST was invoked is not ambiguous.
+                if (!createInvoked && error instanceof OperatorPassthroughOperationDeadlineExceededError) {
+                  return beforeCreateDeadline();
+                }
+                throw error;
+              }
             }
           } else {
             phase.value = 'check_reconciliation';
             try { check = await preflight((child) => client.reconcileOperator(coordinates, child?.signal)); }
             catch (error) {
-              if (isParentDeadline(error)) throw new OperatorPassthroughOperationDeadlineExceededError();
+              if (isParentDeadline(error)) return beforeCreateDeadline();
               safeFailure = failure(current.stage, isPreflightDeadline(error) ? 'preflight_timeout' : 'check_reconciliation');
               return timeoutResult();
             }

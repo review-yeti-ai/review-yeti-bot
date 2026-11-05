@@ -11,12 +11,26 @@ export type OperatorPassthroughTransport = 'github-app' | 'github-actions-oidc' 
 export type OperatorPassthroughCheckStage = 'review' | 'gate';
 export type OperatorPassthroughCheckState = 'reserved' | 'creating' | 'bound' | 'not-created';
 
-/** Default short deadline for status reads and non-MCP paused admissions. */
+/** Short deadline for status and storage-only reads. Never bound GitHub token or Check Run publication with it. */
 export const OPERATOR_PASSTHROUGH_RECEIPT_BUDGET_MS = 1_500;
-/** One authenticated MCP call has a 30-second ceiling; reserve half for candidate resolution and transport overhead. */
+/**
+ * Immediate publication budget for every event transport (MCP, GitHub App delivery, Action OIDC): token mint,
+ * candidate and policy reads, Check Run reconcile/create/update, and the read-back. One authenticated MCP call
+ * has a 30-second ceiling; this reserves half for candidate resolution and transport overhead.
+ */
 export const OPERATOR_PASSTHROUGH_MCP_RECEIPT_BUDGET_MS = 15_000;
-/** Time reserved inside the parent receipt budget for a confirmed pre-POST reset. */
+/** Time reserved inside the parent receipt budget for a child preflight; never used to start a GitHub request. */
 export const OPERATOR_PASSTHROUGH_FINALIZE_RESERVE_MS = 300;
+/**
+ * Independent bound for finalizing a publication whose create was never invoked (confirmed not-started reset).
+ * It runs after the parent receipt budget may already be spent, so it must not reuse that expired scope.
+ */
+export const OPERATOR_PASSTHROUGH_CLEANUP_BUDGET_MS = 2_000;
+
+/** A fresh, finite cleanup scope that is independent of an expired receipt scope. */
+export function operatorPassthroughCleanupScope(): OperatorPassthroughOperationScope {
+  return { deadlineAtMs: performance.now() + OPERATOR_PASSTHROUGH_CLEANUP_BUDGET_MS, signal: new AbortController().signal };
+}
 
 export type OperatorPassthroughFailureStage = 'record' | 'review' | 'gate' | 'receipt';
 export type OperatorPassthroughFailureClass =
