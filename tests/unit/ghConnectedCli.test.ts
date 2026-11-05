@@ -280,8 +280,8 @@ describe('GitHub-Connected CLI (review-yeti pr / status / review --pr)', () => {
   });
   it('parsePrReference supports numeric PRs, owner/repo#number, and GitHub PR URLs', () => {
     expect(parsePrReference('1516')).toEqual({ prNumber: 1516 });
-    expect(parsePrReference('calltelemetry/cisco-cdr#42')).toEqual({
-      repo: 'calltelemetry/cisco-cdr',
+    expect(parsePrReference('example-org/example-repo#42')).toEqual({
+      repo: 'example-org/example-repo',
       prNumber: 42,
     });
     expect(parsePrReference('https://github.com/review-yeti-ai/review-yeti-bot/pull/1520')).toEqual({
