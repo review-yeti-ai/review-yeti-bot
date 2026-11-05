@@ -594,6 +594,56 @@ describeWithPostgres('PostgresOperatorPassthroughRepository durable publication 
     expect(errorClass.rows[0].last_error_class).toBe('unknown-create');
   });
 
+  it('resets a pre-POST deadline to reserved and completes the same publication on re-admission', async () => {
+    const admitted = inputFor();
+    const recorded = await repository.record(admitted, NOW);
+    const firstClaim = await repository.claimPublication('publisher-pre-post', NOW, 10_000, recorded.publicationId);
+    expect(firstClaim).toMatchObject({ stage: 'review', mayCreate: true, reviewCreationState: 'creating' });
+    // A pre-POST deadline is not ambiguous: the create was never invoked, so the row must reset, not reconcile forever.
+    await expect(repository.publishLocked(firstClaim!, async () => ({ kind: 'not-started', retryDelayMs: 1_000 }),
+      () => NOW + 1)).resolves.toBe('retry');
+    await expect(repository.getPublication(recorded.publicationId)).resolves.toMatchObject({
+      reviewCreationState: 'reserved', reviewCheckId: null, readyForShip: false,
+    });
+
+    // Re-admission of the same head is a new delivery that must resolve to the same publication and audit identity.
+    const readmitted = await repository.record({ ...admitted, event: { ...admitted.event,
+      deliveryId: randomUUID(), deliveryDigest: 'e'.repeat(64) } }, NOW + 2_000);
+    expect(readmitted).toMatchObject({ status: 'duplicate', publicationId: recorded.publicationId,
+      auditDigest: recorded.auditDigest });
+
+    const review = await repository.claimPublication('publisher-readmit-review', NOW + 2_000, 10_000,
+      recorded.publicationId);
+    expect(review).toMatchObject({ stage: 'review', mayCreate: true, reviewCreationState: 'creating' });
+    await expect(repository.publishLocked(review!, async (claim) => checkForClaim(claim, 7_801), () => NOW + 2_001))
+      .resolves.toBe('published');
+    const gate = await repository.claimPublication('publisher-readmit-gate', NOW + 2_002, 10_000,
+      recorded.publicationId);
+    expect(gate).toMatchObject({ stage: 'gate', mayCreate: true, gateCreationState: 'creating' });
+    await expect(repository.publishLocked(gate!, async (claim) => checkForClaim(claim, 7_802), () => NOW + 2_003))
+      .resolves.toBe('published');
+
+    await expect(repository.getPublication(recorded.publicationId)).resolves.toMatchObject({
+      publicationId: recorded.publicationId,
+      auditDigest: recorded.auditDigest,
+      reviewCheckId: 7_801,
+      gateCheckId: 7_802,
+      readyForShip: true,
+    });
+  });
+
+  it('refuses to bind a pending publication to a completed check for another head', async () => {
+    const recorded = await repository.record(inputFor(), NOW);
+    const claim = await repository.claimPublication('publisher-stale-head', NOW, 10_000, recorded.publicationId);
+    expect(claim).toMatchObject({ stage: 'review', mayCreate: true, reviewCreationState: 'creating' });
+    await expect(repository.publishLocked(claim!, async (current) => ({
+      ...checkForClaim(current, 7_811), headSha: 'f'.repeat(40),
+    }), () => NOW + 1)).rejects.toThrow('Operator passthrough check publication failed');
+    await expect(repository.getPublication(recorded.publicationId)).resolves.toMatchObject({
+      reviewCreationState: 'creating', reviewCheckId: null, readyForShip: false,
+    });
+  });
+
   it('fences retryPublication by the active lease and makes the requested delay observable', async () => {
     const recorded = await repository.record(inputFor(), NOW);
     const original = await repository.claimPublication('publisher-retry-old', NOW, 10_000, recorded.publicationId);
