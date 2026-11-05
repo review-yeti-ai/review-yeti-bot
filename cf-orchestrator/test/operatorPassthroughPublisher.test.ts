@@ -61,6 +61,7 @@ interface GithubMockOptions {
   failCheckCreateStatus?: number;
   failPolicyInstallationStatus?: number;
   checkReadFailureStatus?: number;
+  checkListFailuresRemaining?: number;
   failFirstGatePatch?: boolean;
   failSuccessReadback?: boolean;
   changeHeadOnSecondRead?: boolean;
@@ -123,6 +124,7 @@ function createTestEnv(options: GithubMockOptions = {}) {
   let policyRead = 0;
   let currentPolicySha: string | undefined;
   let checkReadFailureStatus = options.checkReadFailureStatus;
+  let checkListFailuresRemaining = options.checkListFailuresRemaining ?? 0;
   let gatePatchFailed = false;
   let cancelIssued = false;
   let cancelOnReviewRead = options.cancelOnReviewRead;
@@ -272,6 +274,10 @@ function createTestEnv(options: GithubMockOptions = {}) {
       }
     }
     if (method === 'GET' && path === `/repos/${target.owner}/${target.repo}/commits/${targetHead}/check-runs`) {
+      if (checkListFailuresRemaining > 0) {
+        checkListFailuresRemaining -= 1;
+        return jsonResponse({ message: 'private diagnostic' }, 500);
+      }
       const currentChecks = [...checks.values()].filter((check) => check.head_sha === targetHead);
       return jsonResponse({ total_count: currentChecks.length, check_runs: currentChecks });
     }
@@ -1224,6 +1230,39 @@ describe('Edge operator passthrough publication', () => {
     assert.equal(second.status, 'succeeded');
     assert.equal(second.mergeEligible, true);
     assert.equal(second.runId, first.runId);
+    assert.equal(mock.counts.creates, 2);
+  });
+
+  it('re-admits the same publication identity for a new source run after an earlier run failed before creating checks', async () => {
+    const mock = createTestEnv({ checkListFailuresRemaining: 1 });
+    await configureAppKeys(mock.env);
+    const spec = (runId: string) => ({
+      runId, owner: OWNER, repo: REPO, prNumber: 42, headSha: HEAD_A, baseSha: BASE_A, installationId: 0,
+    });
+    const earlier = await publishOperatorPassthrough(mock.env, spec(`run_${'a'.repeat(32)}`), { fetchFn: mock.fetchFn });
+    assert.equal(earlier.status, 'unavailable');
+    assert.equal(mock.counts.creates, 0);
+
+    const retry = await publishOperatorPassthrough(mock.env, spec(`run_${'b'.repeat(32)}`), { fetchFn: mock.fetchFn });
+    assert.equal(retry.status, 'succeeded', JSON.stringify(retry));
+    assert.equal(retry.mergeEligible, true);
+    assert.equal(retry.headSha, HEAD_A);
+    assert.equal(mock.counts.creates, 2);
+  });
+
+  it('keeps a source run bound once an earlier run has created a publication check', async () => {
+    const mock = createTestEnv({ failFirstGatePatch: true });
+    await configureAppKeys(mock.env);
+    const spec = (runId: string) => ({
+      runId, owner: OWNER, repo: REPO, prNumber: 42, headSha: HEAD_A, baseSha: BASE_A, installationId: 0,
+    });
+    const earlier = await publishOperatorPassthrough(mock.env, spec(`run_${'c'.repeat(32)}`), { fetchFn: mock.fetchFn });
+    assert.equal(earlier.status, 'unavailable');
+    assert.equal(mock.counts.creates, 2);
+
+    const other = await publishOperatorPassthrough(mock.env, spec(`run_${'d'.repeat(32)}`), { fetchFn: mock.fetchFn });
+    assert.equal(other.status, 'unavailable');
+    assert.equal(other.errorCode, 'durable_state_unavailable');
     assert.equal(mock.counts.creates, 2);
   });
 

@@ -17,6 +17,19 @@ import { reviewAppIdForRepository } from './reviewAppAuthority.js';
 const OPERATOR_PASSTHROUGH_STATE_KEY = 'operatorPassthrough.v2';
 const OPERATOR_PASSTHROUGH_LINK_KEY = 'operatorPassthroughLink.v1';
 
+/**
+ * A reservation that never reached a GitHub check (no stage created or patched, no
+ * succeeded receipt, not cancelled). Such a reservation can be re-admitted by a new source run.
+ */
+function isUnpublishedReservation(state: OperatorPassthroughState): boolean {
+  return !state.cancelRequested
+    && state.receipt?.status !== 'succeeded'
+    && (['review', 'gate'] as const).every((stage) => {
+      const current = state.stages[stage];
+      return current.creationState === 'not_started' && current.checkId === null && current.patchState === 'not_started';
+    });
+}
+
 interface InternalReviewRunState extends ReviewRunState {
   jobId?: string;
 }
@@ -142,7 +155,27 @@ export class ReviewRunDO {
           && JSON.stringify(existing.identity) === JSON.stringify(input.identity);
         if (!sameIdentity) return { accepted: false as const, reason: 'identity_conflict' };
         if (existing.sourceRunId && input.sourceRunId && existing.sourceRunId !== input.sourceRunId) {
-          return { accepted: false as const, reason: 'source_run_identity_conflict' };
+          if (!isUnpublishedReservation(existing)) {
+            return { accepted: false as const, reason: 'source_run_identity_conflict' };
+          }
+          // The earlier source run failed before any publication check was created, so no
+          // GitHub check is bound to it. Re-bind this exact identity to the newly
+          // authenticated source run and let admission run again. The publication identity
+          // (runId, publicationId, identity) above is still matched exactly.
+          const rebound: OperatorPassthroughState = {
+            ...existing,
+            sourceRunId: input.sourceRunId,
+            createdAt: Date.now(),
+            priorOutcomeChecked: false,
+            priorControlRunIds: [],
+            stages: {
+              review: { creationState: 'not_started', checkId: null, patchState: 'not_started' },
+              gate: { creationState: 'not_started', checkId: null, patchState: 'not_started' },
+            },
+            receipt: null,
+          };
+          await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, rebound);
+          return { accepted: true as const, state: rebound };
         }
         if (!existing.sourceRunId && input.sourceRunId) {
           const next = { ...existing, sourceRunId: input.sourceRunId };
