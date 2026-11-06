@@ -33,10 +33,10 @@ describe('passthroughAdmission', () => {
   it('shouldShortCircuitActionPassthrough skips short-circuit for listed repo', () => {
     const env = baseEnv({
       OPERATOR_GLOBAL_PASSTHROUGH: 'true',
-      OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES: 'review-yeti-ai/review-yeti-qualification',
+      OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES: 'review-yeti-ai/review-yeti-canary',
     });
     assert.strictEqual(
-      shouldShortCircuitActionPassthrough(env, 'review-yeti-ai/review-yeti-qualification'),
+      shouldShortCircuitActionPassthrough(env, 'review-yeti-ai/review-yeti-canary'),
       false,
     );
     assert.strictEqual(shouldShortCircuitActionPassthrough(env, 'other/org'), true);
@@ -45,19 +45,19 @@ describe('passthroughAdmission', () => {
   it('reviewWorkflowPauseMode runs semantic path for exempt repo even when global passthrough is true', () => {
     const env = baseEnv({
       OPERATOR_GLOBAL_PASSTHROUGH: 'true',
-      OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES: 'review-yeti-ai/review-yeti-qualification',
+      OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES: 'review-yeti-ai/review-yeti-canary',
     });
-    assert.strictEqual(reviewWorkflowPauseMode(env, 'review-yeti-ai', 'review-yeti-qualification'), 'false');
+    assert.strictEqual(reviewWorkflowPauseMode(env, 'review-yeti-ai', 'review-yeti-canary'), 'false');
     assert.strictEqual(reviewWorkflowPauseMode(env, 'other', 'repo'), 'true');
   });
 
   it('mergeGroupOperatorPassthroughMode matches exempt repo behavior', () => {
     const env = baseEnv({
       OPERATOR_GLOBAL_PASSTHROUGH: 'true',
-      OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES: 'review-yeti-ai/review-yeti-qualification',
+      OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES: 'review-yeti-ai/review-yeti-canary',
     });
     assert.strictEqual(
-      mergeGroupOperatorPassthroughMode(env, 'review-yeti-ai/review-yeti-qualification'),
+      mergeGroupOperatorPassthroughMode(env, 'review-yeti-ai/review-yeti-canary'),
       false,
     );
     assert.strictEqual(mergeGroupOperatorPassthroughMode(env, 'other/org'), true);

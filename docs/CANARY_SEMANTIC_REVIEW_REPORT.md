@@ -28,7 +28,8 @@ This document describes wiring verification, code changes in `review-yeti-ai/rev
 
 ## B. Canary repo and scoping
 
-- **Chosen canary:** `review-yeti-ai/review-yeti-qualification` (“Request Routing Workbench”) — **no new dummy repo** was required.
+- **Live semantic canary (default exempt in `wrangler.toml`):** `review-yeti-ai/review-yeti-canary` — dedicated dummy repo for semantic review while **global operator passthrough** stays on.
+- **`review-yeti-ai/review-yeti-qualification` (Request Routing Workbench)** remains the **isolated qualification** admission target: ordinary **`/api/dispatch/action`** requests are **rejected** there unless the caller supplies the **special digest / qualification** paths that repo expects. Qualification is **not** the default **passthrough-exempt** canary repository in source; use **`review-yeti-canary`** for live canary semantics under the exempt list.
 - **Scoping:** comma-separated env **`OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES`**. Only listed `owner/repo` values skip the Action-dispatch and webhook passthrough short-circuits while **`OPERATOR_GLOBAL_PASSTHROUGH === 'true'`**.
 - **Fail-closed:** if the exempt list is **empty or unset**, **no** repository is exempt (everyone stays on passthrough when global pause is on).
 
@@ -37,7 +38,7 @@ This document describes wiring verification, code changes in `review-yeti-ai/rev
 - **`PILOT_REPOSITORIES`**: gates **which repos** may trigger edge dispatch / webhooks at all (comma list or `all`). **Not** the same as semantic-review admission for paused mode.
 - **`OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES`**: enrollment for **paused-publication** identity binding (`operatorPassthroughPublisher.ts`); **not** a semantic-review allowlist.
 
-Operators must ensure **`PILOT_REPOSITORIES`** includes the qualification repo (often already `all` in `wrangler.toml`).
+Operators must ensure **`PILOT_REPOSITORIES`** includes the canary repo (and any qualification target in use); production often sets **`all`** in `wrangler.toml`.
 
 ## D. $0.50 USD per-run enforcement
 
@@ -62,10 +63,10 @@ Operators must ensure **`PILOT_REPOSITORIES`** includes the qualification repo (
 The agent could not open a GitHub PR or read live check-run output in this environment. After merge and deploy:
 
 1. Set org/repo GitHub **variables** (if not using `wrangler.toml` defaults only):  
-   - `OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES` = `review-yeti-ai/review-yeti-qualification`  
+   - `OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES` = `review-yeti-ai/review-yeti-canary`  
    - `REVIEW_RUN_USD_CAP` = `0.50`  
    - Keep **`REVIEW_YETI_PASSTHROUGH`** = `true`.
-2. Open or update a **small PR** in `review-yeti-ai/review-yeti-qualification`.
+2. Open or update a **small PR** in `review-yeti-ai/review-yeti-canary`.
 3. Confirm the **Review Yeti** check is **not** the passthrough-only receipt (summary should **not** claim “zero lanes” / `review-mode=passthrough` for a full semantic run).
 4. In worker logs, find **`Review token accounting`** (`tokenAccounting` / `total.costUSD`) and confirm:
    - **Spend stays ≤ $0.50** from OpenRouter, or the run **fails** with a cap message after crossing the threshold.
@@ -84,5 +85,5 @@ The agent could not open a GitHub PR or read live check-run output in this envir
 ## I. Readiness
 
 - **Global passthrough:** remains **ON** (`OPERATOR_GLOBAL_PASSTHROUGH` / `REVIEW_YETI_PASSTHROUGH` still default true; exempt list adds a **narrow** semantic path).
-- **Canary:** ready after **`OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES`** is set in GitHub Actions variables for deploy and **`PILOT_REPOSITORIES`** covers the repo.
+- **Canary:** ready after **`OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES`** names the canary repo in GitHub Actions variables for deploy (or matches **`wrangler.toml`**) and **`PILOT_REPOSITORIES`** covers that repo.
 - **$0.50 enforcement:** **implemented** for OpenRouter token spend in the publishing worker when `REVIEW_RUN_USD_CAP` is set; **not** verified end-to-end in this run (see section F).
