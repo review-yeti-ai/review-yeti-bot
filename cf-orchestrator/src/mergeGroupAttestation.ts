@@ -23,6 +23,7 @@
 import type { Env } from './types.js';
 import { mergeGroupOperatorPassthroughMode } from './passthroughAdmission.js';
 import { readOperatorPassthroughForTarget } from './operatorPassthroughPublisher.js';
+import type { OperatorPassthroughResult } from './operatorPassthroughTypes.js';
 import { getInstallationToken } from './auth/githubEdgeAuth.js';
 import {
   AUTHORITATIVE_REVIEW_APP_ID,
@@ -1088,6 +1089,82 @@ async function createBlockedOutcome(params: {
   };
 }
 
+/** Total reads of a paused-publication receipt per constituent PR (first read included). */
+export const PASSTHROUGH_RECEIPT_READ_ATTEMPTS = 3;
+/** Pause between receipt reads; the whole sequence stays inside the 15 second paused deadline. */
+export const PASSTHROUGH_RECEIPT_RETRY_DELAY_MS = 1_000;
+
+/**
+ * Receipt error codes that describe an unavailable or not-yet-settled read (GitHub, Durable Object,
+ * or a prior-run check still settling), not a verdict. Policy, identity, semantic, cancellation and
+ * summary-mismatch codes are deliberately absent so they fail immediately without a retry.
+ */
+const TRANSIENT_PASSTHROUGH_READ_CODES: ReadonlySet<string> = new Set([
+  'authoritative_read_unavailable',
+  'current_repository_unavailable',
+  'current_pr_unavailable',
+  'policy_source_unavailable',
+  'durable_state_unavailable',
+  'check_readback_unavailable',
+  'audit_unavailable',
+  'prior_outcome_unavailable',
+  'prior_review_state_unavailable',
+  'prior_review_history_incomplete',
+  'prior_check_state_unavailable',
+  'prior_check_history_incomplete',
+  'prior_check_pair_incomplete',
+  'prior_queue_state_unavailable',
+  'prior_review_active',
+  'prior_do_unavailable',
+  'prior_workflow_state_unavailable',
+]);
+
+export function isTransientPassthroughReadCode(code: unknown): boolean {
+  return typeof code === 'string' && TRANSIENT_PASSTHROUGH_READ_CODES.has(code);
+}
+
+/**
+ * Only an exact-head, merge-eligible, publication-backed success counts. Owner, repository and head
+ * comparisons match the original single-read gate; nothing here is relaxed by the retry.
+ */
+export function passthroughReceiptAccepted(
+  receipt: OperatorPassthroughResult,
+  owner: string,
+  repo: string,
+  headSha: string,
+): boolean {
+  return receipt.status === 'succeeded' && receipt.mergeEligible === true && receipt.publicationReceiptAvailable === true
+    && receipt.owner?.toLowerCase() === owner.toLowerCase() && receipt.repo?.toLowerCase() === repo.toLowerCase()
+    && receipt.headSha === headSha;
+}
+
+/**
+ * Reads a paused-publication receipt, retrying only transient read codes while time remains.
+ * Returns the first accepted receipt, or the last receipt observed.
+ */
+export async function readPassthroughReceiptWithRetry<T extends { status: string; errorCode?: string }>(options: {
+  read: () => Promise<T>;
+  accepted: (receipt: T) => boolean;
+  hasTimeLeft: () => boolean;
+  attempts?: number;
+  delayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<T> {
+  const attempts = options.attempts ?? PASSTHROUGH_RECEIPT_READ_ATTEMPTS;
+  const delayMs = options.delayMs ?? PASSTHROUGH_RECEIPT_RETRY_DELAY_MS;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let receipt = await options.read();
+  for (let attempt = 1; attempt < attempts; attempt += 1) {
+    if (options.accepted(receipt) || !isTransientPassthroughReadCode(receipt.errorCode) || !options.hasTimeLeft()) {
+      break;
+    }
+    await sleep(delayMs);
+    if (!options.hasTimeLeft()) break;
+    receipt = await options.read();
+  }
+  return receipt;
+}
+
 /**
  * Master handler for `merge_group` webhook events in Review Yeti.
  * Executes constituent verification, composite delta hazard scanning, and direct check-run publication.
@@ -1321,15 +1398,23 @@ export async function handleMergeGroupAttestation(
             fetchFn: boundedFetch,
           });
         }
-        const receipt = await readOperatorPassthroughForTarget(env, { owner, repo, prNumber: pr.number }, {
-          headSha: pr.head_sha,
-        }, { fetchFn: boundedFetch, timeoutMs: Math.min(remaining, budget), signal: controller.signal });
-        if (receipt.status !== 'succeeded' || !receipt.mergeEligible || !receipt.publicationReceiptAvailable
-          || receipt.owner?.toLowerCase() !== owner.toLowerCase() || receipt.repo?.toLowerCase() !== repo.toLowerCase()
-          || receipt.headSha !== pr.head_sha) {
+        // One receipt read used to decide the whole queue SHA. A transient read miss
+        // (GitHub or Durable Object) is now retried inside the same deadline. Each attempt is a
+        // full verification, and only an accepted exact-head receipt passes.
+        const receipt = await readPassthroughReceiptWithRetry<OperatorPassthroughResult>({
+          read: () => {
+            const left = Math.max(1, Math.floor(deadline - performance.now()));
+            return readOperatorPassthroughForTarget(env, { owner, repo, prNumber: pr.number }, {
+              headSha: pr.head_sha,
+            }, { fetchFn: boundedFetch, timeoutMs: Math.min(left, budget), signal: controller.signal });
+          },
+          accepted: (candidate) => passthroughReceiptAccepted(candidate, owner, repo, pr.head_sha),
+          hasTimeLeft: () => Math.floor(deadline - performance.now()) >= 1 && !controller.signal.aborted,
+        });
+        if (!passthroughReceiptAccepted(receipt, owner, repo, pr.head_sha)) {
           return await createBlockedOutcome({
             owner, repo, headSha, token,
-            summary: `Merge group attestation blocked: PR #${pr.number} has no current durable App ${requiredAppId} raw/Gate passthrough publication receipt.`,
+            summary: `Merge group attestation blocked: PR #${pr.number} has no current durable App ${requiredAppId} raw/Gate passthrough publication receipt (reason: ${receipt.errorCode ?? 'unknown'}).`,
             constituentPrs: constituentPrs.map((p) => p.number),
             bypassedHazardScan: hazardResult.bypassed,
             fetchFn: boundedFetch,
