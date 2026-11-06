@@ -336,12 +336,12 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     installationId: 1001,
   };
 
-  it('maps the existing deployment pause into Wrangler with a fail-closed default', async () => {
+  it('keeps wrangler and deploy wiring for OPERATOR_GLOBAL_PASSTHROUGH (unpaused checked-in default)', async () => {
     const wrangler = await readFile(resolve(process.cwd(), 'wrangler.toml'), 'utf8');
     const workflow = await readFile(resolve(process.cwd(), '../.github/workflows/cf-orchestrator-ci.yaml'), 'utf8');
     const deployJob = workflow.slice(workflow.indexOf('name: Deploy to Cloudflare Edge'));
 
-    assert.match(wrangler, /^OPERATOR_GLOBAL_PASSTHROUGH = "true"(?:\s+#.*)?$/mu);
+    assert.match(wrangler, /^OPERATOR_GLOBAL_PASSTHROUGH = "false"(?:\s+#.*)?$/mu);
     assert.match(
       deployJob,
       /OPERATOR_GLOBAL_PASSTHROUGH:\s*\$\{\{\s*vars\.REVIEW_YETI_PASSTHROUGH\s*\|\|\s*'true'\s*\}\}/u
