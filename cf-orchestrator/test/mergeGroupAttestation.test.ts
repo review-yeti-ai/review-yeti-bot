@@ -12,6 +12,10 @@ import {
   REQUIRED_CHECK_NAME,
   type CheckRunRecord,
   type MergeGroupPayload,
+  PASSTHROUGH_RECEIPT_READ_ATTEMPTS,
+  isTransientPassthroughReadCode,
+  passthroughReceiptAccepted,
+  readPassthroughReceiptWithRetry,
 } from '../src/mergeGroupAttestation.js';
 import worker from '../src/worker.js';
 import type { Env } from '../src/types.js';
@@ -2025,3 +2029,95 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
 });
 
 
+
+describe('paused passthrough receipt read retry', () => {
+  const HEAD = '0123456789abcdef0123456789abcdef01234567';
+  const accepted = {
+    version: 'OperatorPassthroughReceipt.v2',
+    status: 'succeeded',
+    mergeEligible: true,
+    publicationReceiptAvailable: true,
+    owner: 'Exampleorg',
+    repo: 'Sample-Repo',
+    headSha: HEAD,
+  } as any;
+  const failed = (errorCode: string) => ({ status: 'unavailable', mergeEligible: false, errorCode }) as any;
+  const noSleep = async () => {};
+
+  it('classifies only read-availability codes as transient', () => {
+    assert.equal(isTransientPassthroughReadCode('durable_state_unavailable'), true);
+    assert.equal(isTransientPassthroughReadCode('check_readback_unavailable'), true);
+    assert.equal(isTransientPassthroughReadCode('prior_review_active'), true);
+    assert.equal(isTransientPassthroughReadCode('current_candidate_changed'), false);
+    assert.equal(isTransientPassthroughReadCode('prior_semantic_block'), false);
+    assert.equal(isTransientPassthroughReadCode('prior_check_identity_unverified'), false);
+    assert.equal(isTransientPassthroughReadCode('check_summary_unverified'), false);
+    assert.equal(isTransientPassthroughReadCode('cancel_requested'), false);
+    assert.equal(isTransientPassthroughReadCode('deadline_exceeded'), false);
+    assert.equal(isTransientPassthroughReadCode(undefined), false);
+  });
+
+  it('accepts only an exact-head, merge-eligible, publication-backed success', () => {
+    assert.equal(passthroughReceiptAccepted(accepted, 'exampleorg', 'sample-repo', HEAD), true);
+    assert.equal(passthroughReceiptAccepted(accepted, 'exampleorg', 'sample-repo', 'f'.repeat(40)), false);
+    assert.equal(passthroughReceiptAccepted({ ...accepted, mergeEligible: false }, 'exampleorg', 'sample-repo', HEAD), false);
+    assert.equal(passthroughReceiptAccepted({ ...accepted, publicationReceiptAvailable: false }, 'exampleorg', 'sample-repo', HEAD), false);
+    assert.equal(passthroughReceiptAccepted({ ...accepted, owner: 'other' }, 'exampleorg', 'sample-repo', HEAD), false);
+    assert.equal(passthroughReceiptAccepted(failed('durable_state_unavailable'), 'exampleorg', 'sample-repo', HEAD), false);
+  });
+
+  it('retries a transient miss and returns the later accepted receipt', async () => {
+    const results = [failed('durable_state_unavailable'), accepted];
+    let reads = 0;
+    let sleeps = 0;
+    const receipt = await readPassthroughReceiptWithRetry({
+      read: async () => results[reads++]!,
+      accepted: (r) => passthroughReceiptAccepted(r, 'exampleorg', 'sample-repo', HEAD),
+      hasTimeLeft: () => true,
+      sleep: async () => { sleeps += 1; },
+    });
+    assert.equal(receipt, accepted);
+    assert.equal(reads, 2);
+    assert.equal(sleeps, 1);
+  });
+
+  it('does not retry verdict or identity codes', async () => {
+    for (const code of ['current_candidate_changed', 'prior_semantic_block', 'cancel_requested']) {
+      let reads = 0;
+      const receipt = await readPassthroughReceiptWithRetry({
+        read: async () => { reads += 1; return failed(code); },
+        accepted: (r) => passthroughReceiptAccepted(r, 'exampleorg', 'sample-repo', HEAD),
+        hasTimeLeft: () => true,
+        sleep: noSleep,
+      });
+      assert.equal(reads, 1, code);
+      assert.equal(receipt.errorCode, code);
+    }
+  });
+
+  it('stops after the attempt budget and returns the last failure, never a success', async () => {
+    let reads = 0;
+    const receipt = await readPassthroughReceiptWithRetry({
+      read: async () => { reads += 1; return failed('check_readback_unavailable'); },
+      accepted: (r) => passthroughReceiptAccepted(r, 'exampleorg', 'sample-repo', HEAD),
+      hasTimeLeft: () => true,
+      sleep: noSleep,
+    });
+    assert.equal(reads, PASSTHROUGH_RECEIPT_READ_ATTEMPTS);
+    assert.equal(receipt.status, 'unavailable');
+    assert.equal(receipt.errorCode, 'check_readback_unavailable');
+  });
+
+  it('does not start another read once the paused deadline has passed', async () => {
+    let reads = 0;
+    let budgetLeft = true;
+    const receipt = await readPassthroughReceiptWithRetry({
+      read: async () => { reads += 1; budgetLeft = false; return failed('durable_state_unavailable'); },
+      accepted: (r) => passthroughReceiptAccepted(r, 'exampleorg', 'sample-repo', HEAD),
+      hasTimeLeft: () => budgetLeft,
+      sleep: noSleep,
+    });
+    assert.equal(reads, 1);
+    assert.equal(receipt.errorCode, 'durable_state_unavailable');
+  });
+});
