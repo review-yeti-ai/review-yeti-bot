@@ -22,9 +22,9 @@ This document describes wiring verification, code changes in `review-yeti-ai/rev
 - **`OPERATOR_GLOBAL_PASSTHROUGH`**: primary ingress flag used by Action dispatch, webhook fast-path debounce, operator pause binding checks in `operatorPassthroughPublisher.ts`, MCP tools (`triggerReview`, `attestPrGate`), and merge-group attestation when deciding whether the `:review-mode=passthrough:op2` check suffix is allowed.
 - **`REVIEW_YETI_PASSTHROUGH` / `PASSTHROUGH_MODE`**: read by **`isPassthroughMode()`** in `cf-orchestrator/src/auth/passthrough.ts` (documented as global). **`ReviewJobWorkflow`** uses `OPERATOR_GLOBAL_PASSTHROUGH` if set, otherwise falls back to `isPassthroughMode(env)` for the pause step — unchanged except that exempt repos now force the semantic path (see below).
 
-### 3. ct-infrastructure / calltelemetry GitOps queue mode
+### 3. Other operator GitOps repos (out of scope here)
 
-- **Not modified in this PR** (per scope). Any **queue mode** or **Proxmox/Kubernetes dispatch** configuration in those repos is a **separate control plane** from the **review-yeti-ai** `REVIEW_YETI_PASSTHROUGH` variable and **Wrangler** `OPERATOR_GLOBAL_PASSTHROUGH`. This codebase only reflects the **Cloudflare orchestrator + Cloudflare Containers** path documented in `cf-orchestrator`.
+- **Not modified in this PR** (per scope). Any **queue mode** or **Proxmox/Kubernetes dispatch** configuration in external operator repositories is a **separate control plane** from the **review-yeti-ai** `REVIEW_YETI_PASSTHROUGH` variable and **Wrangler** `OPERATOR_GLOBAL_PASSTHROUGH`. This codebase only reflects the **Cloudflare orchestrator + Cloudflare Containers** path documented in `cf-orchestrator`.
 
 ## B. Canary repo and scoping
 
@@ -43,7 +43,7 @@ Operators must ensure **`PILOT_REPOSITORIES`** includes the qualification repo (
 
 - **New Worker var:** **`REVIEW_RUN_USD_CAP`** (default **`0.50`** in `wrangler.toml`; overridable via `vars.REVIEW_RUN_USD_CAP` in CI).
 - **Forwarded** into the container env from **`reviewJobWorkflow.ts`** as **`REVIEW_RUN_USD_CAP`**.
-- **Enforced in the publishing worker** (`src/cli/publishingReview.ts`): after each OpenRouter response, the **token ledger’s cumulative `costUSD`** is compared to the cap. The next call is rejected with **`UpstreamCapacityRejectionError`** if spend would exceed the cap.
+- **Enforced in the publishing worker** (`src/cli/publishingReview.ts`): after each OpenRouter response, the **token ledger’s cumulative `costUSD`** is compared to the cap. The next provider round-trip is rejected with **`UpstreamCapacityRejectionError`** if spend would exceed the cap.
 - **Scope:** OpenRouter-reported **`costUSD` only** (same basis as `TokenLedger`). It does **not** include Cloudflare Container **compute** (`runnerCost` in `cf-orchestrator/src/runners/runnerCost.ts`) or other fees.
 - **`REVIEW_YETI_BUDGET`** (see `docs/features/review_budget.md`) remains a **content/packing** flag for lane context — **not** a dollar cap.
 
@@ -53,7 +53,7 @@ Operators must ensure **`PILOT_REPOSITORIES`** includes the qualification repo (
 |------|----------------------|
 | **Cloudflare orchestrator** (`cf-orchestrator`) + **Workflow** + **Containers** (`RUNNER_TYPE=cloudflare`, `reviewJobWorkflow.getRunner`) | **Live / supported** — only runner type accepted; anything else **fails closed**. |
 | **K8s “publishing” lane** in `src/cli/publishingReview.ts` comments | **Legacy narrative** about an old operator path; current edge dispatch uses **Cloudflare Containers** + worker image entrypoint `runLiveReview.js`. |
-| **Proxmox lab / external queue (ct-infrastructure)** | **Not present** in this repository; treat as **out-of-repo** unless wired via env/bindings. |
+| **Proxmox lab / external queue (operator-run infra)** | **Not present** in this repository; treat as **out-of-repo** unless wired via env/bindings. |
 
 `src/telemetry/metrics.ts` mentions `REVIEW_YETI_WORKER_METRICS_ENDPOINT` (k8s-operator) as an **optional** metrics hook — not evidence of an active K8s review path here.
 
@@ -68,11 +68,11 @@ The agent could not open a GitHub PR or read live check-run output in this envir
 2. Open or update a **small PR** in `review-yeti-ai/review-yeti-qualification`.
 3. Confirm the **Review Yeti** check is **not** the passthrough-only receipt (summary should **not** claim “zero lanes” / `review-mode=passthrough` for a full semantic run).
 4. In worker logs, find **`Review token accounting`** (`tokenAccounting` / `total.costUSD`) and confirm:
-   - **Spend stays ≤ $0.50** from OpenRouter, or the run **fails** with a cap message on the next call after the threshold.
+   - **Spend stays ≤ $0.50** from OpenRouter, or the run **fails** with a cap message after crossing the threshold.
 
 ## G. Optimization notes
 
-- The cap is evaluated **per provider response**; the **last** response can bring cumulative spend up to just under the next call’s rejection — acceptable for a canary.
+- The cap is evaluated **per provider response**; the **last** response can bring cumulative spend up to just under the following rejection — acceptable for a canary.
 - If **`costUSD`** is missing from a response, ledger cost may under-report; enforcement still follows whatever OpenRouter returns.
 
 ## H. Risks / gaps
