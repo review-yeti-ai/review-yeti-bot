@@ -1,7 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowStep, type WorkflowEvent } from 'cloudflare:workers';
 export type { WorkflowStep, WorkflowEvent };
 import type { Env, ReviewRunSpec } from './types.js';
-import { isPassthroughMode } from './types.js';
+import { reviewWorkflowPauseMode } from './passthroughAdmission.js';
 import { type ContainerRunner, CloudflareContainerRunner } from './runners/containerRunner.js';
 import type { RunnerCostDetails } from './runners/runnerCost.js';
 import { publishOperatorPassthrough } from './operatorPassthroughPublisher.js';
@@ -151,9 +151,7 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
     const spec = event.payload;
     const { runId, owner, repo, prNumber, headSha, baseSha } = spec;
     const repoKey = `${owner}/${repo}`.toLowerCase();
-    const pauseMode = this.env.OPERATOR_GLOBAL_PASSTHROUGH !== undefined
-      ? this.env.OPERATOR_GLOBAL_PASSTHROUGH
-      : (isPassthroughMode(this.env) ? 'true' : undefined);
+    const pauseMode = reviewWorkflowPauseMode(this.env, owner, repo);
     if (pauseMode !== 'false') {
       const config = { timeout: '2 minutes', retries: { limit: 0, delay: '1 second' } };
       const stepName = pauseMode === 'true' ? 'operator-passthrough-publication' : 'operator-passthrough-config-unavailable';
@@ -360,6 +358,8 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
                 PARALLEL_CHECK_NAME: this.env.PARALLEL_CHECK_NAME,
                 PARALLEL_FILE_CONCURRENCY: this.env.PARALLEL_FILE_CONCURRENCY || '5',
                 DIFF_SHRINK: spec.diffShrink || 'true',
+                ...(this.env.REVIEW_RUN_USD_CAP?.trim()
+                  ? { REVIEW_RUN_USD_CAP: this.env.REVIEW_RUN_USD_CAP.trim() } : {}),
               },
               cpu: 2,
               memoryMb: 2048,

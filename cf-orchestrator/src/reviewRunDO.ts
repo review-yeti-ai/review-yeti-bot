@@ -13,6 +13,7 @@ import type {
   OperatorPassthroughState,
 } from './operatorPassthroughTypes.js';
 import { reviewAppIdForRepository } from './reviewAppAuthority.js';
+import { isPassthroughExemptRepository } from './passthroughAdmission.js';
 
 const OPERATOR_PASSTHROUGH_STATE_KEY = 'operatorPassthrough.v2';
 const OPERATOR_PASSTHROUGH_LINK_KEY = 'operatorPassthroughLink.v1';
@@ -700,7 +701,9 @@ export class ReviewRunDO {
       return { published: false, error: 'incomplete_run_spec' };
     }
 
-    if (this.env.OPERATOR_GLOBAL_PASSTHROUGH === 'true') {
+    const repoFullName = `${owner}/${repo}`;
+    if (this.env.OPERATOR_GLOBAL_PASSTHROUGH === 'true'
+      && !isPassthroughExemptRepository(repoFullName, this.env.OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES)) {
       return { published: false, error: 'paused_publication_requires_authoritative_path' };
     }
 

@@ -462,6 +462,31 @@ describe('GitHub Actions OIDC Action Dispatch', () => {
       assert.strictEqual(data.error, 'Action dispatch is not authorized');
     });
 
+    it('dispatches semantic review when repo is on OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES', async () => {
+      const { env, dispatchedWorkflows } = createTestWorkerEnv({
+        OPERATOR_GLOBAL_PASSTHROUGH: 'true',
+        OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES: 'exampleorg/sample-repo',
+      });
+      const token = await createMockToken();
+      const dispatchReq = createValidDispatchRequest();
+
+      const req = new Request('http://worker/api/dispatch/action', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(dispatchReq),
+      });
+
+      const res = await handleActionDispatch(req, env, undefined, { keySet: mockKeySet });
+      assert.strictEqual(res.status, 202);
+
+      const receipt = (await res.json()) as any;
+      assert.strictEqual(receipt.version, 'ActionDispatchAccepted.v1');
+      assert.strictEqual(dispatchedWorkflows.length, 1);
+    });
+
     it('fails closed without a service-owned current repository enrollment', async () => {
       const { env } = createTestWorkerEnv({
         OPERATOR_GLOBAL_PASSTHROUGH: 'true',

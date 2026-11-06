@@ -99,9 +99,13 @@ export interface Env {
   REVIEW_YETI_ATTESTATION_SECRET?: string;
   GITHUB_TOKEN?: string;
   OPERATOR_GLOBAL_PASSTHROUGH?: string;
+  /** Comma-separated `owner/repo` full names that run semantic review while OPERATOR_GLOBAL_PASSTHROUGH stays true. Fail-closed when unset/empty. */
+  OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES?: string;
   REVIEW_YETI_PASSTHROUGH?: string;
   PASSTHROUGH_MODE?: string;
   ACTION_DISPATCH_ALLOW_APP_GATE?: string;
+  /** Maximum estimated OpenRouter token spend (USD) for one worker run; forwarded to the container as REVIEW_RUN_USD_CAP. */
+  REVIEW_RUN_USD_CAP?: string;
 }
 
 export {
