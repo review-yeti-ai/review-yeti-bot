@@ -21,6 +21,7 @@
  */
 
 import type { Env } from './types.js';
+import { mergeGroupOperatorPassthroughMode } from './passthroughAdmission.js';
 import { readOperatorPassthroughForTarget } from './operatorPassthroughPublisher.js';
 import { getInstallationToken } from './auth/githubEdgeAuth.js';
 import {
@@ -1146,7 +1147,7 @@ export async function handleMergeGroupAttestation(
     });
   }
   const requiredAppId = String(expectedApp);
-  const operatorPassthroughMode = env.OPERATOR_GLOBAL_PASSTHROUGH === 'true';
+  const operatorPassthroughMode = mergeGroupOperatorPassthroughMode(env, repoFullName);
   const publicSelfRepositoryStillMatches = async (): Promise<boolean> => {
     if (!isPublicSelfReviewRepository) return true;
     try {

@@ -347,6 +347,14 @@ describe('ReviewJobWorkflow Durable Execution', () => {
       /OPERATOR_GLOBAL_PASSTHROUGH:\s*\$\{\{\s*vars\.REVIEW_YETI_PASSTHROUGH\s*\|\|\s*'true'\s*\}\}/u
     );
     assert.match(deployJob, /vars:\s*\|[\s\S]*?\n\s+OPERATOR_GLOBAL_PASSTHROUGH\s*\n/u);
+    assert.match(
+      deployJob,
+      /OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES:\s*\$\{\{\s*vars\.OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES\s*\}\}/u
+    );
+    assert.match(
+      deployJob,
+      /REVIEW_RUN_USD_CAP:\s*\$\{\{\s*vars\.REVIEW_RUN_USD_CAP\s*\|\|\s*'0\.50'\s*\}\}/u
+    );
   });
 
   it('uses a Cloudflare-valid zero-retry config for container dispatch', async () => {

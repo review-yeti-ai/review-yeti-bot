@@ -1,5 +1,6 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult } from '../types.js';
 import { publishOperatorPassthroughForTarget } from '../../operatorPassthroughPublisher.js';
+import { shouldShortCircuitActionPassthrough } from '../../passthroughAdmission.js';
 
 function configuredTrackingUrl(env: McpExecutionContext['env'] | undefined, runId: string): string | null {
   const baseValue = env?.DISPATCH_STATUS_BASE_URL || env?.OPERATOR_STATUS_BASE_URL;
@@ -96,7 +97,7 @@ export const triggerReviewTool: McpToolHandler = {
     const runId = `run_cf_mcp_${Date.now()}_pr${prNumber}`;
     const env = context.env || {};
 
-    if (env.OPERATOR_GLOBAL_PASSTHROUGH === 'true') {
+    if (shouldShortCircuitActionPassthrough(env, `${owner}/${repo}`)) {
       const expected = commitSha === 'latest-head' ? undefined : { headSha: commitSha };
       const receipt = await publishOperatorPassthroughForTarget(env, { owner, repo, prNumber }, {}, expected);
       const published = receipt.status === 'succeeded' && receipt.mergeEligible && receipt.publicationReceiptAvailable;

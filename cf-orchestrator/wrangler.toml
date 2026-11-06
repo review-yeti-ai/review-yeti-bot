@@ -84,6 +84,10 @@ PUBLIC_READ_MCP = "false" # Lockdown: disable unauthenticated public MCP/API rea
 REQUIRE_CF_ACCESS = "true" # Require Cloudflare Access JWT or bearer token on all UI and dashboard API routes
 REVIEW_YETI_PUBLIC_TARGET_APP_ID = "4552718" # Matches Node authoritative self-review authority; private key uses the same-named Worker secret.
 OPERATOR_GLOBAL_PASSTHROUGH = "true" # Fail closed unless the deployment-owned pause variable explicitly disables the pause
+# Semantic-review canary while global pause stays on (comma-separated owner/repo; unset/empty = no exemption).
+OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES = "review-yeti-ai/review-yeti-qualification"
+# Hard cap on estimated OpenRouter spend (USD) per worker run for exempt repos.
+REVIEW_RUN_USD_CAP = "0.50"
 # Paused publication has a separate exact ID/name enrollment; PILOT_REPOSITORIES does not grant it.
 
 # Cron trigger for 1-hour aggressive R2 workspace cache purge

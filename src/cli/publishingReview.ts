@@ -166,7 +166,8 @@ import {
 } from '../review/thrownPanelInfrastructure';
 import { omittedSourcePathsOf, unavailablePatchFilesOf } from '../review/patchAvailability';
 import type { JevAsker } from '../gateway/jevClient';
-import { TokenLedger, meterModelClient, renderTokenAccountingSummary, tokenAccountingLogFields, type TokenAccounting } from '../telemetry/tokenLedger';
+import { TokenLedger, meterModelClient, renderTokenAccountingSummary, tokenAccountingLogFields,
+  type TokenAccounting } from '../telemetry/tokenLedger';
 import { createPublishingProgress, type PublishingProgressReporter } from '../telemetry/publishingProgress';
 import {
   evaluateFindingConvergence, isCriticalSeverity, normalizeFindingSeverity, renderConvergenceSummary,
@@ -189,6 +190,39 @@ export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths }
  * calls while direct transports retain their deliberately uncapped behaviour.
  */
 export const PUBLISHING_MAX_OUTPUT_TOKENS = 65_536;
+
+/** Optional per-run OpenRouter spend cap (USD), forwarded from the orchestrator as REVIEW_RUN_USD_CAP. */
+function publishingRunUsdCapFromEnv(env: Readonly<Record<string, string | undefined>>): number | undefined {
+  const raw = env.REVIEW_RUN_USD_CAP?.trim();
+  if (!raw) return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n;
+}
+
+function wrapLedgerUsdCap(
+  client: ReviewModelClient,
+  ledger: TokenLedger,
+  capUsd: number | undefined,
+): ReviewModelClient {
+  if (capUsd === undefined) return client;
+  return {
+    async complete(request, context) {
+      const before = ledger.snapshot().total.costUSD;
+      if (before >= capUsd - 1e-9) {
+        throw new UpstreamCapacityRejectionError('openrouter',
+          `REVIEW_RUN_USD_CAP exceeded before provider call: $${before.toFixed(6)} (cap $${capUsd.toFixed(4)} USD)`);
+      }
+      const response = context === undefined ? await client.complete(request) : await client.complete(request, context);
+      const after = ledger.snapshot().total.costUSD;
+      if (after > capUsd + 1e-9) {
+        throw new UpstreamCapacityRejectionError('openrouter',
+          `REVIEW_RUN_USD_CAP exceeded after provider call: $${after.toFixed(6)} (cap $${capUsd.toFixed(4)} USD)`);
+      }
+      return response;
+    },
+  };
+}
 
 function boundedPublishingModelClient(client: ReviewModelClient): ReviewModelClient {
   return {
@@ -2207,6 +2241,7 @@ export async function runPublishingReviewWorker(
       },
     } : undefined;
 
+    const runUsdCap = publishingRunUsdCapFromEnv(env);
     const modelClient = providerPublishingModelClient(boundedPublishingModelClient(
       deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey,
         authorizationHeaderName: transport.authorizationHeaderName,
@@ -2250,8 +2285,9 @@ export async function runPublishingReviewWorker(
       } catch { /* optional progress must never change the publication outcome */ }
     };
     executionProgress = progress;
-    const client = meterModelClient(progress.instrument(modelClient), tokenLedger);
-    const shadowClient = meterModelClient(modelClient, tokenLedger, { label: 'composed-shadow' });
+    const client = wrapLedgerUsdCap(meterModelClient(progress.instrument(modelClient), tokenLedger), tokenLedger, runUsdCap);
+    const shadowClient = wrapLedgerUsdCap(meterModelClient(modelClient, tokenLedger, { label: 'composed-shadow' }),
+      tokenLedger, runUsdCap);
 
     // Full-repository grounding for persona find_files/read_file tools (see
     // `createRepoFileProvider`'s doc comment for the defect this fixes: a diff-scoped miss on a

@@ -7,6 +7,7 @@ import {
   type VerifyOidcOptions,
 } from '../auth/oidcVerifier.js';
 import { isPilotRepository, registerPendingRunForPR } from '../worker.js';
+import { shouldShortCircuitActionPassthrough } from '../passthroughAdmission.js';
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
 const NAME_PATTERN = /^[A-Za-z0-9_.-]+$/u;
@@ -280,9 +281,8 @@ export async function handleActionDispatch(
     );
   }
 
-  // 7. Operator Global Passthrough Mode
-  const passthroughEnabled = env.OPERATOR_GLOBAL_PASSTHROUGH === 'true';
-  if (passthroughEnabled) {
+  // 7. Operator Global Passthrough Mode (with optional exempt-repo semantic canary)
+  if (shouldShortCircuitActionPassthrough(env, repoFullName)) {
     const publication = await publishOperatorPassthroughForTarget(env, {
       owner: dispatch.owner,
       repo: dispatch.repo,

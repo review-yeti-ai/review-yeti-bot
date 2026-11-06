@@ -9,6 +9,7 @@ import { handleDashboardApi } from './api/dashboardRoutes.js';
 import { handleActionDispatch } from './api/actionDispatchRoute.js';
 import { readOperatorPassthroughByRunId } from './operatorPassthroughPublisher.js';
 import { isPilotRepository } from './pilotRepository.js';
+import { shouldShortCircuitActionPassthrough } from './passthroughAdmission.js';
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
 
 export { RepoGateDO, ReviewRunDO, ReviewJobWorkflow, handleMergeGroupAttestation };
@@ -568,7 +569,8 @@ export default {
             };
 
             // In passthrough mode, bypass the 60s debounce queue and trigger the workflow immediately
-            if (env.OPERATOR_GLOBAL_PASSTHROUGH === 'true') {
+            // (exempt repos use normal debounced scheduling so they run semantic review)
+            if (shouldShortCircuitActionPassthrough(env, repoFullName)) {
               if (env.REVIEW_JOB_WORKFLOW && typeof env.REVIEW_JOB_WORKFLOW.create === 'function') {
                 await env.REVIEW_JOB_WORKFLOW.create({
                   id: runId,

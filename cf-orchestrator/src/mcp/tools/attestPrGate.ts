@@ -1,5 +1,6 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult } from '../types.js';
 import { readOperatorPassthroughForTarget } from '../../operatorPassthroughPublisher.js';
+import { shouldShortCircuitActionPassthrough } from '../../passthroughAdmission.js';
 
 export interface AttestPrGateOutput {
   attested: boolean;
@@ -78,7 +79,8 @@ export const attestPrGateTool: McpToolHandler = {
     }
 
     // Paused SHIP is attestable only from the shared current durable publication.
-    if (env.OPERATOR_GLOBAL_PASSTHROUGH === 'true') {
+    const repoFull = `${owner}/${repo}`;
+    if (shouldShortCircuitActionPassthrough(env, repoFull)) {
       const timestamp = new Date().toISOString();
       const receipt = await readOperatorPassthroughForTarget(env, { owner, repo, prNumber }, { headSha });
       const secret = typeof env.REVIEW_YETI_ATTESTATION_SECRET === 'string'
