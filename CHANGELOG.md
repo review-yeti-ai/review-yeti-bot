@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.137.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.137.0...v1.137.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **merge-group:** retry transient paused receipt reads ([71a8133](https://github.com/review-yeti-ai/review-yeti-bot/commit/71a8133b9affbe56b7d58d2b477c31239db3f441))
+* **merge-group:** retry transient paused receipt reads ([67d97f4](https://github.com/review-yeti-ai/review-yeti-bot/commit/67d97f449223b4457bfc381c3b9364e190ed75a6))
+
 ## [1.137.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.136.2...v1.137.0) (2026-11-06)
 
 
