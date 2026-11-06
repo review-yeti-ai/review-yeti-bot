@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.137.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.136.2...v1.137.0) (2026-11-06)
+
+
+### Features
+
+* **orchestrator:** exempt canary repo from passthrough; add per-run USD cap ([913c02f](https://github.com/review-yeti-ai/review-yeti-bot/commit/913c02fcaf9aff1cc76c45a4b3981d8edbfa8663))
+
 ## [1.136.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.136.1...v1.136.2) (2026-11-05)
 
 
