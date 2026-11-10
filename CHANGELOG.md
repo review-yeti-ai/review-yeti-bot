@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.138.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.137.2...v1.138.0) (2026-11-10)
+
+
+### Features
+
+* **orchestrator:** add settings API, onboarding workflow UX, and expanded MCP tooling ([#1494](https://github.com/review-yeti-ai/review-yeti-bot/issues/1494)) ([689d23a](https://github.com/review-yeti-ai/review-yeti-bot/commit/689d23a324e6f13f963f9bd9f399771af6ebad5e))
+
+
+### Bug Fixes
+
+* **review:** bound merge-group operator SHIP wait with backoff instead of a fixed 30s ([#1443](https://github.com/review-yeti-ai/review-yeti-bot/issues/1443)) ([d9def8d](https://github.com/review-yeti-ai/review-yeti-bot/commit/d9def8d5d17398fffed90a0458a498e5778cd325))
+
 ## [1.137.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.137.1...v1.137.2) (2026-11-10)
 
 
