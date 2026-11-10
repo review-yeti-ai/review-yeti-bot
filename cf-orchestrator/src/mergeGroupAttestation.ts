@@ -1090,9 +1090,11 @@ async function createBlockedOutcome(params: {
 }
 
 /** Total reads of a paused-publication receipt per constituent PR (first read included). */
-export const PASSTHROUGH_RECEIPT_READ_ATTEMPTS = 3;
-/** Pause between receipt reads; the whole sequence stays inside the 15 second paused deadline. */
-export const PASSTHROUGH_RECEIPT_RETRY_DELAY_MS = 1_000;
+export const PASSTHROUGH_RECEIPT_READ_ATTEMPTS = 8;
+/** First pause between receipt reads; it doubles per attempt and stays inside the 15 second paused deadline. */
+export const PASSTHROUGH_RECEIPT_RETRY_DELAY_MS = 250;
+/** Backoff cap so a slow, still-transient miss keeps trying instead of stretching one pause. */
+export const PASSTHROUGH_RECEIPT_RETRY_MAX_DELAY_MS = 2_000;
 
 /**
  * Receipt error codes that describe an unavailable or not-yet-settled read (GitHub, Durable Object,
@@ -1148,17 +1150,21 @@ export async function readPassthroughReceiptWithRetry<T extends { status: string
   hasTimeLeft: () => boolean;
   attempts?: number;
   delayMs?: number;
+  maxDelayMs?: number;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<T> {
   const attempts = options.attempts ?? PASSTHROUGH_RECEIPT_READ_ATTEMPTS;
   const delayMs = options.delayMs ?? PASSTHROUGH_RECEIPT_RETRY_DELAY_MS;
+  const maxDelayMs = options.maxDelayMs ?? PASSTHROUGH_RECEIPT_RETRY_MAX_DELAY_MS;
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let receipt = await options.read();
   for (let attempt = 1; attempt < attempts; attempt += 1) {
     if (options.accepted(receipt) || !isTransientPassthroughReadCode(receipt.errorCode) || !options.hasTimeLeft()) {
       break;
     }
-    await sleep(delayMs);
+    // A single transient read used to be able to outlast three 1s-spaced attempts (REL-2712); back off
+    // geometrically so a rate-limited or slow Durable Object read gets the rest of the paused deadline.
+    await sleep(Math.min(delayMs * 2 ** (attempt - 1), maxDelayMs));
     if (!options.hasTimeLeft()) break;
     receipt = await options.read();
   }
