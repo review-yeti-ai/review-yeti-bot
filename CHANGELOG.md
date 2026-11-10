@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.137.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.137.1...v1.137.2) (2026-11-10)
+
+
+### Bug Fixes
+
+* **merge-group:** back off transient receipt reads across the paused deadline ([#1542](https://github.com/review-yeti-ai/review-yeti-bot/issues/1542)) ([afc60e1](https://github.com/review-yeti-ai/review-yeti-bot/commit/afc60e17aefefdd922fcbb936f6b512ea289dbde))
+
 ## [1.137.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.137.0...v1.137.1) (2026-11-06)
 
 
