@@ -1,4 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import ts from 'typescript';
@@ -8,6 +10,7 @@ import {
   REAPER_ACCEPTANCE,
   changedFiles,
   fullSuiteTrigger,
+  isPureReleaseVersionBump,
   literalText,
   parseNameStatus,
   isPostgresFile,
@@ -76,6 +79,63 @@ describe('CI incremental test selection (REL-1074)', () => {
     it('refuses a floating ref or an unknown commit as the base', () => {
       expect(() => changedFiles('main', 'HEAD')).toThrow(/full commit SHA/u);
       expect(() => changedFiles('0'.repeat(40), 'HEAD')).toThrow();
+    });
+
+    it('identifies pure release version bumps and ignores non-release changes', () => {
+      // The predicate shells out to git, so give it a small repository of its own: a CI checkout may
+      // be shallow, and the commit range under test must not depend on the runner's clone depth.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-bump-'));
+      const run = (args: string[]) => execFileSync('git', args, {
+        cwd: dir,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'fixture', GIT_AUTHOR_EMAIL: 'fixture@example.com',
+          GIT_COMMITTER_NAME: 'fixture', GIT_COMMITTER_EMAIL: 'fixture@example.com',
+        },
+      });
+      const write = (version: string, description = 'fixture') => {
+        fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify({ name: 'fixture', version, description }, null, 2)}\n`);
+        fs.writeFileSync(path.join(dir, 'package-lock.json'), `${JSON.stringify({
+          name: 'fixture', version, lockfileVersion: 3, packages: { '': { name: 'fixture', version } },
+        }, null, 2)}\n`);
+        fs.writeFileSync(path.join(dir, '.release-please-manifest.json'), `${JSON.stringify({ '.': version })}\n`);
+        fs.writeFileSync(path.join(dir, 'CHANGELOG.md'), `# Changelog\n\n## ${version}\n`);
+      };
+      try {
+        run(['init', '-q']);
+        write('1.0.0');
+        run(['add', '-A']);
+        run(['commit', '-q', '-m', 'chore: baseline']);
+        const parentCommit = run(['rev-parse', 'HEAD']).trim();
+
+        write('1.0.1');
+        run(['add', '-A']);
+        run(['commit', '-q', '-m', 'chore: release 1.0.1']);
+        const releaseCommit = run(['rev-parse', 'HEAD']).trim();
+
+        expect(isPureReleaseVersionBump(['src/index.ts'], parentCommit, releaseCommit, dir)).toBe(false);
+        expect(isPureReleaseVersionBump(['package.json', 'src/a.ts'], parentCommit, releaseCommit, dir)).toBe(false);
+        expect(isPureReleaseVersionBump(
+          ['package.json', 'package-lock.json', 'CHANGELOG.md', '.release-please-manifest.json'],
+          parentCommit,
+          releaseCommit,
+          dir,
+        )).toBe(true);
+
+        write('1.0.1', 'not a release bump');
+        run(['add', '-A']);
+        run(['commit', '-q', '-m', 'chore: change metadata']);
+        const metadataCommit = run(['rev-parse', 'HEAD']).trim();
+        expect(isPureReleaseVersionBump(
+          ['package.json', 'package-lock.json', 'CHANGELOG.md', '.release-please-manifest.json'],
+          releaseCommit,
+          metadataCommit,
+          dir,
+        )).toBe(false);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 

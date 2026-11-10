@@ -111,8 +111,8 @@ function parseArgs(argv) {
   return args;
 }
 
-function git(args) {
-  return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+function git(args, cwd = repoRoot) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
 
 /** Parse `git diff --name-status -z` output; a rename or copy contributes both of its paths. */
@@ -147,6 +147,27 @@ export function fullSuiteTrigger(file) {
     if (pattern.test(file)) return reason;
   }
   return null;
+}
+
+export function isPureReleaseVersionBump(changed, base, head, cwd = repoRoot) {
+  const allowedFiles = new Set(['package.json', 'package-lock.json', 'CHANGELOG.md', '.release-please-manifest.json']);
+  if (!changed.every((file) => allowedFiles.has(file))) return false;
+  if (!changed.some((file) => file === 'package.json' || file === '.release-please-manifest.json')) return false;
+
+  for (const pkgFile of ['package.json', 'package-lock.json']) {
+    if (changed.includes(pkgFile)) {
+      try {
+        const diff = git(['diff', '-U0', base, head, '--', pkgFile], cwd);
+        const changedLines = diff.split('\n').filter((l) => /^[+-]/.test(l) && !/^(?:\+\+\+|---)/.test(l));
+        if (changedLines.length === 0) return false;
+        const allVersion = changedLines.every((l) => /^[+-]\s*"version":\s*"[^"]+",?$/.test(l));
+        if (!allVersion) return false;
+      } catch {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 function escapeRegExp(text) {
@@ -349,6 +370,15 @@ async function main() {
     if (changed.length === 0) {
       plan.mode = 'none';
       plan.reason = 'zero changed files against merge base; all tests fresh';
+      plan.tests = [];
+      plan.postgresTests = [];
+      plan.reaperAcceptance = false;
+      return;
+    }
+
+    if (isPureReleaseVersionBump(changed, base, args.head)) {
+      plan.mode = 'none';
+      plan.reason = 'release version bump: tests fresh';
       plan.tests = [];
       plan.postgresTests = [];
       plan.reaperAcceptance = false;
