@@ -111,8 +111,8 @@ function parseArgs(argv) {
   return args;
 }
 
-function git(args) {
-  return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+function git(args, cwd = repoRoot) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
 
 /** Parse `git diff --name-status -z` output; a rename or copy contributes both of its paths. */
@@ -149,7 +149,7 @@ export function fullSuiteTrigger(file) {
   return null;
 }
 
-export function isPureReleaseVersionBump(changed, base, head) {
+export function isPureReleaseVersionBump(changed, base, head, cwd = repoRoot) {
   const allowedFiles = new Set(['package.json', 'package-lock.json', 'CHANGELOG.md', '.release-please-manifest.json']);
   if (!changed.every((file) => allowedFiles.has(file))) return false;
   if (!changed.some((file) => file === 'package.json' || file === '.release-please-manifest.json')) return false;
@@ -157,7 +157,7 @@ export function isPureReleaseVersionBump(changed, base, head) {
   for (const pkgFile of ['package.json', 'package-lock.json']) {
     if (changed.includes(pkgFile)) {
       try {
-        const diff = git(['diff', '-U0', base, head, '--', pkgFile]);
+        const diff = git(['diff', '-U0', base, head, '--', pkgFile], cwd);
         const changedLines = diff.split('\n').filter((l) => /^[+-]/.test(l) && !/^(?:\+\+\+|---)/.test(l));
         if (changedLines.length === 0) return false;
         const allVersion = changedLines.every((l) => /^[+-]\s*"version":\s*"[^"]+",?$/.test(l));
