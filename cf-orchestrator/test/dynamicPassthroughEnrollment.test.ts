@@ -48,13 +48,13 @@ async function createPassthroughTestEnv(target: { owner: string; repo: string; r
     DEFAULT_WORKER_IMAGE: 'test',
     OPERATOR_GLOBAL_PASSTHROUGH: 'true',
     OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES: JSON.stringify([
-      { repositoryId: 1131452104, owner: 'calltelemetry', repo: 'ai-workspace' },
+      { repositoryId: 1131452104, owner: 'example-org', repo: 'static-service' },
       { repositoryId: 1326169548, owner: 'review-yeti-ai', repo: 'review-yeti-bot' },
     ]),
     OPERATOR_PASSTHROUGH_POLICY_SOURCE: JSON.stringify({
       repositoryId: 1339040553,
-      owner: 'calltelemetry',
-      repo: 'ct-review-actions',
+      owner: 'example-org',
+      repo: 'policy-source',
       ref: 'main',
       path: 'policy/review-yeti.json',
     }),
@@ -104,7 +104,7 @@ async function createPassthroughTestEnv(target: { owner: string; repo: string; r
     if (method === 'GET' && path === `/repos/${target.owner}/${target.repo}/installation`) {
       return jsonResponse({ id: 11 });
     }
-    if (method === 'GET' && path === '/repos/calltelemetry/ct-review-actions/installation') {
+    if (method === 'GET' && path === '/repos/example-org/policy-source/installation') {
       return jsonResponse({ id: 22 });
     }
     if (method === 'POST' && (path === '/app/installations/11/access_tokens' || path === '/app/installations/22/access_tokens')) {
@@ -136,19 +136,19 @@ async function createPassthroughTestEnv(target: { owner: string; repo: string; r
         head: { sha: target.headSha },
       });
     }
-    if (method === 'GET' && path === '/repos/calltelemetry/ct-review-actions') {
+    if (method === 'GET' && path === '/repos/example-org/policy-source') {
       return jsonResponse({
         id: 1339040553,
-        full_name: 'calltelemetry/ct-review-actions',
+        full_name: 'example-org/policy-source',
         default_branch: 'main',
       });
     }
-    if (method === 'GET' && path === '/repos/calltelemetry/ct-review-actions/commits/main') {
+    if (method === 'GET' && path === '/repos/example-org/policy-source/commits/main') {
       return jsonResponse({ sha: '1111111111111111111111111111111111111111' });
     }
-    if (method === 'GET' && path === '/repos/calltelemetry/ct-review-actions/contents/policy/review-yeti.json') {
+    if (method === 'GET' && path === '/repos/example-org/policy-source/contents/policy/review-yeti.json') {
       const policyContent = JSON.stringify({
-        schema: 'calltelemetry.review-policy.v1',
+        schema: 'example-org.review-policy.v1',
         review_yeti: {
           personas: 'architecture,security',
           profile: 'assertive',
@@ -212,15 +212,15 @@ describe('Dynamic Passthrough Enrollment Engine', () => {
   it('resolves both static identities and dynamically enrolled repositories', async () => {
     const env = {
       OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES: JSON.stringify([
-        { repositoryId: 1131452104, owner: 'calltelemetry', repo: 'ai-workspace' },
+        { repositoryId: 1131452104, owner: 'example-org', repo: 'static-service' },
       ]),
     } as unknown as Env;
 
-    // Enroll ct-infrastructure dynamically into inMemoryStore
+    // Enroll dynamic-service dynamically into inMemoryStore
     inMemoryStore.saveRepository({
-      id: 'calltelemetry/ct-infrastructure',
-      owner: 'calltelemetry',
-      repo: 'ct-infrastructure',
+      id: 'example-org/dynamic-service',
+      owner: 'example-org',
+      repo: 'dynamic-service',
       repositoryId: 1355159090,
       defaultBranch: 'main',
       automationEnabled: true,
@@ -233,21 +233,21 @@ describe('Dynamic Passthrough Enrollment Engine', () => {
 
     const identities = await resolveRepositoryIdentities(env);
     const names = identities.map((i) => `${i.owner}/${i.repo}`).sort();
-    assert.ok(names.includes('calltelemetry/ai-workspace'));
-    assert.ok(names.includes('calltelemetry/ct-infrastructure'));
+    assert.ok(names.includes('example-org/static-service'));
+    assert.ok(names.includes('example-org/dynamic-service'));
   });
 
   it('excludes repositories from passthrough when passthrough_enabled is false', async () => {
     const env = {
       OPERATOR_PASSTHROUGH_REPOSITORY_IDENTITIES: JSON.stringify([
-        { repositoryId: 1131452104, owner: 'calltelemetry', repo: 'ai-workspace' },
+        { repositoryId: 1131452104, owner: 'example-org', repo: 'static-service' },
       ]),
     } as unknown as Env;
 
     inMemoryStore.saveRepository({
-      id: 'calltelemetry/ct-disabled-passthrough',
-      owner: 'calltelemetry',
-      repo: 'ct-disabled-passthrough',
+      id: 'example-org/disabled-service',
+      owner: 'example-org',
+      repo: 'disabled-service',
       repositoryId: 99999999,
       defaultBranch: 'main',
       automationEnabled: true,
@@ -260,13 +260,13 @@ describe('Dynamic Passthrough Enrollment Engine', () => {
 
     const identities = await resolveRepositoryIdentities(env);
     const names = identities.map((i) => `${i.owner}/${i.repo}`);
-    assert.ok(!names.includes('calltelemetry/ct-disabled-passthrough'));
+    assert.ok(!names.includes('example-org/disabled-service'));
   });
 
-  it('rejects ct-uat before enrollment, and successfully publishes SHIP checks after dynamic onboarding', async () => {
+  it('rejects an unenrolled repository before enrollment, and successfully publishes SHIP checks after dynamic onboarding', async () => {
     const ctUatTarget = {
-      owner: 'calltelemetry',
-      repo: 'ct-uat',
+      owner: 'example-org',
+      repo: 'onboarded-service',
       repositoryId: 1399887766,
       prNumber: 1675,
       headSha: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
@@ -275,7 +275,7 @@ describe('Dynamic Passthrough Enrollment Engine', () => {
 
     const { env, fetchFn } = await createPassthroughTestEnv(ctUatTarget);
 
-    // 1. Before enrollment: ct-uat is rejected with repository_not_enrolled
+    // 1. Before enrollment: onboarded-service is rejected with repository_not_enrolled
     const beforeResult = await publishOperatorPassthroughForTarget(env, {
       owner: ctUatTarget.owner,
       repo: ctUatTarget.repo,
@@ -286,8 +286,8 @@ describe('Dynamic Passthrough Enrollment Engine', () => {
     assert.equal(beforeResult.errorCode, 'repository_not_enrolled');
     assert.equal(beforeResult.mergeEligible, false);
 
-    // 2. Onboard ct-uat dynamically via storage layer (mimicking POST /api/settings/repos)
-    await updateRepositoryInDb(env.DB, 'calltelemetry', 'ct-uat', {
+    // 2. Onboard onboarded-service dynamically via storage layer (mimicking POST /api/settings/repos)
+    await updateRepositoryInDb(env.DB, 'example-org', 'onboarded-service', {
       repositoryId: ctUatTarget.repositoryId,
       passthroughEnabled: true,
       automationEnabled: true,
@@ -306,8 +306,8 @@ describe('Dynamic Passthrough Enrollment Engine', () => {
     assert.equal(afterResult.publicationState, 'published');
     assert.ok(afterResult.workerCheckId);
     assert.ok(afterResult.gateCheckId);
-    assert.equal(afterResult.owner, 'calltelemetry');
-    assert.equal(afterResult.repo, 'ct-uat');
+    assert.equal(afterResult.owner, 'example-org');
+    assert.equal(afterResult.repo, 'onboarded-service');
     assert.equal(afterResult.prNumber, 1675);
 
     // 4. Verify readback also succeeds

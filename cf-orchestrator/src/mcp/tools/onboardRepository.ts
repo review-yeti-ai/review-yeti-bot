@@ -12,11 +12,11 @@ export const onboardRepositoryTool: McpToolHandler = {
       properties: {
         owner: {
           type: 'string',
-          description: 'Repository owner or organization name (e.g. "calltelemetry")',
+          description: 'Repository owner or organization name (e.g. "example-org")',
         },
         repo: {
           type: 'string',
-          description: 'Repository name (e.g. "ct-uat")',
+          description: 'Repository name (e.g. "onboarded-service")',
         },
         repositoryId: {
           type: 'number',

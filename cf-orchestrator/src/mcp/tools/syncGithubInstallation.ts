@@ -21,7 +21,7 @@ export const syncGithubInstallationTool: McpToolHandler = {
         },
         organization: {
           type: 'string',
-          description: 'Optional organization login fallback if GitHub API is unreachable (e.g. "calltelemetry")',
+          description: 'Optional organization login fallback if GitHub API is unreachable (e.g. "example-org")',
         },
         organizationName: {
           type: 'string',
@@ -30,7 +30,7 @@ export const syncGithubInstallationTool: McpToolHandler = {
         repositories: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Optional list of repository full names (e.g. ["calltelemetry/ct-uat"]) to sync if GitHub API is unreachable',
+          description: 'Optional list of repository full names (e.g. ["example-org/onboarded-service"]) to sync if GitHub API is unreachable',
         },
         passthroughEnabled: {
           type: 'boolean',

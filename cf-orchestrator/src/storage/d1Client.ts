@@ -5,7 +5,7 @@ import { SAMPLE_REPO_CDR, SAMPLE_REPO_META, SAMPLE_REPO_CDR_SLUG, SAMPLE_REPO_ME
  */
 
 export interface OrganizationRecord {
-  id: string; // lowercase organization owner slug (e.g. "calltelemetry")
+  id: string; // lowercase organization owner slug (e.g. "example-org")
   name: string;
   installationId?: number;
   appId?: number;

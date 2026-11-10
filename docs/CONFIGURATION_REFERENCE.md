@@ -810,7 +810,7 @@ Enterprise deployments on Cloudflare Workers utilize **Cloudflare D1** to dynami
 ### Schema Attributes in D1
 
 #### Organization Settings (`organizations` table)
-- `id`: Lowercase organization owner login (e.g. `calltelemetry`, `example-org`).
+- `id`: Lowercase organization owner login (e.g. `example-org`, `example-org`).
 - `name`: Human-readable display name.
 - `installation_id`: GitHub App installation numeric ID.
 - `app_id`: Service-owned GitHub App ID (default `4385771`).

@@ -11,7 +11,7 @@ export const onboardOrganizationTool: McpToolHandler = {
       properties: {
         org: {
           type: 'string',
-          description: 'GitHub organization login or account name (e.g. "calltelemetry")',
+          description: 'GitHub organization login or account name (e.g. "example-org")',
         },
         displayName: {
           type: 'string',

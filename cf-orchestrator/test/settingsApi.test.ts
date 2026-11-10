@@ -201,7 +201,7 @@ describe('Settings & Onboarding API (/api/settings/*)', () => {
   });
 
   describe('Repository CRUD (/api/settings/repos)', () => {
-    const testOwner = 'calltelemetry';
+    const testOwner = 'example-org';
     const testRepo = 'ct-billing';
 
     it('enrolls a repository via POST /api/settings/repos', async () => {
@@ -312,9 +312,9 @@ describe('Settings & Onboarding API (/api/settings/*)', () => {
       const env = createMockEnv();
       const payload = {
         repositories: [
-          { owner: 'calltelemetry', repo: 'bulk-repo-1', repositoryId: 1001, passthroughEnabled: true },
-          { owner: 'calltelemetry', repo: 'bulk-repo-2', repositoryId: 1002, passthroughEnabled: false },
-          { owner: 'calltelemetry', repo: 'bulk-repo-3', repositoryId: 1003, passthroughEnabled: true },
+          { owner: 'example-org', repo: 'bulk-repo-1', repositoryId: 1001, passthroughEnabled: true },
+          { owner: 'example-org', repo: 'bulk-repo-2', repositoryId: 1002, passthroughEnabled: false },
+          { owner: 'example-org', repo: 'bulk-repo-3', repositoryId: 1003, passthroughEnabled: true },
         ],
       };
 
@@ -331,12 +331,12 @@ describe('Settings & Onboarding API (/api/settings/*)', () => {
       assert.equal(body.count, 3);
 
       // Verify enrolled in storage
-      const repo1 = inMemoryStore.getRepository('calltelemetry', 'bulk-repo-1');
+      const repo1 = inMemoryStore.getRepository('example-org', 'bulk-repo-1');
       assert.ok(repo1);
       assert.equal(repo1.repositoryId, 1001);
       assert.equal(repo1.passthroughEnabled, true);
 
-      const repo2 = inMemoryStore.getRepository('calltelemetry', 'bulk-repo-2');
+      const repo2 = inMemoryStore.getRepository('example-org', 'bulk-repo-2');
       assert.ok(repo2);
       assert.equal(repo2.repositoryId, 1002);
       assert.equal(repo2.passthroughEnabled, false);
@@ -386,7 +386,7 @@ describe('Settings & Onboarding API (/api/settings/*)', () => {
         params: {
           name: 'review_yeti_onboard_repository',
           arguments: {
-            owner: 'calltelemetry',
+            owner: 'example-org',
             repo: 'mcp-managed-repo',
             repositoryId: 77889900,
             passthroughEnabled: true,
@@ -409,7 +409,7 @@ describe('Settings & Onboarding API (/api/settings/*)', () => {
       const textItem = body.result.content?.find((c: any) => c.text?.includes('Repository Onboarded'));
       assert.ok(textItem);
 
-      const saved = inMemoryStore.getRepository('calltelemetry', 'mcp-managed-repo');
+      const saved = inMemoryStore.getRepository('example-org', 'mcp-managed-repo');
       assert.ok(saved);
       assert.equal(saved.repositoryId, 77889900);
       assert.equal(saved.customProfile, 'balanced');
@@ -424,8 +424,7 @@ describe('Settings & Onboarding API (/api/settings/*)', () => {
         params: {
           name: 'review_yeti_update_repository_settings',
           arguments: {
-            owner: 'calltelemetry',
-            repo: 'mcp-managed-repo',
+            repo: 'example-org/mcp-managed-repo',
             customProfile: 'assertive',
             automationEnabled: false,
           },
@@ -444,7 +443,7 @@ describe('Settings & Onboarding API (/api/settings/*)', () => {
       assert.equal(body.jsonrpc, '2.0');
       assert.ok(!body.error);
 
-      const updated = inMemoryStore.getRepository('calltelemetry', 'mcp-managed-repo');
+      const updated = inMemoryStore.getRepository('example-org', 'mcp-managed-repo');
       assert.ok(updated);
       assert.equal(updated.customProfile, 'assertive');
       assert.equal(updated.automationEnabled, false);
@@ -521,7 +520,7 @@ describe('Settings & Onboarding API (/api/settings/*)', () => {
       const jsonItem = body.result.content?.find((c: any) => {
         try {
           const parsed = JSON.parse(c.text);
-          return parsed.ok && typeof parsed.totalOrganizations === 'number';
+          return parsed.success === true && Array.isArray(parsed.steps);
         } catch {
           return false;
         }
@@ -558,7 +557,7 @@ describe('Settings & Onboarding API (/api/settings/*)', () => {
       const jsonItem = body.result.content?.find((c: any) => {
         try {
           const parsed = JSON.parse(c.text);
-          return parsed.ok && Array.isArray(parsed.repositories);
+          return parsed.success === true && Array.isArray(parsed.repositories);
         } catch {
           return false;
         }
