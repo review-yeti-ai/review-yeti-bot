@@ -10,12 +10,19 @@ import { Step3AIProviders } from '@/components/onboarding/steps/step-3-ai-provid
 import * as apiClient from '@/lib/api-client';
 
 vi.mock('@/lib/api-client', () => ({
+fetchGitHubInstallUrl: vi.fn().mockResolvedValue({ success: true, slug: 'review-yeti-bot', url: 'https://github.com/apps/review-yeti-bot/installations/new' }),
   fetchGitHubAppConfig: vi.fn(), updateGitHubAppConfig: vi.fn().mockResolvedValue({}),
   verifyGitHubApp: vi.fn().mockResolvedValue({ success: true }),
   fetchRepositories: vi.fn(), updateRepository: vi.fn().mockResolvedValue({}), createRepository: vi.fn().mockResolvedValue({}),
   fetchProviders: vi.fn(), updateProvider: vi.fn().mockResolvedValue({}), testProvider: vi.fn().mockResolvedValue({ success: true }),
   fetchPersonas: vi.fn(), updatePersona: vi.fn().mockResolvedValue({}), runDiagnosticScan: vi.fn(),
 }));
+
+
+function revealAdvancedCredentials(): void {
+  const toggle = screen.queryByRole('button', { name: /Advanced: Configure Self-Hosted GitHub App Credentials/i });
+  if (toggle) fireEvent.click(toggle);
+}
 
 const unconfigured = { appId: '', installationId: '', webhookSecretConfigured: false, privateKeyConfigured: false, status: 'unconfigured' as const, updatedAt: '' };
 
@@ -35,6 +42,7 @@ describe('public onboarding defaults', () => {
 
   it('never invents credentials or repositories before or after loading an empty store', async () => {
     render(<FiveStepWizard />);
+    revealAdvancedCredentials();
     expect(screen.getByPlaceholderText('e.g. 1048293')).toHaveValue('');
     expect(screen.getByPlaceholderText('e.g. 5829104')).toHaveValue('');
     expect(screen.getByPlaceholderText('whsec_...')).toHaveValue('');
@@ -50,6 +58,7 @@ describe('public onboarding defaults', () => {
     vi.mocked(apiClient.fetchGitHubAppConfig).mockResolvedValue({ ...unconfigured, appId: '9001', installationId: '9002', status: 'configured', privateKeyConfigured: true });
     vi.mocked(apiClient.fetchRepositories).mockResolvedValue([{ owner: 'operator-org', repo: 'configured-service', automationEnabled: true, customProfile: 'balanced', updatedAt: '' }]);
     render(<FiveStepWizard />);
+    revealAdvancedCredentials();
     await waitFor(() => expect(screen.getByPlaceholderText('e.g. 1048293')).toHaveValue('9001'));
     expect(screen.getByPlaceholderText('e.g. 5829104')).toHaveValue('9002');
     fireEvent.click(screen.getByRole('button', { name: /Next Step: Step 2/i }));
@@ -64,6 +73,7 @@ describe('public onboarding defaults', () => {
   ] as const)('reports only the failed %s loader without substituting sample credentials', async (name, loader) => {
     vi.mocked(loader).mockRejectedValue(new Error('unavailable'));
     render(<FiveStepWizard />);
+    revealAdvancedCredentials();
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(`Could not load ${name}. Sync Store to retry; no sample configuration has been substituted.`));
     const alert = screen.getByRole('alert');
     for (const other of ['GitHub App configuration', 'repositories', 'AI providers', 'personas']) {
@@ -78,6 +88,7 @@ describe('public onboarding defaults', () => {
       throw new Error('synchronous loader failure');
     });
     render(<FiveStepWizard />);
+    revealAdvancedCredentials();
 
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(
       'Could not load onboarding settings. Sync Store to retry; no sample configuration has been substituted.',
@@ -109,6 +120,7 @@ describe('public onboarding defaults', () => {
     expect(apiClient.fetchGitHubAppConfig).toHaveBeenCalledTimes(2);
     expect(apiClient.fetchRepositories).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole('button', { name: /Previous Step/i }));
+    revealAdvancedCredentials();
     expect(screen.getByPlaceholderText('e.g. 1048293')).toHaveValue('9001');
     expect(screen.getByPlaceholderText('e.g. 5829104')).toHaveValue('9002');
     expect(screen.getByPlaceholderText('whsec_...')).toHaveValue('');
@@ -118,6 +130,7 @@ describe('public onboarding defaults', () => {
 
   it('does not report a load error for successfully loaded empty settings', async () => {
     render(<FiveStepWizard />);
+    revealAdvancedCredentials();
     await waitFor(() => expect(screen.getByRole('button', { name: /Sync Store/i })).toBeEnabled());
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByPlaceholderText('e.g. 1048293')).toHaveValue('');
@@ -149,6 +162,7 @@ describe('public onboarding defaults', () => {
 
   it('honors a configured webhook even when its secret is not yet configured', () => {
     render(<Step1GitHubApp config={{ ...unconfigured, webhookUrl: 'https://operator.example.com/hooks/github' } as any} onUpdateConfig={vi.fn()} onVerify={vi.fn()} />);
+    revealAdvancedCredentials();
     expect(screen.getByDisplayValue('https://operator.example.com/hooks/github')).toBeInTheDocument();
   });
 

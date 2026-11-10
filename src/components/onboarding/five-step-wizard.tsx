@@ -23,6 +23,8 @@ import {
   fetchPersonas,
   updatePersona,
   runDiagnosticScan,
+  syncGitHubInstallation,
+  bulkSaveRepositories,
 } from '@/lib/api-client';
 import {
   GitHubAppConfig,
@@ -37,6 +39,7 @@ export function FiveStepWizard() {
   const [loading, setLoading] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [finishSuccess, setFinishSuccess] = React.useState(false);
+  const [syncNotification, setSyncNotification] = React.useState<string | null>(null);
 
   // State data for 5 steps
   const [appConfig, setAppConfig] = React.useState<Partial<GitHubAppConfig>>({
@@ -95,6 +98,36 @@ export function FiveStepWizard() {
 
   React.useEffect(() => {
     loadWizardData();
+
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const urlInstId = params.get('installation_id');
+      const action = params.get('setup_action');
+
+      if (urlInstId) {
+        setAppConfig((prev) => ({
+          ...prev,
+          installationId: urlInstId,
+          status: 'configured',
+        }));
+
+        syncGitHubInstallation(urlInstId)
+          .then((res) => {
+            if (res?.repositories && res.repositories.length > 0) {
+              setRepositories(res.repositories);
+              const orgName = res.organization?.name || res.organization?.id || 'Connected Org';
+              setSyncNotification(
+                `GitHub Organization "${orgName}" successfully synced! Discovered ${res.repositories.length} repositories.`
+              );
+              if (action === 'install') {
+                setCurrentStep(2);
+                setCompletedSteps((prev) => (prev.includes(1) ? prev : [...prev, 1]));
+              }
+            }
+          })
+          .catch(() => {});
+      }
+    }
   }, [loadWizardData]);
 
   // Step 1 actions
@@ -169,6 +202,9 @@ export function FiveStepWizard() {
 
   // Navigation handlers
   const handleNext = () => {
+    if (currentStep === 2 && repositories.length > 0) {
+      bulkSaveRepositories(repositories).catch(() => {});
+    }
     if (!completedSteps.includes(currentStep)) {
       setCompletedSteps((prev) => [...prev, currentStep]);
     }
@@ -194,6 +230,22 @@ export function FiveStepWizard() {
           completedSteps={completedSteps}
           onStepClick={(step) => setCurrentStep(step)}
         />
+
+        {/* Sync Notification Banner */}
+        {syncNotification && (
+          <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-3.5 flex items-center justify-between text-xs text-indigo-300">
+            <div className="flex items-center gap-2.5">
+              <Sparkles className="h-4 w-4 text-indigo-400 shrink-0" />
+              <span>{syncNotification}</span>
+            </div>
+            <button
+              onClick={() => setSyncNotification(null)}
+              className="text-muted-foreground hover:text-foreground text-[10px] underline ml-2"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {/* Step Component Content */}
         {loadError && (

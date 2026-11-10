@@ -15,6 +15,7 @@ import { CostEstimatorCard } from '@/components/onboarding/cost-estimator-card';
 import * as apiClient from '@/lib/api-client';
 
 vi.mock('@/lib/api-client', () => ({
+fetchGitHubInstallUrl: vi.fn().mockResolvedValue({ success: true, slug: 'review-yeti-bot', url: 'https://github.com/apps/review-yeti-bot/installations/new' }),
   fetchGitHubAppConfig: vi.fn().mockResolvedValue({ appId: '1048293', status: 'configured' }),
   updateGitHubAppConfig: vi.fn().mockResolvedValue({ appId: '1048293' }),
   verifyGitHubApp: vi.fn().mockResolvedValue({ success: true, verified: true }),
@@ -58,6 +59,7 @@ describe('FiveStepWizard Component Suite', () => {
         onVerify={onVerify}
       />
     );
+    fireEvent.click(screen.getByRole('button', { name: /Advanced: Configure Self-Hosted GitHub App Credentials/i }));
 
     expect(screen.getByText(/Step 1: GitHub Organization Connection/i)).toBeInTheDocument();
     expect(screen.getByDisplayValue('1048293')).toBeInTheDocument();
