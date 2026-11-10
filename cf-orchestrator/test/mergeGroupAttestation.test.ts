@@ -2120,4 +2120,21 @@ describe('paused passthrough receipt read retry', () => {
     assert.equal(reads, 1);
     assert.equal(receipt.errorCode, 'durable_state_unavailable');
   });
+
+  it('backs off geometrically up to the cap while a transient miss persists', async () => {
+    const sleeps: number[] = [];
+    let reads = 0;
+    const receipt = await readPassthroughReceiptWithRetry({
+      read: async () => { reads += 1; return failed('check_readback_unavailable'); },
+      accepted: (r) => passthroughReceiptAccepted(r, 'exampleorg', 'sample-repo', HEAD),
+      hasTimeLeft: () => true,
+      attempts: 5,
+      delayMs: 100,
+      maxDelayMs: 250,
+      sleep: async (ms) => { sleeps.push(ms); },
+    });
+    assert.deepEqual(sleeps, [100, 200, 250, 250]);
+    assert.equal(reads, 5);
+    assert.equal(receipt.errorCode, 'check_readback_unavailable');
+  });
 });
