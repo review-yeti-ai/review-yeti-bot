@@ -970,7 +970,7 @@ async function sha256Hex(value: string): Promise<string> {
 
 async function fetchRepositoryId(
   owner: string, repo: string, token: string, fetchFn: typeof fetch,
-): Promise<string | null> {
+): Promise<{ id: string } | { error: string }> {
   try {
     const res = await fetchFn(`https://api.github.com/repos/${owner}/${repo}`, {
       headers: {
@@ -979,12 +979,12 @@ async function fetchRepositoryId(
         'User-Agent': 'ReviewYeti-Edge-Orchestrator',
       },
     });
-    if (!res.ok) return null;
+    if (!res.ok) return { error: `repository lookup failed (HTTP ${res.status})` };
     const data = await res.json() as { id?: unknown };
     return typeof data.id === 'number' && Number.isSafeInteger(data.id) && data.id > 0
-      ? String(data.id) : null;
-  } catch {
-    return null;
+      ? { id: String(data.id) } : { error: 'repository lookup returned no usable id' };
+  } catch (err: any) {
+    return { error: `repository lookup error: ${String(err?.message || err).slice(0, 120)}` };
   }
 }
 
@@ -997,15 +997,21 @@ export async function publishMergeGroupCheckRun(params: {
   title: string;
   summary: string;
   fetchFn?: typeof fetch;
+  /** Repository id already authenticated by the webhook payload. Avoids a second GitHub read that can fail on its own. */
+  repositoryId?: string;
 }): Promise<{ success: boolean; checkRunId?: number; error?: string }> {
   const { owner, repo, headSha, token, conclusion, title, summary, fetchFn = fetch } = params;
   const endpoint = `https://api.github.com/repos/${owner}/${repo}/check-runs`;
 
   // ADR 0808: the queue consumer accepts only the service-published v2 id.
   // Bind the repository and the attested summary into the snapshot digest.
-  const repositoryId = await fetchRepositoryId(owner, repo, token, fetchFn);
+  let repositoryId = params.repositoryId;
   if (!repositoryId) {
-    return { success: false, error: 'repository identity unavailable' };
+    const lookup = await fetchRepositoryId(owner, repo, token, fetchFn);
+    if ('error' in lookup) {
+      return { success: false, error: `repository identity unavailable: ${lookup.error}` };
+    }
+    repositoryId = lookup.id;
   }
   const snapshotDigest = await sha256Hex(`${headSha}\n${summary}`);
 
@@ -1070,6 +1076,7 @@ async function createBlockedOutcome(params: {
   fetchFn?: typeof fetch;
   skipPublish?: boolean;
   checkRunError?: string;
+  repositoryId?: string;
 }): Promise<AttestationOutcome> {
   const {
     owner,
@@ -1097,6 +1104,7 @@ async function createBlockedOutcome(params: {
       title: ATTESTATION_CHECK_TITLE,
       summary,
       fetchFn,
+      repositoryId: params.repositoryId,
     });
     checkRunId = pubRes.checkRunId;
     checkRunError = pubRes.error;
@@ -1239,10 +1247,13 @@ export async function handleMergeGroupAttestation(
     throw new Error('Configuration error: GitHub token unavailable for merge-group attestation');
   }
   const repoIdentityId = Number(repository.id);
+  // The webhook payload (HMAC-verified at ingress) already carries the repository id; use it for every
+  // check publication below instead of a separate GitHub read that can fail independently.
+  const knownRepositoryId = Number.isSafeInteger(repoIdentityId) && repoIdentityId > 0 ? String(repoIdentityId) : undefined;
   let expectedApp: number;
   try { expectedApp = reviewAppIdForRepository({ repositoryId: repoIdentityId, owner, repo }); }
   catch {
-    return await createBlockedOutcome({
+    return await createBlockedOutcome({ repositoryId: knownRepositoryId,
       owner, repo, headSha, token,
       summary: 'Merge group attestation blocked: repository ID/name does not match the service-owned Review Yeti App authority map.',
       fetchFn,
@@ -1250,7 +1261,7 @@ export async function handleMergeGroupAttestation(
   }
   const isPublicSelfReviewRepository = expectedApp === PUBLIC_REVIEW_APP_ID;
   if (!isPublicSelfReviewRepository && repoIdentityId === PUBLIC_REVIEW_REPOSITORY_ID) {
-    return await createBlockedOutcome({
+    return await createBlockedOutcome({ repositoryId: knownRepositoryId,
       owner, repo, headSha, token,
       summary: 'Merge group attestation blocked: repository ID/name does not match the service-owned Review Yeti App authority map.',
       fetchFn,
@@ -1280,7 +1291,7 @@ export async function handleMergeGroupAttestation(
     }
   };
   if (!await publicSelfRepositoryStillMatches()) {
-    return await createBlockedOutcome({
+    return await createBlockedOutcome({ repositoryId: knownRepositoryId,
       owner, repo, headSha, token,
       summary: 'Merge group attestation blocked: current public self-repository visibility or App identity could not be verified.',
       fetchFn,
@@ -1291,7 +1302,7 @@ export async function handleMergeGroupAttestation(
   const currentPrNumber = extractPrNumberFromHeadRef(headRef);
 
   if (!baseBranch || !currentPrNumber) {
-    return await createBlockedOutcome({
+    return await createBlockedOutcome({ repositoryId: knownRepositoryId,
       owner,
       repo,
       headSha,
@@ -1312,7 +1323,7 @@ export async function handleMergeGroupAttestation(
   });
 
   if (!queueResult.passed) {
-    return await createBlockedOutcome({
+    return await createBlockedOutcome({ repositoryId: knownRepositoryId,
       owner,
       repo,
       headSha,
@@ -1354,7 +1365,7 @@ export async function handleMergeGroupAttestation(
 
   for (const res of checkResults) {
     if (!res.verification.passed) {
-      return await createBlockedOutcome({
+      return await createBlockedOutcome({ repositoryId: knownRepositoryId,
         owner,
         repo,
         headSha,
@@ -1379,7 +1390,7 @@ export async function handleMergeGroupAttestation(
   });
 
   if (!hazardResult.passed) {
-    return await createBlockedOutcome({
+    return await createBlockedOutcome({ repositoryId: knownRepositoryId,
       owner,
       repo,
       headSha,
@@ -1423,7 +1434,7 @@ export async function handleMergeGroupAttestation(
       for (const pr of constituentPrs) {
         const remaining = Math.floor(deadline - performance.now());
         if (remaining <= 0 || controller.signal.aborted) {
-          return await createBlockedOutcome({
+          return await createBlockedOutcome({ repositoryId: knownRepositoryId,
             owner, repo, headSha, token,
             summary: 'Merge group attestation blocked: current paused-publication verification exceeded its 15 second deadline.',
             constituentPrs: constituentPrs.map((p) => p.number),
@@ -1445,7 +1456,7 @@ export async function handleMergeGroupAttestation(
           hasTimeLeft: () => Math.floor(deadline - performance.now()) >= 1 && !controller.signal.aborted,
         });
         if (!passthroughReceiptAccepted(receipt, owner, repo, pr.head_sha)) {
-          return await createBlockedOutcome({
+          return await createBlockedOutcome({ repositoryId: knownRepositoryId,
             owner, repo, headSha, token,
             summary: `Merge group attestation blocked: PR #${pr.number} has no current durable App ${requiredAppId} raw/Gate passthrough publication receipt (reason: ${receipt.errorCode ?? 'unknown'}).`,
             constituentPrs: constituentPrs.map((p) => p.number),
@@ -1456,7 +1467,7 @@ export async function handleMergeGroupAttestation(
       }
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0 || controller.signal.aborted) {
-        return await createBlockedOutcome({
+        return await createBlockedOutcome({ repositoryId: knownRepositoryId,
           owner, repo, headSha, token,
           summary: 'Merge group attestation blocked: paused publication deadline expired before the merge-group check was written.',
           constituentPrs: constituentPrs.map((p) => p.number),
@@ -1465,12 +1476,12 @@ export async function handleMergeGroupAttestation(
         });
       }
       const summary = `Merge group passed constituent, current durable App ${requiredAppId} raw/Gate publication, and hazard checks for [${attestedNumbers}]. No semantic review ran; zero lanes were started. ${hazardNote}`;
-      const pubResult = await publishMergeGroupCheckRun({
+      const pubResult = await publishMergeGroupCheckRun({ repositoryId: knownRepositoryId,
         owner, repo, headSha, token, conclusion: 'success', title: ATTESTATION_CHECK_TITLE, summary,
         fetchFn: boundedFetch,
       });
       if (!pubResult.success || controller.signal.aborted || performance.now() >= deadline) {
-        return await createBlockedOutcome({
+        return await createBlockedOutcome({ repositoryId: knownRepositoryId,
           owner, repo, headSha,
           summary: `Merge group attestation failed to publish a current paused-publication check: ${pubResult.error || 'deadline exceeded'}`,
           constituentPrs: constituentPrs.map((p) => p.number),
@@ -1492,7 +1503,7 @@ export async function handleMergeGroupAttestation(
 
   // 4. Attestation Success: Publish successful check run directly to GitHub API
   if (!await publicSelfRepositoryStillMatches()) {
-    return await createBlockedOutcome({
+    return await createBlockedOutcome({ repositoryId: knownRepositoryId,
       owner, repo, headSha, token,
       summary: 'Merge group attestation blocked: public self-repository visibility changed during verification.',
       constituentPrs: constituentPrs.map((p) => p.number),
@@ -1502,7 +1513,7 @@ export async function handleMergeGroupAttestation(
   }
   const summary = `Attested constituent pull request(s) [${attestedNumbers}] possess valid Review Yeti checks from App ID ${requiredAppId}. ${hazardNote}`;
 
-  const pubResult = await publishMergeGroupCheckRun({
+  const pubResult = await publishMergeGroupCheckRun({ repositoryId: knownRepositoryId,
     owner,
     repo,
     headSha,
@@ -1514,7 +1525,7 @@ export async function handleMergeGroupAttestation(
   });
 
   if (!pubResult.success) {
-    return await createBlockedOutcome({
+    return await createBlockedOutcome({ repositoryId: knownRepositoryId,
       owner,
       repo,
       headSha,

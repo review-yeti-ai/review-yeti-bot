@@ -899,6 +899,97 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
     });
   });
 
+  describe('Check publication does not depend on a second repository lookup', () => {
+    const sha = 'abcdef0123456789abcdef0123456789abcdef01';
+
+    it('publishes with the payload repository id even when GET /repos fails', async () => {
+      const calls: string[] = [];
+      const mockFetch = (async (input: any, init: any) => {
+        const url = typeof input === 'string' ? input : input.url;
+        calls.push(`${init?.method ?? 'GET'} ${url}`);
+        if (url.endsWith('/check-runs') && init?.method === 'POST') {
+          return Response.json({ id: 7777, ...JSON.parse(init.body as string) });
+        }
+        return new Response('upstream unavailable', { status: 500 });
+      }) as typeof fetch;
+
+      const res = await publishMergeGroupCheckRun({
+        owner: 'example-org', repo: 'sample-repo', headSha: sha, token: 'tok',
+        conclusion: 'failure', title: 'Review Yeti (Merge Group Attestation)', summary: 'blocked: example',
+        fetchFn: mockFetch, repositoryId: '424242',
+      });
+      assert.equal(res.success, true);
+      assert.equal(res.checkRunId, 7777);
+      assert.ok(!calls.some((c) => c === 'GET https://api.github.com/repos/example-org/sample-repo'),
+        `no repository lookup expected, saw ${JSON.stringify(calls)}`);
+    });
+
+    it('without a known id it still looks the repository up, and reports why when that fails', async () => {
+      const mockFetch = (async () => new Response('rate limited', { status: 403 })) as unknown as typeof fetch;
+      const res = await publishMergeGroupCheckRun({
+        owner: 'example-org', repo: 'sample-repo', headSha: sha, token: 'tok',
+        conclusion: 'failure', title: 'Review Yeti (Merge Group Attestation)', summary: 'blocked: example',
+        fetchFn: mockFetch,
+      });
+      assert.equal(res.success, false);
+      assert.match(res.error ?? '', /repository identity unavailable: repository lookup failed \(HTTP 403\)/);
+    });
+
+    it('a blocked attestation still publishes its failure check when GET /repos fails', async () => {
+      const payload = {
+        action: 'checks_requested',
+        merge_group: {
+          head_sha: sha,
+          head_ref: 'refs/heads/gh-readonly-queue/main/pr-4836-abcdef01',
+          base_ref: 'refs/heads/main',
+          base_sha: 'base000000000000000000000000000000000000',
+        },
+        repository: { id: 424242, name: 'sample-repo', full_name: 'example-org/sample-repo', owner: { login: 'example-org' } },
+      };
+      let posted: any;
+      const originalFetch = globalThis.fetch;
+      try {
+        globalThis.fetch = (async (input: any, init: any) => {
+          const url = typeof input === 'string' ? input : input.url;
+          if (url.includes('/graphql')) {
+            return Response.json({ data: { repository: { mergeQueue: { entries: { nodes: [{
+              position: 1, state: 'MERGEABLE',
+              pullRequest: { number: 4836, headRefOid: '1111111111111111111111111111111111111111', baseRefOid: 'base000000000000000000000000000000000000' },
+            }] } } } } });
+          }
+          if (url.includes('/check-runs?filter=all')) {
+            // No official Review Yeti check on the constituent: the attestation must block.
+            return Response.json({ check_runs: [] });
+          }
+          if (url.endsWith('/check-runs') && init?.method === 'POST') {
+            posted = JSON.parse(init.body as string);
+            return Response.json({ id: 8888, ...posted });
+          }
+          return new Response('upstream unavailable', { status: 500 });
+        }) as any;
+        const rawBody = JSON.stringify(payload);
+        const res = await worker.fetch(new Request('http://localhost/api/webhooks/github', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-GitHub-Event': 'merge_group',
+            'X-Hub-Signature-256': await signPayload('test-webhook-secret', rawBody),
+          },
+          body: rawBody,
+        }), createMockEnv());
+        assert.equal(res.status, 200);
+        const data = (await res.json()) as any;
+        assert.equal(data.status, 'blocked');
+        assert.equal(data.checkRunError, undefined, `publish must not fail on the repository lookup: ${data.checkRunError}`);
+        assert.equal(data.checkRunId, 8888);
+        assert.equal(posted.conclusion, 'failure');
+        assert.match(posted.external_id, /^review-yeti-merge-group:v2:424242:abcdef0123456789abcdef0123456789abcdef01:[0-9a-f]{64}$/);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  });
+
   describe('Worker Ingress Integration for merge_group Webhooks', () => {
     it('dispatches merge_group event through worker fetch handler and returns attested response', async () => {
       const headSha = 'abcdef0123456789abcdef0123456789abcdef01';
