@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.138.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.1...v1.138.2) (2026-11-11)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** publish a blocked merge-group verdict outside the paused-publication deadline ([#1549](https://github.com/review-yeti-ai/review-yeti-bot/issues/1549)) ([1d7c155](https://github.com/review-yeti-ai/review-yeti-bot/commit/1d7c155e71d7f67726185dd160787eff51edb42d))
+
 ## [1.138.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.0...v1.138.1) (2026-11-11)
 
 
