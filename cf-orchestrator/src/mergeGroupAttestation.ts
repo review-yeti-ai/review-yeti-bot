@@ -119,6 +119,33 @@ export interface AttestationOutcome {
   checkRunError?: string;
 }
 
+/** Longest free-text field (summary, publish error) copied into an attestation log line. */
+const OUTCOME_LOG_TEXT_LIMIT = 240;
+
+/**
+ * One structured, secret-free log line for what a merge_group attestation did. A request that returns
+ * 200 without a visible check is otherwise indistinguishable in the logs from one that published, so
+ * this records the verdict, whether a check run was actually created, and any publish error. It never
+ * carries the webhook payload, tokens or headers.
+ */
+export function mergeGroupOutcomeLogLine(outcome: AttestationOutcome): string {
+  const clip = (value: string | undefined): string | undefined =>
+    typeof value === 'string' ? value.slice(0, OUTCOME_LOG_TEXT_LIMIT) : undefined;
+  return JSON.stringify({
+    event: 'merge_group_attestation',
+    status: outcome.status,
+    conclusion: outcome.conclusion,
+    headSha: outcome.headSha,
+    constituentPrs: outcome.constituentPrs,
+    bypassedHazardScan: outcome.bypassedHazardScan,
+    hazardCount: outcome.hazards?.length ?? 0,
+    checkPublished: typeof outcome.checkRunId === 'number',
+    checkRunId: outcome.checkRunId,
+    checkRunError: clip(outcome.checkRunError),
+    summary: clip(outcome.summary),
+  });
+}
+
 export const SHARED_RUNTIME_CONFIG_PATTERNS = [
   /(?:^|\/)mcp-servers(?:\.[a-zA-Z0-9_-]+)?\.json$/,
   /(?:^|\/)mix\.lock$/,

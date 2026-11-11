@@ -16,6 +16,8 @@ import {
   isTransientPassthroughReadCode,
   passthroughReceiptAccepted,
   readPassthroughReceiptWithRetry,
+  mergeGroupOutcomeLogLine,
+  type AttestationOutcome,
 } from '../src/mergeGroupAttestation.js';
 import worker from '../src/worker.js';
 import type { Env } from '../src/types.js';
@@ -995,6 +997,90 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
       } finally {
         globalThis.fetch = originalFetch;
       }
+    });
+
+    it('logs one secret-free outcome line per merge_group attestation, including whether a check was published', async () => {
+      const headSha = 'abcdef0123456789abcdef0123456789abcdef01';
+      const payload = {
+        action: 'checks_requested',
+        merge_group: {
+          head_sha: headSha,
+          head_ref: 'refs/heads/gh-readonly-queue/main/pr-4836-abcdef01',
+          base_ref: 'refs/heads/main',
+          base_sha: 'base000000000000000000000000000000000000',
+        },
+        repository: { name: 'sample-repo', full_name: 'example-org/sample-repo', owner: { login: 'example-org' } },
+      };
+      const rawBody = JSON.stringify(payload);
+      const signature = await signPayload('test-webhook-secret', rawBody);
+      const originalFetch = globalThis.fetch;
+      const originalLog = console.log;
+      const lines: string[] = [];
+      try {
+        console.log = (...args: unknown[]) => { lines.push(args.map(String).join(' ')); };
+        globalThis.fetch = (async (input: any, init: any) => {
+          const urlStr = typeof input === 'string' ? input : input.url;
+          if (urlStr.includes('/graphql')) {
+            return Response.json({ data: { repository: { mergeQueue: { entries: { nodes: [{
+              position: 1, state: 'MERGEABLE',
+              pullRequest: { number: 4836, headRefOid: '1111111111111111111111111111111111111111', baseRefOid: 'base000000000000000000000000000000000000' },
+            }] } } } } });
+          }
+          if (urlStr.includes('/check-runs?filter=all')) {
+            return Response.json({ check_runs: [{
+              id: 501, name: REQUIRED_CHECK_NAME, status: 'completed', conclusion: 'success',
+              started_at: '2026-10-01T12:00:00Z', external_id: 'run_1234567890abcdef1234567890abcdef:a1', app: { id: 4385771 },
+            }] });
+          }
+          if (urlStr.endsWith('/check-runs') && init?.method === 'POST') {
+            const body = JSON.parse(init.body as string);
+            return Response.json({ id: 9999, ...body });
+          }
+          if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(String(input))) {
+            return Response.json({ id: 1232078607 });
+          }
+          return new Response('Not found', { status: 404 });
+        }) as any;
+        const res = await worker.fetch(new Request('http://localhost/api/webhooks/github', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-GitHub-Event': 'merge_group', 'X-Hub-Signature-256': signature },
+          body: rawBody,
+        }), createMockEnv());
+        assert.equal(res.status, 200);
+      } finally {
+        globalThis.fetch = originalFetch;
+        console.log = originalLog;
+      }
+      const outcomeLines = lines.filter((line) => line.includes('merge_group_attestation'));
+      assert.equal(outcomeLines.length, 1, `expected exactly one outcome line, got ${JSON.stringify(lines)}`);
+      const logged = JSON.parse(outcomeLines[0]);
+      assert.equal(logged.event, 'merge_group_attestation');
+      assert.equal(logged.status, 'attested');
+      assert.equal(logged.headSha, headSha);
+      assert.equal(logged.checkPublished, true);
+      assert.equal(logged.checkRunId, 9999);
+      assert.ok(!outcomeLines[0].includes('test-token'), 'the log line must not carry the token');
+      assert.ok(!outcomeLines[0].includes('test-webhook-secret'), 'the log line must not carry the webhook secret');
+    });
+
+    it('mergeGroupOutcomeLogLine records an unpublished blocked verdict and its publish error, clipped', () => {
+      const outcome: AttestationOutcome = {
+        status: 'blocked',
+        headSha: 'abcdef0123456789abcdef0123456789abcdef01',
+        conclusion: 'failure',
+        title: 'Review Yeti (Merge Group Attestation)',
+        summary: 'x'.repeat(1000),
+        constituentPrs: [6894, 6888],
+        bypassedHazardScan: false,
+        checkRunError: 'e'.repeat(1000),
+      };
+      const logged = JSON.parse(mergeGroupOutcomeLogLine(outcome));
+      assert.equal(logged.status, 'blocked');
+      assert.equal(logged.checkPublished, false);
+      assert.equal(logged.checkRunId, undefined);
+      assert.deepEqual(logged.constituentPrs, [6894, 6888]);
+      assert.equal(logged.summary.length, 240);
+      assert.equal(logged.checkRunError.length, 240);
     });
 
     it('returns ignored when merge_group action is not checks_requested', async () => {
