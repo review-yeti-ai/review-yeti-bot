@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.138.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.2...v1.138.3) (2026-11-11)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** resume the paused publication on transient failures ([#1551](https://github.com/review-yeti-ai/review-yeti-bot/issues/1551)) ([ce038d9](https://github.com/review-yeti-ai/review-yeti-bot/commit/ce038d9dcc13933eb1d7e89f3b2260f38938e5d8))
+
 ## [1.138.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.1...v1.138.2) (2026-11-11)
 
 
