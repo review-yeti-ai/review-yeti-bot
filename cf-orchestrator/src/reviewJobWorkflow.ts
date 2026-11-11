@@ -5,6 +5,7 @@ import { reviewWorkflowPauseMode } from './passthroughAdmission.js';
 import { type ContainerRunner, CloudflareContainerRunner } from './runners/containerRunner.js';
 import type { RunnerCostDetails } from './runners/runnerCost.js';
 import { publishOperatorPassthrough } from './operatorPassthroughPublisher.js';
+import { publishPassthroughWithRetry } from './passthroughPublicationRetry.js';
 import {
   buildGitHubReviewPayload,
   createPendingChecks,
@@ -155,6 +156,11 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
     if (pauseMode !== 'false') {
       const config = { timeout: '2 minutes', retries: { limit: 0, delay: '1 second' } };
       const stepName = pauseMode === 'true' ? 'operator-passthrough-publication' : 'operator-passthrough-config-unavailable';
+      if (pauseMode === 'true') {
+        // Resume the same run on transient failures so a half-completed check pair is finished, not stranded.
+        return await publishPassthroughWithRetry(step, stepName, config, () => publishOperatorPassthrough(this.env, spec),
+          { runId, prNumber, headSha });
+      }
       return await step.do(stepName, config, async () =>
         publishOperatorPassthrough(this.env, spec)
       );
