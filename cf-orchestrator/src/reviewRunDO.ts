@@ -31,6 +31,22 @@ function isUnpublishedReservation(state: OperatorPassthroughState): boolean {
     });
 }
 
+/**
+ * A pair that already has a created check may be adopted by a newer source run only while it
+ * is still live (not cancelled, not already succeeded) and the identity matches exactly.
+ */
+function canAdoptIncompletePair(
+  state: OperatorPassthroughState,
+  input: { runId: string; publicationId: string; identity: OperatorPassthroughIdentity },
+): boolean {
+  return state.version === 'OperatorPassthroughState.v2'
+    && !state.cancelRequested
+    && state.receipt?.status !== 'succeeded'
+    && state.runId === input.runId
+    && state.publicationId === input.publicationId
+    && JSON.stringify(state.identity) === JSON.stringify(input.identity);
+}
+
 interface InternalReviewRunState extends ReviewRunState {
   jobId?: string;
 }
@@ -127,6 +143,21 @@ export class ReviewRunDO {
       && /^[a-f0-9]{64}$/u.test(source.contentDigest);
   }
 
+  /** True only when the source run's own status positively reports cancellation. Fails closed. */
+  private async sourceRunIsCancelled(sourceRunId: string): Promise<boolean> {
+    if (!/^run_[A-Za-z0-9_-]{1,128}$/u.test(sourceRunId)
+      || !this.env.REVIEW_RUN?.idFromName || !this.env.REVIEW_RUN?.get) return false;
+    try {
+      const source = this.env.REVIEW_RUN.get(this.env.REVIEW_RUN.idFromName(sourceRunId));
+      const response = await source.fetch('http://do/status');
+      if (!response.ok) return false;
+      const status = await response.json() as { cancelRequested?: boolean; phase?: string };
+      return status.cancelRequested === true || status.phase === 'Cancelled';
+    } catch {
+      return false;
+    }
+  }
+
   private async reserveOperatorPassthrough(input: {
     version: 'OperatorPassthroughReservation.v1';
     runId: string;
@@ -147,6 +178,17 @@ export class ReviewRunDO {
       return { accepted: false, reason: 'cancel_requested' };
     }
 
+    // A created-but-incomplete pair is bound to its source run. When that source run is
+    // verifiably cancelled, nothing will ever finish the pair, so a newer source run may
+    // adopt it. The older source is read before the transaction and re-matched inside it.
+    const stored = await this.state.storage.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY);
+    let cancelledOlderSource: string | null = null;
+    if (stored && input.sourceRunId && stored.sourceRunId && stored.sourceRunId !== input.sourceRunId
+      && canAdoptIncompletePair(stored, input)
+      && await this.sourceRunIsCancelled(stored.sourceRunId)) {
+      cancelledOlderSource = stored.sourceRunId;
+    }
+
     const result = await this.state.storage.transaction(async (transaction) => {
       const existing = await transaction.get<OperatorPassthroughState>(OPERATOR_PASSTHROUGH_STATE_KEY);
       if (existing) {
@@ -157,6 +199,19 @@ export class ReviewRunDO {
         if (!sameIdentity) return { accepted: false as const, reason: 'identity_conflict' };
         if (existing.sourceRunId && input.sourceRunId && existing.sourceRunId !== input.sourceRunId) {
           if (!isUnpublishedReservation(existing)) {
+            if (cancelledOlderSource === existing.sourceRunId && canAdoptIncompletePair(existing, input)) {
+              // Keep the created checks and stage progress so the publisher reconciles
+              // and completes the existing pair; only the source binding and admission reset.
+              const adopted: OperatorPassthroughState = {
+                ...existing,
+                sourceRunId: input.sourceRunId,
+                priorOutcomeChecked: false,
+                priorControlRunIds: [],
+                receipt: null,
+              };
+              await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, adopted);
+              return { accepted: true as const, state: adopted };
+            }
             return { accepted: false as const, reason: 'source_run_identity_conflict' };
           }
           // The earlier source run failed before any publication check was created, so no

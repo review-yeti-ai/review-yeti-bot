@@ -1266,6 +1266,80 @@ describe('Edge operator passthrough publication', () => {
     assert.equal(mock.counts.creates, 2);
   });
 
+  describe('adopting a created-but-incomplete pair after its bound source run is cancelled', () => {
+    const spec = (runId: string) => ({
+      runId, owner: OWNER, repo: REPO, prNumber: 42, headSha: HEAD_A, baseSha: BASE_A, installationId: 0,
+    });
+    const initSource = async (mock: ReturnType<typeof createTestEnv>, runId: string) => {
+      const source = (mock.env as any).REVIEW_RUN.get(runId);
+      await source.fetch('http://do/init', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          runId, owner: OWNER, repo: REPO, prNumber: 42, headSha: HEAD_A, baseSha: BASE_A, installationId: 0,
+        }),
+      });
+      return source;
+    };
+    const cancel = (stub: { fetch: (url: string, init?: RequestInit) => Promise<Response> }) =>
+      stub.fetch('http://do/cancel', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'superseded-by-newer-run' }),
+      });
+
+    it('lets a newer source run complete the same pair without creating a duplicate', async () => {
+      const mock = createTestEnv({ failFirstGatePatch: true });
+      await configureAppKeys(mock.env);
+      const olderId = `run_${'e'.repeat(32)}`;
+      const newerId = `run_${'f'.repeat(32)}`;
+      const older = await initSource(mock, olderId);
+      const first = await publishOperatorPassthrough(mock.env, spec(olderId), { fetchFn: mock.fetchFn });
+      assert.equal(first.status, 'unavailable');
+      assert.equal(mock.counts.creates, 2, 'the older run created the pair before it was stranded');
+      await cancel(older);
+
+      await initSource(mock, newerId);
+      const second = await publishOperatorPassthrough(mock.env, spec(newerId), { fetchFn: mock.fetchFn });
+      assert.equal(second.status, 'succeeded', JSON.stringify(second));
+      assert.equal(second.mergeEligible, true);
+      assert.equal(second.runId, first.runId, 'same publication identity, so the same pair');
+      assert.equal(mock.counts.creates, 2, 'no duplicate pair');
+    });
+
+    it('keeps the older source bound while it is still live', async () => {
+      const mock = createTestEnv({ failFirstGatePatch: true });
+      await configureAppKeys(mock.env);
+      const olderId = `run_${'1'.repeat(32)}`;
+      const newerId = `run_${'2'.repeat(32)}`;
+      await initSource(mock, olderId);
+      const first = await publishOperatorPassthrough(mock.env, spec(olderId), { fetchFn: mock.fetchFn });
+      assert.equal(first.status, 'unavailable');
+
+      await initSource(mock, newerId);
+      const second = await publishOperatorPassthrough(mock.env, spec(newerId), { fetchFn: mock.fetchFn });
+      assert.equal(second.status, 'unavailable');
+      assert.equal(second.mergeEligible, false);
+      assert.equal(mock.counts.creates, 2);
+    });
+
+    it('does not revive a publication that was itself cancelled', async () => {
+      const mock = createTestEnv({ failFirstGatePatch: true });
+      await configureAppKeys(mock.env);
+      const olderId = `run_${'3'.repeat(32)}`;
+      const newerId = `run_${'4'.repeat(32)}`;
+      const older = await initSource(mock, olderId);
+      const first = await publishOperatorPassthrough(mock.env, spec(olderId), { fetchFn: mock.fetchFn });
+      assert.equal(first.status, 'unavailable');
+      await cancel(older);
+      await cancel((mock.env as any).REVIEW_RUN.get(first.runId!));
+
+      await initSource(mock, newerId);
+      const second = await publishOperatorPassthrough(mock.env, spec(newerId), { fetchFn: mock.fetchFn });
+      assert.equal(second.status, 'unavailable');
+      assert.equal(second.mergeEligible, false);
+      assert.equal(mock.counts.creates, 2);
+    });
+  });
+
   it('admits the exact source run registered by the signed synchronize webhook through RepoGate and Workflow', async () => {
     const mock = createTestEnv();
     await configureAppKeys(mock.env);
