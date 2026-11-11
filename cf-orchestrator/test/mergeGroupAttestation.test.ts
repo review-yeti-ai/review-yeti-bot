@@ -17,6 +17,8 @@ import {
   passthroughReceiptAccepted,
   readPassthroughReceiptWithRetry,
   mergeGroupOutcomeLogLine,
+  isTransientPassthroughRead,
+  describePassthroughReadFailure,
   type AttestationOutcome,
 } from '../src/mergeGroupAttestation.js';
 import worker from '../src/worker.js';
@@ -2375,5 +2377,69 @@ describe('paused passthrough receipt read retry', () => {
     assert.deepEqual(sleeps, [100, 200, 250, 250]);
     assert.equal(reads, 5);
     assert.equal(receipt.errorCode, 'check_readback_unavailable');
+  });
+});
+
+describe('paused passthrough read failure category', () => {
+  const unavailable = (category?: string, extra: Record<string, unknown> = {}) => ({
+    status: 'unavailable',
+    errorCode: 'check_readback_unavailable',
+    ...(category ? { diagnostic: { category, stage: 'review', httpStatus: null, checkId: 130294685128, ...extra } } : {}),
+  }) as any;
+  const noSleep = async () => {};
+
+  it('keeps retrying a pair that may still be settling, but not one that is present and wrong', () => {
+    for (const category of ['missing_check', 'receipt_incomplete', 'creating_check_absent', 'rate_limited', 'timeout', 'existing_check_read_failure']) {
+      assert.equal(isTransientPassthroughRead(unavailable(category)), true, category);
+    }
+    for (const category of ['identity_mismatch', 'identity_unverified', 'identity_ambiguous', 'summary_mismatch']) {
+      assert.equal(isTransientPassthroughRead(unavailable(category)), false, category);
+    }
+    // No diagnostic: behaviour is unchanged from the code alone.
+    assert.equal(isTransientPassthroughRead(unavailable()), true);
+    assert.equal(isTransientPassthroughRead({ errorCode: 'cancel_requested' }), false);
+  });
+
+  it('reads an identity mismatch once instead of eight times', async () => {
+    let reads = 0;
+    const last = await readPassthroughReceiptWithRetry({
+      read: async () => { reads += 1; return unavailable('identity_mismatch'); },
+      accepted: () => false,
+      hasTimeLeft: () => true,
+      sleep: noSleep,
+    });
+    assert.equal(reads, 1);
+    assert.equal(last.diagnostic.category, 'identity_mismatch');
+  });
+
+  it('still re-reads an incomplete pair until it settles', async () => {
+    let reads = 0;
+    const settled = { status: 'succeeded' } as any;
+    const result = await readPassthroughReceiptWithRetry({
+      read: async () => { reads += 1; return reads < 3 ? unavailable('receipt_incomplete') : settled; },
+      accepted: (r) => r.status === 'succeeded',
+      hasTimeLeft: () => true,
+      sleep: noSleep,
+    });
+    assert.equal(reads, 3);
+    assert.equal(result.status, 'succeeded');
+  });
+
+  it('names the category, stage, status and check in the failure description, and nothing else', () => {
+    assert.equal(describePassthroughReadFailure({ errorCode: 'check_readback_unavailable' }), 'check_readback_unavailable');
+    assert.equal(
+      describePassthroughReadFailure(unavailable('receipt_incomplete', { httpStatus: 502 })),
+      'check_readback_unavailable [category=receipt_incomplete, stage=review, http=502, check=130294685128]',
+    );
+  });
+
+  it('records the read failure on the logged attestation outcome', () => {
+    const outcome: AttestationOutcome = {
+      status: 'blocked', headSha: 'abcdef0123456789abcdef0123456789abcdef01', conclusion: 'failure',
+      title: 'Review Yeti (Merge Group Attestation)', summary: 'blocked', constituentPrs: [6888], bypassedHazardScan: false,
+      checkRunId: 1, readFailure: describePassthroughReadFailure(unavailable('identity_mismatch')),
+    };
+    const logged = JSON.parse(mergeGroupOutcomeLogLine(outcome));
+    assert.match(logged.readFailure, /category=identity_mismatch/);
   });
 });

@@ -117,6 +117,8 @@ export interface AttestationOutcome {
   hazards?: HazardFinding[];
   checkRunId?: number;
   checkRunError?: string;
+  /** Why the passthrough receipt read failed (code plus diagnostic category), when that is why it blocked. */
+  readFailure?: string;
 }
 
 /** Longest free-text field (summary, publish error) copied into an attestation log line. */
@@ -142,6 +144,7 @@ export function mergeGroupOutcomeLogLine(outcome: AttestationOutcome): string {
     checkPublished: typeof outcome.checkRunId === 'number',
     checkRunId: outcome.checkRunId,
     checkRunError: clip(outcome.checkRunError),
+    readFailure: clip(outcome.readFailure),
     summary: clip(outcome.summary),
   });
 }
@@ -1077,6 +1080,7 @@ async function createBlockedOutcome(params: {
   skipPublish?: boolean;
   checkRunError?: string;
   repositoryId?: string;
+  readFailure?: string;
 }): Promise<AttestationOutcome> {
   const {
     owner,
@@ -1121,6 +1125,7 @@ async function createBlockedOutcome(params: {
     hazards,
     checkRunId,
     checkRunError,
+    ...(params.readFailure ? { readFailure: params.readFailure } : {}),
   };
 }
 
@@ -1161,6 +1166,47 @@ export function isTransientPassthroughReadCode(code: unknown): boolean {
 }
 
 /**
+ * `check_readback_unavailable` is one code for several different situations. A pair that is still being
+ * created or completed (`missing_check`, `receipt_incomplete`, a rate limit, a timeout) can settle within
+ * seconds, so those keep retrying. These categories describe a pair that is present and wrong: it will
+ * not change by being read again, so retrying only delays the verdict.
+ */
+const DETERMINISTIC_READBACK_CATEGORIES: ReadonlySet<string> = new Set([
+  'identity_ambiguous',
+  'identity_mismatch',
+  'identity_unverified',
+  'summary_mismatch',
+]);
+
+interface PassthroughReadFailureLike {
+  errorCode?: string;
+  diagnostic?: {
+    category?: string;
+    stage?: string;
+    httpStatus?: number | null;
+    checkId?: number | null;
+  };
+}
+
+export function isTransientPassthroughRead(receipt: PassthroughReadFailureLike): boolean {
+  if (!isTransientPassthroughReadCode(receipt.errorCode)) return false;
+  const category = receipt.diagnostic?.category;
+  return !(typeof category === 'string' && DETERMINISTIC_READBACK_CATEGORIES.has(category));
+}
+
+/** `code`, plus `[category=..., stage=..., http=..., check=...]` when the read carried a diagnostic. No bodies. */
+export function describePassthroughReadFailure(receipt: PassthroughReadFailureLike): string {
+  const code = receipt.errorCode ?? 'unknown';
+  const d = receipt.diagnostic;
+  if (!d || typeof d.category !== 'string') return code;
+  const parts = [`category=${d.category}`];
+  if (typeof d.stage === 'string') parts.push(`stage=${d.stage}`);
+  if (typeof d.httpStatus === 'number') parts.push(`http=${d.httpStatus}`);
+  if (typeof d.checkId === 'number') parts.push(`check=${d.checkId}`);
+  return `${code} [${parts.join(', ')}]`;
+}
+
+/**
  * Only an exact-head, merge-eligible, publication-backed success counts. Owner, repository and head
  * comparisons match the original single-read gate; nothing here is relaxed by the retry.
  */
@@ -1179,7 +1225,7 @@ export function passthroughReceiptAccepted(
  * Reads a paused-publication receipt, retrying only transient read codes while time remains.
  * Returns the first accepted receipt, or the last receipt observed.
  */
-export async function readPassthroughReceiptWithRetry<T extends { status: string; errorCode?: string }>(options: {
+export async function readPassthroughReceiptWithRetry<T extends { status: string } & PassthroughReadFailureLike>(options: {
   read: () => Promise<T>;
   accepted: (receipt: T) => boolean;
   hasTimeLeft: () => boolean;
@@ -1194,7 +1240,7 @@ export async function readPassthroughReceiptWithRetry<T extends { status: string
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let receipt = await options.read();
   for (let attempt = 1; attempt < attempts; attempt += 1) {
-    if (options.accepted(receipt) || !isTransientPassthroughReadCode(receipt.errorCode) || !options.hasTimeLeft()) {
+    if (options.accepted(receipt) || !isTransientPassthroughRead(receipt) || !options.hasTimeLeft()) {
       break;
     }
     // A single transient read used to be able to outlast three 1s-spaced attempts (REL-2712); back off
@@ -1465,7 +1511,8 @@ export async function handleMergeGroupAttestation(
         if (!passthroughReceiptAccepted(receipt, owner, repo, pr.head_sha)) {
           return await createBlockedOutcome({ repositoryId: knownRepositoryId,
             owner, repo, headSha, token,
-            summary: `Merge group attestation blocked: PR #${pr.number} has no current durable App ${requiredAppId} raw/Gate passthrough publication receipt (reason: ${receipt.errorCode ?? 'unknown'}).`,
+            summary: `Merge group attestation blocked: PR #${pr.number} has no current durable App ${requiredAppId} raw/Gate passthrough publication receipt (reason: ${describePassthroughReadFailure(receipt)}).`,
+            readFailure: describePassthroughReadFailure(receipt),
             constituentPrs: constituentPrs.map((p) => p.number),
             bypassedHazardScan: hazardResult.bypassed,
             fetchFn: failurePublishFetch,
