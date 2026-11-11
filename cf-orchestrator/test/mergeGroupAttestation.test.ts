@@ -990,6 +990,68 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
     });
   });
 
+  describe('Paused publication: a blocked verdict still publishes its failure check after the deadline', () => {
+    it('publishes the failure check even though the 15 s verification budget is already spent', async () => {
+      const sha = 'abcdef0123456789abcdef0123456789abcdef01';
+      const payload = {
+        action: 'checks_requested',
+        merge_group: {
+          head_sha: sha,
+          head_ref: 'refs/heads/gh-readonly-queue/main/pr-4836-abcdef01',
+          base_ref: 'refs/heads/main',
+          base_sha: 'base000000000000000000000000000000000000',
+        },
+        repository: { id: 424242, name: 'sample-repo', full_name: 'example-org/sample-repo', owner: { login: 'example-org' } },
+      };
+      const rawBody = JSON.stringify(payload);
+      let posted: any;
+      const originalFetch = globalThis.fetch;
+      try {
+        globalThis.fetch = (async (input: any, init: any) => {
+          const url = typeof input === 'string' ? input : input.url;
+          if (url.includes('/graphql')) {
+            return Response.json({ data: { repository: { mergeQueue: { entries: { nodes: [{
+              position: 1, state: 'MERGEABLE',
+              pullRequest: { number: 4836, headRefOid: '1111111111111111111111111111111111111111', baseRefOid: 'base000000000000000000000000000000000000' },
+            }] } } } } });
+          }
+          if (url.includes('/check-runs?filter=all')) {
+            return Response.json({ check_runs: [{
+              id: 501, name: REQUIRED_CHECK_NAME, status: 'completed', conclusion: 'success',
+              started_at: '2026-10-01T12:00:00Z', external_id: 'run_1234567890abcdef1234567890abcdef:a1', app: { id: 4385771 },
+            }] });
+          }
+          if (url.endsWith('/check-runs') && init?.method === 'POST') {
+            // Slower than the 1 ms verification budget, so a publish that shares that deadline is rejected.
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            posted = JSON.parse(init.body as string);
+            return Response.json({ id: 9191, ...posted });
+          }
+          return new Response('Not found', { status: 404 });
+        }) as any;
+        // A 1 ms budget makes the verification deadline pass immediately, like a receipt retry loop that
+        // has used all 15 s; the blocked verdict must still be written as a visible failure check.
+        const res = await worker.fetch(new Request('http://localhost/api/webhooks/github', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-GitHub-Event': 'merge_group',
+            'X-Hub-Signature-256': await signPayload('test-webhook-secret', rawBody),
+          },
+          body: rawBody,
+        }), createMockEnv({ OPERATOR_GLOBAL_PASSTHROUGH: 'true', PAUSED_PUBLICATION_BUDGET_MS: '1' }));
+        assert.equal(res.status, 200);
+        const data = (await res.json()) as any;
+        assert.equal(data.status, 'blocked');
+        assert.equal(data.checkRunError, undefined, `failure publish must not fail: ${data.checkRunError}`);
+        assert.equal(data.checkRunId, 9191);
+        assert.equal(posted.conclusion, 'failure');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  });
+
   describe('Worker Ingress Integration for merge_group Webhooks', () => {
     it('dispatches merge_group event through worker fetch handler and returns attested response', async () => {
       const headSha = 'abcdef0123456789abcdef0123456789abcdef01';

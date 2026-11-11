@@ -102,6 +102,8 @@ export interface Env {
   REVIEW_YETI_ATTESTATION_SECRET?: string;
   GITHUB_TOKEN?: string;
   OPERATOR_GLOBAL_PASSTHROUGH?: string;
+  /** Optional override (milliseconds) of the 15 s paused-publication verification budget. Unset or invalid keeps 15 s. */
+  PAUSED_PUBLICATION_BUDGET_MS?: string;
   /** Comma-separated `owner/repo` full names that run semantic review while OPERATOR_GLOBAL_PASSTHROUGH stays true. Fail-closed when unset/empty. */
   OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES?: string;
   REVIEW_YETI_PASSTHROUGH?: string;

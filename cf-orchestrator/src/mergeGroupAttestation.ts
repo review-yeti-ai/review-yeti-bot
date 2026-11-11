@@ -1408,7 +1408,9 @@ export async function handleMergeGroupAttestation(
     : 'Speculative composite delta hazard scan verified zero schema or contract collisions.';
 
   if (env.OPERATOR_GLOBAL_PASSTHROUGH === 'true') {
-    const budget = 15_000;
+    // Deployer tuning (and tests); defaults to 15 s. Governs verification and the success publish only.
+    const configuredBudget = Number(env.PAUSED_PUBLICATION_BUDGET_MS);
+    const budget = Number.isSafeInteger(configuredBudget) && configuredBudget > 0 ? configuredBudget : 15_000;
     const deadline = performance.now() + budget;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), budget);
@@ -1430,6 +1432,11 @@ export async function handleMergeGroupAttestation(
         if (onAbort) controller.signal.removeEventListener('abort', onAbort);
       }
     };
+    // A blocked verdict is published as a failure check. That publish must not share the verification
+    // deadline: when the receipt retries have used the budget the shared fetch is already aborted, the
+    // failure check is never written, and the queue consumer waits for a check that does not exist.
+    const failurePublishFetch: typeof fetch = (input, init = {}) =>
+      fetchFn(input, { ...init, signal: AbortSignal.timeout(8_000) });
     try {
       for (const pr of constituentPrs) {
         const remaining = Math.floor(deadline - performance.now());
@@ -1439,7 +1446,7 @@ export async function handleMergeGroupAttestation(
             summary: 'Merge group attestation blocked: current paused-publication verification exceeded its 15 second deadline.',
             constituentPrs: constituentPrs.map((p) => p.number),
             bypassedHazardScan: hazardResult.bypassed,
-            fetchFn: boundedFetch,
+            fetchFn: failurePublishFetch,
           });
         }
         // One receipt read used to decide the whole queue SHA. A transient read miss
@@ -1461,7 +1468,7 @@ export async function handleMergeGroupAttestation(
             summary: `Merge group attestation blocked: PR #${pr.number} has no current durable App ${requiredAppId} raw/Gate passthrough publication receipt (reason: ${receipt.errorCode ?? 'unknown'}).`,
             constituentPrs: constituentPrs.map((p) => p.number),
             bypassedHazardScan: hazardResult.bypassed,
-            fetchFn: boundedFetch,
+            fetchFn: failurePublishFetch,
           });
         }
       }
@@ -1472,7 +1479,7 @@ export async function handleMergeGroupAttestation(
           summary: 'Merge group attestation blocked: paused publication deadline expired before the merge-group check was written.',
           constituentPrs: constituentPrs.map((p) => p.number),
           bypassedHazardScan: hazardResult.bypassed,
-          fetchFn: boundedFetch,
+          fetchFn: failurePublishFetch,
         });
       }
       const summary = `Merge group passed constituent, current durable App ${requiredAppId} raw/Gate publication, and hazard checks for [${attestedNumbers}]. No semantic review ran; zero lanes were started. ${hazardNote}`;
