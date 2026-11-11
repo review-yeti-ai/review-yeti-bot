@@ -1,7 +1,7 @@
 import { RepoGateDO } from './repoGateDO.js';
 import { ReviewRunDO } from './reviewRunDO.js';
 import { ReviewJobWorkflow } from './reviewJobWorkflow.js';
-import { handleMergeGroupAttestation } from './mergeGroupAttestation.js';
+import { handleMergeGroupAttestation, mergeGroupOutcomeLogLine } from './mergeGroupAttestation.js';
 import type { DebounceMessagePayload, Env, ReviewRunSpec } from './types.js';
 import { purgeExpiredR2WorkspaceCaches } from './runners/r2WorkspaceCache.js';
 import { defaultMcpRouter, constantTimeEquals } from './mcp/mcpRouter.js';
@@ -767,7 +767,19 @@ export default {
           if (!mergeGroup.head_sha || !mergeGroup.head_ref || !mergeGroup.base_ref) {
             return new Response('Bad Request: Missing or invalid repository / merge_group payload', { status: 400 });
           }
-          const outcome = await handleMergeGroupAttestation(payload, env);
+          let outcome: Awaited<ReturnType<typeof handleMergeGroupAttestation>>;
+          try {
+            outcome = await handleMergeGroupAttestation(payload, env);
+          } catch (err) {
+            // Same behaviour as before (the error propagates); the log line is what is new.
+            console.error(JSON.stringify({
+              event: 'merge_group_attestation_error',
+              headSha: String(mergeGroup.head_sha).slice(0, 40),
+              error: (err instanceof Error ? err.message : String(err)).slice(0, 240),
+            }));
+            throw err;
+          }
+          console.log(mergeGroupOutcomeLogLine(outcome));
           return Response.json(outcome);
         }
 
