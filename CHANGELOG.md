@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.138.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.0...v1.138.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** publish the merge-group check with the payload repository id ([#1547](https://github.com/review-yeti-ai/review-yeti-bot/issues/1547)) ([6d40b99](https://github.com/review-yeti-ai/review-yeti-bot/commit/6d40b995b39a8c940fd4cdd0effef393d133dad9))
+
 ## [1.138.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.137.2...v1.138.0) (2026-11-10)
 
 
