@@ -7,6 +7,12 @@ preview_urls = false
 # Keep current deployment variables during the enrollment-secret migration.
 keep_vars = true
 
+# Workers Logs at full sampling. Webhook requests (merge_group included) that are cancelled or drop out
+# without publishing a check otherwise leave no request log, status, duration or subrequest count.
+[observability]
+enabled = true
+head_sampling_rate = 1
+
 # The public hostname is deployment configuration, not code: the deploy job attaches the custom domain
 # (`wrangler deploy --domain`) and passes ALLOWED_ORIGINS from repository variables.
 
