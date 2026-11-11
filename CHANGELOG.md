@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.138.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.3...v1.138.4) (2026-11-11)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** report the readback failure category and stop retrying mismatched pairs ([#1553](https://github.com/review-yeti-ai/review-yeti-bot/issues/1553)) ([19dbb9e](https://github.com/review-yeti-ai/review-yeti-bot/commit/19dbb9e985ac4f7fa20a05d033e4649a2f1c979b))
+
 ## [1.138.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.2...v1.138.3) (2026-11-11)
 
 
