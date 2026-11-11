@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.138.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.4...v1.138.5) (2026-11-11)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** let a newer source run adopt a pair stranded by a cancelled source run ([#1555](https://github.com/review-yeti-ai/review-yeti-bot/issues/1555)) ([bdfe6b6](https://github.com/review-yeti-ai/review-yeti-bot/commit/bdfe6b6e80f9e8a9edae388257966ae5404df8d0))
+
 ## [1.138.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.3...v1.138.4) (2026-11-11)
 
 
