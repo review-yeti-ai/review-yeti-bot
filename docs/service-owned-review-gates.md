@@ -262,6 +262,21 @@ finite Actions/OIDC repository and owner allowlists:
   panel review: no provider, review worker, normal review run or generation is
   started or consumed.
 
+  **Privileged-change scan (REL-3357).** Passthrough SHIP is not review
+  evidence. The publisher classifies the exact pull-request diff at the
+  reserved head/base and appends the result to both check summaries as
+  `privileged-change-scan=clear`, `privileged-change-scan=escalated;rules=...`
+  or `privileged-change-scan=unavailable`. Escalation lists the detected
+  privileged or runtime-sensitive manifest changes: container
+  `privileged: true`, `runAsUser: 0`, capability additions, `hostNetwork`,
+  `hostPID`/`hostIPC`, `hostPath` volumes, RBAC `Role`/`ClusterRole`/binding
+  kinds, and `NetworkPolicy` removals. The classification is persisted with
+  the exemption reservation so retries render identical text. It does not
+  start a review or change the passthrough verdict; it makes the no-review
+  disposition visible on PRs that touch privileged manifests. If the diff
+  cannot be read the summary says so explicitly instead of implying the
+  change was checked.
+
   The exemption verdict is logically `SHIP` with zero expected and completed
   lanes once the authenticated event is durably accepted. Its
   `publication_state` remains `pending` and `merge_eligible` false until both

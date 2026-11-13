@@ -74,6 +74,9 @@ interface GithubMockOptions {
   reviewAfterFirstGatePatch?: any;
   privateOnRepositoryRead?: number;
   cancelOnReviewRead?: number;
+  /** Diff entries returned by the pull-request files endpoint (REL-3357 scan). */
+  files?: Array<{ filename: string; status?: string; patch?: string | null }>;
+  failFilesStatus?: number;
 }
 
 function policyDocument(repository = `${OWNER}/${REPO}`): string {
@@ -272,6 +275,17 @@ function createTestEnv(options: GithubMockOptions = {}) {
             repo: { id: target.repositoryId },
           },
         });
+      }
+      const filesMatch = /^([1-9][0-9]*)\/files$/u.exec(pullPath);
+      if (filesMatch) {
+        const prNumber = Number(filesMatch[1]);
+        if (!pullTargets.has(prNumber)) return jsonResponse({ message: 'Not Found' }, 404);
+        if (options.failFilesStatus) return jsonResponse({ message: 'private diagnostic' }, options.failFilesStatus);
+        const page = Math.max(1, Number(url.searchParams.get('page') || '1'));
+        const perPage = Math.max(1, Number(url.searchParams.get('per_page') || '100'));
+        const all = prNumber === targetPrNumber ? (options.files ?? []) : [];
+        return jsonResponse(all.slice((page - 1) * perPage, page * perPage)
+          .map((entry) => ({ status: 'modified', ...entry })));
       }
     }
     if (method === 'GET' && path === `/repos/${target.owner}/${target.repo}/commits/${targetHead}/check-runs`) {
@@ -482,6 +496,118 @@ describe('Edge operator passthrough publication', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('escalates the passthrough summary when the diff changes privileged manifests (REL-3357)', async () => {
+    const mock = createTestEnv({
+      files: [
+        {
+          filename: 'clusters/lab/ts-sidecar.yaml',
+          status: 'modified',
+          patch: [
+            '@@ -10,3 +10,9 @@ spec:',
+            '         securityContext:',
+            '+          privileged: true',
+            '+          runAsUser: 0',
+            '+          capabilities:',
+            '+            add: ["NET_ADMIN"]',
+            '+          hostNetwork: true',
+            '+        volumeMounts: []',
+            '+        volume:',
+            '+          hostPath:',
+            '+            path: /var/lib/kubelet',
+            '       containers: []',
+          ].join('\n'),
+        },
+        {
+          filename: 'clusters/lab/rbac.yaml',
+          status: 'added',
+          patch: ['+kind: ClusterRoleBinding', '+metadata:', '+  name: lab-admin'].join('\n'),
+        },
+        {
+          filename: 'clusters/lab/netpol.yaml',
+          status: 'removed',
+          patch: ['-kind: NetworkPolicy', '-metadata:', '-  name: lab-deny'].join('\n'),
+        },
+      ],
+    });
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.ok(receipt.status === 'succeeded', JSON.stringify({ receipt, requests: mock.requests }));
+    assert.ok(mock.requests.some((request) => request.endsWith('/pulls/42/files')), 'diff was read for classification');
+    const workerSummary = receipt.checks!.worker.summary;
+    const gateSummary = receipt.checks!.gate.summary;
+    for (const summary of [workerSummary, gateSummary]) {
+      assert.match(summary, /privileged-change-scan=escalated;/u);
+      assert.match(summary, /\[privileged-container\] clusters\/lab\/ts-sidecar\.yaml: privileged: true/u);
+      assert.match(summary, /\[root-user\]/u);
+      assert.match(summary, /\[added-capability\]/u);
+      assert.match(summary, /\[host-network\]/u);
+      assert.match(summary, /\[host-path\]/u);
+      assert.match(summary, /\[rbac-change\]/u);
+      assert.match(summary, /\[network-policy-removal\]/u);
+      assert.match(summary, /not review evidence/u);
+      assert.match(summary, /review-mode=passthrough/u);
+    }
+    // The escalation is visibility only: the pause contract still publishes a
+    // completed successful service check with zero lanes (ADR 0769).
+    assert.equal(receipt.verdict, 'SHIP');
+    assert.equal(receipt.reviewStarted, false);
+    assert.equal(receipt.expectedLanes, 0);
+    assert.equal(receipt.mergeEligible, true);
+  });
+
+  it('keeps a non-privileged diff passthrough with an explicit clear scan (REL-3357)', async () => {
+    const mock = createTestEnv({
+      files: [
+        {
+          filename: 'backend/app/main.py',
+          status: 'modified',
+          patch: ['@@ -1,2 +1,2 @@', '-TIMEOUT = 3', '+TIMEOUT = 5'].join('\n'),
+        },
+        {
+          filename: 'docs/notes.md',
+          status: 'modified',
+          patch: ['@@ -1 +1,2 @@', '+Notes about privileged: true wording, not a manifest.'].join('\n'),
+        },
+      ],
+    });
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.ok(receipt.status === 'succeeded', JSON.stringify({ receipt, requests: mock.requests }));
+    const summary = receipt.checks!.worker.summary;
+    assert.match(summary, /privileged-change-scan=clear\./u);
+    assert.doesNotMatch(summary, /privileged-change-scan=escalated/u);
+    assert.equal(receipt.verdict, 'SHIP');
+    assert.equal(receipt.mergeEligible, true);
+  });
+
+  it('reports an unmatched diff scan instead of pretending the change was checked (REL-3357)', async () => {
+    const mock = createTestEnv({ failFilesStatus: 500 });
+    await configureAppKeys(mock.env);
+    const receipt = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.ok(receipt.status === 'succeeded', JSON.stringify({ receipt, requests: mock.requests }));
+    const summary = receipt.checks!.worker.summary;
+    assert.match(summary, /privileged-change-scan=unavailable\./u);
+    assert.match(summary, /were not checked/u);
+  });
+
+  it('is not consulted when the pause is off, so semantic review is unchanged (REL-3357)', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    (mock.env as any).OPERATOR_GLOBAL_PASSTHROUGH = 'false';
+    const result = await publishOperatorPassthroughForTarget(mock.env,
+      { owner: OWNER, repo: REPO, prNumber: 42 }, { fetchFn: mock.fetchFn });
+
+    assert.equal(result.status, 'unavailable');
+    assert.equal(result.errorCode, 'pause_binding_unavailable');
+    assert.equal(mock.requests.length, 0, 'no diff scan or check publication happens off the pause path');
   });
 
   it('does not let a valid closed sibling-PR op2 pair on the same head block the current PR', async () => {

@@ -1,3 +1,5 @@
+import type { PrivilegedChangeScan } from './privilegedChangeScan.js';
+
 export interface OperatorPassthroughTarget {
   owner: string;
   repo: string;
@@ -167,6 +169,12 @@ export interface OperatorPassthroughState {
   cancelRequested: boolean;
   priorOutcomeChecked: boolean;
   priorControlRunIds: string[];
+  /**
+   * Diff-derived privileged-change classification (REL-3357). Persisted once at
+   * reservation so every check summary in the publication renders the identical
+   * section. Absent on reservations created before this field existed.
+   */
+  privilegedChangeScan?: PrivilegedChangeScan | null;
   stages: {
     review: OperatorPassthroughStageState;
     gate: OperatorPassthroughStageState;

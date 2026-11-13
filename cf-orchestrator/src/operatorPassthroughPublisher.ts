@@ -37,6 +37,11 @@ import {
   reviewAppIdForRepository,
 } from './reviewAppAuthority.js';
 import { fetchRepositoriesFromDb } from './storage/d1Client.js';
+import {
+  scanPrivilegedChanges,
+  type PrivilegedChangeScan,
+  type PrivilegedChangeScanFile,
+} from './privilegedChangeScan.js';
 
 const APP_ID = AUTHORITATIVE_REVIEW_APP_ID;
 const DEADLINE_MS = 15_000;
@@ -535,6 +540,59 @@ async function currentCandidate(
     draft: false,
     isPrivate: repository.private,
   };
+}
+
+const PULL_FILES_PAGE_SIZE = 100;
+const PULL_FILES_MAX_PAGES = 5;
+
+/**
+ * List the pull request's changed files for privileged-change classification.
+ * Failures degrade to an explicit `unavailable` scan so the pause stays
+ * fail-open (ADR 0769) while the blind spot is still visible in the summary.
+ */
+async function listCandidateChangedFiles(
+  identity: OperatorPassthroughIdentity,
+  token: string,
+  context: DeadlineContext
+): Promise<{ files: PrivilegedChangeScanFile[]; truncated: boolean }> {
+  const base = `https://api.github.com/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}`
+    + `/pulls/${identity.prNumber}/files`;
+  const files: PrivilegedChangeScanFile[] = [];
+  for (let page = 1; page <= PULL_FILES_MAX_PAGES; page += 1) {
+    const response = await context.fetch(`${base}?per_page=${PULL_FILES_PAGE_SIZE}&page=${page}`, {
+      headers: githubHeaders(token),
+    });
+    if (!response.ok) throw new Error(`candidate_files_unavailable:${response.status}`);
+    const raw = await context.run(() => response.json());
+    if (!Array.isArray(raw)) throw new Error('candidate_files_unavailable');
+    for (const entry of raw) {
+      if (!isRecord(entry) || typeof entry.filename !== 'string' || entry.filename.length === 0) continue;
+      files.push({
+        filename: entry.filename,
+        status: typeof entry.status === 'string' ? entry.status : 'modified',
+        patch: typeof entry.patch === 'string' ? entry.patch : null,
+      });
+    }
+    if (raw.length < PULL_FILES_PAGE_SIZE) return { files, truncated: false };
+  }
+  return { files, truncated: true };
+}
+
+async function scanCandidatePrivilegedChanges(
+  identity: OperatorPassthroughIdentity,
+  token: string,
+  context: DeadlineContext
+): Promise<PrivilegedChangeScan> {
+  try {
+    const { files, truncated } = await listCandidateChangedFiles(identity, token, context);
+    return scanPrivilegedChanges(files, { truncated });
+  } catch {
+    return {
+      version: 'PrivilegedChangeScan.v1',
+      status: 'unavailable',
+      reason: 'diff_unavailable',
+    };
+  }
 }
 
 function base64Utf8(encoded: string): string {
@@ -1074,6 +1132,7 @@ async function verifyCheckPair(
   gateCheckId: number,
   token: string,
   context: DeadlineContext,
+  privilegedChangeScan: PrivilegedChangeScan | null,
   diagnosticReadOnly = false
 ): Promise<{ worker: PublishedCheck; gate: PublishedCheck }> {
   const external = await externalIds(identity, runId);
@@ -1105,7 +1164,8 @@ async function verifyCheckPair(
     unavailable('check_readback_unavailable', checkReadDiagnostic(stage, identity, checkId, 'receipt_incomplete', null,
       stage === 'review' ? worker.appId : gate.appId, true));
   }
-  const expectedSummary = operatorPassthroughCheckSummary(identity, runId, publicationId, auditDigest);
+  const expectedSummary = operatorPassthroughCheckSummary(identity, runId, publicationId, auditDigest,
+    privilegedChangeScan);
   if (worker.summary !== expectedSummary || gate.summary !== expectedSummary) {
     const stage = worker.summary !== expectedSummary ? 'review' : 'gate';
     const check = stage === 'review' ? worker : gate;
@@ -1145,7 +1205,8 @@ async function loadExistingCheck(
   }
   if (mutation.action !== 'create') unavailable('check_readback_unavailable');
 
-  const summary = operatorPassthroughCheckSummary(identity, runId, publicationId, auditDigest);
+  const summary = operatorPassthroughCheckSummary(identity, runId, publicationId, auditDigest,
+    state.privilegedChangeScan ?? null);
   const response = await context.fetch(`https://api.github.com/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/check-runs`, {
     method: 'POST',
     headers: { ...githubHeaders(token), 'Content-Type': 'application/json' },
@@ -1190,9 +1251,11 @@ async function completeCheck(
   auditDigest: string,
   check: PublishedCheck,
   token: string,
-  context: DeadlineContext
+  context: DeadlineContext,
+  privilegedChangeScan: PrivilegedChangeScan | null
 ): Promise<void> {
-  const expectedSummary = operatorPassthroughCheckSummary(identity, runId, publicationId, auditDigest);
+  const expectedSummary = operatorPassthroughCheckSummary(identity, runId, publicationId, auditDigest,
+    privilegedChangeScan);
   const current = await getCheckById(check.id, stage, identity, externalId, auditDigest, token, context);
   if (current.status === 'completed') {
     if (current.conclusion !== 'success' || current.title !== checkTitle(stage) || current.summary !== expectedSummary
@@ -1358,7 +1421,8 @@ async function reserveAndCheckPriorOutcome(
   runId: string,
   publicationId: string,
   token: string,
-  context: DeadlineContext
+  context: DeadlineContext,
+  privilegedChangeScan: PrivilegedChangeScan
 ): Promise<{ state: OperatorPassthroughState; priorControlRunIds: string[] }> {
   const spec = reviewSpec(identity, runId);
   await context.guard();
@@ -1375,7 +1439,8 @@ async function reserveAndCheckPriorOutcome(
 
   const reservation = await doRequest<{ accepted?: boolean; reason?: string; state?: OperatorPassthroughState }>(env, runId,
     '/operator-passthrough/reserve', 'POST', context,
-    { version: 'OperatorPassthroughReservation.v1', runId, publicationId, identity, sourceRunId: context.sourceRunId || null });
+    { version: 'OperatorPassthroughReservation.v1', runId, publicationId, identity,
+      sourceRunId: context.sourceRunId || null, privilegedChangeScan });
   if (!reservation.accepted || !stateMatches(reservation.state ?? null, identity, publicationId, runId)) {
     unavailable(reservation.reason === 'cancel_requested' ? 'cancel_requested' : 'durable_state_unavailable');
   }
@@ -1544,7 +1609,8 @@ async function readPublishedWithContext(
   let pair: { worker: PublishedCheck; gate: PublishedCheck };
   try {
     pair = await verifyCheckPair(resolved.identity, resolved.runId, resolved.publicationId, receipt.auditDigest,
-      receipt.workerCheckId, receipt.gateCheckId, resolved.token, context, readOnlyDiagnostic);
+      receipt.workerCheckId, receipt.gateCheckId, resolved.token, context,
+      state.privilegedChangeScan ?? null, readOnlyDiagnostic);
   } catch (error) {
     if (!readOnlyDiagnostic) throw error;
     const observation = error instanceof PassthroughUnavailable && error.diagnostic
@@ -1601,7 +1667,11 @@ async function publishWithContext(
     const resolved = await resolveIdentity(env, parseTarget(target), context);
     ({ identity, runId, publicationId } = resolved);
     verifyExpectedCandidate(resolved.candidate, expected);
-    const admission = await reserveAndCheckPriorOutcome(env, identity, runId, publicationId, resolved.token, context);
+    // REL-3357: classify the exact diff once, persist it with the reservation, and
+    // render it into both passthrough checks. This does not start a review.
+    const privilegedChangeScan = await scanCandidatePrivilegedChanges(identity, resolved.token, context);
+    const admission = await reserveAndCheckPriorOutcome(env, identity, runId, publicationId, resolved.token, context,
+      privilegedChangeScan);
     durableState = admission.state;
     if (durableState.cancelRequested) unavailable('cancel_requested');
     if (durableState.receipt?.status === 'succeeded') {
@@ -1622,9 +1692,12 @@ async function publishWithContext(
     durableState = afterGate.state;
     if (!stateMatches(durableState, identity, publicationId, runId) || durableState.cancelRequested) unavailable('cancel_requested');
 
-    await completeCheck(env, runId, publicationId, identity, 'review', external.worker, auditDigest, worker, resolved.token, context);
-    await completeCheck(env, runId, publicationId, identity, 'gate', external.gate, auditDigest, gate, resolved.token, context);
-    const pair = await verifyCheckPair(identity, runId, publicationId, auditDigest, worker.id, gate.id, resolved.token, context);
+    await completeCheck(env, runId, publicationId, identity, 'review', external.worker, auditDigest, worker,
+      resolved.token, context, durableState.privilegedChangeScan ?? null);
+    await completeCheck(env, runId, publicationId, identity, 'gate', external.gate, auditDigest, gate,
+      resolved.token, context, durableState.privilegedChangeScan ?? null);
+    const pair = await verifyCheckPair(identity, runId, publicationId, auditDigest, worker.id, gate.id,
+      resolved.token, context, durableState.privilegedChangeScan ?? null);
 
     if (!await currentCoordinatesStillMatch(env, resolved.candidate, identity, resolved.token,
       resolved.policyToken, resolved.source, context)) unavailable('current_candidate_changed');
@@ -1757,7 +1830,7 @@ async function readPriorRunForHead(
     unavailable('check_readback_unavailable');
   }
   await verifyCheckPair(prior, runId, derived.publicationId, receipt.auditDigest,
-    receipt.workerCheckId, receipt.gateCheckId, resolved.token, context);
+    receipt.workerCheckId, receipt.gateCheckId, resolved.token, context, state.privilegedChangeScan ?? null);
   // The head, PR and policy must still be current. The base is deliberately not compared.
   const identities = await resolveRepositoryIdentities(env, context);
   const now = await currentCandidate({ owner: current.owner, repo: current.repo, prNumber: current.prNumber },
