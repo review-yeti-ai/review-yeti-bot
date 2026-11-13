@@ -12,11 +12,35 @@ import type {
   OperatorPassthroughStageMutation,
   OperatorPassthroughState,
 } from './operatorPassthroughTypes.js';
+import type { PrivilegedChangeScan } from './privilegedChangeScan.js';
 import { reviewAppIdForRepository } from './reviewAppAuthority.js';
 import { isPassthroughExemptRepository } from './passthroughAdmission.js';
 
 const OPERATOR_PASSTHROUGH_STATE_KEY = 'operatorPassthrough.v2';
 const OPERATOR_PASSTHROUGH_LINK_KEY = 'operatorPassthroughLink.v1';
+
+/** Validate the diff-derived scan accepted with a reservation (REL-3357). */
+function validPrivilegedChangeScan(value: unknown): value is PrivilegedChangeScan | null | undefined {
+  if (value === undefined || value === null) return true;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const scan = value as Record<string, unknown>;
+  if (scan.version !== 'PrivilegedChangeScan.v1') return false;
+  if (scan.status === 'unavailable') {
+    return typeof scan.reason === 'string' && /^[a-z_]{1,64}$/u.test(scan.reason);
+  }
+  if (scan.status !== 'complete') return false;
+  if (!Number.isSafeInteger(scan.filesScanned) || (scan.filesScanned as number) < 0
+    || (scan.filesScanned as number) > 100_000) return false;
+  if (typeof scan.truncated !== 'boolean' || !Array.isArray(scan.findings)) return false;
+  if (scan.findings.length > 20) return false;
+  return scan.findings.every((finding) => {
+    if (!finding || typeof finding !== 'object' || Array.isArray(finding)) return false;
+    const entry = finding as Record<string, unknown>;
+    return typeof entry.rule === 'string' && /^[a-z][a-z-]{1,40}$/u.test(entry.rule)
+      && typeof entry.file === 'string' && entry.file.length > 0 && entry.file.length <= 512
+      && typeof entry.detail === 'string' && entry.detail.length > 0 && entry.detail.length <= 256;
+  });
+}
 
 /**
  * A reservation that never reached a GitHub check (no stage created or patched, no
@@ -164,6 +188,7 @@ export class ReviewRunDO {
     publicationId: string;
     identity: OperatorPassthroughIdentity;
     sourceRunId?: string | null;
+    privilegedChangeScan?: PrivilegedChangeScan | null;
   }): Promise<{ accepted: boolean; state?: OperatorPassthroughState; reason?: string }> {
     await this.ensureInitialized();
     if (input.version !== 'OperatorPassthroughReservation.v1'
@@ -171,6 +196,7 @@ export class ReviewRunDO {
       || !/^[a-f0-9]{64}$/u.test(input.publicationId)
       || (input.sourceRunId !== undefined && input.sourceRunId !== null
         && !/^run_[A-Za-z0-9_-]{1,128}$/u.test(input.sourceRunId))
+      || !validPrivilegedChangeScan(input.privilegedChangeScan)
       || !this.validOperatorPassthroughIdentity(input.identity)) {
       return { accepted: false, reason: 'invalid_identity' };
     }
@@ -224,6 +250,7 @@ export class ReviewRunDO {
             createdAt: Date.now(),
             priorOutcomeChecked: false,
             priorControlRunIds: [],
+            privilegedChangeScan: existing.privilegedChangeScan ?? input.privilegedChangeScan ?? null,
             stages: {
               review: { creationState: 'not_started', checkId: null, patchState: 'not_started' },
               gate: { creationState: 'not_started', checkId: null, patchState: 'not_started' },
@@ -234,7 +261,16 @@ export class ReviewRunDO {
           return { accepted: true as const, state: rebound };
         }
         if (!existing.sourceRunId && input.sourceRunId) {
-          const next = { ...existing, sourceRunId: input.sourceRunId };
+          const next = {
+            ...existing,
+            sourceRunId: input.sourceRunId,
+            privilegedChangeScan: existing.privilegedChangeScan ?? input.privilegedChangeScan ?? null,
+          };
+          await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, next);
+          return { accepted: true as const, state: next };
+        }
+        if (!existing.privilegedChangeScan && input.privilegedChangeScan && isUnpublishedReservation(existing)) {
+          const next = { ...existing, privilegedChangeScan: input.privilegedChangeScan };
           await transaction.put(OPERATOR_PASSTHROUGH_STATE_KEY, next);
           return { accepted: true as const, state: next };
         }
@@ -253,6 +289,7 @@ export class ReviewRunDO {
         cancelRequested: false,
         priorOutcomeChecked: false,
         priorControlRunIds: [],
+        privilegedChangeScan: input.privilegedChangeScan ?? null,
         stages: {
           review: { creationState: 'not_started', checkId: null, patchState: 'not_started' },
           gate: { creationState: 'not_started', checkId: null, patchState: 'not_started' },

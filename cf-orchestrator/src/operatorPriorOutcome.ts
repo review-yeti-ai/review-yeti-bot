@@ -253,7 +253,8 @@ async function isVerifiedSiblingPassthroughPair(
     runId,
     executionAttempt: 1,
   })}${OPERATOR_PASSTHROUGH_EXTERNAL_SUFFIX}`;
-  const summary = operatorPassthroughCheckSummary(identity, runId, publicationId, receipt.auditDigest);
+  const summary = operatorPassthroughCheckSummary(identity, runId, publicationId, receipt.auditDigest,
+    state.privilegedChangeScan ?? null);
   if (!readbackCheckMatches(worker, workerReceipt, REVIEW_WORKER_CHECK_NAME, workerExternalId,
     identity, OPERATOR_PASSTHROUGH_REVIEW_TITLE, summary)
     || !readbackCheckMatches(gate, gateReceipt, REVIEW_GATE_CHECK_NAME, gateExternalId,

@@ -1,4 +1,5 @@
 import type { OperatorPassthroughIdentity } from './operatorPassthroughTypes.js';
+import { formatPrivilegedChangeScan, type PrivilegedChangeScan } from './privilegedChangeScan.js';
 
 export const OPERATOR_PASSTHROUGH_EXTERNAL_SUFFIX = ':review-mode=passthrough:op2';
 export const OPERATOR_PASSTHROUGH_SUMMARY_SENTENCE =
@@ -23,9 +24,10 @@ export function operatorPassthroughCheckSummary(
   identity: OperatorPassthroughIdentity,
   runId: string,
   publicationId: string,
-  auditDigest: string
+  auditDigest: string,
+  privilegedChangeScan?: PrivilegedChangeScan | null
 ): string {
-  return [
+  const lines = [
     OPERATOR_PASSTHROUGH_SUMMARY_SENTENCE,
     `Publication ID: ${publicationId}`,
     `Audit digest: ${auditDigest}`,
@@ -36,5 +38,7 @@ export function operatorPassthroughCheckSummary(
     `Current policy digest: ${identity.policyDigest}`,
     `Policy source: ${identity.policySource.owner}/${identity.policySource.repo}@${identity.policySource.sha}:${identity.policySource.path}`,
     `Review run identity: ${runId}`,
-  ].join('\n');
+  ];
+  if (privilegedChangeScan) lines.push('', formatPrivilegedChangeScan(privilegedChangeScan));
+  return lines.join('\n');
 }
