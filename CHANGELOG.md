@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.138.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.5...v1.138.6) (2026-11-13)
+
+
+### Bug Fixes
+
+* **attestation:** accept the same head's passthrough receipt after the base moves ([#1557](https://github.com/review-yeti-ai/review-yeti-bot/issues/1557)) ([5b5e4ba](https://github.com/review-yeti-ai/review-yeti-bot/commit/5b5e4bad1c10038fd5bbd7b4cd90d5c48b984513))
+
 ## [1.138.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.4...v1.138.5) (2026-11-11)
 
 
