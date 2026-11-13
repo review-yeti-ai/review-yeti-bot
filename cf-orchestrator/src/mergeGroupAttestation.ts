@@ -22,7 +22,7 @@
 
 import type { Env } from './types.js';
 import { mergeGroupOperatorPassthroughMode } from './passthroughAdmission.js';
-import { readOperatorPassthroughForTarget } from './operatorPassthroughPublisher.js';
+import { readOperatorPassthroughForHead, readOperatorPassthroughForTarget } from './operatorPassthroughPublisher.js';
 import type { OperatorPassthroughResult } from './operatorPassthroughTypes.js';
 import { getInstallationToken } from './auth/githubEdgeAuth.js';
 import {
@@ -1253,6 +1253,29 @@ export async function readPassthroughReceiptWithRetry<T extends { status: string
 }
 
 /**
+ * Decides one constituent's receipt. The head-keyed read runs first: a publication for this exact head is
+ * accepted whichever base it was published against, which is the case that appears once main has moved.
+ * Only when that read does not accept the head does the current-base read run, with its transient retries.
+ * The retries cannot spend the shared budget on a base-bound miss, because the head read already covered it.
+ */
+export async function readAttestedPassthroughReceipt<T extends { status: string } & PassthroughReadFailureLike>(options: {
+  readHead: () => Promise<T>;
+  readCurrent: () => Promise<T>;
+  accepted: (receipt: T) => boolean;
+  hasTimeLeft: () => boolean;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<T> {
+  const head = await options.readHead();
+  if (options.accepted(head) || !options.hasTimeLeft()) return head;
+  return readPassthroughReceiptWithRetry<T>({
+    read: options.readCurrent,
+    accepted: options.accepted,
+    hasTimeLeft: options.hasTimeLeft,
+    sleep: options.sleep,
+  });
+}
+
+/**
  * Master handler for `merge_group` webhook events in Review Yeti.
  * Executes constituent verification, composite delta hazard scanning, and direct check-run publication.
  */
@@ -1498,8 +1521,13 @@ export async function handleMergeGroupAttestation(
         // One receipt read used to decide the whole queue SHA. A transient read miss
         // (GitHub or Durable Object) is now retried inside the same deadline. Each attempt is a
         // full verification, and only an accepted exact-head receipt passes.
-        const receipt = await readPassthroughReceiptWithRetry<OperatorPassthroughResult>({
-          read: () => {
+        const receipt = await readAttestedPassthroughReceipt<OperatorPassthroughResult>({
+          readHead: () => {
+            const left = Math.max(1, Math.floor(deadline - performance.now()));
+            return readOperatorPassthroughForHead(env, { owner, repo, prNumber: pr.number }, pr.head_sha,
+              { fetchFn: boundedFetch, timeoutMs: Math.min(left, budget), signal: controller.signal });
+          },
+          readCurrent: () => {
             const left = Math.max(1, Math.floor(deadline - performance.now()));
             return readOperatorPassthroughForTarget(env, { owner, repo, prNumber: pr.number }, {
               headSha: pr.head_sha,

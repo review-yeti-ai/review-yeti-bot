@@ -7,6 +7,7 @@ import {
   publishOperatorPassthroughForTarget,
   publishOperatorPassthrough,
   readOperatorPassthroughByRunId,
+  readOperatorPassthroughForHead,
   readOperatorPassthroughForTarget,
 } from '../src/operatorPassthroughPublisher.js';
 import { assertNoBlockingPriorOutcome } from '../src/operatorPriorOutcome.js';
@@ -363,6 +364,12 @@ function createTestEnv(options: GithubMockOptions = {}) {
       pull.state = state;
     },
     setPrivateOnRepositoryRead: (read: number | undefined) => { privateOnRead = read; },
+    setPullRefs: (prNumber: number, refs: { headSha?: string; baseSha?: string }) => {
+      const pull = pullTargets.get(prNumber);
+      if (!pull) throw new Error(`unknown test pull request ${prNumber}`);
+      if (refs.headSha) pull.headSha = refs.headSha;
+      if (refs.baseSha) pull.baseSha = refs.baseSha;
+    },
     setPolicySha: (sha: string | undefined) => { currentPolicySha = sha; },
     setCheckReadFailureStatus: (status: number | undefined) => { checkReadFailureStatus = status; },
     cancelOnNextReviewRead: () => { cancelOnReviewRead = counts.reviewReads + 1; },
@@ -1939,5 +1946,71 @@ describe('Edge operator passthrough publication', () => {
     assert.equal(receipt.status, 'unavailable');
     assert.equal(receipt.errorCode, 'audit_unavailable');
     assert.equal(receipt.mergeEligible, false);
+  });
+});
+
+describe('Head-keyed passthrough receipt read (REL-3332: base moved after the receipt)', () => {
+  const target = { owner: OWNER, repo: REPO, prNumber: 42 };
+
+  it('accepts the App publication for the same head after main moves, while the current-base read refuses it', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const published = await publishOperatorPassthroughForTarget(mock.env, target, { fetchFn: mock.fetchFn });
+    assert.equal(published.status, 'succeeded', JSON.stringify(published));
+    mock.setPullRefs(42, { baseSha: BASE_B });
+
+    const current = await readOperatorPassthroughForTarget(mock.env, target, { headSha: HEAD_A }, { fetchFn: mock.fetchFn });
+    assert.equal(current.mergeEligible, false, 'the current-base read cannot see a publication bound to the old base');
+
+    const head = await readOperatorPassthroughForHead(mock.env, target, HEAD_A, { fetchFn: mock.fetchFn });
+    assert.equal(head.status, 'succeeded', JSON.stringify(head));
+    assert.equal(head.mergeEligible, true);
+    assert.equal(head.publicationReceiptAvailable, true);
+    assert.equal(head.headSha, HEAD_A);
+    assert.equal(head.baseSha, BASE_A, 'the receipt keeps the base it was published against');
+    assert.equal(head.runId, published.runId);
+  });
+
+  it('refuses when the head has moved since the receipt', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    await publishOperatorPassthroughForTarget(mock.env, target, { fetchFn: mock.fetchFn });
+    mock.setPullRefs(42, { headSha: HEAD_B, baseSha: BASE_B });
+
+    const head = await readOperatorPassthroughForHead(mock.env, target, HEAD_A, { fetchFn: mock.fetchFn });
+    assert.equal(head.mergeEligible, false);
+    assert.equal(head.errorCode, 'current_candidate_changed');
+  });
+
+  it('refuses when no App publication exists for the head', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const head = await readOperatorPassthroughForHead(mock.env, target, HEAD_A, { fetchFn: mock.fetchFn });
+    assert.equal(head.mergeEligible, false);
+    assert.equal(head.errorCode, 'check_readback_unavailable');
+  });
+
+  it('refuses a publication that belongs to another App', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    await publishOperatorPassthroughForTarget(mock.env, target, { fetchFn: mock.fetchFn });
+    mock.setPullRefs(42, { baseSha: BASE_B });
+    for (const check of mock.checks.values()) check.app.id = 999999;
+
+    const head = await readOperatorPassthroughForHead(mock.env, target, HEAD_A, { fetchFn: mock.fetchFn });
+    assert.equal(head.mergeEligible, false);
+    assert.equal(head.errorCode, 'check_readback_unavailable');
+  });
+
+  it('refuses after the policy changed, even with the same head', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    await publishOperatorPassthroughForTarget(mock.env, target, { fetchFn: mock.fetchFn });
+    mock.setPullRefs(42, { baseSha: BASE_B });
+    mock.setPolicySha(POLICY_SHA_B);
+
+    const head = await readOperatorPassthroughForHead(mock.env, target, HEAD_A, { fetchFn: mock.fetchFn });
+    assert.equal(head.mergeEligible, false);
+    assert.equal(head.errorCode, 'current_candidate_changed');
   });
 });

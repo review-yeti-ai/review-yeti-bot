@@ -1659,6 +1659,128 @@ async function readForTargetWithContext(
   }
 }
 
+/** Most prior App publications on one head that a head-keyed read verifies (one per base the head was published against). */
+const HEAD_RECEIPT_CANDIDATE_LIMIT = 4;
+const WORKER_RUN_EXTERNAL_ID_RE = /^(run_[A-Za-z0-9_-]{1,128}):a[1-9][0-9]*(?::review-mode=passthrough:op2)?$/u;
+
+/**
+ * Head-keyed read: the durable passthrough receipt for `headSha`, whichever base it was published against.
+ *
+ * A publication's durable identity includes the base SHA, so once the base moves the current-base read
+ * (`readOperatorPassthroughForTarget`) can only see a publication for the new base, and none exists until
+ * the PR is republished. This read finds the App's prior publications on the head from the head's own check
+ * runs and verifies each one with the same checks as the current read. The only comparison relaxed is the
+ * base SHA. Head, repository, PR, App, policy digest, durable state, the exact check pair and the
+ * prior-outcome set must all still match, and the head and PR must still be open.
+ */
+export async function readOperatorPassthroughForHead(
+  env: Env,
+  target: OperatorPassthroughTarget,
+  headSha: string,
+  options: OperatorPassthroughOptions = {}
+): Promise<OperatorPassthroughResult> {
+  const context = makeDeadline(env, options);
+  try { return await readForHeadWithContext(env, target, headSha.toLowerCase(), context); }
+  catch (error) {
+    const code = error instanceof PassthroughUnavailable ? error.code : 'authoritative_read_unavailable';
+    return responseFromReceipt(null, code);
+  } finally { context.dispose(); }
+}
+
+async function readForHeadWithContext(
+  env: Env,
+  target: OperatorPassthroughTarget,
+  headSha: string,
+  context: DeadlineContext
+): Promise<OperatorPassthroughResult> {
+  const resolved = await resolveIdentity(env, parseTarget(target), context);
+  if (resolved.identity.headSha !== headSha) unavailable('current_candidate_changed');
+  const checks = await listChecks(resolved.identity, resolved.token, context);
+  let failure: ErrorCode = 'check_readback_unavailable';
+  for (const runId of priorWorkerRunIds(checks, resolved.identity.appId)) {
+    try {
+      return await readPriorRunForHead(env, resolved, runId, context);
+    } catch (error) {
+      // The shared budget is spent, so trying further publications cannot help.
+      if (error instanceof PassthroughUnavailable && error.code === 'deadline_exceeded') throw error;
+      failure = error instanceof PassthroughUnavailable ? error.code : 'authoritative_read_unavailable';
+    }
+  }
+  return responseFromReceipt(null, failure);
+}
+
+/** Run ids of this App's worker checks on the head, newest first. Other apps' checks never qualify. */
+function priorWorkerRunIds(checks: any[], appId: number): string[] {
+  const startedAt = new Map<string, string>();
+  for (const check of checks) {
+    if (check?.name !== REVIEW_WORKER_CHECK_NAME || Number(check?.app?.id) !== appId) continue;
+    const match = typeof check.external_id === 'string' ? WORKER_RUN_EXTERNAL_ID_RE.exec(check.external_id) : null;
+    if (!match) continue;
+    const started = typeof check.started_at === 'string' ? check.started_at : '';
+    const previous = startedAt.get(match[1]);
+    if (previous === undefined || started > previous) startedAt.set(match[1], started);
+  }
+  return [...startedAt.entries()]
+    .sort((left, right) => (left[1] < right[1] ? 1 : left[1] > right[1] ? -1 : 0))
+    .slice(0, HEAD_RECEIPT_CANDIDATE_LIMIT)
+    .map(([runId]) => runId);
+}
+
+async function readPriorRunForHead(
+  env: Env,
+  resolved: Awaited<ReturnType<typeof resolveIdentity>>,
+  runId: string,
+  context: DeadlineContext
+): Promise<OperatorPassthroughResult> {
+  const current = resolved.identity;
+  const stored = await readDurableState(env, runId, context);
+  const state = stored.state;
+  if (stored.link || !state || state.version !== 'OperatorPassthroughState.v2' || state.runId !== runId) {
+    unavailable('durable_state_unavailable');
+  }
+  const prior = state.identity;
+  // Same head, repository, PR, App and policy. Only the base may differ from the current candidate.
+  if (prior.headSha !== current.headSha || prior.repositoryId !== current.repositoryId
+    || prior.owner !== current.owner || prior.repo !== current.repo || prior.prNumber !== current.prNumber
+    || prior.appId !== current.appId || prior.isPrivate !== current.isPrivate
+    || prior.policyDigest !== current.policyDigest || stableJson(prior.policySource) !== stableJson(current.policySource)) {
+    unavailable('current_candidate_changed');
+  }
+  const derived = await shaIdentity(prior);
+  if (derived.runId !== runId || !stateMatches(state, prior, derived.publicationId, runId)) unavailable('audit_unavailable');
+  if (state.cancelRequested) unavailable('cancel_requested');
+  const receipt = state.receipt;
+  if (!receipt || receipt.status !== 'succeeded' || !receipt.mergeEligible || receipt.publicationState !== 'published'
+    || receipt.reason !== 'operator_global_passthrough' || receipt.runId !== runId || receipt.headSha !== prior.headSha
+    || receipt.appId !== prior.appId || receipt.policyDigest !== prior.policyDigest
+    || receipt.auditDigest === null || receipt.workerCheckId === null || receipt.gateCheckId === null) {
+    unavailable('check_readback_unavailable');
+  }
+  await verifyCheckPair(prior, runId, derived.publicationId, receipt.auditDigest,
+    receipt.workerCheckId, receipt.gateCheckId, resolved.token, context);
+  // The head, PR and policy must still be current. The base is deliberately not compared.
+  const identities = await resolveRepositoryIdentities(env, context);
+  const now = await currentCandidate({ owner: current.owner, repo: current.repo, prNumber: current.prNumber },
+    identities, resolved.token, context);
+  if (now.headSha !== current.headSha || now.repositoryId !== current.repositoryId || !now.open || now.draft) {
+    unavailable('current_candidate_changed');
+  }
+  if (!await policyRevisionIsCurrent(resolved.source, prior.policySource, resolved.policyToken, context)) {
+    unavailable('current_candidate_changed');
+  }
+  const durable = await readDurableState(env, runId, context);
+  if (!stateMatches(durable.state, prior, derived.publicationId, runId)) unavailable('audit_unavailable');
+  if (durable.state.cancelRequested) unavailable('cancel_requested');
+  if (durable.state.receipt?.auditDigest !== receipt.auditDigest
+    || durable.state.receipt?.workerCheckId !== receipt.workerCheckId
+    || durable.state.receipt?.gateCheckId !== receipt.gateCheckId
+    || durable.state.receipt?.mergeEligible !== true) {
+    unavailable('audit_unavailable');
+  }
+  await assertPriorOutcomeUnchanged(env, prior, durable.state, durable.state.priorControlRunIds, resolved.token, context);
+  return readDurableSuccessReceipt(env, context, prior, runId, derived.publicationId, receipt);
+}
+
 async function publishOperatorPassthroughForTargetInternal(
   env: Env,
   target: OperatorPassthroughTarget,

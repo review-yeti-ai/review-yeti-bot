@@ -16,6 +16,7 @@ import {
   isTransientPassthroughReadCode,
   passthroughReceiptAccepted,
   readPassthroughReceiptWithRetry,
+  readAttestedPassthroughReceipt,
   mergeGroupOutcomeLogLine,
   isTransientPassthroughRead,
   describePassthroughReadFailure,
@@ -2441,5 +2442,101 @@ describe('paused passthrough read failure category', () => {
     };
     const logged = JSON.parse(mergeGroupOutcomeLogLine(outcome));
     assert.match(logged.readFailure, /category=identity_mismatch/);
+  });
+});
+
+describe('attested passthrough receipt: head-keyed read first (REL-3332)', () => {
+  const HEAD = '0123456789abcdef0123456789abcdef01234567';
+  const OTHER_HEAD = 'fedcba9876543210fedcba9876543210fedcba98';
+  const accepted = (receipt: any) => passthroughReceiptAccepted(receipt, 'Exampleorg', 'Sample-Repo', HEAD);
+  const success = {
+    version: 'OperatorPassthroughReceipt.v2',
+    status: 'succeeded',
+    mergeEligible: true,
+    publicationReceiptAvailable: true,
+    owner: 'Exampleorg',
+    repo: 'Sample-Repo',
+    headSha: HEAD,
+    baseSha: '1111111111111111111111111111111111111111',
+  } as any;
+  const failed = (errorCode: string) => ({ status: 'unavailable', mergeEligible: false, errorCode }) as any;
+  const noSleep = async () => {};
+
+  it('accepts the head read on its own when the same head was published against an older base', async () => {
+    let currentReads = 0;
+    const result = await readAttestedPassthroughReceipt<any>({
+      readHead: async () => success,
+      readCurrent: async () => { currentReads += 1; return failed('durable_state_unavailable'); },
+      accepted,
+      hasTimeLeft: () => true,
+      sleep: noSleep,
+    });
+    assert.equal(result, success);
+    assert.equal(currentReads, 0, 'the current-base read is not needed once the head is accepted');
+  });
+
+  it('falls back to the current-base read when the head read has no accepted receipt', async () => {
+    let currentReads = 0;
+    const result = await readAttestedPassthroughReceipt<any>({
+      readHead: async () => failed('check_readback_unavailable'),
+      readCurrent: async () => { currentReads += 1; return currentReads === 2 ? success : failed('durable_state_unavailable'); },
+      accepted,
+      hasTimeLeft: () => true,
+      sleep: noSleep,
+    });
+    assert.equal(result, success);
+    assert.equal(currentReads, 2);
+  });
+
+  it('retries a transient head-read failure through the current-base read instead of hard failing', async () => {
+    let currentReads = 0;
+    const result = await readAttestedPassthroughReceipt<any>({
+      readHead: async () => failed('authoritative_read_unavailable'),
+      readCurrent: async () => { currentReads += 1; return currentReads === 1 ? failed('durable_state_unavailable') : success; },
+      accepted,
+      hasTimeLeft: () => true,
+      sleep: noSleep,
+    });
+    assert.equal(result, success);
+    assert.equal(currentReads, 2, 'the transient current-base miss is retried');
+  });
+
+  it('refuses when the current-base read reports a different head, and does not retry it', async () => {
+    let currentReads = 0;
+    const result = await readAttestedPassthroughReceipt<any>({
+      readHead: async () => failed('current_candidate_changed'),
+      readCurrent: async () => { currentReads += 1; return { ...success, headSha: OTHER_HEAD }; },
+      accepted,
+      hasTimeLeft: () => true,
+      sleep: noSleep,
+    });
+    assert.equal(accepted(result), false);
+    assert.equal(currentReads, 1);
+  });
+
+  it('refuses when no App receipt exists for the head on either read, within the bounded attempts', async () => {
+    let reads = 0;
+    const result = await readAttestedPassthroughReceipt<any>({
+      readHead: async () => failed('check_readback_unavailable'),
+      readCurrent: async () => { reads += 1; return failed('durable_state_unavailable'); },
+      accepted,
+      hasTimeLeft: () => true,
+      sleep: noSleep,
+    });
+    assert.equal(accepted(result), false);
+    assert.equal(reads, PASSTHROUGH_RECEIPT_READ_ATTEMPTS);
+  });
+
+  it('does not start the current-base read once the budget is spent', async () => {
+    let currentReads = 0;
+    const result = await readAttestedPassthroughReceipt<any>({
+      readHead: async () => failed('check_readback_unavailable'),
+      readCurrent: async () => { currentReads += 1; return success; },
+      accepted,
+      hasTimeLeft: () => false,
+      sleep: noSleep,
+    });
+    assert.equal(accepted(result), false);
+    assert.equal(currentReads, 0);
   });
 });
