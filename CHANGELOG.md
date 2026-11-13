@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.139.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.6...v1.139.0) (2026-11-13)
+
+
+### Features
+
+* **cf-orchestrator:** show privileged changes in passthrough SHIP summaries ([#1559](https://github.com/review-yeti-ai/review-yeti-bot/issues/1559)) ([3d5a636](https://github.com/review-yeti-ai/review-yeti-bot/commit/3d5a636e1f34b4d9ec56512e9bc303cb63b58054))
+
 ## [1.138.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.5...v1.138.6) (2026-11-13)
 
 
