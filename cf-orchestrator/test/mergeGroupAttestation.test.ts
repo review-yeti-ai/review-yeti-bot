@@ -2540,3 +2540,83 @@ describe('attested passthrough receipt: head-keyed read first (REL-3332)', () =>
     assert.equal(currentReads, 0);
   });
 });
+
+  describe('Unexpected verification errors still publish the v2 queue check', () => {
+    const headSha = 'aaaaaaaabbbbbbbbccccccccddddddddeeeeeeee';
+    const payload: MergeGroupPayload = {
+      action: 'checks_requested',
+      merge_group: {
+        head_sha: headSha,
+        head_ref: 'refs/heads/gh-readonly-queue/main/pr-4836-aaaaaaaa',
+        base_ref: 'refs/heads/main',
+        base_sha: 'base000000000000000000000000000000000000',
+      },
+      repository: {
+        name: 'sample-repo',
+        full_name: 'example-org/sample-repo',
+        owner: { login: 'example-org' },
+      },
+    };
+
+    it('publishes a blocked failure check on the merge-group SHA when verification throws unexpectedly', async () => {
+      const publishedCheckRuns: any[] = [];
+      const mockFetch: typeof fetch = async (input, init) => {
+        const urlStr = typeof input === 'string' ? input : (input as any).url || (input as any).href || String(input);
+        if (urlStr.endsWith('/check-runs') && init?.method === 'POST') {
+          const body = JSON.parse(init.body as string);
+          publishedCheckRuns.push(body);
+          return Response.json({ id: 9999, ...body });
+        }
+        if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(urlStr)) {
+          return Response.json({ id: 1232078607 });
+        }
+        return new Response('Not found', { status: 404 });
+      };
+      // A binding read that explodes is the class of failure no anticipated path catches:
+      // without the ingress wrapper the webhook 500s and the synthetic head carries no check.
+      const env = createMockEnv();
+      Object.defineProperty(env, 'OPERATOR_GLOBAL_PASSTHROUGH', {
+        get() { throw new Error('simulated binding read failure'); },
+      });
+
+      const outcome = await handleMergeGroupAttestation(payload, env, mockFetch);
+      assert.equal(outcome.status, 'blocked');
+      assert.equal(outcome.conclusion, 'failure');
+      assert.equal(outcome.headSha, headSha);
+
+      assert.equal(publishedCheckRuns.length, 1);
+      const published = publishedCheckRuns[0];
+      assert.equal(published.name, 'Review Yeti');
+      assert.equal(published.head_sha, headSha);
+      assert.match(published.external_id,
+        new RegExp(`^review-yeti-merge-group:v2:1232078607:${headSha}:[0-9a-f]{64}$`));
+      assert.equal(published.status, 'completed');
+      assert.equal(published.conclusion, 'failure');
+      assert.equal(published.output.title, 'Review Yeti (Merge Group Attestation)');
+      assert.match(published.output.summary, /unexpected verification error/);
+    });
+
+    it('still throws for malformed payloads that no check can bind to', async () => {
+      const mockFetch: typeof fetch = async () => new Response('Not found', { status: 404 });
+      await assert.rejects(
+        handleMergeGroupAttestation({ action: 'checks_requested' }, createMockEnv(), mockFetch),
+        /merge_group|repository/,
+      );
+    });
+
+    it('rethrows the original error when no token exists to publish with', async () => {
+      const publishedCheckRuns: any[] = [];
+      const mockFetch: typeof fetch = async (input, init) => {
+        const urlStr = typeof input === 'string' ? input : (input as any).url || String(input);
+        if (urlStr.endsWith('/check-runs') && init?.method === 'POST') {
+          publishedCheckRuns.push(JSON.parse(init.body as string));
+          return Response.json({ id: 9999 });
+        }
+        throw new Error('simulated GraphQL outage');
+      };
+      await assert.rejects(
+        handleMergeGroupAttestation(payload, createMockEnv({ GITHUB_TOKEN: '' }), mockFetch),
+      );
+      assert.equal(publishedCheckRuns.length, 0);
+    });
+  });

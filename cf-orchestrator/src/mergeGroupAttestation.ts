@@ -1278,8 +1278,59 @@ export async function readAttestedPassthroughReceipt<T extends { status: string 
 /**
  * Master handler for `merge_group` webhook events in Review Yeti.
  * Executes constituent verification, composite delta hazard scanning, and direct check-run publication.
+ *
+ * Exported ingress wrapper. `runMergeGroupAttestation` still throws for malformed payloads and
+ * missing credentials, but every unexpected error after the repository identity is known must
+ * still leave a service-published v2 check on the synthetic merge-group head. The queue consumer
+ * reads check-run evidence on that exact SHA; a bare 500 leaves zero Review Yeti records there,
+ * which the consumer can only treat as a missing attestation. A published blocked verdict keeps
+ * the queue-level assertion fail-closed while leaving a durable, inspectable record.
  */
 export async function handleMergeGroupAttestation(
+  payload: MergeGroupPayload,
+  env: Env,
+  fetchFn: typeof fetch = fetch,
+  mockPrFiles?: Map<number, Array<{ filename: string; patch?: string; status?: string }>>,
+  mockBaseDriftFiles?: Array<{ filename: string; patch?: string; status?: string }>
+): Promise<AttestationOutcome> {
+  try {
+    return await runMergeGroupAttestation(payload, env, fetchFn, mockPrFiles, mockBaseDriftFiles);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const mergeGroup = payload?.merge_group;
+    const repository = payload?.repository;
+    const headSha = typeof mergeGroup?.head_sha === 'string' ? mergeGroup.head_sha.trim() : '';
+    const fullName = typeof repository?.full_name === 'string' ? repository.full_name.trim() : '';
+    const owner = repository?.owner?.login || fullName.split('/')[0] || '';
+    const repo = repository?.name || fullName.split('/')[1] || '';
+    const repoId = Number(repository?.id);
+    const repositoryId = Number.isSafeInteger(repoId) && repoId > 0 ? String(repoId) : undefined;
+    // Without an exact head SHA and repository identity there is nothing a check can bind to;
+    // keep the original error so ingress still rejects malformed payloads.
+    if (!headSha || !owner || !repo) throw err;
+    let token: string | null | undefined;
+    try {
+      token = env.GITHUB_TOKEN || await getInstallationToken(env, owner, repo);
+    } catch {
+      token = undefined;
+    }
+    if (!token) throw err;
+    // The failure publish must outlive whatever deadline or abort killed verification.
+    const publishFetch: typeof fetch = (input, init = {}) =>
+      fetchFn(input, { ...init, signal: AbortSignal.timeout(10_000) });
+    return await createBlockedOutcome({
+      repositoryId,
+      owner,
+      repo,
+      headSha,
+      token,
+      fetchFn: publishFetch,
+      summary: `Merge group attestation blocked: unexpected verification error: ${message.slice(0, 500)}`,
+    });
+  }
+}
+
+async function runMergeGroupAttestation(
   payload: MergeGroupPayload,
   env: Env,
   fetchFn: typeof fetch = fetch,
