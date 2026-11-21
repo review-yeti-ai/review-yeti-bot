@@ -182,7 +182,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
       assert.match(result.blockerReason!, /did not return current PR #102 exactly once/);
     });
 
-    it('fails closed when constituent PR is UNMERGEABLE or LOCKED', async () => {
+    it('keeps an UNMERGEABLE constituent in the group for its own exact-head evidence check', async () => {
       const mockGraphQLResponse = {
         data: {
           repository: {
@@ -215,8 +215,8 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
         fetchFn: mockFetch,
       });
 
-      assert.equal(result.passed, false);
-      assert.match(result.blockerReason!, /is not mergeable \(UNMERGEABLE\)/);
+      assert.equal(result.passed, true);
+      assert.deepEqual(result.prs.map((p) => [p.number, p.state]), [[101, 'UNMERGEABLE']]);
     });
   });
 
@@ -2538,5 +2538,133 @@ describe('attested passthrough receipt: head-keyed read first (REL-3332)', () =>
     });
     assert.equal(accepted(result), false);
     assert.equal(currentReads, 0);
+  });
+});
+
+describe('UNMERGEABLE queue member is judged on its own exact-head evidence', () => {
+  const BASE = 'b'.repeat(40);
+  const REPO_ID = 1232078607;
+  const passingCheck = (id: number) => ({
+    id,
+    name: REQUIRED_CHECK_NAME,
+    status: 'completed',
+    conclusion: 'success',
+    started_at: '2026-11-21T18:00:00Z',
+    external_id: `run_${'c'.repeat(32)}:a1`,
+    app: { id: Number(DEFAULT_REQUIRED_APP_ID) },
+  });
+  const blockingCheck = (id: number) => ({ ...passingCheck(id), conclusion: 'failure' });
+
+  interface Member {
+    number: number;
+    state: string;
+    sha: string;
+    checks: any[];
+  }
+
+  // Builds a merge-group run whose queue members are listed in position order; the last member is the current PR.
+  function runMergeGroup(members: Member[]) {
+    const current = members[members.length - 1];
+    const payload: MergeGroupPayload = {
+      action: 'checks_requested',
+      merge_group: {
+        head_sha: 'f'.repeat(40),
+        head_ref: `refs/heads/gh-readonly-queue/main/pr-${current.number}-${current.sha.slice(0, 8)}`,
+        base_ref: 'refs/heads/main',
+        base_sha: BASE,
+      },
+      repository: { name: 'sample-repo', full_name: 'example-org/sample-repo', owner: { login: 'example-org' } },
+    };
+    const publications: any[] = [];
+    const mockFetch: typeof fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : (input as any).url || String(input);
+      if (url.includes('/graphql')) {
+        return Response.json({
+          data: {
+            repository: {
+              mergeQueue: {
+                entries: {
+                  nodes: members.map((m, i) => ({
+                    position: i + 1,
+                    state: m.state,
+                    pullRequest: { number: m.number, headRefOid: m.sha, baseRefOid: BASE },
+                  })),
+                },
+              },
+            },
+          },
+        });
+      }
+      const commit = /\/commits\/([0-9a-f]{40})\/check-runs/.exec(url);
+      if (commit) {
+        return Response.json({ check_runs: members.find((m) => m.sha === commit[1])?.checks ?? [] });
+      }
+      if (url.endsWith('/check-runs') && init?.method === 'POST') {
+        const body = JSON.parse(init.body as string);
+        publications.push(body);
+        return Response.json({ id: 9999, ...body });
+      }
+      if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(url)) {
+        return Response.json({ id: REPO_ID });
+      }
+      return new Response('Not found', { status: 404 });
+    };
+    // Distinct, non-drifting file sets keep the composite hazard scan clean for every member.
+    const mockPrFiles = new Map(members.map((m) => [m.number, [{ filename: `docs/member-${m.number}.md`, status: 'modified' }]]));
+    return handleMergeGroupAttestation(payload, createMockEnv(), mockFetch, mockPrFiles as any).then((outcome) => ({ outcome, publications }));
+  }
+
+  const sha = (c: string) => c.repeat(40);
+
+  it('attests a group whose UNMERGEABLE member has valid exact-head evidence, so its clean siblings are not failed', async () => {
+    const { outcome, publications } = await runMergeGroup([
+      { number: 101, state: 'MERGEABLE', sha: sha('1'), checks: [passingCheck(1)] },
+      { number: 102, state: 'UNMERGEABLE', sha: sha('2'), checks: [passingCheck(2)] },
+      { number: 103, state: 'MERGEABLE', sha: sha('3'), checks: [passingCheck(3)] },
+    ]);
+    assert.equal(outcome.status, 'attested', outcome.summary);
+    assert.deepEqual(outcome.constituentPrs, [101, 102, 103]);
+    assert.equal(publications.length, 1);
+    assert.equal(publications[0].conclusion, 'success');
+  });
+
+  it('still blocks when the UNMERGEABLE member has no exact-head Review Yeti evidence', async () => {
+    const { outcome } = await runMergeGroup([
+      { number: 101, state: 'MERGEABLE', sha: sha('1'), checks: [passingCheck(1)] },
+      { number: 102, state: 'UNMERGEABLE', sha: sha('2'), checks: [] },
+      { number: 103, state: 'MERGEABLE', sha: sha('3'), checks: [passingCheck(3)] },
+    ]);
+    assert.equal(outcome.status, 'blocked');
+    assert.match(outcome.summary, /PR #102 at [0-9a-f]{40} has no newest successful exact-head Review Yeti check/);
+    assert.doesNotMatch(outcome.summary, /not mergeable/);
+  });
+
+  it('still blocks when the UNMERGEABLE member carries a real BLOCK on its exact head', async () => {
+    const { outcome } = await runMergeGroup([
+      { number: 101, state: 'MERGEABLE', sha: sha('1'), checks: [passingCheck(1)] },
+      { number: 102, state: 'UNMERGEABLE', sha: sha('2'), checks: [blockingCheck(2)] },
+      { number: 103, state: 'MERGEABLE', sha: sha('3'), checks: [passingCheck(3)] },
+    ]);
+    assert.equal(outcome.status, 'blocked');
+    assert.match(outcome.summary, /PR #102 at [0-9a-f]{40} has no newest successful exact-head Review Yeti check/);
+  });
+
+  it('still blocks on a clean sibling BLOCK when another member is UNMERGEABLE', async () => {
+    const { outcome } = await runMergeGroup([
+      { number: 101, state: 'UNMERGEABLE', sha: sha('1'), checks: [passingCheck(1)] },
+      { number: 102, state: 'MERGEABLE', sha: sha('2'), checks: [blockingCheck(2)] },
+      { number: 103, state: 'MERGEABLE', sha: sha('3'), checks: [passingCheck(3)] },
+    ]);
+    assert.equal(outcome.status, 'blocked');
+    assert.match(outcome.summary, /PR #102 at [0-9a-f]{40} has no newest successful exact-head Review Yeti check/);
+  });
+
+  it('keeps LOCKED fail-closed without consulting member evidence', async () => {
+    const { outcome } = await runMergeGroup([
+      { number: 101, state: 'LOCKED', sha: sha('1'), checks: [passingCheck(1)] },
+      { number: 102, state: 'MERGEABLE', sha: sha('2'), checks: [passingCheck(2)] },
+    ]);
+    assert.equal(outcome.status, 'blocked');
+    assert.match(outcome.summary, /merge queue entry for PR #101 is not mergeable \(LOCKED\)/);
   });
 });

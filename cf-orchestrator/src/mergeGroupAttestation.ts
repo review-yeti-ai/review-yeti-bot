@@ -361,7 +361,12 @@ export async function getConstituentPullRequests(params: {
         prs: [],
       };
     }
-    if (pr.state === 'UNMERGEABLE' || pr.state === 'LOCKED') {
+    // UNMERGEABLE is GitHub's mergeability verdict for the entry, not review evidence, and GitHub ejects
+    // that entry from the queue itself. Failing the whole group on it turned one wedged entry into a
+    // failure for every speculative group it shared. The member still has to present its own exact-head
+    // Review Yeti evidence and passes the composite hazard scan, so no unreviewed content is attested.
+    // LOCKED stays fail-closed.
+    if (pr.state === 'LOCKED') {
       return {
         passed: false,
         blockerReason: `merge queue entry for PR #${pr.number} is not mergeable (${pr.state})`,
