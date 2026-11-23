@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.139.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.139.2...v1.139.3) (2026-11-23)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** a commit cannot supersede itself; forward the head to linked publication cancels ([#1566](https://github.com/review-yeti-ai/review-yeti-bot/issues/1566)) ([677ea1a](https://github.com/review-yeti-ai/review-yeti-bot/commit/677ea1abb93b54aedb23385f7f5b92a01fc1a3b1))
+
 ## [1.139.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.139.1...v1.139.2) (2026-11-23)
 
 
