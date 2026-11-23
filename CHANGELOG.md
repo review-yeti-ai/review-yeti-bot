@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.139.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.139.1...v1.139.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** skip failed queue entries ahead when attesting a merge group ([#1564](https://github.com/review-yeti-ai/review-yeti-bot/issues/1564)) ([ec39717](https://github.com/review-yeti-ai/review-yeti-bot/commit/ec39717e5bb7c263578c86d18a47ff978a562de4))
+
 ## [1.139.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.139.0...v1.139.1) (2026-11-23)
 
 
