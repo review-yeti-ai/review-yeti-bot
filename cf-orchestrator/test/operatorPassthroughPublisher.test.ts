@@ -2163,6 +2163,24 @@ describe('Head-keyed passthrough receipt read (REL-3332: base moved after the re
     assert.ok(checkRunReads.length >= 2, `expected the stalled candidate to be read again, saw ${checkRunReads.length} read(s)`);
   });
 
+  it('gives a single candidate\'s first attempt most of the head budget, so a slow read is not cut in half', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const published = await publishOperatorPassthroughForTarget(mock.env, target, { fetchFn: mock.fetchFn });
+    assert.equal(published.status, 'succeeded', JSON.stringify(published));
+
+    // A read verifies two check runs (worker and gate). At 400 ms each, one read takes about 800 ms of a
+    // 1500 ms budget: an even split between attempts (~750 ms each) would time out twice; 75% (~1100 ms) fits.
+    const slowFetch: typeof fetch = async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (/\/check-runs\/\d+$/u.test(url)) await new Promise((resolve) => setTimeout(resolve, 400));
+      return mock.fetchFn(input, init);
+    };
+    const head = await readOperatorPassthroughForHead(mock.env, target, HEAD_A, { fetchFn: slowFetch, timeoutMs: 1500 });
+    assert.equal(head.status, 'succeeded', JSON.stringify(head));
+    assert.equal(head.mergeEligible, true);
+  });
+
   it('ends a head read whose every candidate read stalls, by the head budget and not by the attempts', async () => {
     const mock = createTestEnv();
     await configureAppKeys(mock.env);
