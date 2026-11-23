@@ -1803,6 +1803,13 @@ async function readForHeadWithContext(
 
 /** Attempts per candidate publication: a read whose own share ran out is retried once while the head budget lasts. */
 const HEAD_CANDIDATE_READ_ATTEMPTS = 2;
+/**
+ * Fraction of a candidate's share given to its first attempt. A real read is about seven sequential GitHub and
+ * Durable Object calls and can take most of the budget, so splitting the share evenly between attempts made a
+ * slow single-candidate read fail both times. The first attempt gets most of the time; the retry keeps the rest
+ * for a call that hung.
+ */
+const HEAD_FIRST_ATTEMPT_SHARE = 0.75;
 
 function budgetSpent(context: DeadlineContext): boolean {
   return context.signal.aborted || performance.now() >= context.deadlineAt;
@@ -1823,9 +1830,12 @@ async function readPriorRunWithinBudget(
 ): Promise<OperatorPassthroughResult> {
   for (let attempt = 1; attempt <= HEAD_CANDIDATE_READ_ATTEMPTS; attempt += 1) {
     if (budgetSpent(context)) unavailable(context.reason() === 'caller' ? 'cancel_requested' : 'deadline_exceeded');
-    const attemptsLeft = HEAD_CANDIDATE_READ_ATTEMPTS - attempt + 1;
     const remaining = context.deadlineAt - performance.now();
-    const candidate = context.child(Math.max(1, Math.floor(remaining / (laterCandidates + attemptsLeft))));
+    // This candidate's share leaves equal room for each later candidate; within it, the first attempt
+    // takes most of the time and a retry takes whatever is left.
+    const candidateShare = remaining / (laterCandidates + 1);
+    const attemptShare = attempt < HEAD_CANDIDATE_READ_ATTEMPTS ? candidateShare * HEAD_FIRST_ATTEMPT_SHARE : candidateShare;
+    const candidate = context.child(Math.max(1, Math.floor(attemptShare)));
     try {
       return await readPriorRunForHead(env, resolved, runId, candidate);
     } catch (error) {
