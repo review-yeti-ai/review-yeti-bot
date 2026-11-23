@@ -667,6 +667,18 @@ export class ReviewRunDO {
       };
     }
 
+    // A commit cannot supersede itself. A superseded_by_commit cancel that names this run's own head is a
+    // duplicate or late event for an unchanged head, so it is a no-op in every phase. This also covers a
+    // passthrough publication run that never reaches Completed. Close and draft cancels are unaffected.
+    if (
+      reason === 'superseded_by_commit' &&
+      currentHeadSha &&
+      this.runState.spec?.headSha &&
+      currentHeadSha === this.runState.spec.headSha
+    ) {
+      return { cancelled: false, previousPhase: this.runState.phase, fencingEpoch: this.runState.fencingEpoch, skipped: 'same_head' };
+    }
+
     if (this.runState.phase === 'Completed' || this.runState.phase === 'Failed') {
       const runHeadSha = this.runState.spec?.headSha;
       if (currentHeadSha && runHeadSha && currentHeadSha === runHeadSha) {
@@ -682,7 +694,8 @@ export class ReviewRunDO {
             const linked = this.env.REVIEW_RUN.get(this.env.REVIEW_RUN.idFromName(linkedRunId));
             await linked.fetch('http://do/cancel', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ reason }),
+              // Forward the head so the linked publication run applies the same-head guard itself.
+              body: JSON.stringify({ reason, currentHeadSha }),
             });
           } catch {
             // The linked receipt is revalidated by status and remains fail-closed if this fails.
