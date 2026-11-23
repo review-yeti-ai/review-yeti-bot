@@ -218,6 +218,66 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
       assert.equal(result.passed, false);
       assert.match(result.blockerReason!, /is not mergeable \(UNMERGEABLE\)/);
     });
+    function queueResponse(nodes: Array<{ position: number; state: string; number: number; sha: string }>) {
+      return {
+        data: {
+          repository: {
+            mergeQueue: {
+              entries: {
+                nodes: nodes.map((n) => ({
+                  position: n.position,
+                  state: n.state,
+                  pullRequest: { number: n.number, headRefOid: n.sha },
+                })),
+              },
+            },
+          },
+        },
+      };
+    }
+
+    it('excludes a failed (UNMERGEABLE) entry ahead of the current PR instead of refusing the rebuilt group', async () => {
+      const mockFetch: typeof fetch = async () => Response.json(queueResponse([
+        { position: 1, state: 'UNMERGEABLE', number: 201, sha: 'a'.repeat(40) },
+        { position: 2, state: 'MERGEABLE', number: 202, sha: 'b'.repeat(40) },
+        { position: 3, state: 'AWAITING_CHECKS', number: 203, sha: 'c'.repeat(40) },
+      ]));
+
+      const result = await getConstituentPullRequests({
+        owner: 'example-org', repo: 'sample-repo', baseBranch: 'main', currentPrNumber: 203, token: 'test-token', fetchFn: mockFetch,
+      });
+
+      assert.equal(result.passed, true, result.blockerReason ?? "");
+      assert.deepEqual(result.prs.map((p) => p.number), [202, 203]);
+    });
+
+    it('still fails closed when the current PR itself is UNMERGEABLE, even with failed entries ahead', async () => {
+      const mockFetch: typeof fetch = async () => Response.json(queueResponse([
+        { position: 1, state: 'UNMERGEABLE', number: 201, sha: 'a'.repeat(40) },
+        { position: 2, state: 'UNMERGEABLE', number: 202, sha: 'b'.repeat(40) },
+      ]));
+
+      const result = await getConstituentPullRequests({
+        owner: 'example-org', repo: 'sample-repo', baseBranch: 'main', currentPrNumber: 202, token: 'test-token', fetchFn: mockFetch,
+      });
+
+      assert.equal(result.passed, false);
+      assert.match(result.blockerReason!, /PR #202 is not mergeable \(UNMERGEABLE\)/);
+    });
+
+    it('still fails closed on a LOCKED entry ahead of the current PR', async () => {
+      const mockFetch: typeof fetch = async () => Response.json(queueResponse([
+        { position: 1, state: 'LOCKED', number: 201, sha: 'a'.repeat(40) },
+        { position: 2, state: 'AWAITING_CHECKS', number: 202, sha: 'b'.repeat(40) },
+      ]));
+
+      const result = await getConstituentPullRequests({
+        owner: 'example-org', repo: 'sample-repo', baseBranch: 'main', currentPrNumber: 202, token: 'test-token', fetchFn: mockFetch,
+      });
+
+      assert.equal(result.passed, false);
+      assert.match(result.blockerReason!, /PR #201 is not mergeable \(LOCKED\)/);
+    });
   });
 
   describe('Strict Check Run Verification (App ID 4385771, External ID, Status)', () => {
