@@ -335,7 +335,13 @@ export async function getConstituentPullRequests(params: {
     };
   }
 
-  const constituentPrs = validEntries.filter((e) => e.position <= currentEntry.position);
+  // An entry ahead of the current PR that GitHub has already marked UNMERGEABLE failed its own group.
+  // GitHub removes it and rebuilds every group behind it without that PR, so it is not part of the group
+  // being attested. Counting it would refuse every rebuilt group, which marks those entries UNMERGEABLE in
+  // turn and jams the whole queue. The current PR's own state, and LOCKED entries, still fail closed below.
+  const constituentPrs = validEntries.filter(
+    (e) => e.position <= currentEntry.position && !(e.number !== currentPrNumber && e.state === 'UNMERGEABLE')
+  );
   if (constituentPrs.length < 1) {
     return {
       passed: false,
