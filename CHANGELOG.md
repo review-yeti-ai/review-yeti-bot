@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.139.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.139.3...v1.139.4) (2026-11-23)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** give a head read's first attempt most of its candidate share ([#1568](https://github.com/review-yeti-ai/review-yeti-bot/issues/1568)) ([6d4a1d9](https://github.com/review-yeti-ai/review-yeti-bot/commit/6d4a1d9c1a78b0305aede5cbfe35ce96e0eea7b7))
+
 ## [1.139.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.139.2...v1.139.3) (2026-11-23)
 
 
