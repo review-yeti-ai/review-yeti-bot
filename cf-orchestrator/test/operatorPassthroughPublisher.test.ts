@@ -125,6 +125,8 @@ function createTestEnv(options: GithubMockOptions = {}) {
   let nextCheckId = 7000;
   let headRead = 0;
   let repositoryRead = 0;
+  // The next N check-run reads by id never settle, so a read that waits on them can only end by its deadline.
+  let stalledCheckRunReads = 0;
   let policyRead = 0;
   let currentPolicySha: string | undefined;
   let checkReadFailureStatus = options.checkReadFailureStatus;
@@ -342,6 +344,10 @@ function createTestEnv(options: GithubMockOptions = {}) {
 
     const checkMatch = path.match(new RegExp(`^/repos/${target.owner}/${target.repo}/check-runs/(\\d+)$`, 'u'));
     if (checkMatch && method === 'GET') {
+      if (stalledCheckRunReads > 0) {
+        stalledCheckRunReads -= 1;
+        return await new Promise<Response>(() => {});
+      }
       if (checkReadFailureStatus) {
         return jsonResponse({ message: 'private diagnostic' }, checkReadFailureStatus);
       }
@@ -372,6 +378,7 @@ function createTestEnv(options: GithubMockOptions = {}) {
 
   return {
     env, fetchFn, checks, publications, counts, requests, reviewHistory,
+    stallCheckRunReads: (count: number) => { stalledCheckRunReads = count; },
     setPullState: (prNumber: number, state: 'open' | 'closed') => {
       const pull = pullTargets.get(prNumber);
       if (!pull) throw new Error(`unknown test pull request ${prNumber}`);
@@ -2138,5 +2145,35 @@ describe('Head-keyed passthrough receipt read (REL-3332: base moved after the re
     const head = await readOperatorPassthroughForHead(mock.env, target, HEAD_A, { fetchFn: mock.fetchFn });
     assert.equal(head.mergeEligible, false);
     assert.equal(head.errorCode, 'current_candidate_changed');
+  });
+
+  it('retries a candidate whose read outlives its share while the head budget still has time', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const published = await publishOperatorPassthroughForTarget(mock.env, target, { fetchFn: mock.fetchFn });
+    assert.equal(published.status, 'succeeded', JSON.stringify(published));
+
+    mock.stallCheckRunReads(1);
+    const before = mock.requests.length;
+    const head = await readOperatorPassthroughForHead(mock.env, target, HEAD_A, { fetchFn: mock.fetchFn, timeoutMs: 2000 });
+    assert.equal(head.status, 'succeeded', JSON.stringify(head));
+    assert.equal(head.mergeEligible, true);
+    assert.equal(head.runId, published.runId);
+    const checkRunReads = mock.requests.slice(before).filter((request) => /^GET \/repos\/[^/]+\/[^/]+\/check-runs\/\d+$/u.test(request));
+    assert.ok(checkRunReads.length >= 2, `expected the stalled candidate to be read again, saw ${checkRunReads.length} read(s)`);
+  });
+
+  it('ends a head read whose every candidate read stalls, by the head budget and not by the attempts', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    await publishOperatorPassthroughForTarget(mock.env, target, { fetchFn: mock.fetchFn });
+
+    mock.stallCheckRunReads(Number.MAX_SAFE_INTEGER);
+    const started = performance.now();
+    const head = await readOperatorPassthroughForHead(mock.env, target, HEAD_A, { fetchFn: mock.fetchFn, timeoutMs: 600 });
+    const elapsed = performance.now() - started;
+    assert.equal(head.mergeEligible, false);
+    assert.equal(head.errorCode, 'deadline_exceeded');
+    assert.ok(elapsed < 2000, `head read must respect its 600 ms budget, took ${Math.round(elapsed)} ms`);
   });
 });

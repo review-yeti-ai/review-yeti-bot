@@ -616,9 +616,19 @@ export class ReviewRunDO {
     return { ok: true, leaseExpiresAt: this.runState.leaseExpiresAt };
   }
 
+  /**
+   * Cancels this run. `currentHeadSha` is the PR head the cancel is issued for, when the caller knows it.
+   *
+   * A cancel that names the head of a completed or failed run is a no-op for that run, so a duplicate or
+   * replayed PR event for an unchanged head cannot revoke the receipt the run already earned. Live runs
+   * are still cancelled for the same head, because a closed PR must stop its queued run. Any other cancel
+   * keeps the existing behaviour, including revoking a completed run's receipt, because explicit operator
+   * cancellations carry no head and fail closed.
+   */
   async requestCancellation(
-    reason: string
-  ): Promise<{ cancelled: boolean; previousPhase: string; fencingEpoch?: number; jobId?: string }> {
+    reason: string,
+    currentHeadSha?: string
+  ): Promise<{ cancelled: boolean; previousPhase: string; fencingEpoch?: number; jobId?: string; skipped?: 'same_head' }> {
     await this.ensureInitialized();
     if (!this.runState) {
       const tombstone: ReviewRunState = {
@@ -658,6 +668,11 @@ export class ReviewRunDO {
     }
 
     if (this.runState.phase === 'Completed' || this.runState.phase === 'Failed') {
+      const runHeadSha = this.runState.spec?.headSha;
+      if (currentHeadSha && runHeadSha && currentHeadSha === runHeadSha) {
+        // The receipt was earned on this head, so a same-head cancel must not revoke it.
+        return { cancelled: false, previousPhase: this.runState.phase, fencingEpoch: this.runState.fencingEpoch, skipped: 'same_head' };
+      }
       const operatorState = await this.getOperatorPassthroughState();
       const linkedRunId = await this.getOperatorPassthroughLink();
       if (operatorState || linkedRunId) {
@@ -1407,8 +1422,8 @@ export class ReviewRunDO {
     }
 
     if (request.method === 'POST' && path === '/cancel') {
-      const body = (await request.json()) as { reason: string };
-      const res = await this.requestCancellation(body.reason);
+      const body = (await request.json()) as { reason: string; currentHeadSha?: string };
+      const res = await this.requestCancellation(body.reason, body.currentHeadSha);
       return Response.json(res);
     }
 

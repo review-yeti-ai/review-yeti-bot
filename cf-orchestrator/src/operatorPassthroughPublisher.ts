@@ -133,6 +133,8 @@ interface PublishedCheck extends OperatorPassthroughCheckReceipt {
   annotationsCount: 0;
 }
 
+type DeadlineEnd = 'caller' | 'deadline';
+
 interface DeadlineContext {
   signal: AbortSignal;
   sourceRunId?: string;
@@ -140,6 +142,10 @@ interface DeadlineContext {
   fetch(url: string, init?: RequestInit): Promise<Response>;
   run<T>(operation: () => Promise<T>): Promise<T>;
   guard(): Promise<void>;
+  /** Why this deadline ended, once it has. */
+  reason(): DeadlineEnd | undefined;
+  /** A sub-deadline of at most `timeoutMs` that ends with this one and times out on its own. */
+  child(timeoutMs: number): DeadlineContext;
   dispose(): void;
 }
 
@@ -199,16 +205,22 @@ async function digest(value: string): Promise<string> {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-function makeDeadline(env: Env, options: OperatorPassthroughOptions, sourceRunId?: string): DeadlineContext {
+function makeDeadline(
+  env: Env,
+  options: OperatorPassthroughOptions,
+  sourceRunId?: string,
+  parentEnd?: () => DeadlineEnd | undefined
+): DeadlineContext {
   const timeoutMs = options.timeoutMs ?? DEADLINE_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > DEADLINE_MS) {
     unavailable('service_configuration_unavailable');
   }
   const controller = new AbortController();
   const deadlineAt = performance.now() + timeoutMs;
-  let endedBy: 'caller' | 'deadline' | undefined;
+  let endedBy: DeadlineEnd | undefined;
+  // A child inherits the parent's reason, so a parent deadline is not reported as a caller cancel.
   const fromCaller = () => {
-    if (endedBy === undefined) endedBy = 'caller';
+    if (endedBy === undefined) endedBy = parentEnd ? (parentEnd() ?? 'deadline') : 'caller';
     controller.abort();
   };
   options.signal?.addEventListener('abort', fromCaller, { once: true });
@@ -275,6 +287,12 @@ function makeDeadline(env: Env, options: OperatorPassthroughOptions, sourceRunId
       await guard();
       return fetchImplementation(url, { ...init, signal: controller.signal });
     }),
+    reason: () => endedBy,
+    child: (childTimeoutMs: number) => makeDeadline(env, {
+      timeoutMs: Math.min(DEADLINE_MS, Math.max(1, Math.floor(childTimeoutMs))),
+      fetchFn: options.fetchFn,
+      signal: controller.signal,
+    }, sourceRunId, () => endedBy),
     dispose: () => {
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', fromCaller);
@@ -1770,16 +1788,55 @@ async function readForHeadWithContext(
   if (resolved.identity.headSha !== headSha) unavailable('current_candidate_changed');
   const checks = await listChecks(resolved.identity, resolved.token, context);
   let failure: ErrorCode = 'check_readback_unavailable';
-  for (const runId of priorWorkerRunIds(checks, resolved.identity.appId)) {
+  const runIds = priorWorkerRunIds(checks, resolved.identity.appId);
+  for (const [index, runId] of runIds.entries()) {
     try {
-      return await readPriorRunForHead(env, resolved, runId, context);
+      return await readPriorRunWithinBudget(env, resolved, runId, context, runIds.length - index - 1);
     } catch (error) {
       // The shared budget is spent, so trying further publications cannot help.
-      if (error instanceof PassthroughUnavailable && error.code === 'deadline_exceeded') throw error;
+      if (budgetSpent(context)) throw error;
       failure = error instanceof PassthroughUnavailable ? error.code : 'authoritative_read_unavailable';
     }
   }
   return responseFromReceipt(null, failure);
+}
+
+/** Attempts per candidate publication: a read whose own share ran out is retried once while the head budget lasts. */
+const HEAD_CANDIDATE_READ_ATTEMPTS = 2;
+
+function budgetSpent(context: DeadlineContext): boolean {
+  return context.signal.aborted || performance.now() >= context.deadlineAt;
+}
+
+/**
+ * Reads one candidate publication inside a share of the head read's remaining budget. The share leaves
+ * room for the later candidates and for the retry, so one slow GitHub or Durable Object round-trip cannot
+ * consume the whole budget. A share that runs out while the head budget still has time is a slow read,
+ * not a verdict on the publication, so it is retried.
+ */
+async function readPriorRunWithinBudget(
+  env: Env,
+  resolved: Awaited<ReturnType<typeof resolveIdentity>>,
+  runId: string,
+  context: DeadlineContext,
+  laterCandidates: number
+): Promise<OperatorPassthroughResult> {
+  for (let attempt = 1; attempt <= HEAD_CANDIDATE_READ_ATTEMPTS; attempt += 1) {
+    if (budgetSpent(context)) unavailable(context.reason() === 'caller' ? 'cancel_requested' : 'deadline_exceeded');
+    const attemptsLeft = HEAD_CANDIDATE_READ_ATTEMPTS - attempt + 1;
+    const remaining = context.deadlineAt - performance.now();
+    const candidate = context.child(Math.max(1, Math.floor(remaining / (laterCandidates + attemptsLeft))));
+    try {
+      return await readPriorRunForHead(env, resolved, runId, candidate);
+    } catch (error) {
+      if (!(error instanceof PassthroughUnavailable && error.code === 'deadline_exceeded') || budgetSpent(context)) {
+        throw error;
+      }
+    } finally {
+      candidate.dispose();
+    }
+  }
+  unavailable('deadline_exceeded');
 }
 
 /** Run ids of this App's worker checks on the head, newest first. Other apps' checks never qualify. */

@@ -278,4 +278,73 @@ describe('ReviewRunDO Coordinator & Fencing', () => {
     assert.equal(statusData.phase, 'Pending');
     assert.equal(statusData.fencingEpoch, 1);
   });
+
+  describe('cancellation of a run that already published for its head', () => {
+    const headA = 'a'.repeat(40);
+    const headB = 'b'.repeat(40);
+
+    /** A completed run whose operator publication succeeded, with the operator receipt stored as the run keeps it. */
+    async function completedRunWithOperatorReceipt(head: string, runId: string) {
+      const state = new MockDurableObjectState();
+      const runDO = new ReviewRunDO(state as any, {} as any);
+      await runDO.initialize({ ...sampleSpec, runId, headSha: head });
+      await runDO.acquireWorkerLease('worker_1', 1);
+      const accepted = await runDO.submitReceipt({
+        runId,
+        status: 'succeeded',
+        verdict: 'SHIP',
+        operatorPassthrough: true,
+        publicationState: 'published',
+        workerCheckId: 701,
+        gateCheckId: 702,
+      }, 1);
+      assert.equal(accepted.accepted, true);
+      await state.storage.put('operatorPassthrough.v2', { version: 'OperatorPassthroughState.v2', runId, cancelRequested: false });
+      return { state, runDO };
+    }
+
+    it('a same-head cancel leaves the completed run and its operator receipt accepted', async () => {
+      const { state, runDO } = await completedRunWithOperatorReceipt(headA, 'run_same_head');
+
+      const cancel = await runDO.requestCancellation('superseded_by_commit', headA);
+
+      assert.equal(cancel.cancelled, false);
+      assert.equal(cancel.skipped, 'same_head');
+      assert.equal((await state.storage.get<any>('runState')).phase, 'Completed');
+      const stored = await state.storage.get<any>('operatorPassthrough.v2');
+      assert.equal(stored.cancelRequested, false);
+    });
+
+    it('a cancel for a superseded head still revokes the completed run receipt', async () => {
+      const { state, runDO } = await completedRunWithOperatorReceipt(headA, 'run_superseded');
+
+      const cancel = await runDO.requestCancellation('superseded_by_commit', headB);
+
+      assert.equal(cancel.cancelled, true);
+      const stored = await state.storage.get<any>('operatorPassthrough.v2');
+      assert.equal(stored.cancelRequested, true);
+    });
+
+    it('a cancel for an older run does not touch the receipt of the run for the current head', async () => {
+      const older = await completedRunWithOperatorReceipt(headA, 'run_older_head');
+      const current = await completedRunWithOperatorReceipt(headB, 'run_current_head');
+
+      await older.runDO.requestCancellation('superseded_by_commit', headB);
+
+      assert.equal((await older.state.storage.get<any>('operatorPassthrough.v2')).cancelRequested, true);
+      assert.equal((await current.state.storage.get<any>('operatorPassthrough.v2')).cancelRequested, false);
+      assert.equal((await current.state.storage.get<any>('runState')).phase, 'Completed');
+    });
+
+    it('a same-head cancel still stops a live run, so a closed pull request terminates its queued run', async () => {
+      const state = new MockDurableObjectState();
+      const runDO = new ReviewRunDO(state as any, {} as any);
+      await runDO.initialize({ ...sampleSpec, runId: 'run_queued_same_head', headSha: headA });
+
+      const cancel = await runDO.requestCancellation('pr_closed', headA);
+
+      assert.equal(cancel.cancelled, true);
+      assert.equal((await runDO.getStatus()).phase, 'Cancelled');
+    });
+  });
 });

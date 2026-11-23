@@ -176,12 +176,14 @@ export async function getLatestRunForPR(
 }
 
 /**
- * Invokes cancellation on a specific ReviewRunDO instance.
+ * Invokes cancellation on a specific ReviewRunDO instance. `currentHeadSha` lets a completed run keep its
+ * receipt when the event is for the head that run already published (see ReviewRunDO.requestCancellation).
  */
 export async function cancelRun(
   env: Env,
   runId: string,
-  reason: string
+  reason: string,
+  currentHeadSha?: string
 ): Promise<{ cancelled: boolean; previousPhase?: string }> {
   try {
     if (!env?.REVIEW_RUN?.idFromName || !env?.REVIEW_RUN?.get) return { cancelled: false };
@@ -190,7 +192,7 @@ export async function cancelRun(
     const res = await runDO.fetch('http://do/cancel', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason }),
+      body: JSON.stringify({ reason, currentHeadSha }),
     });
     if (!res.ok) return { cancelled: false };
     return (await res.json()) as { cancelled: boolean; previousPhase: string };
@@ -553,7 +555,7 @@ export default {
             if (runsToCancel.size > 0) {
               await Promise.all(
                 Array.from(runsToCancel).map((rId) =>
-                  cancelRun(env, rId, 'superseded_by_commit')
+                  cancelRun(env, rId, 'superseded_by_commit', pr.head?.sha)
                 )
               );
             }
@@ -638,7 +640,7 @@ export default {
             if (runsToCancel.size > 0) {
               const cancelResults = await Promise.all(
                 Array.from(runsToCancel).map((rId) =>
-                  cancelRun(env, rId, `pr_${action}`)
+                  cancelRun(env, rId, `pr_${action}`, pr.head?.sha)
                 )
               );
               anyCancelled = cancelResults.some((res) => res.cancelled);
