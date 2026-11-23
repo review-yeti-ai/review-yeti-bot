@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.139.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.139.0...v1.139.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** keep a published head's receipt through same-head cancels ([#1562](https://github.com/review-yeti-ai/review-yeti-bot/issues/1562)) ([df10655](https://github.com/review-yeti-ai/review-yeti-bot/commit/df10655c4870a6fde9e9172996f109c932f02c01))
+
 ## [1.139.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.138.6...v1.139.0) (2026-11-13)
 
 
