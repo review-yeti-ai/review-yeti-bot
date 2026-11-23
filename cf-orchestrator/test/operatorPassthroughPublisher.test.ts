@@ -2177,3 +2177,39 @@ describe('Head-keyed passthrough receipt read (REL-3332: base moved after the re
     assert.ok(elapsed < 2000, `head read must respect its 600 ms budget, took ${Math.round(elapsed)} ms`);
   });
 });
+
+describe('passthrough read budget expiry is labelled as a deadline, a caller cancel only when the caller cancels (REL-4259)', () => {
+  const target = { owner: OWNER, repo: REPO, prNumber: 42 };
+
+  it('reports a read whose budget expires with no caller signal as deadline_exceeded', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const published = await publishOperatorPassthroughForTarget(mock.env, target, { fetchFn: mock.fetchFn });
+    assert.equal(published.status, 'succeeded', JSON.stringify(published));
+
+    mock.stallCheckRunReads(Number.MAX_SAFE_INTEGER);
+    const head = await readOperatorPassthroughForHead(mock.env, target, HEAD_A, { fetchFn: mock.fetchFn, timeoutMs: 300 });
+    assert.equal(head.mergeEligible, false);
+    assert.equal(head.errorCode, 'deadline_exceeded');
+  });
+
+  it('still reports a real caller cancellation as cancel_requested', async () => {
+    const mock = createTestEnv();
+    await configureAppKeys(mock.env);
+    const published = await publishOperatorPassthroughForTarget(mock.env, target, { fetchFn: mock.fetchFn });
+    assert.equal(published.status, 'succeeded', JSON.stringify(published));
+
+    mock.stallCheckRunReads(Number.MAX_SAFE_INTEGER);
+    const caller = new AbortController();
+    const timer = setTimeout(() => caller.abort(), 100);
+    try {
+      const head = await readOperatorPassthroughForHead(mock.env, target, HEAD_A, {
+        fetchFn: mock.fetchFn, timeoutMs: 5000, signal: caller.signal,
+      });
+      assert.equal(head.mergeEligible, false);
+      assert.equal(head.errorCode, 'cancel_requested');
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+});

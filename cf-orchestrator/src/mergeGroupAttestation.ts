@@ -1282,6 +1282,79 @@ export async function readAttestedPassthroughReceipt<T extends { status: string 
 }
 
 /**
+ * Constituent receipt reads in flight at once. Each read is a handful of sequential GitHub and Durable
+ * Object round-trips, so a queue group's latency is the slowest read, not the sum of all of them.
+ */
+export const PASSTHROUGH_CONSTITUENT_READ_CONCURRENCY = 4;
+
+export interface ConstituentReceiptRead<T> {
+  prNumber: number;
+  headSha: string;
+  /** Null when the read never started because the shared budget was already spent. */
+  receipt: T | null;
+}
+
+/**
+ * Reads every constituent's receipt with at most `concurrency` reads in flight. A read starts only while the
+ * shared budget still has time, so a read that never starts is reported with `receipt: null`, never as a verdict.
+ */
+export async function readConstituentReceipts<T>(options: {
+  constituents: ReadonlyArray<{ number: number; head_sha: string }>;
+  hasTimeLeft: () => boolean;
+  readOne: (constituent: { number: number; head_sha: string }) => Promise<T>;
+  concurrency?: number;
+}): Promise<Array<ConstituentReceiptRead<T>>> {
+  const limit = Math.max(1, Math.floor(options.concurrency ?? PASSTHROUGH_CONSTITUENT_READ_CONCURRENCY));
+  const reads: Array<ConstituentReceiptRead<T>> = options.constituents.map((constituent) => ({
+    prNumber: constituent.number,
+    headSha: constituent.head_sha,
+    receipt: null,
+  }));
+  let next = 0;
+  const drain = async (): Promise<void> => {
+    while (next < options.constituents.length) {
+      const index = next;
+      next += 1;
+      if (!options.hasTimeLeft()) continue;
+      reads[index].receipt = await options.readOne(options.constituents[index]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, options.constituents.length) }, drain));
+  return reads;
+}
+
+export type ConstituentRefusal =
+  | { kind: 'receipt'; prNumber: number; reason: string }
+  | { kind: 'budget'; unfinished: number[] };
+
+/**
+ * Attributes a refusal. A constituent is refused only for its own receipt: a missing, invalid or verdict-bearing
+ * read. A read that ran out of the shared budget (`deadline_exceeded` after the budget is spent, or never started)
+ * is unfinished, not a verdict on that PR, so it is reported as such instead of being named as the broken one.
+ * Returns null when every constituent has an accepted receipt.
+ */
+export function attributeConstituentRefusal<T>(
+  reads: ReadonlyArray<ConstituentReceiptRead<T>>,
+  options: {
+    accepted: (receipt: T, read: ConstituentReceiptRead<T>) => boolean;
+    describe: (receipt: T) => string;
+    isBudgetUnfinished: (receipt: T) => boolean;
+    budgetSpent: boolean;
+  },
+): ConstituentRefusal | null {
+  const unfinished: number[] = [];
+  for (const read of reads) {
+    if (read.receipt !== null && options.accepted(read.receipt, read)) continue;
+    if (read.receipt === null || (options.budgetSpent && options.isBudgetUnfinished(read.receipt))) {
+      unfinished.push(read.prNumber);
+      continue;
+    }
+    return { kind: 'receipt', prNumber: read.prNumber, reason: options.describe(read.receipt) };
+  }
+  return unfinished.length > 0 ? { kind: 'budget', unfinished } : null;
+}
+
+/**
  * Master handler for `merge_group` webhook events in Review Yeti.
  * Executes constituent verification, composite delta hazard scanning, and direct check-run publication.
  */
@@ -1513,45 +1586,51 @@ export async function handleMergeGroupAttestation(
     const failurePublishFetch: typeof fetch = (input, init = {}) =>
       fetchFn(input, { ...init, signal: AbortSignal.timeout(8_000) });
     try {
-      for (const pr of constituentPrs) {
-        const remaining = Math.floor(deadline - performance.now());
-        if (remaining <= 0 || controller.signal.aborted) {
-          return await createBlockedOutcome({ repositoryId: knownRepositoryId,
-            owner, repo, headSha, token,
-            summary: 'Merge group attestation blocked: current paused-publication verification exceeded its 15 second deadline.',
-            constituentPrs: constituentPrs.map((p) => p.number),
-            bypassedHazardScan: hazardResult.bypassed,
-            fetchFn: failurePublishFetch,
-          });
-        }
-        // One receipt read used to decide the whole queue SHA. A transient read miss
-        // (GitHub or Durable Object) is now retried inside the same deadline. Each attempt is a
-        // full verification, and only an accepted exact-head receipt passes.
-        const receipt = await readAttestedPassthroughReceipt<OperatorPassthroughResult>({
-          readHead: () => {
-            const left = Math.max(1, Math.floor(deadline - performance.now()));
-            return readOperatorPassthroughForHead(env, { owner, repo, prNumber: pr.number }, pr.head_sha,
-              { fetchFn: boundedFetch, timeoutMs: Math.min(left, budget), signal: controller.signal });
-          },
-          readCurrent: () => {
-            const left = Math.max(1, Math.floor(deadline - performance.now()));
-            return readOperatorPassthroughForTarget(env, { owner, repo, prNumber: pr.number }, {
-              headSha: pr.head_sha,
-            }, { fetchFn: boundedFetch, timeoutMs: Math.min(left, budget), signal: controller.signal });
-          },
+      // Receipt reads run concurrently under the one shared budget. Each read takes its time from that budget
+      // as a child deadline, not as the caller's abort signal: budget expiry is a deadline, never a cancel.
+      const hasTimeLeft = () => Math.floor(deadline - performance.now()) >= 1 && !controller.signal.aborted;
+      const remainingMs = () => Math.max(1, Math.min(Math.floor(deadline - performance.now()), budget));
+      const reads = await readConstituentReceipts<OperatorPassthroughResult>({
+        constituents: constituentPrs,
+        hasTimeLeft,
+        // One receipt read decides each constituent. A transient read miss (GitHub or Durable Object) is retried
+        // inside the shared budget. Each attempt is a full verification, and only an accepted exact-head receipt passes.
+        readOne: (pr) => readAttestedPassthroughReceipt<OperatorPassthroughResult>({
+          readHead: () => readOperatorPassthroughForHead(env, { owner, repo, prNumber: pr.number }, pr.head_sha,
+            { fetchFn, timeoutMs: remainingMs() }),
+          readCurrent: () => readOperatorPassthroughForTarget(env, { owner, repo, prNumber: pr.number }, {
+            headSha: pr.head_sha,
+          }, { fetchFn, timeoutMs: remainingMs() }),
           accepted: (candidate) => passthroughReceiptAccepted(candidate, owner, repo, pr.head_sha),
-          hasTimeLeft: () => Math.floor(deadline - performance.now()) >= 1 && !controller.signal.aborted,
+          hasTimeLeft,
+        }),
+      });
+      const refusal = attributeConstituentRefusal(reads, {
+        accepted: (receipt, read) => passthroughReceiptAccepted(receipt, owner, repo, read.headSha),
+        describe: describePassthroughReadFailure,
+        isBudgetUnfinished: (receipt) => receipt.errorCode === 'deadline_exceeded',
+        budgetSpent: !hasTimeLeft(),
+      });
+      if (refusal?.kind === 'receipt') {
+        return await createBlockedOutcome({ repositoryId: knownRepositoryId,
+          owner, repo, headSha, token,
+          summary: `Merge group attestation blocked: PR #${refusal.prNumber} has no current durable App ${requiredAppId} raw/Gate passthrough publication receipt (reason: ${refusal.reason}).`,
+          readFailure: refusal.reason,
+          constituentPrs: constituentPrs.map((p) => p.number),
+          bypassedHazardScan: hazardResult.bypassed,
+          fetchFn: failurePublishFetch,
         });
-        if (!passthroughReceiptAccepted(receipt, owner, repo, pr.head_sha)) {
-          return await createBlockedOutcome({ repositoryId: knownRepositoryId,
-            owner, repo, headSha, token,
-            summary: `Merge group attestation blocked: PR #${pr.number} has no current durable App ${requiredAppId} raw/Gate passthrough publication receipt (reason: ${describePassthroughReadFailure(receipt)}).`,
-            readFailure: describePassthroughReadFailure(receipt),
-            constituentPrs: constituentPrs.map((p) => p.number),
-            bypassedHazardScan: hazardResult.bypassed,
-            fetchFn: failurePublishFetch,
-          });
-        }
+      }
+      if (refusal?.kind === 'budget') {
+        const names = refusal.unfinished.map((n) => `#${n}`).join(', ');
+        return await createBlockedOutcome({ repositoryId: knownRepositoryId,
+          owner, repo, headSha, token,
+          summary: `Merge group attestation blocked: the ${budget} ms paused-publication budget ran out while reading receipts for [${names}]. Those receipts were not evaluated, so no verdict was reached on them (reason: deadline_exceeded).`,
+          readFailure: 'deadline_exceeded',
+          constituentPrs: constituentPrs.map((p) => p.number),
+          bypassedHazardScan: hazardResult.bypassed,
+          fetchFn: failurePublishFetch,
+        });
       }
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0 || controller.signal.aborted) {

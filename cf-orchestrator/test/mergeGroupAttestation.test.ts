@@ -17,6 +17,9 @@ import {
   passthroughReceiptAccepted,
   readPassthroughReceiptWithRetry,
   readAttestedPassthroughReceipt,
+  readConstituentReceipts,
+  attributeConstituentRefusal,
+  PASSTHROUGH_CONSTITUENT_READ_CONCURRENCY,
   mergeGroupOutcomeLogLine,
   isTransientPassthroughRead,
   describePassthroughReadFailure,
@@ -2598,5 +2601,134 @@ describe('attested passthrough receipt: head-keyed read first (REL-3332)', () =>
     });
     assert.equal(accepted(result), false);
     assert.equal(currentReads, 0);
+  });
+});
+
+describe('constituent receipt reads run concurrently under one shared budget', () => {
+  // Timings are scaled down from the production 15 s budget and 6 s reads, keeping the same ratio:
+  // three reads of 0.4x the budget each. Sequentially they exhaust the budget; concurrently they fit.
+  const BUDGET_MS = 150;
+  const READ_MS = 60;
+  const HEAD = '0123456789abcdef0123456789abcdef01234567';
+  const constituents = [
+    { number: 101, head_sha: HEAD },
+    { number: 102, head_sha: HEAD },
+    { number: 103, head_sha: HEAD },
+  ];
+  const accepted = {
+    version: 'OperatorPassthroughReceipt.v2',
+    status: 'succeeded',
+    mergeEligible: true,
+    publicationReceiptAvailable: true,
+    owner: 'Exampleorg',
+    repo: 'Sample-Repo',
+    headSha: HEAD,
+  } as any;
+  const failed = (errorCode: string) => ({ status: 'unavailable', mergeEligible: false, errorCode }) as any;
+  const isAccepted = (receipt: any, read: { headSha: string }) =>
+    passthroughReceiptAccepted(receipt, 'Exampleorg', 'Sample-Repo', read.headSha);
+  const isBudgetUnfinished = (receipt: any) => receipt.errorCode === 'deadline_exceeded';
+
+  /** A read that finishes after `ms`, or is cut off by the shared deadline, as the publisher's child deadline does. */
+  function slowRead(deadline: number, ms: number, receipt: any) {
+    return async () => {
+      const left = Math.max(0, deadline - performance.now());
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(ms, left)));
+      return ms > left ? failed('deadline_exceeded') : receipt;
+    };
+  }
+
+  it('reads three slow constituents concurrently, so the group passes inside the shared budget', async () => {
+    const deadline = performance.now() + BUDGET_MS;
+    const hasTimeLeft = () => performance.now() < deadline;
+    const started = performance.now();
+    const reads = await readConstituentReceipts<any>({
+      constituents,
+      hasTimeLeft,
+      readOne: slowRead(deadline, READ_MS, accepted),
+    });
+    const elapsed = performance.now() - started;
+    assert.ok(elapsed < BUDGET_MS, `three ${READ_MS} ms reads took ${Math.round(elapsed)} ms against a ${BUDGET_MS} ms budget`);
+    assert.equal(attributeConstituentRefusal(reads, {
+      accepted: isAccepted, describe: describePassthroughReadFailure, isBudgetUnfinished, budgetSpent: !hasTimeLeft(),
+    }), null);
+  });
+
+  it('control: the previous sequential shape (concurrency 1) exhausts the same budget and leaves the last PR unfinished', async () => {
+    const deadline = performance.now() + BUDGET_MS;
+    const hasTimeLeft = () => performance.now() < deadline;
+    const reads = await readConstituentReceipts<any>({
+      constituents,
+      hasTimeLeft,
+      concurrency: 1,
+      readOne: slowRead(deadline, READ_MS, accepted),
+    });
+    assert.deepEqual(attributeConstituentRefusal(reads, {
+      accepted: isAccepted, describe: describePassthroughReadFailure, isBudgetUnfinished, budgetSpent: !hasTimeLeft(),
+    }), { kind: 'budget', unfinished: [103] });
+  });
+
+  it('keeps the concurrency bound at or above a typical queue group, so a three-PR group reads in one wave', () => {
+    assert.ok(PASSTHROUGH_CONSTITUENT_READ_CONCURRENCY >= constituents.length);
+  });
+
+  it('refuses for the one constituent whose own receipt is missing, and names only that PR', async () => {
+    const reads = await readConstituentReceipts<any>({
+      constituents,
+      hasTimeLeft: () => true,
+      readOne: async (pr) => (pr.number === 102 ? failed('check_readback_unavailable') : accepted),
+    });
+    const refusal = attributeConstituentRefusal(reads, {
+      accepted: isAccepted, describe: describePassthroughReadFailure, isBudgetUnfinished, budgetSpent: false,
+    });
+    assert.equal(refusal?.kind, 'receipt');
+    assert.equal(refusal?.kind === 'receipt' && refusal.prNumber, 102);
+    assert.match(refusal?.kind === 'receipt' ? refusal.reason : '', /^check_readback_unavailable$/u);
+  });
+
+  it('attributes a genuine refusal to its PR even when the budget has run out after it', () => {
+    const reads = [
+      { prNumber: 101, headSha: HEAD, receipt: failed('deadline_exceeded') },
+      { prNumber: 102, headSha: HEAD, receipt: failed('durable_state_unavailable') },
+      { prNumber: 103, headSha: HEAD, receipt: null },
+    ];
+    assert.deepEqual(attributeConstituentRefusal(reads, {
+      accepted: isAccepted, describe: describePassthroughReadFailure, isBudgetUnfinished, budgetSpent: true,
+    }), { kind: 'receipt', prNumber: 102, reason: 'durable_state_unavailable' });
+  });
+
+  it('names every unfinished constituent when the shared budget expires before any read starts', async () => {
+    let readsStarted = 0;
+    const reads = await readConstituentReceipts<any>({
+      constituents,
+      hasTimeLeft: () => false,
+      readOne: async () => { readsStarted += 1; return accepted; },
+    });
+    assert.equal(readsStarted, 0);
+    assert.deepEqual(attributeConstituentRefusal(reads, {
+      accepted: isAccepted, describe: describePassthroughReadFailure, isBudgetUnfinished, budgetSpent: true,
+    }), { kind: 'budget', unfinished: [101, 102, 103] });
+  });
+
+  it('reports a read cut off by the spent budget as unfinished, not as a verdict on that PR', () => {
+    const reads = [
+      { prNumber: 101, headSha: HEAD, receipt: accepted },
+      { prNumber: 102, headSha: HEAD, receipt: failed('deadline_exceeded') },
+      { prNumber: 103, headSha: HEAD, receipt: failed('deadline_exceeded') },
+    ];
+    assert.deepEqual(attributeConstituentRefusal(reads, {
+      accepted: isAccepted, describe: describePassthroughReadFailure, isBudgetUnfinished, budgetSpent: true,
+    }), { kind: 'budget', unfinished: [102, 103] });
+  });
+
+  it('still attributes a per-read timeout to its PR while the shared budget has time left', () => {
+    const reads = [
+      { prNumber: 101, headSha: HEAD, receipt: accepted },
+      { prNumber: 102, headSha: HEAD, receipt: failed('deadline_exceeded') },
+      { prNumber: 103, headSha: HEAD, receipt: accepted },
+    ];
+    assert.deepEqual(attributeConstituentRefusal(reads, {
+      accepted: isAccepted, describe: describePassthroughReadFailure, isBudgetUnfinished, budgetSpent: false,
+    }), { kind: 'receipt', prNumber: 102, reason: 'deadline_exceeded' });
   });
 });
