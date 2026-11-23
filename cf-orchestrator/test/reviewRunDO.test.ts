@@ -336,6 +336,60 @@ describe('ReviewRunDO Coordinator & Fencing', () => {
       assert.equal((await current.state.storage.get<any>('runState')).phase, 'Completed');
     });
 
+    it('a superseded_by_commit cancel naming a live run\'s own head is a no-op', async () => {
+      const state = new MockDurableObjectState();
+      const runDO = new ReviewRunDO(state as any, {} as any);
+      await runDO.initialize({ ...sampleSpec, runId: 'run_live_same_commit', headSha: headA });
+
+      const cancel = await runDO.requestCancellation('superseded_by_commit', headA);
+
+      assert.equal(cancel.cancelled, false);
+      assert.equal(cancel.skipped, 'same_head');
+      assert.notEqual((await runDO.getStatus()).phase, 'Cancelled');
+    });
+
+    it('a superseded_by_commit cancel for a newer head still stops a live run', async () => {
+      const state = new MockDurableObjectState();
+      const runDO = new ReviewRunDO(state as any, {} as any);
+      await runDO.initialize({ ...sampleSpec, runId: 'run_live_older_commit', headSha: headA });
+
+      const cancel = await runDO.requestCancellation('superseded_by_commit', headB);
+
+      assert.equal(cancel.cancelled, true);
+      assert.equal((await runDO.getStatus()).phase, 'Cancelled');
+    });
+
+    it('forwards the cancel head to a linked publication run so it can apply the same-head guard', async () => {
+      const forwarded: any[] = [];
+      const env = {
+        REVIEW_RUN: {
+          idFromName: (name: string) => name,
+          get: () => ({ fetch: async (_url: string, init: any) => { forwarded.push(JSON.parse(init.body)); return Response.json({}); } }),
+        },
+      };
+      const state = new MockDurableObjectState();
+      const runDO = new ReviewRunDO(state as any, env as any);
+      await runDO.initialize({ ...sampleSpec, runId: 'run_with_link', headSha: headA });
+      await runDO.acquireWorkerLease('worker_1', 1);
+      const accepted = await runDO.submitReceipt({
+        runId: 'run_with_link',
+        status: 'succeeded',
+        verdict: 'SHIP',
+        operatorPassthrough: true,
+        publicationState: 'published',
+        workerCheckId: 801,
+        gateCheckId: 802,
+      }, 1);
+      assert.equal(accepted.accepted, true);
+      await state.storage.put('operatorPassthroughLink.v1', { version: 'OperatorPassthroughLink.v1', publicationRunId: 'run_linked_publication' });
+
+      await runDO.requestCancellation('pr_closed', headB);
+
+      assert.equal(forwarded.length, 1, 'the cancel is forwarded to the linked publication run');
+      assert.equal(forwarded[0].reason, 'pr_closed');
+      assert.equal(forwarded[0].currentHeadSha, headB);
+    });
+
     it('a same-head cancel still stops a live run, so a closed pull request terminates its queued run', async () => {
       const state = new MockDurableObjectState();
       const runDO = new ReviewRunDO(state as any, {} as any);
