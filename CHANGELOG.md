@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.139.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.139.4...v1.139.5) (2026-11-25)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** enforce run_worker_first and authenticate GET /api/mcp ([#1570](https://github.com/review-yeti-ai/review-yeti-bot/issues/1570)) ([c51a511](https://github.com/review-yeti-ai/review-yeti-bot/commit/c51a511f490fc0a7049023e897318d18d611e0b6))
+
 ## [1.139.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.139.3...v1.139.4) (2026-11-23)
 
 
