@@ -1083,17 +1083,28 @@ describe('Authenticated MCP operator connection check', () => {
         });
       }
 
-      it('keeps the tool catalog public while requiring authentication on the health route', async () => {
+      it('gates or allows the tool catalog based on PUBLIC_READ_MCP while requiring authentication on the health route', async () => {
         const { env } = createWorkerTestEnv({ PUBLIC_READ_MCP: publicRead });
         const catalog = await worker.fetch(new Request('https://review-yeti.test/api/mcp', { method: 'GET' }), env);
+        const authenticatedCatalog = await worker.fetch(new Request('https://review-yeti.test/api/mcp', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer mock-mcp-token-xyz' },
+        }), env);
         const authHealth = await worker.fetch(new Request('https://review-yeti.test/mcp/auth', { method: 'GET' }), env);
         const authenticatedAlias = await worker.fetch(new Request('https://review-yeti.test/mcp/auth', {
           method: 'GET',
           headers: { Authorization: 'Bearer mock-mcp-token-xyz' },
         }), env);
 
-        assert.equal(catalog.status, 200);
-        assert.equal((await catalog.json() as any).toolsCount, 23);
+        if (publicRead === 'true') {
+          assert.equal(catalog.status, 200);
+          assert.equal((await catalog.json() as any).toolsCount, 23);
+        } else {
+          assert.equal(catalog.status, 401);
+          assert.equal(catalog.headers.get('Cache-Control'), 'no-store');
+        }
+        assert.equal(authenticatedCatalog.status, 200);
+        assert.equal((await authenticatedCatalog.json() as any).toolsCount, 23);
         assert.equal(authHealth.status, 401);
         assert.deepEqual(await authenticatedAlias.json(), {
           authenticated: true,
