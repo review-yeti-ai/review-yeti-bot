@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.140.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.140.0...v1.140.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **mcp:** mark zero-arg get_platform_settings schema additionalProperties false ([#1574](https://github.com/review-yeti-ai/review-yeti-bot/issues/1574)) ([0c8b662](https://github.com/review-yeti-ai/review-yeti-bot/commit/0c8b6629ae8b5633c06b7e7f2f3e7ec242f3ab8d))
+
 ## [1.140.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.139.5...v1.140.0) (2026-11-25)
 
 
