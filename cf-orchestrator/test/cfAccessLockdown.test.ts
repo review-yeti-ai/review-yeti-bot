@@ -27,6 +27,7 @@ describe('Whole-Site Cloudflare Access Lockdown', () => {
     const wrangler = await readFile(resolve(process.cwd(), 'wrangler.toml'), 'utf8');
     assert.match(wrangler, /^workers_dev\s*=\s*false\b/mu);
     assert.match(wrangler, /^preview_urls\s*=\s*false\b/mu);
+    assert.match(wrangler, /^run_worker_first\s*=\s*true\b/mu);
     assert.match(wrangler, /^PUBLIC_READ_MCP\s*=\s*"false"/mu);
     assert.match(wrangler, /^REQUIRE_CF_ACCESS\s*=\s*"true"/mu);
   });
