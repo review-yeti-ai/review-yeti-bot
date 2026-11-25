@@ -413,7 +413,7 @@ export class McpRouter {
   public async handleHttpRequest(
     request: Request,
     env: any,
-    options: { accessAuthorized?: boolean } = {}
+    options: { accessAuthorized?: boolean; basePath?: string } = {}
   ): Promise<Response> {
     const url = new URL(request.url);
     const reqOrigin = request.headers.get('Origin') || '';
@@ -445,7 +445,7 @@ export class McpRouter {
     const corsHeaders: Record<string, string> = {
       'Access-Control-Allow-Origin': allowedOrigin,
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, mcp-session-id',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key, mcp-session-id, CF-Access-Client-Id, CF-Access-Client-Secret',
       'Access-Control-Expose-Headers': 'Mcp-Session-Id',
     };
 
@@ -453,48 +453,68 @@ export class McpRouter {
       return new Response(null, { status: 204, headers: corsHeaders });
     }
 
-    // Constant-time Authentication
+    // Constant-time Bearer/x-api-key Authentication or verified Cloudflare Access JWT
     const authHeader = request.headers.get('Authorization') || '';
     const token = authHeader.startsWith('Bearer ')
       ? authHeader.slice(7).trim()
       : (request.headers.get('x-api-key') || url.searchParams.get('token') || '').trim();
     const configuredToken = (env.REVIEW_YETI_MCP_AUTH_TOKEN || '').trim();
 
-    let isAuthenticated = false;
-    if (configuredToken) {
-      isAuthenticated = constantTimeEquals(token, configuredToken);
-      if (!isAuthenticated && request.method === 'POST' && env?.PUBLIC_READ_MCP !== 'true') {
-        return new Response(
-          JSON.stringify({
-            jsonrpc: '2.0',
-            id: null,
-            error: { code: -32000, message: 'Unauthorized: Invalid or missing MCP authorization token' },
-          }),
-          { status: 401, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
-        );
-      }
+    const isAuthenticated = configuredToken ? constantTimeEquals(token, configuredToken) : false;
+    const isAuthorized = isAuthenticated || Boolean(options.accessAuthorized);
+    const authRequired = Boolean(configuredToken || env?.REQUIRE_CF_ACCESS === 'true');
+
+    if (authRequired && !isAuthorized && request.method === 'POST' && env?.PUBLIC_READ_MCP !== 'true') {
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: null,
+          error: { code: -32000, message: 'Unauthorized: Invalid or missing MCP authorization token' },
+        }),
+        {
+          status: 401,
+          headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store',
+            ...corsHeaders,
+          },
+        }
+      );
     }
 
-    // 1. SSE Transport: GET /api/mcp/sse, GET /mcp/sse, or Accept: text/event-stream
+    // 1. SSE Transport: GET /api/mcp/sse, GET /mcp/sse, GET /review_yeti/mcp/sse, or Accept: text/event-stream
     const isSseRequest =
       url.pathname.endsWith('/sse') ||
       request.headers.get('Accept')?.includes('text/event-stream');
 
     if (request.method === 'GET' && isSseRequest) {
-      if (configuredToken && !isAuthenticated && env?.PUBLIC_READ_MCP !== 'true') {
+      if (authRequired && !isAuthorized && env?.PUBLIC_READ_MCP !== 'true') {
         return new Response(
           JSON.stringify({
             jsonrpc: '2.0',
             id: null,
             error: { code: -32000, message: 'Unauthorized: Invalid or missing MCP authorization token' },
           }),
-          { status: 401, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
+          {
+            status: 401,
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-store',
+              ...corsHeaders,
+            },
+          }
         );
       }
 
       const sessionId = crypto.randomUUID();
       const encoder = new TextEncoder();
-      const basePath = url.pathname.startsWith('/mcp') ? '/mcp' : '/api/mcp';
+      const basePath =
+        options.basePath ??
+        (url.pathname.startsWith('/review_yeti/mcp')
+          ? '/review_yeti/mcp'
+          : url.pathname.startsWith('/mcp')
+            ? '/mcp'
+            : '/api/mcp');
 
       const stream = new ReadableStream<Uint8Array>({
         start: (controller) => {
@@ -523,7 +543,7 @@ export class McpRouter {
       });
     }
 
-    // 2. SSE Inbound Messages: POST /api/mcp/messages or POST /mcp/messages
+    // 2. SSE Inbound Messages: POST .../messages
     if (request.method === 'POST' && url.pathname.endsWith('/messages')) {
       const sessionId =
         url.searchParams.get('sessionId') ||
@@ -557,14 +577,14 @@ export class McpRouter {
       }
 
       // Check auth if configured
-      if (configuredToken && !isAuthenticated && env?.PUBLIC_READ_MCP !== 'true') {
+      if (authRequired && !isAuthorized && env?.PUBLIC_READ_MCP !== 'true') {
         return Response.json(
           {
             jsonrpc: '2.0',
             id: rpcBody?.id ?? null,
             error: { code: -32000, message: 'Unauthorized: Invalid or missing MCP authorization token' },
           },
-          { status: 401, headers: corsHeaders }
+          { status: 401, headers: { 'Cache-Control': 'no-store', ...corsHeaders } }
         );
       }
 
@@ -596,13 +616,12 @@ export class McpRouter {
       );
     }
 
-    // 3. GET /api/mcp or /mcp: Tool list & server info
+    // 3. GET /api/mcp, /mcp, or /review_yeti/mcp: Tool list & server info
     if (request.method === 'GET') {
       if (
         env?.PUBLIC_READ_MCP !== 'true' &&
-        (configuredToken || env?.REQUIRE_CF_ACCESS === 'true') &&
-        !isAuthenticated &&
-        !options.accessAuthorized
+        authRequired &&
+        !isAuthorized
       ) {
         return new Response(
           JSON.stringify({
@@ -633,7 +652,7 @@ export class McpRouter {
       );
     }
 
-    // 4. POST /api/mcp or /mcp: JSON-RPC execution (Streamable HTTP)
+    // 4. POST /api/mcp, /mcp, or /review_yeti/mcp: JSON-RPC execution (Streamable HTTP)
     if (request.method === 'POST') {
       let rpcBody: any;
       try {
@@ -669,14 +688,14 @@ export class McpRouter {
             typeof req?.params?.name === 'string' &&
             MUTATING_TOOL_NAMES.has(req.params.name)
         );
-        if (configuredToken && !isAuthenticated && (hasMutating || env?.PUBLIC_READ_MCP !== 'true')) {
+        if (authRequired && !isAuthorized && (hasMutating || env?.PUBLIC_READ_MCP !== 'true')) {
           return Response.json(
             {
               jsonrpc: '2.0',
               id: null,
               error: { code: -32000, message: 'Unauthorized: Invalid or missing MCP authorization token' },
             },
-            { status: 401, headers: corsHeaders }
+            { status: 401, headers: { 'Cache-Control': 'no-store', ...corsHeaders } }
           );
         }
 
@@ -703,8 +722,8 @@ export class McpRouter {
           rpcRequest.method === 'tools/call'
             ? `Tool "${rpcRequest.params?.name || 'unknown'}"`
             : `Resource "${rpcRequest.params?.uri || 'unknown'}"`;
-        if (!isAuthenticated) {
-          const reason = !configuredToken
+        if (!isAuthorized) {
+          const reason = !configuredToken && env?.REQUIRE_CF_ACCESS !== 'true'
             ? `Unauthorized: ${target} requires authentication. Configure REVIEW_YETI_MCP_AUTH_TOKEN.`
             : `Unauthorized: Invalid or missing MCP authorization token.`;
           return Response.json(
@@ -716,7 +735,7 @@ export class McpRouter {
                 message: reason,
               },
             },
-            { status: 401, headers: corsHeaders }
+            { status: 401, headers: { 'Cache-Control': 'no-store', ...corsHeaders } }
           );
         }
       }

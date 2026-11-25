@@ -106,6 +106,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           ALLOWED_ORIGINS: ${{ vars.CF_ALLOWED_ORIGINS }}
+          ACCESS_AUD: ${{ vars.CF_ACCESS_AUD }}
           OPERATOR_GLOBAL_PASSTHROUGH: ${{ vars.REVIEW_YETI_PASSTHROUGH || 'true' }}
           OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES: ${{ vars.OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES }}
           REVIEW_RUN_USD_CAP: ${{ vars.REVIEW_RUN_USD_CAP || '0.50' }}
@@ -113,10 +114,10 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: 'cf-orchestrator'
-          # The public hostname and the browser origins are deployment configuration kept in
-          # repository variables (CF_CUSTOM_DOMAIN, CF_ALLOWED_ORIGINS), not in this repository.
+          # Deployment-specific origins and Access AUD lists live in repository variables.
           vars: |
             ALLOWED_ORIGINS
+            ACCESS_AUD
             OPERATOR_GLOBAL_PASSTHROUGH
             OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES
             REVIEW_RUN_USD_CAP

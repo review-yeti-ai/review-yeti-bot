@@ -132,6 +132,57 @@ export async function verifyGitHubSignature(
 }
 
 /**
+ * Validates incoming GitHub webhook HMAC-SHA256 against the active secret and
+ * optional next rotation secret (`GITHUB_WEBHOOK_SECRET_NEXT`).
+ */
+export async function verifyGitHubSignatureWithRotation(
+  env: Env,
+  signatureHeader: string | null,
+  body: string
+): Promise<boolean> {
+  const primary = (env.GITHUB_WEBHOOK_SECRET || '').trim();
+  const next = (env.GITHUB_WEBHOOK_SECRET_NEXT || '').trim();
+  if (!primary && !next) {
+    return false;
+  }
+  if (primary && (await verifyGitHubSignature(primary, signatureHeader, body))) {
+    return true;
+  }
+  if (next && (await verifyGitHubSignature(next, signatureHeader, body))) {
+    return true;
+  }
+  return false;
+}
+
+export interface MatchedMcpRoute {
+  basePath: string;
+  subPath: '' | '/auth' | '/sse' | '/messages';
+}
+
+/**
+ * Resolves supported MCP gateway base paths (`/api/mcp`, `/mcp`, `/review_yeti/mcp`,
+ * and optional `${MCP_BASE_PATH}/mcp`) into canonical base and subpath components.
+ */
+export function matchMcpRoute(pathname: string, env?: Partial<Env>): MatchedMcpRoute | null {
+  const prefixes = ['/api/mcp', '/review_yeti/mcp', '/mcp'];
+  const rawBase = (env?.MCP_BASE_PATH || '').trim().replace(/\/+$/u, '');
+  if (rawBase && rawBase.startsWith('/')) {
+    const dynamicPrefix = rawBase.endsWith('/mcp') ? rawBase : `${rawBase}/mcp`;
+    if (!prefixes.includes(dynamicPrefix)) {
+      prefixes.unshift(dynamicPrefix);
+    }
+  }
+
+  for (const prefix of prefixes) {
+    if (pathname === prefix) return { basePath: prefix, subPath: '' };
+    if (pathname === `${prefix}/auth`) return { basePath: prefix, subPath: '/auth' };
+    if (pathname === `${prefix}/sse`) return { basePath: prefix, subPath: '/sse' };
+    if (pathname === `${prefix}/messages`) return { basePath: prefix, subPath: '/messages' };
+  }
+  return null;
+}
+
+/**
  * Queries RepoGateDO for the active in-flight runId associated with a pull request.
  */
 export async function getActiveRunForPR(
@@ -290,9 +341,13 @@ export async function registerPendingRunForPR(
   }
 }
 
-export default {
-  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
-    try {
+export async function handleFetch(
+  request: Request,
+  env: Env,
+  ctx?: ExecutionContext,
+  verifyOptions: VerifyAccessOptions = {}
+): Promise<Response> {
+  try {
       const url = new URL(request.url);
 
       // Health / Ready probe
@@ -303,17 +358,19 @@ export default {
         });
       }
 
+      const mcpRoute = matchMcpRoute(url.pathname, env);
+
       // Operator connection check is authenticated independently of public MCP discovery.
-      if (url.pathname === '/api/mcp/auth' || url.pathname === '/mcp/auth') {
+      if (mcpRoute?.subPath === '/auth') {
         if (request.method !== 'GET') {
           return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'GET' } });
         }
 
-        const configuredToken = (env.REVIEW_YETI_MCP_AUTH_TOKEN || '').trim();
-        const bearer = /^Bearer\s+([^\s]+)$/iu.exec(request.headers.get('Authorization') || '');
-        const suppliedToken = bearer?.[1] || '';
-        if (!configuredToken || !suppliedToken || !constantTimeEquals(suppliedToken, configuredToken)) {
-          return Response.json({ error: 'Unauthorized' }, { status: 401 });
+        if (!(await isAuthorizedAccess(request, env, verifyOptions))) {
+          return Response.json(
+            { error: 'Unauthorized' },
+            { status: 401, headers: { 'Cache-Control': 'no-store' } }
+          );
         }
 
         return Response.json({ authenticated: true, service: 'review-yeti', transport: 'cloudflare' });
@@ -389,20 +446,17 @@ export default {
         return Response.json({ status: 'ok', maxAgeSeconds, ...result });
       }
 
-      // Review Yeti MCP Gateway: /api/mcp, /mcp, and subpaths (/sse, /messages)
-      if (
-        url.pathname === '/api/mcp' ||
-        url.pathname === '/mcp' ||
-        url.pathname === '/api/mcp/sse' ||
-        url.pathname === '/mcp/sse' ||
-        url.pathname === '/api/mcp/messages' ||
-        url.pathname === '/mcp/messages'
-      ) {
+      // Review Yeti MCP Gateway: /api/mcp, /mcp, /review_yeti/mcp (plus /sse, /messages)
+      if (mcpRoute) {
         const accessAuthorized =
-          request.method === 'GET' && env.REQUIRE_CF_ACCESS === 'true'
-            ? await isAuthorizedAccess(request, env)
+          request.method !== 'OPTIONS' &&
+          (env.REQUIRE_CF_ACCESS === 'true' || Boolean(request.headers.get('Cf-Access-Jwt-Assertion')?.trim()))
+            ? await isAuthorizedAccess(request, env, verifyOptions)
             : false;
-        return await defaultMcpRouter.handleHttpRequest(request, env, { accessAuthorized });
+        return await defaultMcpRouter.handleHttpRequest(request, env, {
+          accessAuthorized,
+          basePath: mcpRoute.basePath,
+        });
       }
 
       // Review Yeti Dashboard & Analytics REST API (Edge)
@@ -437,14 +491,14 @@ export default {
         const signature = request.headers.get('X-Hub-Signature-256');
 
         // 1. Web Crypto HMAC-SHA256 signature verification
-        // Strict fail-closed verification: GITHUB_WEBHOOK_SECRET is required.
-        if (!env.GITHUB_WEBHOOK_SECRET) {
+        // Strict fail-closed verification: at least one webhook secret is required.
+        if (!(env.GITHUB_WEBHOOK_SECRET || '').trim() && !(env.GITHUB_WEBHOOK_SECRET_NEXT || '').trim()) {
           return new Response('Unauthorized: Webhook secret not configured', { status: 500 });
         }
         if (!signature) {
           return new Response('Unauthorized: Invalid HMAC signature', { status: 401 });
         }
-        const valid = await verifyGitHubSignature(env.GITHUB_WEBHOOK_SECRET, signature, rawBody);
+        const valid = await verifyGitHubSignatureWithRotation(env, signature, rawBody);
         if (!valid) {
           return new Response('Unauthorized: Invalid HMAC signature', { status: 401 });
         }
@@ -957,6 +1011,11 @@ export default {
       console.error('Unhandled ingress error in worker.fetch:', err);
       return new Response('Bad Request: Ingress webhook processing failure', { status: 400 });
     }
+}
+
+export default {
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+    return await handleFetch(request, env, ctx);
   },
 
   /**
