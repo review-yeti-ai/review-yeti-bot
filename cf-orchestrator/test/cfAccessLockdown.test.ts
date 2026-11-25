@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { SignJWT, exportJWK, generateKeyPair, createLocalJWKSet } from 'jose';
-import worker, { defaultMcpRouter, isAuthorizedAccess } from '../src/worker.js';
+import worker, { defaultMcpRouter, handleFetch, isAuthorizedAccess } from '../src/worker.js';
 import type { Env } from '../src/types.js';
 
 function createLockedEnv(overrides: Partial<Env> = {}): Env {
@@ -199,5 +199,130 @@ describe('Whole-Site Cloudflare Access Lockdown', () => {
     const accessRes = await defaultMcpRouter.handleHttpRequest(mcpReq, accessEnv, { accessAuthorized });
     assert.equal(accessRes.status, 200);
     assert.equal((await accessRes.json() as any).toolsCount, 23);
+  });
+
+  it('serves /review_yeti/mcp across GET, POST, auth, and SSE only when Access JWT (multi-AUD) or Bearer token verifies', async () => {
+    const { publicKey, privateKey } = await generateKeyPair('RS256');
+    const jwk = await exportJWK(publicKey);
+    jwk.kid = 'test-review-yeti-mcp-kid';
+    jwk.alg = 'RS256';
+    jwk.use = 'sig';
+    const keySet = createLocalJWKSet({ keys: [jwk] });
+
+    const env = createLockedEnv({
+      REVIEW_YETI_MCP_AUTH_TOKEN: 'secret-mcp-token-999',
+      ACCESS_TEAM_DOMAIN: 'example.cloudflareaccess.com',
+      ACCESS_AUD: 'aud-portal-111, aud-mcp-edge-222',
+    });
+
+    // 1. Unauthenticated GET, POST, /auth, and /sse fail closed with 401
+    for (const [method, path, body] of [
+      ['GET', '/review_yeti/mcp', undefined],
+      ['GET', '/review_yeti/mcp/auth', undefined],
+      ['GET', '/review_yeti/mcp/sse', undefined],
+      ['POST', '/review_yeti/mcp', JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })],
+    ] as const) {
+      const res = await handleFetch(
+        new Request(`https://mcp.example.com${path}`, {
+          method,
+          headers: body ? { 'Content-Type': 'application/json' } : undefined,
+          body,
+        }),
+        env,
+        undefined,
+        { keySet }
+      );
+      assert.equal(res.status, 401, `Expected 401 for unauthenticated ${method} ${path}`);
+      assert.equal(res.headers.get('Cache-Control'), 'no-store');
+    }
+
+    // 2. Signed RS256 Access JWT matching the second AUD authorizes all MCP routes
+    const mcpEdgeJwt = await new SignJWT({ email: 'agent@example.com' })
+      .setProtectedHeader({ alg: 'RS256', kid: 'test-review-yeti-mcp-kid' })
+      .setIssuer('https://example.cloudflareaccess.com')
+      .setAudience('aud-mcp-edge-222')
+      .setIssuedAt()
+      .setExpirationTime('10m')
+      .sign(privateKey);
+
+    const authProbe = await handleFetch(
+      new Request('https://mcp.example.com/review_yeti/mcp/auth', {
+        method: 'GET',
+        headers: { 'Cf-Access-Jwt-Assertion': mcpEdgeJwt },
+      }),
+      env,
+      undefined,
+      { keySet }
+    );
+    assert.equal(authProbe.status, 200);
+    assert.deepEqual(await authProbe.json(), {
+      authenticated: true,
+      service: 'review-yeti',
+      transport: 'cloudflare',
+    });
+
+    const toolsListRes = await handleFetch(
+      new Request('https://mcp.example.com/review_yeti/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cf-Access-Jwt-Assertion': mcpEdgeJwt,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+      }),
+      env,
+      undefined,
+      { keySet }
+    );
+    assert.equal(toolsListRes.status, 200);
+    assert.equal((await toolsListRes.json() as any).result.tools.length, 23);
+
+    const toolCallRes = await handleFetch(
+      new Request('https://mcp.example.com/review_yeti/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cf-Access-Jwt-Assertion': mcpEdgeJwt,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: { name: 'review_yeti_get_cloudflare_status', arguments: {} },
+        }),
+      }),
+      env,
+      undefined,
+      { keySet }
+    );
+    assert.equal(toolCallRes.status, 200);
+    assert.ok((await toolCallRes.json() as any).result?.content?.[0]?.text);
+
+    const sseRes = await handleFetch(
+      new Request('https://mcp.example.com/review_yeti/mcp/sse', {
+        method: 'GET',
+        headers: { 'Cf-Access-Jwt-Assertion': mcpEdgeJwt },
+      }),
+      env,
+      undefined,
+      { keySet }
+    );
+    assert.equal(sseRes.status, 200);
+    const reader = sseRes.body!.getReader();
+    const firstChunk = new TextDecoder().decode((await reader.read()).value);
+    assert.match(firstChunk, /data: \/review_yeti\/mcp\/messages\?sessionId=/);
+    await reader.cancel();
+
+    // 3. Bearer token still works for operator transitions on /review_yeti/mcp
+    const bearerRes = await handleFetch(
+      new Request('https://mcp.example.com/review_yeti/mcp/auth', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer secret-mcp-token-999' },
+      }),
+      env,
+      undefined,
+      { keySet }
+    );
+    assert.equal(bearerRes.status, 200);
   });
 });

@@ -75,6 +75,10 @@ export interface Env {
   PARALLEL_FILE_CONCURRENCY?: string;
   RUNNER_TYPE?: string; // 'cloudflare' (default and only supported value; anything else fails closed)
   GITHUB_WEBHOOK_SECRET?: string;
+  /** Optional secondary webhook secret accepted only during active secret rotation windows. */
+  GITHUB_WEBHOOK_SECRET_NEXT?: string;
+  /** Optional deployment MCP base path prefix (e.g. '/review_yeti' -> '/review_yeti/mcp'). */
+  MCP_BASE_PATH?: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_INSTALLATION_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;

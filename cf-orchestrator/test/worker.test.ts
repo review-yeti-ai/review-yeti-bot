@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import worker, { evictQueuedRunsForPR, isPilotRepository, verifyGitHubSignature } from '../src/worker.js';
+import worker, { evictQueuedRunsForPR, isPilotRepository, verifyGitHubSignature, verifyGitHubSignatureWithRotation } from '../src/worker.js';
 import { RepoGateDO } from '../src/repoGateDO.js';
 import { ReviewRunDO } from '../src/reviewRunDO.js';
 import { MockDurableObjectState } from './mockDurableObject.js';
@@ -1129,5 +1129,70 @@ describe('Authenticated MCP operator connection check', () => {
       headers: { Authorization: 'Bearer mock-mcp-token-xyz' },
     }), env);
     assert.equal(unconfigured.status, 401);
+  });
+});
+
+describe('Webhook Secret Rotation (GITHUB_WEBHOOK_SECRET_NEXT)', () => {
+  it('accepts signatures from either GITHUB_WEBHOOK_SECRET or GITHUB_WEBHOOK_SECRET_NEXT and fails closed otherwise', async () => {
+    const context = createWorkerTestEnv();
+    context.env.GITHUB_WEBHOOK_SECRET = 'primary-webhook-secret';
+    context.env.GITHUB_WEBHOOK_SECRET_NEXT = 'next-webhook-secret';
+
+    const body = JSON.stringify({ zen: 'rotation-test', hook_id: 1 });
+    const primarySig = await signPayload('primary-webhook-secret', body);
+    const nextSig = await signPayload('next-webhook-secret', body);
+    const wrongSig = await signPayload('wrong-webhook-secret', body);
+
+    assert.equal(await verifyGitHubSignatureWithRotation(context.env, primarySig, body), true);
+    assert.equal(await verifyGitHubSignatureWithRotation(context.env, nextSig, body), true);
+    assert.equal(await verifyGitHubSignatureWithRotation(context.env, wrongSig, body), false);
+
+    const nextRes = await worker.fetch(
+      new Request('https://review-yeti.test/api/webhooks/github', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-GitHub-Event': 'ping',
+          'X-Hub-Signature-256': nextSig,
+        },
+        body,
+      }),
+      context.env,
+      context.mockCtx as any
+    );
+    assert.equal(nextRes.status, 200);
+    assert.deepEqual(await nextRes.json(), { status: 'ignored', event: 'ping' });
+
+    const invalidRes = await worker.fetch(
+      new Request('https://review-yeti.test/api/webhooks/github', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-GitHub-Event': 'ping',
+          'X-Hub-Signature-256': wrongSig,
+        },
+        body,
+      }),
+      context.env,
+      context.mockCtx as any
+    );
+    assert.equal(invalidRes.status, 401);
+
+    context.env.GITHUB_WEBHOOK_SECRET = '';
+    context.env.GITHUB_WEBHOOK_SECRET_NEXT = '';
+    const unconfiguredRes = await worker.fetch(
+      new Request('https://review-yeti.test/api/webhooks/github', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-GitHub-Event': 'ping',
+          'X-Hub-Signature-256': nextSig,
+        },
+        body,
+      }),
+      context.env,
+      context.mockCtx as any
+    );
+    assert.equal(unconfiguredRes.status, 500);
   });
 });
