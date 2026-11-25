@@ -31,6 +31,7 @@ export interface ToolDefinition {
     type: 'object';
     properties: Record<string, any>;
     required?: string[];
+    additionalProperties?: boolean;
   };
 }
 
