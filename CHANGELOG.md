@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.140.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.139.5...v1.140.0) (2026-11-25)
+
+
+### Features
+
+* **cf-orchestrator:** add tenant-neutral MCP prefix, full Access JWT auth, and dual webhook secret rotation ([#1572](https://github.com/review-yeti-ai/review-yeti-bot/issues/1572)) ([60fedae](https://github.com/review-yeti-ai/review-yeti-bot/commit/60fedaec827614d7f23912a27056f515c9a6e2c2))
+
 ## [1.139.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.139.4...v1.139.5) (2026-11-25)
 
 
