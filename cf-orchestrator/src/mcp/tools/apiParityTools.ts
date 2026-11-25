@@ -432,6 +432,7 @@ export const getPlatformSettingsTool: McpToolHandler = {
     inputSchema: {
       type: 'object',
       properties: {},
+      additionalProperties: false,
     },
   },
   async execute(): Promise<ToolResult> {

@@ -68,6 +68,11 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
     assert.ok(toolNames.includes('review_yeti_onboard_organization'));
     assert.ok(toolNames.includes('review_yeti_onboard_repository'));
     assert.ok(toolNames.includes('review_yeti_sync_github_installation'));
+
+    const getPlatformSettings = res.result.tools.find(
+      (t: any) => t.name === 'review_yeti_get_platform_settings',
+    );
+    assert.equal(getPlatformSettings?.inputSchema?.additionalProperties, false);
   });
 
   it('supports unprefixed tool name aliases and legacy aliases', () => {
