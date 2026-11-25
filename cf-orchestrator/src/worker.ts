@@ -398,7 +398,11 @@ export default {
         url.pathname === '/api/mcp/messages' ||
         url.pathname === '/mcp/messages'
       ) {
-        return await defaultMcpRouter.handleHttpRequest(request, env);
+        const accessAuthorized =
+          request.method === 'GET' && env.REQUIRE_CF_ACCESS === 'true'
+            ? await isAuthorizedAccess(request, env)
+            : false;
+        return await defaultMcpRouter.handleHttpRequest(request, env, { accessAuthorized });
       }
 
       // Review Yeti Dashboard & Analytics REST API (Edge)

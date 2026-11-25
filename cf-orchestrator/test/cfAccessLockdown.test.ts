@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { SignJWT, exportJWK, generateKeyPair, createLocalJWKSet } from 'jose';
-import worker, { isAuthorizedAccess } from '../src/worker.js';
+import worker, { defaultMcpRouter, isAuthorizedAccess } from '../src/worker.js';
 import type { Env } from '../src/types.js';
 
 function createLockedEnv(overrides: Partial<Env> = {}): Env {
@@ -27,6 +27,7 @@ describe('Whole-Site Cloudflare Access Lockdown', () => {
     const wrangler = await readFile(resolve(process.cwd(), 'wrangler.toml'), 'utf8');
     assert.match(wrangler, /^workers_dev\s*=\s*false\b/mu);
     assert.match(wrangler, /^preview_urls\s*=\s*false\b/mu);
+    assert.match(wrangler, /^run_worker_first\s*=\s*true\b/mu);
     assert.match(wrangler, /^PUBLIC_READ_MCP\s*=\s*"false"/mu);
     assert.match(wrangler, /^REQUIRE_CF_ACCESS\s*=\s*"true"/mu);
   });
@@ -140,5 +141,63 @@ describe('Whole-Site Cloudflare Access Lockdown', () => {
     const env = createLockedEnv();
     const res = await worker.fetch(new Request('https://review-bot.example.com/health'), env);
     assert.equal(res.status, 200);
+  });
+
+  it('blocks unauthenticated GET /api/mcp and GET /mcp with 401 when PUBLIC_READ_MCP is false', async () => {
+    for (const tokenOverride of ['secret-mcp-token-999', '']) {
+      const env = createLockedEnv({ REVIEW_YETI_MCP_AUTH_TOKEN: tokenOverride });
+      for (const path of ['/api/mcp', '/mcp']) {
+        const res = await worker.fetch(
+          new Request(`https://review-bot.example.com${path}`, { method: 'GET' }),
+          env
+        );
+        assert.equal(res.status, 401, `Expected 401 for unauthenticated GET ${path}`);
+        assert.equal(res.headers.get('Cache-Control'), 'no-store');
+      }
+    }
+  });
+
+  it('allows authenticated GET /api/mcp via Bearer token or Cloudflare Access authorization', async () => {
+    const env = createLockedEnv();
+    const bearerRes = await worker.fetch(
+      new Request('https://review-bot.example.com/api/mcp', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer secret-mcp-token-999' },
+      }),
+      env
+    );
+    assert.equal(bearerRes.status, 200);
+    assert.equal((await bearerRes.json() as any).toolsCount, 23);
+
+    const { publicKey, privateKey } = await generateKeyPair('RS256');
+    const jwk = await exportJWK(publicKey);
+    jwk.kid = 'test-mcp-access-kid';
+    jwk.alg = 'RS256';
+    jwk.use = 'sig';
+    const keySet = createLocalJWKSet({ keys: [jwk] });
+
+    const accessEnv = createLockedEnv({
+      REVIEW_YETI_MCP_AUTH_TOKEN: '',
+      ACCESS_TEAM_DOMAIN: 'example.cloudflareaccess.com',
+      ACCESS_AUD: 'aud-review-bot-123',
+    });
+    const validJwt = await new SignJWT({ email: 'operator@example.com' })
+      .setProtectedHeader({ alg: 'RS256', kid: 'test-mcp-access-kid' })
+      .setIssuer('https://example.cloudflareaccess.com')
+      .setAudience('aud-review-bot-123')
+      .setIssuedAt()
+      .setExpirationTime('10m')
+      .sign(privateKey);
+
+    const mcpReq = new Request('https://review-bot.example.com/api/mcp', {
+      method: 'GET',
+      headers: { 'Cf-Access-Jwt-Assertion': validJwt },
+    });
+    const accessAuthorized = await isAuthorizedAccess(mcpReq, accessEnv, { keySet });
+    assert.equal(accessAuthorized, true);
+
+    const accessRes = await defaultMcpRouter.handleHttpRequest(mcpReq, accessEnv, { accessAuthorized });
+    assert.equal(accessRes.status, 200);
+    assert.equal((await accessRes.json() as any).toolsCount, 23);
   });
 });

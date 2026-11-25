@@ -410,7 +410,11 @@ export class McpRouter {
     }
   }
 
-  public async handleHttpRequest(request: Request, env: any): Promise<Response> {
+  public async handleHttpRequest(
+    request: Request,
+    env: any,
+    options: { accessAuthorized?: boolean } = {}
+  ): Promise<Response> {
     const url = new URL(request.url);
     const reqOrigin = request.headers.get('Origin') || '';
     const configuredOrigins = String(env?.ALLOWED_ORIGINS ?? '')
@@ -594,6 +598,29 @@ export class McpRouter {
 
     // 3. GET /api/mcp or /mcp: Tool list & server info
     if (request.method === 'GET') {
+      if (
+        env?.PUBLIC_READ_MCP !== 'true' &&
+        (configuredToken || env?.REQUIRE_CF_ACCESS === 'true') &&
+        !isAuthenticated &&
+        !options.accessAuthorized
+      ) {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32000, message: 'Unauthorized: Invalid or missing MCP authorization token' },
+          }),
+          {
+            status: 401,
+            headers: {
+              'Content-Type': 'application/json',
+              'Cache-Control': 'no-store',
+              ...corsHeaders,
+            },
+          }
+        );
+      }
+
       return Response.json(
         {
           name: MCP_SERVER_NAME,
