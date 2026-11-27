@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.141.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.141.0...v1.141.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **cf-orchestrator:** default LEGACY_SUNSET_HOSTS to disabled for wrangler-action ([#1578](https://github.com/review-yeti-ai/review-yeti-bot/issues/1578)) ([d900e6b](https://github.com/review-yeti-ai/review-yeti-bot/commit/d900e6bbb0ceffbcf5ece9fb5d01fc0ec3ae11bf))
+
 ## [1.141.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.140.1...v1.141.0) (2026-11-27)
 
 
