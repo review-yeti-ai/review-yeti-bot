@@ -110,7 +110,7 @@ jobs:
           OPERATOR_GLOBAL_PASSTHROUGH: ${{ vars.REVIEW_YETI_PASSTHROUGH || 'true' }}
           OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES: ${{ vars.OPERATOR_PASSTHROUGH_EXEMPT_REPOSITORIES }}
           REVIEW_RUN_USD_CAP: ${{ vars.REVIEW_RUN_USD_CAP || '0.50' }}
-          LEGACY_SUNSET_HOSTS: ${{ vars.CF_LEGACY_SUNSET_HOSTS || '' }}
+          LEGACY_SUNSET_HOSTS: ${{ vars.CF_LEGACY_SUNSET_HOSTS || 'disabled' }}
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
