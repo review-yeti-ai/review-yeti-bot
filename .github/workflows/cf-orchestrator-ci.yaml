@@ -1,6 +1,7 @@
 name: Cloudflare Orchestrator CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
@@ -62,7 +63,7 @@ jobs:
   deploy-orchestrator:
     name: Deploy to Cloudflare Edge
     needs: verify-orchestrator
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
