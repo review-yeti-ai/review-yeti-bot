@@ -326,23 +326,28 @@ describe('Whole-Site Cloudflare Access Lockdown', () => {
     assert.equal(bearerRes.status, 200);
   });
 
-  it('keeps legacy endpoints active when LEGACY_SUNSET_HOSTS is unset, and returns 410 Gone only on configured legacy hosts', async () => {
-    // 1. Default (unset LEGACY_SUNSET_HOSTS): legacy host retains active routes
-    const defaultEnv = createLockedEnv({ GITHUB_WEBHOOK_SECRET: 'test-webhook-secret' });
-    const preSunsetWebhook = await handleFetch(
-      new Request('https://review-bot.example.com/api/webhooks/github', {
-        method: 'POST',
-        body: '{}',
-      }),
-      defaultEnv
-    );
-    assert.equal(preSunsetWebhook.status, 401);
+  it('keeps legacy endpoints active when LEGACY_SUNSET_HOSTS is unset or disabled, and returns 410 Gone only on configured legacy hosts', async () => {
+    // 1. Default (unset or disabled/none sentinel): legacy host retains active routes
+    for (const defaultVal of [undefined, 'disabled', 'none'] as const) {
+      const defaultEnv = createLockedEnv({
+        GITHUB_WEBHOOK_SECRET: 'test-webhook-secret',
+        LEGACY_SUNSET_HOSTS: defaultVal,
+      });
+      const preSunsetWebhook = await handleFetch(
+        new Request('https://review-bot.example.com/api/webhooks/github', {
+          method: 'POST',
+          body: '{}',
+        }),
+        defaultEnv
+      );
+      assert.equal(preSunsetWebhook.status, 401);
 
-    const preSunsetMcp = await handleFetch(
-      new Request('https://review-bot.example.com/api/mcp', { method: 'GET' }),
-      defaultEnv
-    );
-    assert.equal(preSunsetMcp.status, 401);
+      const preSunsetMcp = await handleFetch(
+        new Request('https://review-bot.example.com/api/mcp', { method: 'GET' }),
+        defaultEnv
+      );
+      assert.equal(preSunsetMcp.status, 401);
+    }
 
     // 2. Enabled (LEGACY_SUNSET_HOSTS=review-bot.example.com): retired endpoints return 410 + structured warning
     const sunsetEnv = createLockedEnv({

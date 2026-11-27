@@ -190,12 +190,13 @@ export interface LegacySunsetMatch {
 
 /**
  * Parses a comma/whitespace-separated list of legacy hostnames into a normalized lowercase Set.
+ * Sentinel values (`disabled`, `none`, `false`) are ignored so CI defaults never fail closed in wrangler-action.
  */
 export function parseSunsetHosts(raw?: string): Set<string> {
   const hosts = new Set<string>();
   for (const entry of (raw || '').split(/[\s,]+/u)) {
     const trimmed = entry.trim().toLowerCase();
-    if (trimmed) {
+    if (trimmed && trimmed !== 'disabled' && trimmed !== 'none' && trimmed !== 'false') {
       hosts.add(trimmed);
     }
   }
