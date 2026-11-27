@@ -325,4 +325,108 @@ describe('Whole-Site Cloudflare Access Lockdown', () => {
     );
     assert.equal(bearerRes.status, 200);
   });
+
+  it('keeps legacy endpoints active when LEGACY_SUNSET_HOSTS is unset, and returns 410 Gone only on configured legacy hosts', async () => {
+    // 1. Default (unset LEGACY_SUNSET_HOSTS): legacy host retains active routes
+    const defaultEnv = createLockedEnv({ GITHUB_WEBHOOK_SECRET: 'test-webhook-secret' });
+    const preSunsetWebhook = await handleFetch(
+      new Request('https://review-bot.example.com/api/webhooks/github', {
+        method: 'POST',
+        body: '{}',
+      }),
+      defaultEnv
+    );
+    assert.equal(preSunsetWebhook.status, 401);
+
+    const preSunsetMcp = await handleFetch(
+      new Request('https://review-bot.example.com/api/mcp', { method: 'GET' }),
+      defaultEnv
+    );
+    assert.equal(preSunsetMcp.status, 401);
+
+    // 2. Enabled (LEGACY_SUNSET_HOSTS=review-bot.example.com): retired endpoints return 410 + structured warning
+    const sunsetEnv = createLockedEnv({
+      GITHUB_WEBHOOK_SECRET: 'test-webhook-secret',
+      LEGACY_SUNSET_HOSTS: 'review-bot.example.com',
+    });
+    const warnMessages: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnMessages.push(args.map(String).join(' '));
+    };
+    try {
+      const legacyWebhookRes = await handleFetch(
+        new Request('https://review-bot.example.com/api/webhooks/github', {
+          method: 'POST',
+          headers: { 'User-Agent': 'GitHub-Hookshot/test' },
+          body: '{}',
+        }),
+        sunsetEnv
+      );
+      assert.equal(legacyWebhookRes.status, 410);
+      assert.equal(legacyWebhookRes.headers.get('Cache-Control'), 'no-store');
+      assert.deepEqual(await legacyWebhookRes.json(), {
+        error: 'endpoint_retired',
+        host: 'review-bot.example.com',
+        path: '/api/webhooks/github',
+        endpoint: 'webhook',
+      });
+
+      for (const [method, path] of [
+        ['POST', '/api/mcp'],
+        ['GET', '/api/mcp/auth'],
+        ['POST', '/mcp'],
+      ] as const) {
+        const legacyMcpRes = await handleFetch(
+          new Request(`https://review-bot.example.com${path}`, {
+            method,
+            headers: { Authorization: 'Bearer secret-mcp-token-999' },
+          }),
+          sunsetEnv
+        );
+        assert.equal(legacyMcpRes.status, 410, `Expected 410 for sunset ${method} ${path}`);
+        assert.equal(legacyMcpRes.headers.get('Cache-Control'), 'no-store');
+        assert.deepEqual(await legacyMcpRes.json(), {
+          error: 'endpoint_retired',
+          host: 'review-bot.example.com',
+          path,
+          endpoint: 'mcp',
+        });
+      }
+
+      // 3. Health probe, Service Binding (review-yeti-internal), and mcp.example.com/review_yeti/mcp remain active
+      const healthRes = await handleFetch(
+        new Request('https://review-bot.example.com/health'),
+        sunsetEnv
+      );
+      assert.equal(healthRes.status, 200);
+
+      const serviceBindingWebhook = await handleFetch(
+        new Request('https://review-yeti-internal/api/webhooks/github', {
+          method: 'POST',
+          body: '{}',
+        }),
+        sunsetEnv
+      );
+      assert.equal(serviceBindingWebhook.status, 401);
+
+      const mcpPlaneAuth = await handleFetch(
+        new Request('https://mcp.example.com/review_yeti/mcp/auth', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer secret-mcp-token-999' },
+        }),
+        sunsetEnv
+      );
+      assert.equal(mcpPlaneAuth.status, 200);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnMessages.length, 4);
+    for (const msg of warnMessages) {
+      const parsed = JSON.parse(msg);
+      assert.equal(parsed.event, 'legacy_host_sunset_hit');
+      assert.equal(parsed.host, 'review-bot.example.com');
+    }
+  });
 });
