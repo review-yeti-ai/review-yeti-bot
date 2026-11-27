@@ -115,6 +115,8 @@ export interface Env {
   ACTION_DISPATCH_ALLOW_APP_GATE?: string;
   /** Maximum estimated OpenRouter token spend (USD) for one worker run; forwarded to the container as REVIEW_RUN_USD_CAP. */
   REVIEW_RUN_USD_CAP?: string;
+  /** Comma-separated legacy hostnames whose retired /api/webhooks/github, /api/mcp*, and /mcp* routes return 410 Gone during Phase 3/4 sunset soak. */
+  LEGACY_SUNSET_HOSTS?: string;
 }
 
 export {
