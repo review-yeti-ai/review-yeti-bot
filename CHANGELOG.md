@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.141.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.140.1...v1.141.0) (2026-11-27)
+
+
+### Features
+
+* **cf-orchestrator:** add opt-in LEGACY_SUNSET_HOSTS 410 gate for legacy host sunset ([#1576](https://github.com/review-yeti-ai/review-yeti-bot/issues/1576)) ([190a847](https://github.com/review-yeti-ai/review-yeti-bot/commit/190a847ee115fcf89e55af707b38ff9688ef71a5))
+
 ## [1.140.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.140.0...v1.140.1) (2026-11-25)
 
 
