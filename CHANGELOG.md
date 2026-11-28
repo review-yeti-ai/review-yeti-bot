@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.141.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.141.1...v1.141.2) (2026-11-28)
+
+
+### Performance
+
+* **ci:** cache cf-orchestrator frontend build assets and preserve next cache ([#1581](https://github.com/review-yeti-ai/review-yeti-bot/issues/1581)) ([74feda9](https://github.com/review-yeti-ai/review-yeti-bot/commit/74feda96bb3debdaeafefee07274275e99cd8a04))
+
 ## [1.141.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.141.0...v1.141.1) (2026-11-27)
 
 
