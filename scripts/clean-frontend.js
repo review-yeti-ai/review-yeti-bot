@@ -58,36 +58,75 @@ function waitForAnyNextBuild() {
   }
 }
 
+// Opt-in: keep Next's incremental compiler cache (.next/cache) while still
+// purging every other generated output. Unset (or any value other than '1')
+// keeps the original full-purge behavior.
+const preserveNextCache = process.env.PRESERVE_NEXT_CACHE === '1';
+
 waitForBuildLock();
 waitForAnyNextBuild();
 try {
   fs.writeFileSync(lockFile, String(process.ppid || process.pid));
 } catch (_) {}
 
+function purgeNextBuildDir() {
+  const nextDir = path.join(root, '.next');
+  if (!preserveNextCache) {
+    try {
+      fs.rmSync(nextDir, { recursive: true, force: true });
+    } catch (_) {}
+    return;
+  }
+  let entries = [];
+  try {
+    entries = fs.readdirSync(nextDir);
+  } catch (_) {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry === 'cache') continue;
+    try {
+      fs.rmSync(path.join(nextDir, entry), { recursive: true, force: true });
+    } catch (_) {}
+  }
+}
+
 function purgeNextDirs() {
   const dirs = [
     path.join(root, 'public', '_next'),
     path.join(root, 'out'),
-    path.join(root, '.next'),
   ];
   for (const d of dirs) {
     try {
       fs.rmSync(d, { recursive: true, force: true });
     } catch (_) {}
   }
+  purgeNextBuildDir();
 }
 
-// Force-purge generated build output folders
+function releaseLockOnFailure() {
+  // The lock intentionally outlives this script on success (postbuild.js
+  // releases it after `next build`); only drop it when cleanup itself fails.
+  try {
+    fs.unlinkSync(lockFile);
+  } catch (_) {}
+}
+
 try {
-  execSync('rm -rf .next out pages public/_next public/dashboard dist/tsconfig.tsbuildinfo tsconfig.tsbuildinfo', { cwd: root });
-} catch (e) {}
+  // Force-purge generated build output folders
+  const staticTargets = 'out pages public/_next public/dashboard dist/tsconfig.tsbuildinfo tsconfig.tsbuildinfo';
+  try {
+    execSync(`rm -rf ${preserveNextCache ? '' : '.next '}${staticTargets}`, { cwd: root });
+  } catch (e) {}
 
-purgeNextDirs();
+  purgeNextDirs();
 
-ensureStaticAssets();
+  ensureStaticAssets();
 
-purgeNextDirs();
+  purgeNextDirs();
+} catch (err) {
+  releaseLockOnFailure();
+  throw err;
+}
 
-console.log('[CleanFrontend] Pre-build cleanup completed successfully.');
-
-
+console.log(`[CleanFrontend] Pre-build cleanup completed successfully${preserveNextCache ? ' (preserved .next/cache)' : ''}.`);

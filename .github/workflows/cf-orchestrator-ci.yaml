@@ -15,8 +15,9 @@ on:
       - ".github/workflows/cf-orchestrator-ci.yaml"
 
 concurrency:
-  group: cf-orchestrator-ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: cf-orchestrator-ci-${{ github.event.pull_request.number || github.ref }}
+  # Cancel superseded PR runs only; never abort an in-flight push/dispatch deploy to main.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -42,7 +43,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: cf-orchestrator
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Compile TypeScript
         working-directory: cf-orchestrator
@@ -73,22 +74,98 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
 
+      # Deterministic digest of every tracked file `npm run build:frontend` can read
+      # (next build, tsc type-check, Tailwind/PostCSS, postbuild/clean/ensure scripts,
+      # src/, public/, legacy_public/, assets/, lockfile). Only trees the frontend
+      # build provably never reads are excluded. Computed before anything mutates the
+      # checkout, and fail-closed: an empty file list or empty digest aborts the job.
+      - name: Compute frontend input hash
+        id: frontend_hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          files="$(git ls-files -z -- . ':!cf-orchestrator' ':!docs' ':!k8s' ':!k8s-operator' ':!charts' ':!infra' ':!.github' | tr -cd '\0' | wc -c)"
+          if [ "${files}" -lt 1 ]; then
+            echo "::error::No frontend input files found; refusing to compute an empty hash" >&2
+            exit 1
+          fi
+          hash="$(
+            {
+              git ls-files -z -- . ':!cf-orchestrator' ':!docs' ':!k8s' ':!k8s-operator' ':!charts' ':!infra' ':!.github' | xargs -0 sha256sum
+              sha256sum .github/workflows/cf-orchestrator-ci.yaml
+            } | sha256sum | cut -d' ' -f1
+          )"
+          if [ -z "${hash}" ] || [ "${#hash}" -ne 64 ]; then
+            echo "::error::Frontend input hash is empty or malformed" >&2
+            exit 1
+          fi
+          echo "hash=${hash}" >> "$GITHUB_OUTPUT"
+
+      # Exact-match only (no restore-keys): a stale frontend bundle can never be deployed.
+      - name: Restore built frontend assets (out/)
+        id: frontend_out_cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: out
+          key: cf-orchestrator-frontend-out-v1-${{ steps.frontend_hash.outputs.hash }}
+
       - name: Setup Node.js 22
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v6
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            cf-orchestrator/package-lock.json
+
+      - name: Restore Next.js build cache
+        if: steps.frontend_out_cache.outputs.cache-hit != 'true'
+        id: next_cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: .next/cache
+          key: cf-orchestrator-next-cache-v1-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
+          restore-keys: |
+            cf-orchestrator-next-cache-v1-${{ hashFiles('package-lock.json') }}-
 
       - name: Install root dependencies
-        run: npm ci
+        if: steps.frontend_out_cache.outputs.cache-hit != 'true'
+        run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Build Next.js Frontend Static Assets
+        if: steps.frontend_out_cache.outputs.cache-hit != 'true'
+        env:
+          PRESERVE_NEXT_CACHE: '1'
         run: npm run build:frontend
+
+      - name: Save built frontend assets (out/)
+        if: steps.frontend_out_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: out
+          key: cf-orchestrator-frontend-out-v1-${{ steps.frontend_hash.outputs.hash }}
+
+      - name: Save Next.js build cache
+        if: steps.frontend_out_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: .next/cache
+          key: cf-orchestrator-next-cache-v1-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
+
+      # wrangler serves `[assets] directory = "../out"`; refuse to deploy without it.
+      - name: Verify frontend assets are present
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d out && test -f out/index.html || {
+            echo "::error::out/ is missing or incomplete; refusing to deploy" >&2
+            exit 1
+          }
 
       - name: Install cf-orchestrator dependencies & compile
         working-directory: cf-orchestrator
         run: |
-          npm ci
+          npm ci --prefer-offline --no-audit --no-fund
           npm run build
 
       - name: Project MCP auth token from Doppler
