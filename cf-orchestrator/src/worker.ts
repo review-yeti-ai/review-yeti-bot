@@ -182,60 +182,6 @@ export function matchMcpRoute(pathname: string, env?: Partial<Env>): MatchedMcpR
   return null;
 }
 
-export interface LegacySunsetMatch {
-  host: string;
-  path: string;
-  endpoint: 'webhook' | 'mcp';
-}
-
-/**
- * Parses a comma/whitespace-separated list of legacy hostnames into a normalized lowercase Set.
- * Sentinel values (`disabled`, `none`, `false`) are ignored so CI defaults never fail closed in wrangler-action.
- */
-export function parseSunsetHosts(raw?: string): Set<string> {
-  const hosts = new Set<string>();
-  for (const entry of (raw || '').split(/[\s,]+/u)) {
-    const trimmed = entry.trim().toLowerCase();
-    if (trimmed && trimmed !== 'disabled' && trimmed !== 'none' && trimmed !== 'false') {
-      hosts.add(trimmed);
-    }
-  }
-  return hosts;
-}
-
-/**
- * Matches retired public endpoints (/api/webhooks/github, /api/mcp*, /mcp*) on hostnames listed
- * in LEGACY_SUNSET_HOSTS during legacy host sunset. Internal Service Bindings and
- * /review_yeti/mcp* on non-listed hostnames are never matched.
- */
-export function matchLegacySunsetEndpoint(url: URL, env?: Partial<Env>): LegacySunsetMatch | null {
-  const host = url.hostname.toLowerCase();
-  if (!parseSunsetHosts(env?.LEGACY_SUNSET_HOSTS).has(host)) {
-    return null;
-  }
-  const pathname = url.pathname;
-  if (pathname === '/api/webhooks/github') {
-    return {
-      host,
-      path: pathname,
-      endpoint: 'webhook',
-    };
-  }
-  if (
-    pathname === '/api/mcp' ||
-    pathname.startsWith('/api/mcp/') ||
-    pathname === '/mcp' ||
-    pathname.startsWith('/mcp/')
-  ) {
-    return {
-      host,
-      path: pathname,
-      endpoint: 'mcp',
-    };
-  }
-  return null;
-}
-
 /**
  * Queries RepoGateDO for the active in-flight runId associated with a pull request.
  */
@@ -410,31 +356,6 @@ export async function handleFetch(
           status: 'ok',
           environment: env.ENVIRONMENT,
         });
-      }
-
-      // Phase 3/4 opt-in sunset gate: fail retired public endpoints on listed legacy hosts
-      // with 410 Gone and structured log telemetry while preserving Service Bindings & /review_yeti/mcp.
-      const sunsetHit = matchLegacySunsetEndpoint(url, env);
-      if (sunsetHit) {
-        console.warn(
-          JSON.stringify({
-            event: 'legacy_host_sunset_hit',
-            host: sunsetHit.host,
-            method: request.method,
-            path: sunsetHit.path,
-            cf_ray: request.headers.get('cf-ray') || null,
-            user_agent: (request.headers.get('user-agent') || '').slice(0, 120),
-          })
-        );
-        return Response.json(
-          {
-            error: 'endpoint_retired',
-            host: sunsetHit.host,
-            path: sunsetHit.path,
-            endpoint: sunsetHit.endpoint,
-          },
-          { status: 410, headers: { 'Cache-Control': 'no-store' } }
-        );
       }
 
       const mcpRoute = matchMcpRoute(url.pathname, env);
